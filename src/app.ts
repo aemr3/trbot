@@ -1,6 +1,8 @@
 import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core"
 import { resumeApiClient, type ApiClientHandle } from "./api/index.ts"
 import { loadConfig, type AppConfig } from "./config.ts"
+import { ApiViopInstrumentSource } from "./market/api-source.ts"
+import { PlaceholderNewsSource } from "./market/placeholder-news.ts"
 import { LoginScreen } from "./screens/login.ts"
 import { WatchlistScreen } from "./screens/watchlist.ts"
 
@@ -74,7 +76,7 @@ class App {
     })
 
     this.screen = this.api
-      ? new WatchlistScreen(renderer)
+      ? this.createWatchlistScreen(this.api)
       : new LoginScreen(renderer, config, {
           initialStatus: initialState.sessionExpired ? "Session expired · Sign in" : undefined,
           onAuthenticated: (api) => this.showWatchlist(api),
@@ -114,7 +116,14 @@ class App {
 
     this.api?.close()
     this.api = api
-    this.replaceScreen(new WatchlistScreen(this.renderer))
+    this.replaceScreen(this.createWatchlistScreen(api))
+  }
+
+  private createWatchlistScreen(api: ApiClientHandle): WatchlistScreen {
+    return new WatchlistScreen(this.renderer, {
+      instruments: new ApiViopInstrumentSource(api.client),
+      news: new PlaceholderNewsSource(),
+    })
   }
 
   private replaceScreen(next: Screen): void {
