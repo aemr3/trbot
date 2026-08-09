@@ -1,6 +1,8 @@
 import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core"
 import { CredentialsRequiredError, resumeApiClient, type ApiClientHandle } from "./api/index.ts"
 import { loadConfig, type AppConfig } from "./config.ts"
+import { openDatabase, type DatabaseConnection } from "./db/client.ts"
+import { DrizzleWatchlistPreferencesStore } from "./db/watchlist-preferences-store.ts"
 import { ApiCandleSource } from "./market/api-candles.ts"
 import { ApiNewsSource } from "./market/api-news.ts"
 import { ApiEquityQuoteStream } from "./market/equity-quote-stream.ts"
@@ -8,6 +10,7 @@ import { ApiQuoteStream } from "./market/quote-stream.ts"
 import { ApiViopInstrumentSource } from "./market/api-source.ts"
 import { LoginScreen } from "./screens/login.ts"
 import { WatchlistScreen } from "./screens/watchlist.ts"
+import type { WatchlistPreferences } from "./screens/watchlist-preferences.ts"
 import { ApiAccountSource } from "./trading/api-account.ts"
 import { ApiAccountStream } from "./trading/api-account-stream.ts"
 
@@ -20,6 +23,13 @@ interface Screen {
 interface InitialState {
   api: ApiClientHandle | null
   sessionExpired: boolean
+}
+
+interface AppOptions {
+  preferences?: WatchlistPreferences
+  savePreferences?: (preferences: WatchlistPreferences) => void
+  closePreferences?: () => void
+  exit?: () => void
 }
 
 const EXIT_SIGNALS: NodeJS.Signals[] = [
@@ -36,17 +46,28 @@ export async function startApp(): Promise<void> {
   const config = loadConfig()
   const initialState = await resolveInitialState(config)
   let app: App | null = null
+  let preferencesConnection: DatabaseConnection | null = null
 
   try {
+    preferencesConnection = await openDatabase(config.databaseUrl)
+    const preferencesStore = new DrizzleWatchlistPreferencesStore(preferencesConnection.db)
     const renderer = await createCliRenderer({
       exitOnCtrlC: false,
       exitSignals: EXIT_SIGNALS,
       onDestroy: () => app?.dispose(),
     })
-    app = new App(renderer, config, initialState)
+    app = new App(renderer, config, initialState, {
+      preferences: preferencesStore.get(),
+      savePreferences: (preferences) => preferencesStore.put(preferences),
+      closePreferences: preferencesConnection.close,
+    })
     app.mount()
   } catch (error) {
-    if (!app) initialState.api?.close()
+    if (app) app.dispose()
+    else {
+      initialState.api?.close()
+      preferencesConnection?.close()
+    }
     throw error
   }
 }
@@ -70,6 +91,10 @@ export class App {
   private api: ApiClientHandle | null
   private disposed = false
   private shuttingDown = false
+  private preferences: WatchlistPreferences | undefined
+  private readonly persistPreferences: ((preferences: WatchlistPreferences) => void) | undefined
+  private readonly closePreferences: (() => void) | undefined
+  private readonly exit: () => void
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     if (!key.ctrl || key.name !== "c") return
@@ -84,9 +109,13 @@ export class App {
     private readonly renderer: CliRenderer,
     private readonly config: AppConfig,
     initialState: InitialState,
-    private readonly exit: () => void = exitWithSigint,
+    options: AppOptions = {},
   ) {
     this.api = initialState.api
+    this.preferences = options.preferences
+    this.persistPreferences = options.savePreferences
+    this.closePreferences = options.closePreferences
+    this.exit = options.exit ?? exitWithSigint
     this.root = new BoxRenderable(renderer, {
       width: "100%",
       height: "100%",
@@ -115,6 +144,7 @@ export class App {
     this.renderer.keyInput.off("keypress", this.handleKeypress)
     this.api?.close()
     this.api = null
+    this.closePreferences?.()
 
     if (this.screen) {
       if (!this.renderer.isDestroyed) this.root.remove(this.screen.root)
@@ -158,6 +188,11 @@ export class App {
           if (error instanceof CredentialsRequiredError) this.showLogin()
         },
       }),
+      preferences: this.preferences,
+      onPreferencesChange: (preferences) => {
+        this.preferences = preferences
+        this.persistPreferences?.(preferences)
+      },
       onSessionExpired: () => this.showLogin(),
     })
   }

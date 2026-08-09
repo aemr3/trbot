@@ -20,6 +20,13 @@ import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.
 import type { NewsArticle, NewsSource } from "../market/news.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
 import type { AccountSource, AccountStream } from "../trading/account.ts"
+import {
+  DEFAULT_WATCHLIST_PREFERENCES,
+  normalizeWatchlistPreferences,
+  type InstrumentSort,
+  type SortDirection,
+  type WatchlistPreferences,
+} from "./watchlist-preferences.ts"
 
 const UP_COLOR = "#70d7a1"
 const DOWN_COLOR = "#ff6b6b"
@@ -48,11 +55,11 @@ export interface WatchlistScreenOptions {
   onSessionExpired?: () => void
   newsIntervalMs?: number
   accountIntervalMs?: number
+  preferences?: WatchlistPreferences
+  onPreferencesChange?: (preferences: WatchlistPreferences) => void
 }
 
 type Focus = "instruments" | "chart" | "account" | "news"
-type InstrumentSort = keyof typeof SORT_LABELS
-type SortDirection = "asc" | "desc"
 
 export class WatchlistScreen {
   readonly root: BoxRenderable
@@ -90,8 +97,9 @@ export class WatchlistScreen {
   private connected = false
   private equityConnected = false
   private selectedEquitySymbol: string | null = null
-  private instrumentSort: InstrumentSort = "volume"
-  private sortDirection: SortDirection = "desc"
+  private preferences: WatchlistPreferences
+  private instrumentSort: InstrumentSort
+  private sortDirection: SortDirection
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     if (this.articleOpen) {
@@ -116,6 +124,10 @@ export class WatchlistScreen {
     private readonly renderer: RenderContext,
     private readonly options: WatchlistScreenOptions,
   ) {
+    this.preferences = normalizeWatchlistPreferences(options.preferences ?? DEFAULT_WATCHLIST_PREFERENCES)
+    this.instrumentSort = this.preferences.instrumentSort
+    this.sortDirection = this.preferences.sortDirection
+
     this.root = new BoxRenderable(renderer, {
       flexDirection: "column",
       width: "100%",
@@ -184,6 +196,11 @@ export class WatchlistScreen {
     this.centerPanel.add(this.chartHeader)
     this.chart = new CandlestickChart(renderer, {
       source: options.candles,
+      initialRange: this.preferences.candleRange,
+      initialInterval: this.preferences.candleInterval,
+      onSelectionChange: (candleRange, candleInterval) => {
+        this.savePreferences({ candleRange, candleInterval })
+      },
       onFocusRequest: () => this.setFocus("chart"),
       onError: (error) => this.notifyIfSessionExpired(error),
     })
@@ -239,7 +256,7 @@ export class WatchlistScreen {
     columns.add(this.rightPanel)
 
     const hint = new TextRenderable(renderer, {
-      content: "↑/↓ move · list: C change, V volume · Tab panel · chart: ←/→ range, ↑/↓ TF · account: ←/→ tab, R refresh · Enter read · Esc back · Ctrl+C exit",
+      content: "↑/↓ move · list: C/V sort · Tab panel · chart: ←/→ range, ↑/↓ TF, Shift+←/→ scroll · account: ←/→ tab, R refresh · Enter read · Esc back · Ctrl+C exit",
       fg: "#777777",
     })
 
@@ -287,7 +304,7 @@ export class WatchlistScreen {
         const reference = referenceClose(instrument)
         if (reference !== null) this.referenceClose.set(instrument.symbol, reference)
       })
-      this.sortAndRenderInstrumentList()
+      this.sortAndRenderInstrumentList(this.preferences.selectedInstrumentUid ?? undefined)
       if (instruments.length > 0) {
         this.onInstrumentSelected(this.instrumentList.selectedIndex)
         this.options.quotes?.start(instruments.map((instrument) => instrument.symbol))
@@ -355,6 +372,9 @@ export class WatchlistScreen {
   private onInstrumentSelected(index: number): void {
     const instrument = this.instruments[index]
     if (!instrument) return
+    if (this.preferences.selectedInstrumentUid !== instrument.uid) {
+      this.savePreferences({ selectedInstrumentUid: instrument.uid })
+    }
     this.contractDetailsPanel.selectInstrument(instrument, Boolean(this.options.instruments.loadContractDetails))
     void this.loadContractDetails(instrument)
     this.chart.setInstrument(instrument)
@@ -548,6 +568,12 @@ export class WatchlistScreen {
     }
     this.sortAndRenderInstrumentList(selectedUid)
     this.paintSortToolbar()
+    this.savePreferences({ instrumentSort: this.instrumentSort, sortDirection: this.sortDirection })
+  }
+
+  private savePreferences(update: Partial<WatchlistPreferences>): void {
+    this.preferences = { ...this.preferences, ...update }
+    this.options.onPreferencesChange?.({ ...this.preferences })
   }
 
   private sortAndRenderInstrumentList(selectedUid?: string): void {

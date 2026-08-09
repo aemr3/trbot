@@ -374,6 +374,77 @@ test("sorts VIOP stocks by change or volume and preserves the selected stock", a
   renderer.destroy()
 })
 
+test("restores and reports list and chart display choices", async () => {
+  const { renderer, mockInput, waitForFrame, waitFor } = await createTestRenderer({ width: 120, height: 24 })
+  const changes: Array<{
+    instrumentSort: string
+    sortDirection: string
+    candleRange: string
+    candleInterval: string
+    selectedInstrumentUid: string | null
+  }> = []
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    preferences: {
+      instrumentSort: "change",
+      sortDirection: "asc",
+      candleRange: "WEEK",
+      candleInterval: "MIN_15",
+      selectedInstrumentUid: "u1",
+    },
+    onPreferencesChange: (preferences) => changes.push(preferences),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const restored = await waitForFrame((frame) => frame.includes("Change ↑") && frame.includes("15m · O"))
+  expect(restored).toContain("XU030 stock")
+
+  mockInput.pressArrow("down")
+  await waitForFrame((frame) => frame.includes("THYAO stock"))
+  expect(changes.at(-1)).toMatchObject({ selectedInstrumentUid: "u2" })
+
+  await mockInput.typeText("c")
+  await waitForFrame((frame) => frame.includes("Change ↓"))
+  expect(changes.at(-1)).toMatchObject({ instrumentSort: "change", sortDirection: "desc" })
+
+  mockInput.pressTab()
+  mockInput.pressArrow("right")
+  await waitFor(() => changes.some((preferences) => preferences.candleRange === "MONTH"))
+  expect(changes.at(-1)).toMatchObject({ candleRange: "MONTH", candleInterval: "HOUR_1" })
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("falls back to an available contract when the saved contract no longer exists", async () => {
+  const { renderer, waitForFrame, waitFor } = await createTestRenderer({ width: 120, height: 24 })
+  const selectedInstrumentUids: Array<string | null> = []
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    preferences: {
+      instrumentSort: "volume",
+      sortDirection: "desc",
+      candleRange: "INTRADAY",
+      candleInterval: "MIN_5",
+      selectedInstrumentUid: "expired-contract",
+    },
+    onPreferencesChange: (preferences) => selectedInstrumentUids.push(preferences.selectedInstrumentUid),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitForFrame((frame) => frame.includes("XU030 stock"))
+  await waitFor(() => selectedInstrumentUids.includes("u1"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 function viopRowSymbols(frame: string): string[] {
   return frame
     .split("\n")
@@ -493,6 +564,50 @@ test("switches chart ranges and timeframes from the focused chart panel", async 
   renderer.destroy()
 })
 
+test("routes modified arrows to horizontal chart scrolling", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+    width: 120,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const sessionStart = new Date("2026-08-07T06:55:00Z").getTime()
+  const historyCandles: CandleSource = {
+    async loadCandles(instrumentUid, range, interval) {
+      return {
+        instrumentUid,
+        range,
+        interval,
+        availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+        intervalMs: 300_000,
+        currency: "TRY",
+        candles: Array.from({ length: 100 }, (_, index) => ({
+          timestamp: sessionStart + index * 300_000,
+          open: 200 + index / 10,
+          high: 200.2 + index / 10,
+          low: 199.8 + index / 10,
+          close: 200.1 + index / 10,
+          volume: null,
+        })),
+      }
+    },
+  }
+  const screen = new WatchlistScreen(renderer, { instruments, candles: historyCandles, news })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const newestFrame = await waitForFrame((frame) => frame.includes("XU030 stock") && frame.includes("◀") && !frame.includes("history"))
+  expect(newestFrame).toContain("█")
+  mockInput.pressTab()
+  mockInput.pressArrow("left", { shift: true })
+  await waitForFrame((frame) => frame.includes("history"))
+
+  mockInput.pressArrow("right", { shift: true })
+  await waitForFrame((frame) => !frame.includes("history"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("keeps the chart usable in an 80-column terminal", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 80, height: 24 })
   const screen = new WatchlistScreen(renderer, { instruments, candles, news })
@@ -500,10 +615,10 @@ test("keeps the chart usable in an 80-column terminal", async () => {
   screen.mount()
 
   const frame = await waitForFrame(
-    (value) => value.includes("102,00") && value.includes("5Y") && value.includes("5m") && /[█│━]/.test(value),
+    (value) => value.includes("102,00") && value.includes("5Y") && value.includes("5m") && /[┃╻╹╽╿│]/.test(value),
   )
   expect(frame).not.toContain("Chart needs more room")
-  expect(frame).toMatch(/[█│━]/)
+  expect(frame).toMatch(/[┃╻╹╽╿│]/)
 
   mockInput.pressTab()
   mockInput.pressTab()

@@ -14,3 +14,13 @@ export const authState = sqliteTable("auth_state", {
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 })
+
+export const watchlistPreferences = sqliteTable("watchlist_preferences", {
+  id: integer("id").primaryKey(),
+  instrumentSort: text("instrument_sort").notNull(),
+  sortDirection: text("sort_direction").notNull(),
+  candleRange: text("candle_range").notNull(),
+  candleInterval: text("candle_interval").notNull(),
+  selectedInstrumentUid: text("selected_instrument_uid"),
+  updatedAt: integer("updated_at").notNull(),
+})

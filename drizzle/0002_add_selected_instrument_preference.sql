@@ -1,0 +1,1 @@
+ALTER TABLE `watchlist_preferences` ADD `selected_instrument_uid` text;

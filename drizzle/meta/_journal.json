@@ -8,6 +8,20 @@
       "when": 1786216415267,
       "tag": "0000_create_auth_state",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786306567910,
+      "tag": "0001_add_watchlist_preferences",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786306902171,
+      "tag": "0002_add_selected_instrument_preference",
+      "breakpoints": true
     }
   ]
 }

@@ -9,13 +9,19 @@ test("restores the terminal synchronously on Ctrl+C", async () => {
     kittyKeyboard: true,
   })
   let exitRequested = false
+  let preferencesClosed = false
   const app = new App(
     renderer,
     { databaseUrl: ":memory:", credentials: null },
     { api: null, sessionExpired: false },
-    () => {
-      expect(renderer.isDestroyed).toBe(true)
-      exitRequested = true
+    {
+      exit: () => {
+        expect(renderer.isDestroyed).toBe(true)
+        exitRequested = true
+      },
+      closePreferences: () => {
+        preferencesClosed = true
+      },
     },
   )
   app.mount()
@@ -24,4 +30,5 @@ test("restores the terminal synchronously on Ctrl+C", async () => {
 
   expect(renderer.isDestroyed).toBe(true)
   expect(exitRequested).toBe(true)
+  expect(preferencesClosed).toBe(true)
 })
