@@ -22,6 +22,7 @@ import type {
   ViopPositionExitSource,
 } from "../trading/order.ts"
 import { WatchlistScreen } from "./watchlist.ts"
+import type { WatchlistPreferences } from "./watchlist-preferences.ts"
 
 class FakeQuoteStream implements QuoteStream {
   private listener: QuoteUpdateListener | null = null
@@ -525,7 +526,11 @@ test("opens the complete shortcut help with question mark and closes it again", 
   await mockInput.typeText("?")
   const firstPage = await waitForFrame((frame) => frame.includes("Keyboard shortcuts"))
   expect(firstPage).toContain("Cancel all pending VIOP orders")
-  expect(firstPage).toContain("Sort by price change")
+  expect(firstPage).toContain("Search and switch ticker")
+
+  await mockInput.typeText("jjj")
+  const contractPage = await waitForFrame((frame) => frame.includes("Sort by price change"))
+  expect(contractPage).toContain("Sort by volume")
 
   await mockInput.typeText("jjjjjjjjjj")
   const lastPage = await waitForFrame((frame) => frame.includes("Order ticket"))
@@ -534,6 +539,37 @@ test("opens the complete shortcut help with question mark and closes it again", 
 
   await mockInput.typeText("?")
   await waitForFrame((frame) => !frame.includes("Keyboard shortcuts") && frame.includes("XU030 stock"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("searches tickers with slash and switches only after Enter", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const preferences: WatchlistPreferences[] = []
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    onPreferencesChange: (value) => preferences.push(value),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Chart  XU030 stock"))
+
+  await mockInput.typeText("/thy")
+  const searchFrame = await waitForFrame((frame) => frame.includes("/thy") && frame.includes("THYAO · F_THYAO0826"))
+  expect(searchFrame).toContain("Chart  XU030 stock")
+
+  mockInput.pressEnter()
+  const selectedFrame = await waitForFrame((frame) => frame.includes("Chart  THYAO stock") && frame.includes("/ ticker"))
+  expect(selectedFrame).not.toContain("/thy")
+  expect(preferences.at(-1)?.selectedInstrumentUid).toBe("u2")
+
+  await mockInput.typeText("/xu")
+  await waitForFrame((frame) => frame.includes("XU030 · F_XU0300826"))
+  mockInput.pressEscape()
+  await waitForFrame((frame) => frame.includes("Chart  THYAO stock") && frame.includes("/ ticker"))
 
   screen.destroy()
   renderer.destroy()

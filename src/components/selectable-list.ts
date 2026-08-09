@@ -54,6 +54,12 @@ export class SelectableList {
     return this.selected
   }
 
+  selectIndex(index: number): boolean {
+    if (!Number.isInteger(index) || index < 0 || index >= this.rowBoxes.length) return false
+    this.select(index)
+    return true
+  }
+
   setRows(rows: SelectableListRow[], selectedId?: string): void {
     for (const child of this.root.getChildren()) {
       this.root.remove(child)

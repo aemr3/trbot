@@ -51,17 +51,28 @@ const NEWS_HEADLINE_COLOR = "#e0e0e0"
 const NEWS_POLL_INTERVAL_MS = 60_000
 const COMPACT_LAYOUT_WIDTH = 104
 const SORT_LABELS = { change: "Change", volume: "Volume" } as const
-const WATCHLIST_HINT = "B/S trade · c cancel · x exit · ? help · Ctrl+C quit"
+const WATCHLIST_HINT = "B/S trade · / ticker · c cancel · x exit · ? help · Ctrl+C quit"
 const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
   {
     title: "Global",
     bindings: [
       { keys: "?", description: "Toggle this help" },
+      { keys: "/", description: "Search and switch ticker" },
       { keys: "B / S", description: "Open buy / sell ticket" },
       { keys: "c", description: "Cancel all pending VIOP orders" },
       { keys: "x", description: "Exit all VIOP positions" },
       { keys: "Tab", description: "Move focus to the next panel" },
       { keys: "Ctrl+C", description: "Quit" },
+    ],
+  },
+  {
+    title: "Ticker search",
+    bindings: [
+      { keys: "Type", description: "Filter by ticker or contract symbol" },
+      { keys: "↑/↓ or Ctrl+p/n", description: "Cycle through matches" },
+      { keys: "Enter", description: "Switch to the selected match" },
+      { keys: "Backspace", description: "Delete the last character" },
+      { keys: "Esc", description: "Cancel search" },
     ],
   },
   {
@@ -158,6 +169,8 @@ export class WatchlistScreen {
   private readonly hint: TextRenderable
   private orderTicket: ViopOrderTicket | null = null
   private shortcutHelp: ShortcutHelp | null = null
+  private tickerSearchQuery: string | null = null
+  private tickerSearchMatchIndex = 0
 
   private newsContent: Renderable | null = null
   private instruments: ViopInstrument[] = []
@@ -183,6 +196,10 @@ export class WatchlistScreen {
   private sortDirection: SortDirection
 
   private readonly handleKeypress = (key: KeyEvent): void => {
+    if (this.tickerSearchQuery !== null) {
+      this.handleTickerSearchKey(key)
+      return
+    }
     if (this.shortcutHelp) {
       this.shortcutHelp.handleKey(key)
       return
@@ -199,6 +216,10 @@ export class WatchlistScreen {
       if (key.name === "escape" || key.name === "esc" || key.name === "backspace") this.closeArticle()
       else if (key.name === "up" || key.name === "k") this.newsReader.scrollBy({ x: 0, y: -2 })
       else if (key.name === "down" || key.name === "j") this.newsReader.scrollBy({ x: 0, y: 2 })
+      return
+    }
+    if (isTickerSearchKey(key)) {
+      this.openTickerSearch()
       return
     }
     if (!key.ctrl && (key.name === "b" || key.name === "s")) {
@@ -387,6 +408,7 @@ export class WatchlistScreen {
     this.destroyed = true
     this.chart.destroy()
     this.accountPanel.destroy()
+    this.tickerSearchQuery = null
     this.closeShortcutHelp()
     this.closeOrderTicket()
     this.contractDetailsRequest?.abort()
@@ -561,6 +583,92 @@ export class WatchlistScreen {
     this.shortcutHelp = help
     this.root.add(help.root)
     this.renderer.requestRender()
+  }
+
+  private openTickerSearch(): void {
+    if (this.destroyed || this.tickerSearchQuery !== null) return
+    if (this.hintTimer) clearTimeout(this.hintTimer)
+    this.hintTimer = null
+    this.tickerSearchQuery = ""
+    this.tickerSearchMatchIndex = 0
+    this.renderTickerSearch()
+  }
+
+  private closeTickerSearch(): void {
+    if (this.tickerSearchQuery === null) return
+    this.tickerSearchQuery = null
+    this.tickerSearchMatchIndex = 0
+    this.hint.content = WATCHLIST_HINT
+    this.hint.fg = "#777777"
+  }
+
+  private handleTickerSearchKey(key: KeyEvent): void {
+    if (key.name === "escape" || key.name === "esc") {
+      this.closeTickerSearch()
+      return
+    }
+    if (key.name === "return" || key.name === "enter") {
+      this.selectTickerSearchMatch()
+      return
+    }
+    if (key.name === "backspace") {
+      this.tickerSearchQuery = Array.from(this.tickerSearchQuery ?? "").slice(0, -1).join("")
+      this.tickerSearchMatchIndex = 0
+      this.renderTickerSearch()
+      return
+    }
+    const direction = key.name === "up" || (key.ctrl && key.name === "p")
+      ? -1
+      : key.name === "down" || (key.ctrl && key.name === "n")
+        ? 1
+        : 0
+    if (direction !== 0) {
+      const matches = this.tickerSearchMatches()
+      if (matches.length > 0) {
+        this.tickerSearchMatchIndex = (this.tickerSearchMatchIndex + direction + matches.length) % matches.length
+        this.renderTickerSearch()
+      }
+      return
+    }
+    const character = tickerSearchCharacter(key)
+    if (character === null) return
+    this.tickerSearchQuery = `${this.tickerSearchQuery ?? ""}${character}`
+    this.tickerSearchMatchIndex = 0
+    this.renderTickerSearch()
+  }
+
+  private selectTickerSearchMatch(): void {
+    const match = this.tickerSearchMatches()[this.tickerSearchMatchIndex]
+    if (!match) return
+    const index = this.instruments.findIndex((instrument) => instrument.uid === match.uid)
+    if (index < 0) return
+    this.closeTickerSearch()
+    this.setFocus("instruments")
+    this.instrumentList.selectIndex(index)
+  }
+
+  private tickerSearchMatches(): ViopInstrument[] {
+    const query = normalizedTickerSearch(this.tickerSearchQuery ?? "")
+    if (!query) return []
+    return this.instruments
+      .map((instrument, index) => ({ instrument, index, score: tickerSearchScore(instrument, query) }))
+      .filter((entry) => entry.score !== null)
+      .sort((left, right) => (left.score ?? 0) - (right.score ?? 0) || left.index - right.index)
+      .map((entry) => entry.instrument)
+  }
+
+  private renderTickerSearch(): void {
+    const query = this.tickerSearchQuery ?? ""
+    const matches = this.tickerSearchMatches()
+    if (this.tickerSearchMatchIndex >= matches.length) this.tickerSearchMatchIndex = 0
+    const match = matches[this.tickerSearchMatchIndex]
+    const result = !query
+      ? "type a ticker"
+      : match
+        ? `${match.displayName} · ${match.symbol}  ${this.tickerSearchMatchIndex + 1}/${matches.length}`
+        : "no matches"
+    this.hint.content = t`${fg("#7c83ff")(`/${query}`)}  ${fg(match ? "#dddddd" : "#888888")(result)}  ${fg("#666666")("Enter select · Esc cancel")}`
+    this.hint.fg = "#dddddd"
   }
 
   private closeShortcutHelp(): void {
@@ -919,6 +1027,30 @@ function isCapitalShortcut(key: KeyEvent, letter: "c" | "v"): boolean {
 function isLowercaseShortcut(key: KeyEvent, letter: "c" | "x"): boolean {
   if (key.ctrl || key.shift || key.meta || key.option) return false
   return key.name === letter && key.sequence !== letter.toUpperCase()
+}
+
+function isTickerSearchKey(key: KeyEvent): boolean {
+  if (key.ctrl || key.meta || key.option) return false
+  return key.name === "/" || key.sequence === "/"
+}
+
+function tickerSearchCharacter(key: KeyEvent): string | null {
+  if (key.ctrl || key.meta || key.option) return null
+  const character = key.sequence || key.name
+  return /^[\p{L}\p{N}_.-]$/u.test(character) ? character : null
+}
+
+function normalizedTickerSearch(value: string): string {
+  return value.trim().toUpperCase()
+}
+
+function tickerSearchScore(instrument: ViopInstrument, query: string): number | null {
+  const values = [instrument.displayName, instrument.underlyingSymbol, instrument.symbol]
+    .filter((value): value is string => Boolean(value))
+    .map(normalizedTickerSearch)
+  if (values.some((value) => value === query || value === `F_${query}`)) return 0
+  if (values.some((value) => value.startsWith(query) || value.startsWith(`F_${query}`))) return 1
+  return values.some((value) => value.includes(query)) ? 2 : null
 }
 
 function errorMessage(error: unknown): string {
