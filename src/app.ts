@@ -177,6 +177,7 @@ export class App {
       account: new ApiAccountSource(api.client),
       orders,
       orderCancellation: orders,
+      positionExit: orders,
       accountStream: new ApiAccountStream(api.client, {
         onError: (error) => {
           if (error instanceof CredentialsRequiredError) this.showLogin()

@@ -71,6 +71,29 @@ export interface ViopOrderCancellationSource {
   cancelPendingOrders(request: CancelPendingViopOrdersRequest): Promise<ViopOrderCancellationResult>
 }
 
+export interface SubmittedViopPositionExit {
+  instrumentUid: string
+  symbol: string
+  quantity: number
+  orderUid: string
+}
+
+export interface ViopPositionExitFailure {
+  instrumentUid: string
+  symbol: string
+  quantity: number
+  message: string
+}
+
+export interface ViopPositionExitResult {
+  submitted: SubmittedViopPositionExit[]
+  failures: ViopPositionExitFailure[]
+}
+
+export interface ViopPositionExitSource {
+  exitAllPositions(options?: { signal?: AbortSignal }): Promise<ViopPositionExitResult>
+}
+
 export function resolveViopOrderPrice(
   kind: ViopOrderKind,
   side: ViopOrderSide,

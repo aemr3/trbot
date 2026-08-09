@@ -14,13 +14,19 @@ import { AccountPanel } from "../components/account-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
 import { ContractDetailsPanel } from "../components/contract-details-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
+import { isShortcutHelpKey, ShortcutHelp, type ShortcutHelpSection } from "../components/shortcut-help.ts"
 import type { CandleSource } from "../market/candle.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsArticle, NewsSource } from "../market/news.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
 import type { AccountSource, AccountStream } from "../trading/account.ts"
-import type { ViopOrderCancellationSource, ViopOrderSide, ViopOrderSource } from "../trading/order.ts"
+import type {
+  ViopOrderCancellationSource,
+  ViopOrderSide,
+  ViopOrderSource,
+  ViopPositionExitSource,
+} from "../trading/order.ts"
 import { ViopOrderTicket } from "./order-ticket.ts"
 import {
   DEFAULT_WATCHLIST_PREFERENCES,
@@ -45,7 +51,71 @@ const NEWS_HEADLINE_COLOR = "#e0e0e0"
 const NEWS_POLL_INTERVAL_MS = 60_000
 const COMPACT_LAYOUT_WIDTH = 104
 const SORT_LABELS = { change: "Change", volume: "Volume" } as const
-const WATCHLIST_HINT = "B buy · S sell · c cancel pending · ↑/↓ move · list: C/V sort · Tab panel · chart: ←/→ range, ↑/↓ TF, Shift+←/→ scroll · account: ←/→ tab, R refresh · Enter read · Esc back · Ctrl+C exit"
+const WATCHLIST_HINT = "B/S trade · c cancel · x exit · ? help · Ctrl+C quit"
+const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
+  {
+    title: "Global",
+    bindings: [
+      { keys: "?", description: "Toggle this help" },
+      { keys: "B / S", description: "Open buy / sell ticket" },
+      { keys: "c", description: "Cancel all pending VIOP orders" },
+      { keys: "x", description: "Exit all VIOP positions" },
+      { keys: "Tab", description: "Move focus to the next panel" },
+      { keys: "Ctrl+C", description: "Quit" },
+    ],
+  },
+  {
+    title: "VIOP contracts",
+    bindings: [
+      { keys: "↑/↓ or j/k", description: "Move selection" },
+      { keys: "Home / End", description: "Select first / last contract" },
+      { keys: "C", description: "Sort by price change" },
+      { keys: "V", description: "Sort by volume" },
+    ],
+  },
+  {
+    title: "Chart",
+    bindings: [
+      { keys: "←/→ or h/l", description: "Change range" },
+      { keys: "↑/↓ or j/k", description: "Change timeframe" },
+      { keys: "Shift+←/→ or H/L", description: "Scroll candle history" },
+      { keys: "Shift+Home / End", description: "Jump to oldest / newest candles" },
+    ],
+  },
+  {
+    title: "Account",
+    bindings: [
+      { keys: "←/→ or h/l", description: "Change account tab" },
+      { keys: "↑/↓ or j/k", description: "Scroll" },
+      { keys: "Home", description: "Scroll to top" },
+      { keys: "R", description: "Refresh account" },
+    ],
+  },
+  {
+    title: "News",
+    bindings: [
+      { keys: "↑/↓ or j/k", description: "Move selection or scroll article" },
+      { keys: "Home / End", description: "Select first / last article" },
+      { keys: "Enter", description: "Open selected article" },
+      { keys: "Esc / Backspace", description: "Close article" },
+    ],
+  },
+  {
+    title: "Order ticket",
+    bindings: [
+      { keys: "Tab / Shift+Tab", description: "Move between fields" },
+      { keys: "↑/↓", description: "Move between fields" },
+      { keys: "←/→ or Space", description: "Toggle order type on its field" },
+      { keys: "L / M", description: "Select limit / simulated market" },
+      { keys: "Digits, . or ,", description: "Enter contracts or limit price" },
+      { keys: "Backspace", description: "Delete the last digit" },
+      { keys: "R", description: "Review order" },
+      { keys: "Enter", description: "Next field, review, or submit" },
+      { keys: "B / S", description: "Review or submit the matching side" },
+      { keys: "Esc", description: "Return to edit or close ticket" },
+    ],
+  },
+]
 
 export interface WatchlistScreenOptions {
   instruments: ViopInstrumentSource
@@ -55,6 +125,7 @@ export interface WatchlistScreenOptions {
   accountStream?: AccountStream
   orders?: ViopOrderSource
   orderCancellation?: ViopOrderCancellationSource
+  positionExit?: ViopPositionExitSource
   equityQuotes?: EquityQuoteStream
   quotes?: QuoteStream
   onSessionExpired?: () => void
@@ -86,6 +157,7 @@ export class WatchlistScreen {
   private readonly newsMessage: TextRenderable
   private readonly hint: TextRenderable
   private orderTicket: ViopOrderTicket | null = null
+  private shortcutHelp: ShortcutHelp | null = null
 
   private newsContent: Renderable | null = null
   private instruments: ViopInstrument[] = []
@@ -99,7 +171,7 @@ export class WatchlistScreen {
   private newsRequestUid: string | null = null
   private articleRequestUid: string | null = null
   private contractDetailsRequest: AbortController | null = null
-  private cancellationRequest: AbortController | null = null
+  private tradingActionRequest: AbortController | null = null
   private readerLastClickAt = 0
   private newsTimer: ReturnType<typeof setInterval> | null = null
   private hintTimer: ReturnType<typeof setTimeout> | null = null
@@ -111,6 +183,14 @@ export class WatchlistScreen {
   private sortDirection: SortDirection
 
   private readonly handleKeypress = (key: KeyEvent): void => {
+    if (this.shortcutHelp) {
+      this.shortcutHelp.handleKey(key)
+      return
+    }
+    if (isShortcutHelpKey(key)) {
+      this.openShortcutHelp()
+      return
+    }
     if (this.orderTicket) {
       this.orderTicket.handleKey(key)
       return
@@ -127,6 +207,10 @@ export class WatchlistScreen {
     }
     if (isLowercaseShortcut(key, "c")) {
       void this.cancelAllPendingOrders()
+      return
+    }
+    if (isLowercaseShortcut(key, "x")) {
+      void this.exitAllPositions()
       return
     }
     if (key.name === "tab") {
@@ -303,11 +387,12 @@ export class WatchlistScreen {
     this.destroyed = true
     this.chart.destroy()
     this.accountPanel.destroy()
+    this.closeShortcutHelp()
     this.closeOrderTicket()
     this.contractDetailsRequest?.abort()
     this.contractDetailsRequest = null
-    this.cancellationRequest?.abort()
-    this.cancellationRequest = null
+    this.tradingActionRequest?.abort()
+    this.tradingActionRequest = null
     this.options.quotes?.stop()
     this.options.equityQuotes?.stop()
     if (this.newsTimer) {
@@ -467,6 +552,26 @@ export class WatchlistScreen {
     ticket.mount()
   }
 
+  private openShortcutHelp(): void {
+    if (this.shortcutHelp || this.destroyed) return
+    const help = new ShortcutHelp(this.renderer, {
+      sections: WATCHLIST_SHORTCUTS,
+      onClose: () => this.closeShortcutHelp(),
+    })
+    this.shortcutHelp = help
+    this.root.add(help.root)
+    this.renderer.requestRender()
+  }
+
+  private closeShortcutHelp(): void {
+    const help = this.shortcutHelp
+    if (!help) return
+    this.shortcutHelp = null
+    if (!this.root.isDestroyed && !help.root.isDestroyed) this.root.remove(help.root)
+    help.destroy()
+    this.renderer.requestRender()
+  }
+
   private closeOrderTicket(): void {
     const ticket = this.orderTicket
     if (!ticket) return
@@ -478,13 +583,13 @@ export class WatchlistScreen {
 
   private async cancelAllPendingOrders(): Promise<void> {
     const source = this.options.orderCancellation
-    if (!source || this.cancellationRequest || this.destroyed) return
+    if (!source || this.tradingActionRequest || this.destroyed) return
     const request = new AbortController()
-    this.cancellationRequest = request
+    this.tradingActionRequest = request
     this.showHintStatus("Loading pending VIOP orders…", "#e5c07b")
     try {
       const orders = await source.listPendingOrders({ signal: request.signal })
-      if (this.destroyed || request.signal.aborted || this.cancellationRequest !== request) return
+      if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request) return
       if (orders.length === 0) {
         this.showHintStatus("No pending VIOP orders to cancel.", "#888888", 3_000)
         return
@@ -494,7 +599,7 @@ export class WatchlistScreen {
         orderUids: orders.map((order) => order.uid),
         signal: request.signal,
       })
-      if (this.destroyed || request.signal.aborted || this.cancellationRequest !== request) return
+      if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request) return
       if (result.cancelledOrderUids.length > 0) void this.accountPanel.refresh()
       if (result.failures.length === 0) {
         const count = result.cancelledOrderUids.length
@@ -508,11 +613,43 @@ export class WatchlistScreen {
         )
       }
     } catch (error) {
-      if (this.destroyed || request.signal.aborted || this.cancellationRequest !== request || isAbortError(error)) return
+      if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request || isAbortError(error)) return
       if (this.notifyIfSessionExpired(error)) return
       this.showHintStatus(`Failed to cancel pending orders: ${errorMessage(error)}`, "#ff6b6b", 6_000)
     } finally {
-      if (this.cancellationRequest === request) this.cancellationRequest = null
+      if (this.tradingActionRequest === request) this.tradingActionRequest = null
+    }
+  }
+
+  private async exitAllPositions(): Promise<void> {
+    const source = this.options.positionExit
+    if (!source || this.tradingActionRequest || this.destroyed) return
+    const request = new AbortController()
+    this.tradingActionRequest = request
+    this.showHintStatus("Submitting simulated-market VIOP exits…", "#e5c07b")
+    try {
+      const result = await source.exitAllPositions({ signal: request.signal })
+      if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request) return
+      if (result.submitted.length > 0) void this.accountPanel.refresh()
+      if (result.submitted.length === 0 && result.failures.length === 0) {
+        this.showHintStatus("No open VIOP positions to exit.", "#888888", 3_000)
+      } else if (result.failures.length === 0) {
+        const count = result.submitted.length
+        this.showHintStatus(`Submitted exit orders for ${count} VIOP position${count === 1 ? "" : "s"}.`, "#70d7a1", 4_000)
+      } else {
+        const message = result.failures[0]?.message ?? "Position exit failed"
+        this.showHintStatus(
+          `Submitted ${result.submitted.length} exits; ${result.failures.length} failed: ${message}`,
+          "#ff6b6b",
+          6_000,
+        )
+      }
+    } catch (error) {
+      if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request || isAbortError(error)) return
+      if (this.notifyIfSessionExpired(error)) return
+      this.showHintStatus(`Failed to exit positions: ${errorMessage(error)}`, "#ff6b6b", 6_000)
+    } finally {
+      if (this.tradingActionRequest === request) this.tradingActionRequest = null
     }
   }
 
@@ -779,7 +916,7 @@ function isCapitalShortcut(key: KeyEvent, letter: "c" | "v"): boolean {
   return key.sequence === letter.toUpperCase() || (key.shift && key.name === letter)
 }
 
-function isLowercaseShortcut(key: KeyEvent, letter: "c"): boolean {
+function isLowercaseShortcut(key: KeyEvent, letter: "c" | "x"): boolean {
   if (key.ctrl || key.shift || key.meta || key.option) return false
   return key.name === letter && key.sequence !== letter.toUpperCase()
 }

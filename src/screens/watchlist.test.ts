@@ -19,6 +19,7 @@ import type {
   PlaceViopOrderRequest,
   ViopOrderCancellationSource,
   ViopOrderSource,
+  ViopPositionExitSource,
 } from "../trading/order.ts"
 import { WatchlistScreen } from "./watchlist.ts"
 
@@ -473,6 +474,66 @@ test("cancels every pending VIOP order immediately with lowercase c", async () =
   await mockInput.typeText("c")
   await waitForFrame((frame) => frame.includes("Cancelled 2 pending VIOP orders."))
   expect(cancelled).toEqual([["order-1", "order-2"]])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("submits exits for every VIOP position immediately with lowercase x", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+  let exits = 0
+  const positionExit: ViopPositionExitSource = {
+    async exitAllPositions() {
+      exits += 1
+      return {
+        submitted: [
+          { instrumentUid: "u1", symbol: "F_XU0300826", quantity: 1, orderUid: "exit-1" },
+          { instrumentUid: "u2", symbol: "F_THYAO0826", quantity: 2, orderUid: "exit-2" },
+        ],
+        failures: [],
+      }
+    },
+  }
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    positionExit,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("XU030 stock"))
+
+  mockInput.pressKey("x", { shift: true })
+  expect(exits).toBe(0)
+  await mockInput.typeText("x")
+  await waitForFrame((frame) => frame.includes("Submitted exit orders for 2 VIOP positions."))
+  expect(exits).toBe(1)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("opens the complete shortcut help with question mark and closes it again", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24 })
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("XU030 stock"))
+
+  await mockInput.typeText("?")
+  const firstPage = await waitForFrame((frame) => frame.includes("Keyboard shortcuts"))
+  expect(firstPage).toContain("Cancel all pending VIOP orders")
+  expect(firstPage).toContain("Sort by price change")
+
+  await mockInput.typeText("jjjjjjjjjj")
+  const lastPage = await waitForFrame((frame) => frame.includes("Order ticket"))
+  expect(lastPage).toContain("Next field, review, or submit")
+  expect(lastPage).toContain("Review or submit the matching side")
+
+  await mockInput.typeText("?")
+  await waitForFrame((frame) => !frame.includes("Keyboard shortcuts") && frame.includes("XU030 stock"))
 
   screen.destroy()
   renderer.destroy()

@@ -81,6 +81,57 @@ test("continues cancelling remaining orders after an individual failure", async 
   expect(calls.filter((call) => call.name === "cancelOrder")).toHaveLength(2)
 })
 
+test("submits simulated-market close orders for every long and short VIOP position", async () => {
+  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const source = new ApiViopOrderSource(fakeExitClient(calls))
+
+  const result = await source.exitAllPositions()
+
+  expect(result).toEqual({
+    submitted: [
+      { instrumentUid: "future-long", symbol: "F_LONG0826", quantity: 2, orderUid: "exit-future-long" },
+      { instrumentUid: "future-short", symbol: "F_SHORT0826", quantity: 3, orderUid: "exit-future-short" },
+    ],
+    failures: [],
+  })
+  expect(calls.filter((call) => call.name === "placeOrder").map((call) => call.variables)).toEqual([
+    expect.objectContaining({
+      instrumentId: "future-long",
+      quantity: 2,
+      limitPrice: 188.3,
+      orderSide: "SELL",
+      orderType: "LIMIT",
+      timeInForce: "DAY",
+      positionIntent: "SELL_TO_CLOSE",
+    }),
+    expect.objectContaining({
+      instrumentId: "future-short",
+      quantity: 3,
+      limitPrice: 230.1,
+      orderSide: "BUY",
+      orderType: "LIMIT",
+      timeInForce: "DAY",
+      positionIntent: "BUY_TO_CLOSE",
+    }),
+  ])
+})
+
+test("continues exiting remaining VIOP positions after an individual failure", async () => {
+  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const source = new ApiViopOrderSource(fakeExitClient(calls, "future-long"))
+
+  const result = await source.exitAllPositions()
+
+  expect(result.submitted.map((entry) => entry.instrumentUid)).toEqual(["future-short"])
+  expect(result.failures).toEqual([{
+    instrumentUid: "future-long",
+    symbol: "F_LONG0826",
+    quantity: 2,
+    message: "Exit rejected",
+  }])
+  expect(calls.filter((call) => call.name === "placeOrder")).toHaveLength(2)
+})
+
 function fakeClient(
   calls: Array<{ name: string; variables: Record<string, unknown> }>,
   positionQuantity: number,
@@ -137,6 +188,59 @@ function fakeClient(
                 : operation.name === "placeOrder"
                   ? { placeOrderV2: { order: { uid: "order-1", status: "PENDING", statusDescription: "Bekliyor" } } }
                   : null
+      if (!response) throw new Error(`Unexpected operation ${operation.name}`)
+      return response as TData
+    },
+  }
+}
+
+function fakeExitClient(
+  calls: Array<{ name: string; variables: Record<string, unknown> }>,
+  failureInstrumentUid?: string,
+) {
+  return {
+    async authenticate() {
+      return { accessToken: "token", refreshToken: null, memberUid: "member" }
+    },
+    async call<TData, TVariables extends Record<string, unknown>>(
+      operation: GraphqlOperation<TData, TVariables>,
+      variables: TVariables,
+    ): Promise<TData> {
+      calls.push({ name: operation.name, variables })
+      if (operation.name === "placeOrder" && variables.instrumentId === failureInstrumentUid) {
+        throw new Error("Exit rejected")
+      }
+      const response = operation.name === "overviewV7"
+        ? { overviewV7: { accounts: [{ accountUid: "try-account", status: "ACTIVE", currency: "TRY" }] } }
+        : operation.name === "viopOverviewPositions"
+          ? {
+              viopOverviewPositions: {
+                positions: [
+                  { assetUid: "future-long", symbol: "F_LONG0826", quantity: 2 },
+                  { assetUid: "future-short", symbol: "F_SHORT0826", quantity: -3 },
+                ],
+              },
+            }
+          : operation.name === "assetFuture"
+            ? { assetFuture: { priceFormat: { scale: 2 } } }
+            : operation.name === "prepareOrder"
+              ? {
+                  orderPreparationV2: {
+                    type: "LIMIT",
+                    availableOrderTypes: ["LIMIT"],
+                    priceRange: { minPrice: 188.3, maxPrice: 230.1 },
+                    validityPeriodDto: {
+                      tradingRangeDto: { validityPeriodCalendarItems: [{ isActive: true, timeInForce: "DAY" }] },
+                    },
+                  },
+                }
+              : operation.name === "placeOrder"
+                ? {
+                    placeOrderV2: {
+                      order: { uid: `exit-${String(variables.instrumentId)}`, status: "PENDING" },
+                    },
+                  }
+                : null
       if (!response) throw new Error(`Unexpected operation ${operation.name}`)
       return response as TData
     },

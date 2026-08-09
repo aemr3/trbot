@@ -16,6 +16,8 @@ import {
   type ViopOrderCancellationSource,
   type ViopOrderPreparation,
   type ViopOrderSource,
+  type ViopPositionExitResult,
+  type ViopPositionExitSource,
   type ViopPositionIntent,
 } from "./order.ts"
 
@@ -32,7 +34,7 @@ interface PreparedOrderContext {
   result: ViopOrderPreparation
 }
 
-export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellationSource {
+export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellationSource, ViopPositionExitSource {
   constructor(private readonly client: OrderApiClient) {}
 
   async prepareOrder(request: PrepareViopOrderRequest): Promise<ViopOrderPreparation> {
@@ -51,16 +53,99 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
     const { lowerLimit, upperLimit, priceScale } = context.result
     if (lowerLimit !== null && request.limitPrice < lowerLimit) throw new Error("Limit price is below the exchange lower limit")
     if (upperLimit !== null && request.limitPrice > upperLimit) throw new Error("Limit price is above the exchange upper limit")
-    const scale = 10 ** priceScale
-    if (Math.abs(Math.round(request.limitPrice * scale) / scale - request.limitPrice) > Number.EPSILON) {
-      throw new Error(`Limit price supports at most ${priceScale} decimal places`)
-    }
+    assertPriceScale(request.limitPrice, priceScale)
 
+    return this.submitLimitOrder({
+      accountUid: context.accountUid,
+      instrumentUid: request.instrumentUid,
+      quantity: request.quantity,
+      limitPrice: request.limitPrice,
+      side: request.side,
+      positionIntent: context.positionIntent,
+      signal: request.signal,
+    })
+  }
+
+  async exitAllPositions(options: { signal?: AbortSignal } = {}): Promise<ViopPositionExitResult> {
+    const session = await this.client.authenticate()
+    const [overview, positionsData] = await Promise.all([
+      this.client.call(
+        accountOperations.overview,
+        { memberId: session.memberUid, currencyCode: "TRY", period: "DAY" },
+        options,
+      ),
+      this.client.call(accountOperations.positions, { accountId: session.memberUid }, options),
+    ])
+    const accountUid = activeTryAccountUid(overview)
+    const positions = openPositions(positionsData)
+    const result: ViopPositionExitResult = { submitted: [], failures: [] }
+
+    for (const position of positions) {
+      const quantity = Math.abs(position.quantity)
+      if (!Number.isInteger(quantity)) {
+        result.failures.push({ ...position, quantity, message: "Position quantity must be a whole number of contracts" })
+        continue
+      }
+      const side = position.quantity > 0 ? "SELL" : "BUY"
+      const positionIntent = position.quantity > 0 ? "SELL_TO_CLOSE" : "BUY_TO_CLOSE"
+      try {
+        const [future, prepared] = await Promise.all([
+          this.client.call(
+            tradingOperations.assetFuture,
+            { instrumentId: position.instrumentUid, memberId: session.memberUid },
+            options,
+          ),
+          this.client.call(
+            tradingOperations.prepareOrder,
+            {
+              orderId: null,
+              instrumentId: position.instrumentUid,
+              accountId: accountUid,
+              orderSide: side,
+              orderType: "LIMIT",
+              positionIntent,
+            },
+            options,
+          ),
+        ])
+        const preparation = prepared.orderPreparationV2
+        if (!preparation) throw new Error("Order preparation is unavailable")
+        assertPreparationAllowsLimitOrder(preparation)
+        const limitPrice = finiteNumber(side === "BUY" ? preparation.priceRange?.maxPrice : preparation.priceRange?.minPrice)
+        if (limitPrice === null || limitPrice <= 0) throw new Error("Exchange price limit is unavailable")
+        assertPriceScale(limitPrice, boundedScale(future.assetFuture?.priceFormat?.scale))
+        const order = await this.submitLimitOrder({
+          accountUid,
+          instrumentUid: position.instrumentUid,
+          quantity,
+          limitPrice,
+          side,
+          positionIntent,
+          signal: options.signal,
+        })
+        result.submitted.push({ ...position, quantity, orderUid: order.uid })
+      } catch (error) {
+        if (options.signal?.aborted || isAbortError(error)) throw error
+        result.failures.push({ ...position, quantity, message: errorMessage(error) })
+      }
+    }
+    return result
+  }
+
+  private async submitLimitOrder(request: {
+    accountUid: string
+    instrumentUid: string
+    quantity: number
+    limitPrice: number
+    side: "BUY" | "SELL"
+    positionIntent: ViopPositionIntent
+    signal?: AbortSignal
+  }): Promise<PlacedViopOrder> {
     const data = await this.client.call(
       tradingOperations.placeOrder,
       {
         instrumentId: request.instrumentUid,
-        accountId: context.accountUid,
+        accountId: request.accountUid,
         quantity: request.quantity,
         notional: null,
         price: null,
@@ -79,7 +164,7 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
         shouldPlaceInExtendedHours: false,
         endingDate: null,
         investmentType: "FUTURES",
-        positionIntent: context.positionIntent,
+        positionIntent: request.positionIntent,
       },
       { signal: request.signal },
     )
@@ -242,6 +327,26 @@ function activeTryAccountUid(data: AccountOverviewData): string {
 function currentPositionQuantity(data: AccountPositionsData, instrumentUid: string): number {
   const entry = data.viopOverviewPositions?.positions?.find((position) => position.assetUid === instrumentUid)
   return finiteNumber(entry?.quantity) ?? 0
+}
+
+function openPositions(data: AccountPositionsData): Array<{ instrumentUid: string; symbol: string; quantity: number }> {
+  const positions = new Map<string, { instrumentUid: string; symbol: string; quantity: number }>()
+  for (const entry of data.viopOverviewPositions?.positions ?? []) {
+    const instrumentUid = entry.assetUid
+    const quantity = finiteNumber(entry.quantity)
+    if (!instrumentUid || quantity === null || quantity === 0) continue
+    const existing = positions.get(instrumentUid)
+    if (existing) existing.quantity += quantity
+    else positions.set(instrumentUid, { instrumentUid, symbol: entry.symbol ?? entry.displayName ?? instrumentUid, quantity })
+  }
+  return [...positions.values()].filter((position) => position.quantity !== 0)
+}
+
+function assertPriceScale(price: number, priceScale: number): void {
+  const scale = 10 ** priceScale
+  if (Math.abs(Math.round(price * scale) / scale - price) > Number.EPSILON) {
+    throw new Error(`Limit price supports at most ${priceScale} decimal places`)
+  }
 }
 
 function assertPreparationAllowsLimitOrder(preparation: NonNullable<OrderPreparationData["orderPreparationV2"]>): void {
