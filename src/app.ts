@@ -8,6 +8,8 @@ import { ApiQuoteStream } from "./market/quote-stream.ts"
 import { ApiViopInstrumentSource } from "./market/api-source.ts"
 import { LoginScreen } from "./screens/login.ts"
 import { WatchlistScreen } from "./screens/watchlist.ts"
+import { ApiAccountSource } from "./trading/api-account.ts"
+import { ApiAccountStream } from "./trading/api-account-stream.ts"
 
 interface Screen {
   readonly root: BoxRenderable
@@ -128,6 +130,12 @@ class App {
       instruments: new ApiViopInstrumentSource(api.client),
       candles: new ApiCandleSource(api.client),
       news: new ApiNewsSource(api.client),
+      account: new ApiAccountSource(api.client),
+      accountStream: new ApiAccountStream(api.client, {
+        onError: (error) => {
+          if (error instanceof CredentialsRequiredError) this.showLogin()
+        },
+      }),
       equityQuotes: new ApiEquityQuoteStream(api.client, {
         onError: (error) => {
           if (error instanceof CredentialsRequiredError) this.showLogin()

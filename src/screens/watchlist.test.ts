@@ -9,6 +9,12 @@ import type {
 import type { ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsSource } from "../market/news.ts"
 import type { QuoteStream, QuoteUpdate, QuoteUpdateListener } from "../market/quote-stream.ts"
+import type {
+  AccountLiveUpdate,
+  AccountLiveUpdateListener,
+  AccountSource,
+  AccountStream,
+} from "../trading/account.ts"
 import { WatchlistScreen } from "./watchlist.ts"
 
 class FakeQuoteStream implements QuoteStream {
@@ -63,6 +69,36 @@ class FakeEquityQuoteStream implements EquityQuoteStream {
   }
 }
 
+class FakeAccountStream implements AccountStream {
+  private listener: AccountLiveUpdateListener | null = null
+  private connectionListener: ((connected: boolean) => void) | null = null
+  pendingOrders: string[] = []
+  started = false
+  stopped = false
+
+  subscribe(listener: AccountLiveUpdateListener): void {
+    this.listener = listener
+  }
+  onConnectionChange(listener: (connected: boolean) => void): void {
+    this.connectionListener = listener
+  }
+  setPendingOrders(orderUids: string[]): void {
+    this.pendingOrders = orderUids
+  }
+  start(): void {
+    this.started = true
+  }
+  stop(): void {
+    this.stopped = true
+  }
+  emit(update: AccountLiveUpdate): void {
+    this.listener?.(update)
+  }
+  emitConnection(connected: boolean): void {
+    this.connectionListener?.(connected)
+  }
+}
+
 const instruments: ViopInstrumentSource = {
   async listInstruments() {
     return [
@@ -98,6 +134,41 @@ const candles: CandleSource = {
   },
 }
 
+const account: AccountSource = {
+  async loadAccount() {
+    return {
+      portfolio: {
+        currency: "TRY",
+        totalCollateral: 125_000,
+        availableCollateral: 45_000,
+        dailyProfitLoss: 2_500,
+        dailyProfitLossPercent: 2.04,
+        periodProfitLoss: 5_000,
+        periodProfitLossPercent: 4.17,
+      },
+      orders: [{
+        uid: "order-1",
+        title: "THYAO alış",
+        description: "2 kontrat",
+        value: "Bekliyor",
+        status: "pending",
+      }],
+      positions: [{
+        uid: "position-1",
+        symbol: "F_THYAO0826",
+        displayName: "THYAO",
+        quantity: 2,
+        averageCost: 300,
+        currentPrice: 312,
+        unrealizedProfitLoss: 240,
+        currency: "TRY",
+        multiplier: 10,
+      }],
+      updatedAt: 1,
+    }
+  },
+}
+
 test("renders the VIOP, chart, and news panels with instrument data", async () => {
   const { renderer, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({
     width: 120,
@@ -120,6 +191,76 @@ test("renders the VIOP, chart, and news panels with instrument data", async () =
   expect(frame).toContain("XU030")
 
   screen.destroy()
+  renderer.destroy()
+})
+
+test("shows portfolio, orders, and positions in tabs below the chart", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 160, height: 30 })
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const portfolioFrame = await waitForFrame((frame) => frame.includes("Available") && frame.includes("₺125.000,00"))
+  expect(portfolioFrame).toContain("Portfolio")
+  expect(portfolioFrame).toContain("Orders")
+  expect(portfolioFrame).toContain("Positions")
+
+  mockInput.pressTab()
+  mockInput.pressTab()
+  mockInput.pressArrow("right")
+  const ordersFrame = await waitForFrame((frame) => frame.includes("THYAO alış"))
+  expect(ordersFrame).toContain("PENDING")
+
+  mockInput.pressArrow("right")
+  const positionsFrame = await waitForFrame((frame) => frame.includes("300,00→312,00"))
+  expect(positionsFrame).toContain("+₺240,00")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("applies live account, order, and futures price updates", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 160, height: 30 })
+  const quotes = new FakeQuoteStream()
+  const accountStream = new FakeAccountStream()
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account, accountStream, quotes })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitForFrame((frame) => frame.includes("₺45.000,00") && frame.includes("○ sync"))
+  expect(accountStream.started).toBe(true)
+  expect(accountStream.pendingOrders).toEqual(["order-1"])
+
+  accountStream.emitConnection(true)
+  accountStream.emit({ type: "collateral", availableCollateral: 48_000 })
+  const livePortfolio = await waitForFrame((frame) => frame.includes("₺48.000,00") && frame.includes("● live"))
+  expect(livePortfolio).toContain("Available")
+
+  mockInput.pressTab()
+  mockInput.pressTab()
+  mockInput.pressArrow("right")
+  accountStream.emit({
+    type: "order",
+    uid: "order-1",
+    status: "completed",
+    providerStatus: "FILLED",
+    description: "Gerçekleşti",
+  })
+  const orderFrame = await waitForFrame((frame) => frame.includes("DONE") && frame.includes("Gerçekleşti"))
+  expect(orderFrame).toContain("THYAO alış")
+  expect(accountStream.pendingOrders).toEqual([])
+
+  mockInput.pressArrow("right")
+  quotes.emit({ symbol: "F_THYAO0826", lastPrice: 320, sessionStatus: "OPEN", timestamp: 2 })
+  const pricedPosition = await waitForFrame((frame) => frame.includes("300,00→320,00") && frame.includes("+₺400,00"))
+  expect(pricedPosition).toContain("THYAO")
+
+  accountStream.emit({ type: "position", uid: "position-1", quantity: 3, averageCost: 305, country: "TR" })
+  const updatedPosition = await waitForFrame((frame) => frame.includes("305,00→320,00") && frame.includes("+₺450,00"))
+  expect(updatedPosition).toContain("3x")
+
+  screen.destroy()
+  expect(accountStream.stopped).toBe(true)
   renderer.destroy()
 })
 
@@ -288,6 +429,7 @@ test("opens a news article with its full body on Enter and returns on Backspace"
   await waitForFrame((f) => f.includes("BIST 30 güne"))
 
   mockInput.pressTab() // move focus to the chart panel
+  mockInput.pressTab() // move focus to the account panel
   mockInput.pressTab() // move focus to the news panel
   mockInput.pressEnter() // open the selected article
   await waitForFrame((f) => f.includes("Full body text."))
@@ -344,6 +486,7 @@ test("keeps the chart usable in an 80-column terminal", async () => {
   expect(frame).not.toContain("Chart needs more room")
   expect(frame).toMatch(/[█│━]/)
 
+  mockInput.pressTab()
   mockInput.pressTab()
   mockInput.pressTab()
   const newsFrame = await waitForFrame((value) => value.includes("BIST 30 güne"))

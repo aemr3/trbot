@@ -10,6 +10,7 @@ import {
   type RenderContext,
 } from "@opentui/core"
 import { CredentialsRequiredError } from "../api/index.ts"
+import { AccountPanel } from "../components/account-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
 import type { CandleSource } from "../market/candle.ts"
@@ -17,6 +18,7 @@ import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quot
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsArticle, NewsSource } from "../market/news.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
+import type { AccountSource, AccountStream } from "../trading/account.ts"
 
 const UP_COLOR = "#70d7a1"
 const DOWN_COLOR = "#ff6b6b"
@@ -38,13 +40,16 @@ export interface WatchlistScreenOptions {
   instruments: ViopInstrumentSource
   candles: CandleSource
   news: NewsSource
+  account?: AccountSource
+  accountStream?: AccountStream
   equityQuotes?: EquityQuoteStream
   quotes?: QuoteStream
   onSessionExpired?: () => void
   newsIntervalMs?: number
+  accountIntervalMs?: number
 }
 
-type Focus = "instruments" | "chart" | "news"
+type Focus = "instruments" | "chart" | "account" | "news"
 type InstrumentSort = keyof typeof SORT_LABELS
 type SortDirection = "asc" | "desc"
 
@@ -58,6 +63,7 @@ export class WatchlistScreen {
   private readonly sortButtonLabels = new Map<InstrumentSort, TextRenderable>()
   private readonly chart: CandlestickChart
   private readonly chartHeader: TextRenderable
+  private readonly accountPanel: AccountPanel
   private readonly rightPanel: BoxRenderable
   private readonly viopHeader: TextRenderable
   private readonly newsHeader: TextRenderable
@@ -96,6 +102,7 @@ export class WatchlistScreen {
       return
     }
     if (this.focus === "news") this.newsList.handleKey(key)
+    else if (this.focus === "account") this.accountPanel.handleKey(key)
     else if (this.focus === "chart") this.chart.handleKey(key)
     else if (!key.ctrl && key.name === "c") this.selectInstrumentSort("change")
     else if (!key.ctrl && key.name === "v") this.selectInstrumentSort("volume")
@@ -176,6 +183,14 @@ export class WatchlistScreen {
       onError: (error) => this.notifyIfSessionExpired(error),
     })
     this.centerPanel.add(this.chart.root)
+    this.accountPanel = new AccountPanel(renderer, {
+      source: options.account,
+      stream: options.accountStream,
+      refreshIntervalMs: options.accountIntervalMs,
+      onFocusRequest: () => this.setFocus("account"),
+      onError: (error) => this.notifyIfSessionExpired(error),
+    })
+    this.centerPanel.add(this.accountPanel.root)
 
     this.rightPanel = new BoxRenderable(renderer, {
       width: 46,
@@ -219,7 +234,7 @@ export class WatchlistScreen {
     columns.add(this.rightPanel)
 
     const hint = new TextRenderable(renderer, {
-      content: "↑/↓ move · list: C change, V volume · Tab panel · chart: ←/→ range, ↑/↓ TF · Enter read · Esc back · Ctrl+C exit",
+      content: "↑/↓ move · list: C change, V volume · Tab panel · chart: ←/→ range, ↑/↓ TF · account: ←/→ tab, R refresh · Enter read · Esc back · Ctrl+C exit",
       fg: "#777777",
     })
 
@@ -235,6 +250,7 @@ export class WatchlistScreen {
   mount(): void {
     this.renderer.keyInput.on("keypress", this.handleKeypress)
     this.updateFocusIndicator()
+    this.accountPanel.mount()
     void this.load()
     this.newsTimer = setInterval(() => void this.refreshNews(), this.options.newsIntervalMs ?? NEWS_POLL_INTERVAL_MS)
   }
@@ -243,6 +259,7 @@ export class WatchlistScreen {
     if (this.destroyed) return
     this.destroyed = true
     this.chart.destroy()
+    this.accountPanel.destroy()
     this.options.quotes?.stop()
     this.options.equityQuotes?.stop()
     if (this.newsTimer) {
@@ -283,6 +300,7 @@ export class WatchlistScreen {
   // close seeded from the opening screener snapshot.
   private onQuote(update: QuoteUpdate): void {
     if (this.destroyed) return
+    this.accountPanel.applyQuote(update)
     const index = this.symbolIndex.get(update.symbol)
     if (index === undefined) return
     const instrument = this.instruments[index]
@@ -432,7 +450,7 @@ export class WatchlistScreen {
   }
 
   private toggleFocus(): void {
-    const order: Focus[] = ["instruments", "chart", "news"]
+    const order: Focus[] = ["instruments", "chart", "account", "news"]
     const index = order.indexOf(this.focus)
     this.setFocus(order[(index + 1) % order.length] ?? "instruments")
   }
@@ -454,6 +472,7 @@ export class WatchlistScreen {
     this.paintSortToolbar()
     this.renderChartHeader()
     this.chart.setFocused(this.focus === "chart")
+    this.accountPanel.setFocused(this.focus === "account")
     this.newsHeader.fg = this.focus === "news" ? FOCUSED_HEADER : UNFOCUSED_HEADER
     this.updateResponsiveLayout()
   }
