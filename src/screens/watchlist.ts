@@ -32,6 +32,7 @@ const NEWS_HEADLINE_COLOR = "#e0e0e0"
 
 const NEWS_POLL_INTERVAL_MS = 60_000
 const COMPACT_LAYOUT_WIDTH = 104
+const SORT_LABELS = { change: "Change", volume: "Volume" } as const
 
 export interface WatchlistScreenOptions {
   instruments: ViopInstrumentSource
@@ -44,6 +45,8 @@ export interface WatchlistScreenOptions {
 }
 
 type Focus = "instruments" | "chart" | "news"
+type InstrumentSort = keyof typeof SORT_LABELS
+type SortDirection = "asc" | "desc"
 
 export class WatchlistScreen {
   readonly root: BoxRenderable
@@ -51,6 +54,8 @@ export class WatchlistScreen {
   private readonly leftPanel: BoxRenderable
   private readonly centerPanel: BoxRenderable
   private readonly instrumentList: SelectableList
+  private readonly sortButtons = new Map<InstrumentSort, BoxRenderable>()
+  private readonly sortButtonLabels = new Map<InstrumentSort, TextRenderable>()
   private readonly chart: CandlestickChart
   private readonly chartHeader: TextRenderable
   private readonly rightPanel: BoxRenderable
@@ -76,6 +81,8 @@ export class WatchlistScreen {
   private connected = false
   private equityConnected = false
   private selectedEquitySymbol: string | null = null
+  private instrumentSort: InstrumentSort = "volume"
+  private sortDirection: SortDirection = "desc"
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     if (this.articleOpen) {
@@ -90,6 +97,8 @@ export class WatchlistScreen {
     }
     if (this.focus === "news") this.newsList.handleKey(key)
     else if (this.focus === "chart") this.chart.handleKey(key)
+    else if (!key.ctrl && key.name === "c") this.selectInstrumentSort("change")
+    else if (!key.ctrl && key.name === "v") this.selectInstrumentSort("volume")
     else this.instrumentList.handleKey(key)
   }
 
@@ -119,6 +128,31 @@ export class WatchlistScreen {
     })
     this.viopHeader = panelHeader(renderer, "VIOP")
     this.leftPanel.add(this.viopHeader)
+    const sortToolbar = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      height: 1,
+      gap: 1,
+      marginBottom: 1,
+    })
+    sortToolbar.add(new TextRenderable(renderer, { content: "Sort", fg: NEUTRAL_COLOR, width: 5 }))
+    for (const sort of ["change", "volume"] as const) {
+      const button = new BoxRenderable(renderer, {
+        height: 1,
+        paddingLeft: 1,
+        paddingRight: 1,
+        onMouseDown: (event) => {
+          if (event.button !== 0) return
+          this.setFocus("instruments")
+          this.selectInstrumentSort(sort)
+        },
+      })
+      const label = new TextRenderable(renderer, { content: SORT_LABELS[sort] })
+      button.add(label)
+      sortToolbar.add(button)
+      this.sortButtons.set(sort, button)
+      this.sortButtonLabels.set(sort, label)
+    }
+    this.leftPanel.add(sortToolbar)
     this.instrumentList = new SelectableList(renderer, {
       selectedBackgroundColor: SELECTED_ROW_BG,
       backgroundColor: SIDE_PANEL_BG,
@@ -165,7 +199,7 @@ export class WatchlistScreen {
       flexGrow: 1,
       width: "100%",
       backgroundColor: SIDE_PANEL_BG,
-      contentOptions: { flexDirection: "column", gap: 1, paddingRight: 1, backgroundColor: SIDE_PANEL_BG },
+      contentOptions: { flexDirection: "column", gap: 1, paddingRight: 2, backgroundColor: SIDE_PANEL_BG },
       onMouseDown: (event) => {
         if (event.button !== 0 || !this.articleOpen) return
         const now = Date.now()
@@ -185,7 +219,7 @@ export class WatchlistScreen {
     columns.add(this.rightPanel)
 
     const hint = new TextRenderable(renderer, {
-      content: "↑/↓ move · Tab switch panel · chart: ←/→ range, ↑/↓ timeframe · Enter/double-click read · Esc/⌫ back · Ctrl+C exit",
+      content: "↑/↓ move · list: C change, V volume · Tab panel · chart: ←/→ range, ↑/↓ TF · Enter read · Esc back · Ctrl+C exit",
       fg: "#777777",
     })
 
@@ -224,22 +258,14 @@ export class WatchlistScreen {
       const instruments = await this.options.instruments.listInstruments()
       if (this.destroyed) return
       this.instruments = instruments
-      this.symbolIndex.clear()
       this.referenceClose.clear()
-      instruments.forEach((instrument, index) => {
-        this.symbolIndex.set(instrument.symbol, index)
+      instruments.forEach((instrument) => {
         const reference = referenceClose(instrument)
         if (reference !== null) this.referenceClose.set(instrument.symbol, reference)
       })
-      this.instrumentList.setRows(
-        instruments.map((instrument) => ({
-          id: instrument.uid,
-          content: formatInstrumentRow(instrument),
-          color: changeColor(instrument.changePercent),
-        })),
-      )
+      this.sortAndRenderInstrumentList()
       if (instruments.length > 0) {
-        this.onInstrumentSelected(0)
+        this.onInstrumentSelected(this.instrumentList.selectedIndex)
         this.options.quotes?.start(instruments.map((instrument) => instrument.symbol))
       } else {
         this.chartHeader.content = "Chart  ·  No VIOP instruments"
@@ -266,6 +292,11 @@ export class WatchlistScreen {
     const reference = this.referenceClose.get(update.symbol)
     if (reference && reference > 0 && instrument.lastPrice !== null) {
       instrument.changePercent = (instrument.lastPrice / reference - 1) * 100
+    }
+    if (this.instrumentSort === "change") {
+      const selectedUid = this.instruments[this.instrumentList.selectedIndex]?.uid
+      this.sortAndRenderInstrumentList(selectedUid)
+      return
     }
     this.instrumentList.updateRow(index, {
       content: formatInstrumentRow(instrument),
@@ -420,6 +451,7 @@ export class WatchlistScreen {
 
   private updateFocusIndicator(): void {
     this.renderViopHeader()
+    this.paintSortToolbar()
     this.renderChartHeader()
     this.chart.setFocused(this.focus === "chart")
     this.newsHeader.fg = this.focus === "news" ? FOCUSED_HEADER : UNFOCUSED_HEADER
@@ -459,6 +491,44 @@ export class WatchlistScreen {
     const statusColor = this.connected ? UP_COLOR : NEUTRAL_COLOR
     const status = this.connected ? "● live" : "○ snapshot"
     this.viopHeader.content = t`${fg(titleColor)("VIOP")}  ${fg(statusColor)(status)}`
+  }
+
+  private selectInstrumentSort(sort: InstrumentSort): void {
+    const selectedUid = this.instruments[this.instrumentList.selectedIndex]?.uid
+    if (this.instrumentSort === sort) this.sortDirection = this.sortDirection === "desc" ? "asc" : "desc"
+    else {
+      this.instrumentSort = sort
+      this.sortDirection = "desc"
+    }
+    this.sortAndRenderInstrumentList(selectedUid)
+    this.paintSortToolbar()
+  }
+
+  private sortAndRenderInstrumentList(selectedUid?: string): void {
+    this.instruments.sort(instrumentComparator(this.instrumentSort, this.sortDirection))
+    this.symbolIndex.clear()
+    this.instruments.forEach((instrument, index) => this.symbolIndex.set(instrument.symbol, index))
+    this.instrumentList.setRows(
+      this.instruments.map((instrument) => ({
+        id: instrument.uid,
+        content: formatInstrumentRow(instrument),
+        color: changeColor(instrument.changePercent),
+      })),
+      selectedUid,
+    )
+  }
+
+  private paintSortToolbar(): void {
+    for (const sort of ["change", "volume"] as const) {
+      const active = this.instrumentSort === sort
+      const button = this.sortButtons.get(sort)
+      const label = this.sortButtonLabels.get(sort)
+      if (!button || !label) continue
+      const direction = active ? (this.sortDirection === "desc" ? " ↓" : " ↑") : ""
+      button.backgroundColor = active ? SELECTED_ROW_BG : undefined
+      label.content = `${SORT_LABELS[sort]}${direction}`
+      label.fg = active ? HEADER_COLOR : this.focus === "instruments" ? "#aaaaaa" : UNFOCUSED_HEADER
+    }
   }
 }
 
@@ -504,6 +574,19 @@ function formatInstrumentRow(instrument: ViopInstrument): string {
       ? `${instrument.changePercent >= 0 ? "+" : ""}${instrument.changePercent.toFixed(2)}%`
       : ""
   return `${name}  ${price.padStart(10)}  ${change.padStart(7)}`
+}
+
+function instrumentComparator(sort: InstrumentSort, direction: SortDirection): (left: ViopInstrument, right: ViopInstrument) => number {
+  return (left, right) => {
+    const leftValue = sort === "change" ? left.changePercent : left.volume
+    const rightValue = sort === "change" ? right.changePercent : right.volume
+    if (leftValue === null && rightValue !== null) return 1
+    if (leftValue !== null && rightValue === null) return -1
+    if (leftValue !== null && rightValue !== null && leftValue !== rightValue) {
+      return direction === "desc" ? rightValue - leftValue : leftValue - rightValue
+    }
+    return left.displayName.localeCompare(right.displayName)
+  }
 }
 
 function errorMessage(error: unknown): string {

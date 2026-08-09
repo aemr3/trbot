@@ -66,8 +66,8 @@ class FakeEquityQuoteStream implements EquityQuoteStream {
 const instruments: ViopInstrumentSource = {
   async listInstruments() {
     return [
-      { uid: "u1", symbol: "F_XU0300826", displayName: "XU030", underlyingSymbol: "XU030", lastPrice: 15910, changePercent: 0.4, currency: "TRY" },
-      { uid: "u2", symbol: "F_THYAO0826", displayName: "THYAO", underlyingSymbol: "THYAO", lastPrice: 312.45, changePercent: -1.05, currency: "TRY" },
+      { uid: "u1", symbol: "F_XU0300826", displayName: "XU030", underlyingSymbol: "XU030", lastPrice: 15910, changePercent: 0.4, volume: 2_000_000_000, currency: "TRY" },
+      { uid: "u2", symbol: "F_THYAO0826", displayName: "THYAO", underlyingSymbol: "THYAO", lastPrice: 312.45, changePercent: -1.05, volume: 1_000_000_000, currency: "TRY" },
     ]
   },
 }
@@ -113,6 +113,8 @@ test("renders the VIOP, chart, and news panels with instrument data", async () =
   const frame = captureCharFrame()
 
   expect(frame).toContain("VIOP")
+  expect(frame).toContain("Change")
+  expect(frame).toContain("Volume ↓")
   expect(frame).toContain("Chart")
   expect(frame).toContain("News")
   expect(frame).toContain("XU030")
@@ -172,6 +174,52 @@ test("applies live price ticks in place and subscribes with instrument symbols",
   expect(quotes.stopped).toBe(true)
   renderer.destroy()
 })
+
+test("sorts VIOP stocks by change or volume and preserves the selected stock", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+  const sortable: ViopInstrumentSource = {
+    async listInstruments() {
+      return [
+        { uid: "c", symbol: "F_CCC0826", displayName: "CCC", underlyingSymbol: "CCC", lastPrice: 98, changePercent: -2, volume: 1_000_000_000, currency: "TRY" },
+        { uid: "a", symbol: "F_AAA0826", displayName: "AAA", underlyingSymbol: "AAA", lastPrice: 101, changePercent: 1, volume: 3_000_000_000, currency: "TRY" },
+        { uid: "b", symbol: "F_BBB0826", displayName: "BBB", underlyingSymbol: "BBB", lastPrice: 103, changePercent: 3, volume: 2_000_000_000, currency: "TRY" },
+      ]
+    },
+  }
+  const screen = new WatchlistScreen(renderer, { instruments: sortable, candles, news })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const volumeFrame = await waitForFrame((frame) => frame.includes("Volume ↓") && frame.includes("AAA stock"))
+  expect(viopRowSymbols(volumeFrame)).toEqual(["AAA", "BBB", "CCC"])
+  expect(volumeFrame).toContain("AAA stock")
+
+  await mockInput.typeText("c")
+  const changeDescFrame = await waitForFrame((frame) => frame.includes("Change ↓"))
+  expect(changeDescFrame.indexOf("+3.00%")).toBeLessThan(changeDescFrame.indexOf("+1.00%"))
+  expect(changeDescFrame.indexOf("+1.00%")).toBeLessThan(changeDescFrame.indexOf("-2.00%"))
+  expect(changeDescFrame).toContain("AAA stock")
+  expect(changeDescFrame).toMatch(/▶ AAA/)
+
+  await mockInput.typeText("c")
+  const changeAscFrame = await waitForFrame((frame) => frame.includes("Change ↑"))
+  expect(changeAscFrame.indexOf("-2.00%")).toBeLessThan(changeAscFrame.indexOf("+1.00%"))
+  expect(changeAscFrame.indexOf("+1.00%")).toBeLessThan(changeAscFrame.indexOf("+3.00%"))
+
+  await mockInput.typeText("v")
+  const volumeAgainFrame = await waitForFrame((frame) => frame.includes("Volume ↓"))
+  expect(viopRowSymbols(volumeAgainFrame)).toEqual(["AAA", "BBB", "CCC"])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+function viopRowSymbols(frame: string): string[] {
+  return frame
+    .split("\n")
+    .map((line) => line.slice(0, 36).match(/\b(AAA|BBB|CCC)\b/)?.[1])
+    .filter((symbol): symbol is string => Boolean(symbol))
+}
 
 test("notifies onSessionExpired when the session cannot be restored", async () => {
   const { renderer, waitFor } = await createTestRenderer({ width: 80, height: 20 })
@@ -290,7 +338,9 @@ test("keeps the chart usable in an 80-column terminal", async () => {
   renderer.root.add(screen.root)
   screen.mount()
 
-  const frame = await waitForFrame((value) => value.includes("102,00") && value.includes("5Y") && value.includes("5m"))
+  const frame = await waitForFrame(
+    (value) => value.includes("102,00") && value.includes("5Y") && value.includes("5m") && /[█│━]/.test(value),
+  )
   expect(frame).not.toContain("Chart needs more room")
   expect(frame).toMatch(/[█│━]/)
 
@@ -309,8 +359,8 @@ test("streams the selected underlying stock into the live candle", async () => {
   const stockFutures: ViopInstrumentSource = {
     async listInstruments() {
       return [
-        { uid: "future-1", symbol: "F_TUPRS0826", displayName: "TUPRS", underlyingSymbol: "TUPRS", lastPrice: 329.85, changePercent: 1.2, currency: "TRY" },
-        { uid: "future-2", symbol: "F_THYAO0826", displayName: "THYAO", underlyingSymbol: "THYAO", lastPrice: 312.45, changePercent: -1.05, currency: "TRY" },
+        { uid: "future-1", symbol: "F_TUPRS0826", displayName: "TUPRS", underlyingSymbol: "TUPRS", lastPrice: 329.85, changePercent: 1.2, volume: 2_000_000_000, currency: "TRY" },
+        { uid: "future-2", symbol: "F_THYAO0826", displayName: "THYAO", underlyingSymbol: "THYAO", lastPrice: 312.45, changePercent: -1.05, volume: 1_000_000_000, currency: "TRY" },
       ]
     },
   }

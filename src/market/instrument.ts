@@ -7,6 +7,7 @@ export interface ViopInstrument {
   underlyingSymbol: string | null
   lastPrice: number | null
   changePercent: number | null
+  volume: number | null
   currency: string
 }
 

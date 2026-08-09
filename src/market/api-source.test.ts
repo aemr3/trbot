@@ -6,7 +6,15 @@ interface Op {
   name: string
 }
 
-function instrument(uid: string, symbol: string, underlying: string, price: string, change: string, redemptionDate?: string) {
+function instrument(
+  uid: string,
+  symbol: string,
+  underlying: string,
+  price: string,
+  change: string,
+  redemptionDate?: string,
+  volume = "1.234.567",
+) {
   return {
     uid,
     symbol,
@@ -14,6 +22,7 @@ function instrument(uid: string, symbol: string, underlying: string, price: stri
       { key: "underlyingInstrumentSymbol", value: underlying, situation: "NEUTRAL" },
       { key: "price", value: price, situation: "NEUTRAL" },
       { key: "percentageChangeDay", value: change, situation: "NEUTRAL" },
+      { key: "derivativeVolume", value: volume, situation: "NEUTRAL" },
       ...(redemptionDate ? [{ key: "redemptionDate", value: redemptionDate, situation: "NEUTRAL" }] : []),
     ],
   }
@@ -81,6 +90,7 @@ test("aggregates all pages, dedupes by uid, and parses Turkish-formatted values"
   expect(xu030?.displayName).toBe("XU030")
   expect(xu030?.lastPrice).toBe(11842.5)
   expect(xu030?.changePercent).toBe(0.86)
+  expect(xu030?.volume).toBe(1_234_567)
 
   const usdtry = instruments[1]
   expect(usdtry?.lastPrice).toBe(41.32)

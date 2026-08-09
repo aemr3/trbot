@@ -59,9 +59,10 @@ export class CandlestickChart {
   private request: AbortController | null = null
   private focused = false
   private destroyed = false
+  private bodyRenderScheduled = false
 
   constructor(
-    renderer: RenderContext,
+    private readonly renderer: RenderContext,
     private readonly options: CandlestickChartOptions,
   ) {
     this.root = new BoxRenderable(renderer, {
@@ -133,7 +134,7 @@ export class CandlestickChart {
       flexGrow: 1,
       width: "100%",
       wrapMode: "none",
-      onSizeChange: () => this.renderBody(),
+      onSizeChange: () => this.renderBodyAfterNextFrame(),
     })
 
     this.root.add(this.summary)
@@ -289,9 +290,24 @@ export class CandlestickChart {
 
   private renderBody(): void {
     const candles = this.series?.candles
-    if (!candles || candles.length === 0 || this.body.width <= 0 || this.body.height <= 0) return
+    if (!candles || candles.length === 0) return
+    if (this.body.width <= 0 || this.body.height <= 0) {
+      this.renderBodyAfterNextFrame()
+      return
+    }
     this.body.content = renderCandleChart(candles, this.body.width, this.body.height, this.range)
     this.body.fg = "#cccccc"
+  }
+
+  private renderBodyAfterNextFrame(): void {
+    if (this.bodyRenderScheduled || this.destroyed) return
+    this.bodyRenderScheduled = true
+    this.renderer.once("frame", () => {
+      queueMicrotask(() => {
+        this.bodyRenderScheduled = false
+        if (!this.destroyed) this.renderBody()
+      })
+    })
   }
 
   private paintToolbar(): void {

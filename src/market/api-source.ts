@@ -22,6 +22,7 @@ const COLUMNS: ScreenerColumnInput[] = [
   { id: "underlyingInstrumentType", field: "underlying.type" },
   { id: "price", field: "derivativePrice.price" },
   { id: "percentageChangeDay", field: "percentageChange.percentageChangeDay" },
+  { id: "derivativeVolume", field: "stats.volume" },
   { id: "redemptionDate", field: "redemptionDate" },
 ]
 
@@ -116,6 +117,7 @@ function toInstrument(instrument: ScreenerInstrument): ViopInstrument {
     underlyingSymbol,
     lastPrice: parseTurkishNumber(values.get("price")),
     changePercent: parseTurkishNumber(values.get("percentageChangeDay")),
+    volume: parseTurkishNumber(values.get("derivativeVolume")),
     currency: "TRY",
   }
 }

@@ -46,7 +46,7 @@ export class SelectableList {
       flexGrow: 1,
       width: "100%",
       backgroundColor: options.backgroundColor,
-      contentOptions: { flexDirection: "column", gap: options.rowGap, paddingRight: 1, backgroundColor: options.backgroundColor },
+      contentOptions: { flexDirection: "column", gap: options.rowGap, paddingRight: 2, backgroundColor: options.backgroundColor },
     })
   }
 
@@ -54,8 +54,11 @@ export class SelectableList {
     return this.selected
   }
 
-  setRows(rows: SelectableListRow[]): void {
-    for (const child of this.root.getChildren()) this.root.remove(child)
+  setRows(rows: SelectableListRow[], selectedId?: string): void {
+    for (const child of this.root.getChildren()) {
+      this.root.remove(child)
+      if (!child.isDestroyed) child.destroyRecursively()
+    }
     this.rowBoxes = []
     this.indicators = []
     this.contents = []
@@ -97,8 +100,10 @@ export class SelectableList {
       this.contents.push(content)
     })
 
-    this.selected = rows.length > 0 ? 0 : -1
+    const selectedIndex = selectedId ? rows.findIndex((row) => row.id === selectedId) : -1
+    this.selected = rows.length > 0 ? Math.max(0, selectedIndex) : -1
     this.paint(-1)
+    if (selectedId && this.selected >= 0) this.root.scrollChildIntoView(`row-${this.selected}`)
   }
 
   // Repaints one row's content in place, preserving selection and scroll — used

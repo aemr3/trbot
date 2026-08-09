@@ -56,6 +56,33 @@ test("activates the selected row on Enter", async () => {
   renderer.destroy()
 })
 
+test("preserves a selected row by id when rows are reordered", async () => {
+  const { renderer } = await createTestRenderer({ width: 40, height: 10 })
+  const selected: number[] = []
+  const list = new SelectableList(renderer, { onSelect: (index) => selected.push(index) })
+  list.setRows([
+    { id: "a", content: "a" },
+    { id: "b", content: "b" },
+    { id: "c", content: "c" },
+  ])
+  list.handleKey(key("down"))
+
+  list.setRows(
+    [
+      { id: "c", content: "c" },
+      { id: "a", content: "a" },
+      { id: "b", content: "b" },
+    ],
+    "b",
+  )
+
+  expect(list.selectedIndex).toBe(2)
+  expect(selected).toEqual([1])
+
+  list.destroy()
+  renderer.destroy()
+})
+
 test("selects a row when it is clicked", async () => {
   const { renderer, mockMouse, renderOnce, captureCharFrame } = await createTestRenderer({ width: 40, height: 10 })
   const selected: number[] = []
