@@ -13,6 +13,7 @@ import { WatchlistScreen } from "./screens/watchlist.ts"
 import type { WatchlistPreferences } from "./screens/watchlist-preferences.ts"
 import { ApiAccountSource } from "./trading/api-account.ts"
 import { ApiAccountStream } from "./trading/api-account-stream.ts"
+import { ApiViopOrderSource } from "./trading/api-order.ts"
 
 interface Screen {
   readonly root: BoxRenderable
@@ -173,6 +174,7 @@ export class App {
       candles: new ApiCandleSource(api.client),
       news: new ApiNewsSource(api.client),
       account: new ApiAccountSource(api.client),
+      orders: new ApiViopOrderSource(api.client),
       accountStream: new ApiAccountStream(api.client, {
         onError: (error) => {
           if (error instanceof CredentialsRequiredError) this.showLogin()

@@ -193,7 +193,7 @@ export class AccountPanel {
     if (this.tab === "positions") this.renderContent()
   }
 
-  private async refresh(): Promise<void> {
+  async refresh(): Promise<void> {
     const source = this.options.source
     if (!source || this.destroyed) return
     this.request?.abort()

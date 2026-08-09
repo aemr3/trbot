@@ -15,6 +15,7 @@ import type {
   AccountSource,
   AccountStream,
 } from "../trading/account.ts"
+import type { PlaceViopOrderRequest, ViopOrderSource } from "../trading/order.ts"
 import { WatchlistScreen } from "./watchlist.ts"
 
 class FakeQuoteStream implements QuoteStream {
@@ -183,6 +184,29 @@ const account: AccountSource = {
   },
 }
 
+function fakeOrderSource(placed: PlaceViopOrderRequest[] = []): ViopOrderSource {
+  return {
+    async prepareOrder({ side }) {
+      return {
+        lowerLimit: 14_000,
+        upperLimit: 17_000,
+        lastPrice: 15_910,
+        ask: 15_911,
+        bid: 15_909,
+        priceScale: 2,
+        contractSize: 10,
+        initialCollateral: 4_719.55,
+        availableCollateral: 45_000,
+        positionIntent: side === "BUY" ? "BUY_TO_OPEN" : "SELL_TO_OPEN",
+      }
+    },
+    async placeOrder(request) {
+      placed.push(request)
+      return { uid: "new-order", status: "PENDING", description: "Bekliyor" }
+    },
+  }
+}
+
 test("renders the VIOP, chart, and news panels with instrument data", async () => {
   const { renderer, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({
     width: 120,
@@ -208,6 +232,41 @@ test("renders the VIOP, chart, and news panels with instrument data", async () =
   expect(frame).toContain("Required    ₺4.719,55")
   expect(frame).toContain("Stats · High ₺210,00 · Low ₺195,00")
   expect(frame).toContain("Vol 1.040.270.720 · OI 54.068")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("opens modal buy and sell tickets and submits simulated market orders at exchange limits", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 160, height: 30, kittyKeyboard: true })
+  const placed: PlaceViopOrderRequest[] = []
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    orders: fakeOrderSource(placed),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("XU030 stock"))
+
+  await mockInput.typeText("b")
+  const buyTicket = await waitForFrame((frame) => frame.includes("Buy XU030 08/26") && frame.includes("Upper limit"))
+  expect(buyTicket).toContain("VIOP")
+  expect(buyTicket).toContain("News")
+  expect(buyTicket).toContain("╭")
+  expect(buyTicket).toContain("₺15.910,00")
+  await mockInput.typeText("m")
+  await mockInput.typeText("r")
+  await waitForFrame((frame) => frame.includes("Review buy order") && frame.includes("₺17.000,00"))
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Order submitted"))
+  expect(placed[0]).toMatchObject({ side: "BUY", quantity: 1, limitPrice: 17_000 })
+
+  mockInput.pressEscape()
+  await waitForFrame((frame) => frame.includes("XU030 stock") && !frame.includes("Order submitted"))
+  await mockInput.typeText("s")
+  await waitForFrame((frame) => frame.includes("Sell XU030 08/26"))
 
   screen.destroy()
   renderer.destroy()
@@ -382,17 +441,20 @@ test("restores and reports list and chart display choices", async () => {
     candleRange: string
     candleInterval: string
     selectedInstrumentUid: string | null
+    orderKind: string
   }> = []
   const screen = new WatchlistScreen(renderer, {
     instruments,
     candles,
     news,
+    orders: fakeOrderSource(),
     preferences: {
       instrumentSort: "change",
       sortDirection: "asc",
       candleRange: "WEEK",
       candleInterval: "MIN_15",
       selectedInstrumentUid: "u1",
+      orderKind: "LIMIT",
     },
     onPreferencesChange: (preferences) => changes.push(preferences),
   })
@@ -415,6 +477,12 @@ test("restores and reports list and chart display choices", async () => {
   await waitFor(() => changes.some((preferences) => preferences.candleRange === "MONTH"))
   expect(changes.at(-1)).toMatchObject({ candleRange: "MONTH", candleInterval: "HOUR_1" })
 
+  await mockInput.typeText("b")
+  await waitForFrame((frame) => frame.includes("Buy THYAO 08/26"))
+  await mockInput.typeText("m")
+  await waitForFrame((frame) => frame.includes("Simulated market"))
+  await waitFor(() => changes.some((preferences) => preferences.orderKind === "MARKETABLE_LIMIT"))
+
   screen.destroy()
   renderer.destroy()
 })
@@ -432,6 +500,7 @@ test("falls back to an available contract when the saved contract no longer exis
       candleRange: "INTRADAY",
       candleInterval: "MIN_5",
       selectedInstrumentUid: "expired-contract",
+      orderKind: "LIMIT",
     },
     onPreferencesChange: (preferences) => selectedInstrumentUids.push(preferences.selectedInstrumentUid),
   })

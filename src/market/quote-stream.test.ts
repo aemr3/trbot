@@ -12,7 +12,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
 }
 
 function priceFrame(symbol: string, price: number, event = "PriceUpdate"): SseFrame {
-  return { event, data: JSON.stringify({ s: symbol, p: price, ts: 1 }) }
+  return { event, data: JSON.stringify({ s: symbol, p: price, a: price + 0.02, b: price - 0.02, ts: 1 }) }
 }
 
 type Script = SseFrame[] | { error: unknown }
@@ -61,7 +61,8 @@ test("emits parsed updates and subscribes with the comma-joined symbols", async 
   await waitFor(() => updates.length >= 1)
 
   expect(client.lastQuery).toEqual({ symbol: "F_AKBNK0825,F_THYAO0826" })
-  expect(updates[0]).toMatchObject({ symbol: "F_AKBNK0825", lastPrice: 68.68 })
+  expect(updates[0]).toMatchObject({ symbol: "F_AKBNK0825", lastPrice: 68.68, ask: 68.7 })
+  expect(updates[0]?.bid).toBeCloseTo(68.66)
 })
 
 test("skips frames whose event name is not PriceUpdate", async () => {

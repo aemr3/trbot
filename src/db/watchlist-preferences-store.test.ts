@@ -31,6 +31,7 @@ describe("watchlist preferences store", () => {
       candleRange: "WEEK",
       candleInterval: "MIN_15",
       selectedInstrumentUid: "future-2",
+      orderKind: "MARKETABLE_LIMIT",
     })
     connection.close()
     connection = null
@@ -42,6 +43,7 @@ describe("watchlist preferences store", () => {
       candleRange: "WEEK",
       candleInterval: "MIN_15",
       selectedInstrumentUid: "future-2",
+      orderKind: "MARKETABLE_LIMIT",
     })
   })
 })

@@ -4,6 +4,8 @@ import { parseFuturePriceUpdate, VIOP_PRICE_STREAM_EVENT, VIOP_PRICE_STREAM_PATH
 export interface QuoteUpdate {
   symbol: string
   lastPrice: number | null
+  ask?: number | null
+  bid?: number | null
   sessionStatus: string | null
   timestamp: number
 }
@@ -91,6 +93,8 @@ export class ApiQuoteStream implements QuoteStream {
             listener({
               symbol: update.symbol,
               lastPrice: update.lastPrice,
+              ask: update.ask,
+              bid: update.bid,
               sessionStatus: update.sessionStatus,
               timestamp: update.timestamp,
             })

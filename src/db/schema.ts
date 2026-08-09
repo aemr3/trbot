@@ -22,5 +22,6 @@ export const watchlistPreferences = sqliteTable("watchlist_preferences", {
   candleRange: text("candle_range").notNull(),
   candleInterval: text("candle_interval").notNull(),
   selectedInstrumentUid: text("selected_instrument_uid"),
+  orderKind: text("order_kind").notNull().default("LIMIT"),
   updatedAt: integer("updated_at").notNull(),
 })

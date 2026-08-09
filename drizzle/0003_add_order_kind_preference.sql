@@ -1,0 +1,1 @@
+ALTER TABLE `watchlist_preferences` ADD `order_kind` text DEFAULT 'LIMIT' NOT NULL;

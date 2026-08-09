@@ -20,6 +20,8 @@ import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.
 import type { NewsArticle, NewsSource } from "../market/news.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
 import type { AccountSource, AccountStream } from "../trading/account.ts"
+import type { ViopOrderSide, ViopOrderSource } from "../trading/order.ts"
+import { ViopOrderTicket } from "./order-ticket.ts"
 import {
   DEFAULT_WATCHLIST_PREFERENCES,
   normalizeWatchlistPreferences,
@@ -50,6 +52,7 @@ export interface WatchlistScreenOptions {
   news: NewsSource
   account?: AccountSource
   accountStream?: AccountStream
+  orders?: ViopOrderSource
   equityQuotes?: EquityQuoteStream
   quotes?: QuoteStream
   onSessionExpired?: () => void
@@ -79,6 +82,7 @@ export class WatchlistScreen {
   private readonly newsList: SelectableList
   private readonly newsReader: ScrollBoxRenderable
   private readonly newsMessage: TextRenderable
+  private orderTicket: ViopOrderTicket | null = null
 
   private newsContent: Renderable | null = null
   private instruments: ViopInstrument[] = []
@@ -102,10 +106,18 @@ export class WatchlistScreen {
   private sortDirection: SortDirection
 
   private readonly handleKeypress = (key: KeyEvent): void => {
+    if (this.orderTicket) {
+      this.orderTicket.handleKey(key)
+      return
+    }
     if (this.articleOpen) {
       if (key.name === "escape" || key.name === "esc" || key.name === "backspace") this.closeArticle()
       else if (key.name === "up" || key.name === "k") this.newsReader.scrollBy({ x: 0, y: -2 })
       else if (key.name === "down" || key.name === "j") this.newsReader.scrollBy({ x: 0, y: 2 })
+      return
+    }
+    if (!key.ctrl && (key.name === "b" || key.name === "s")) {
+      this.openOrderTicket(key.name === "b" ? "BUY" : "SELL")
       return
     }
     if (key.name === "tab") {
@@ -256,7 +268,7 @@ export class WatchlistScreen {
     columns.add(this.rightPanel)
 
     const hint = new TextRenderable(renderer, {
-      content: "↑/↓ move · list: C/V sort · Tab panel · chart: ←/→ range, ↑/↓ TF, Shift+←/→ scroll · account: ←/→ tab, R refresh · Enter read · Esc back · Ctrl+C exit",
+      content: "B buy · S sell · ↑/↓ move · list: C/V sort · Tab panel · chart: ←/→ range, ↑/↓ TF, Shift+←/→ scroll · account: ←/→ tab, R refresh · Enter read · Esc back · Ctrl+C exit",
       fg: "#777777",
     })
 
@@ -282,6 +294,7 @@ export class WatchlistScreen {
     this.destroyed = true
     this.chart.destroy()
     this.accountPanel.destroy()
+    this.closeOrderTicket()
     this.contractDetailsRequest?.abort()
     this.contractDetailsRequest = null
     this.options.quotes?.stop()
@@ -332,6 +345,9 @@ export class WatchlistScreen {
 
     if (update.lastPrice !== null) instrument.lastPrice = update.lastPrice
     if (update.lastPrice !== null) this.contractDetailsPanel.applyPrice(update.symbol, update.lastPrice)
+    if (this.orderTicket && this.instruments[this.instrumentList.selectedIndex]?.symbol === update.symbol) {
+      this.orderTicket.applyQuote({ lastPrice: update.lastPrice, ask: update.ask, bid: update.bid })
+    }
     const reference = this.referenceClose.get(update.symbol)
     if (reference && reference > 0 && instrument.lastPrice !== null) {
       instrument.changePercent = (instrument.lastPrice / reference - 1) * 100
@@ -415,6 +431,34 @@ export class WatchlistScreen {
       if (this.notifyIfSessionExpired(error)) return
       this.setMessage(`Failed to load news: ${errorMessage(error)}`, "#ff6b6b")
     }
+  }
+
+  private openOrderTicket(side: ViopOrderSide): void {
+    const source = this.options.orders
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    if (!source || !instrument || this.orderTicket) return
+    const ticket = new ViopOrderTicket(this.renderer, {
+      source,
+      instrument,
+      side,
+      initialKind: this.preferences.orderKind,
+      onClose: () => this.closeOrderTicket(),
+      onKindChange: (orderKind) => this.savePreferences({ orderKind }),
+      onPlaced: () => void this.accountPanel.refresh(),
+      onError: (error) => this.notifyIfSessionExpired(error),
+    })
+    this.orderTicket = ticket
+    this.root.add(ticket.root)
+    ticket.mount()
+  }
+
+  private closeOrderTicket(): void {
+    const ticket = this.orderTicket
+    if (!ticket) return
+    this.orderTicket = null
+    if (!this.root.isDestroyed && !ticket.root.isDestroyed) this.root.remove(ticket.root)
+    ticket.destroy()
+    this.renderer.requestRender()
   }
 
   private renderNews(articles: NewsArticle[], label: string): void {
