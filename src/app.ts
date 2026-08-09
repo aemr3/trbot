@@ -1,7 +1,9 @@
 import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core"
 import { CredentialsRequiredError, resumeApiClient, type ApiClientHandle } from "./api/index.ts"
 import { loadConfig, type AppConfig } from "./config.ts"
+import { ApiCandleSource } from "./market/api-candles.ts"
 import { ApiNewsSource } from "./market/api-news.ts"
+import { ApiEquityQuoteStream } from "./market/equity-quote-stream.ts"
 import { ApiQuoteStream } from "./market/quote-stream.ts"
 import { ApiViopInstrumentSource } from "./market/api-source.ts"
 import { LoginScreen } from "./screens/login.ts"
@@ -124,7 +126,13 @@ class App {
   private createWatchlistScreen(api: ApiClientHandle): WatchlistScreen {
     return new WatchlistScreen(this.renderer, {
       instruments: new ApiViopInstrumentSource(api.client),
+      candles: new ApiCandleSource(api.client),
       news: new ApiNewsSource(api.client),
+      equityQuotes: new ApiEquityQuoteStream(api.client, {
+        onError: (error) => {
+          if (error instanceof CredentialsRequiredError) this.showLogin()
+        },
+      }),
       quotes: new ApiQuoteStream(api.client, {
         onError: (error) => {
           if (error instanceof CredentialsRequiredError) this.showLogin()

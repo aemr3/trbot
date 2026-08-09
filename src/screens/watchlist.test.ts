@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import { CredentialsRequiredError } from "../api/index.ts"
+import { DEFAULT_INTERVALS_BY_RANGE, type CandleSource } from "../market/candle.ts"
+import type {
+  EquityQuoteListener,
+  EquityQuoteStream,
+} from "../market/equity-quote-stream.ts"
 import type { ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsSource } from "../market/news.ts"
 import type { QuoteStream, QuoteUpdate, QuoteUpdateListener } from "../market/quote-stream.ts"
@@ -32,6 +37,32 @@ class FakeQuoteStream implements QuoteStream {
   }
 }
 
+class FakeEquityQuoteStream implements EquityQuoteStream {
+  private listener: EquityQuoteListener | null = null
+  private connectionListener: ((connected: boolean) => void) | null = null
+  startedSymbols: string[] = []
+  stopped = false
+
+  subscribe(listener: EquityQuoteListener): void {
+    this.listener = listener
+  }
+  onConnectionChange(listener: (connected: boolean) => void): void {
+    this.connectionListener = listener
+  }
+  start(symbol: string): void {
+    this.startedSymbols.push(symbol)
+  }
+  stop(): void {
+    this.stopped = true
+  }
+  emit(symbol: string, lastPrice: number, timestamp: number): void {
+    this.listener?.({ symbol, lastPrice, timestamp, sessionStatus: "OPEN" })
+  }
+  emitConnection(connected: boolean): void {
+    this.connectionListener?.(connected)
+  }
+}
+
 const instruments: ViopInstrumentSource = {
   async listInstruments() {
     return [
@@ -50,13 +81,30 @@ const news: NewsSource = {
   },
 }
 
+const candles: CandleSource = {
+  async loadCandles(instrumentUid, range, interval) {
+    return {
+      instrumentUid,
+      range,
+      interval,
+      availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+      intervalMs: 600_000,
+      currency: "TRY",
+      candles: [
+        { timestamp: 1_786_083_900_000, open: 100, high: 104, low: 99, close: 103, volume: 10 },
+        { timestamp: 1_786_084_500_000, open: 103, high: 105, low: 101, close: 102, volume: 12 },
+      ],
+    }
+  },
+}
+
 test("renders the VIOP, chart, and news panels with instrument data", async () => {
   const { renderer, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({
     width: 120,
     height: 30,
   })
 
-  const screen = new WatchlistScreen(renderer, { instruments, news })
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -80,7 +128,7 @@ test("shows a snapshot indicator until the stream reports live ticks", async () 
   })
   const quotes = new FakeQuoteStream()
 
-  const screen = new WatchlistScreen(renderer, { instruments, news, quotes })
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news, quotes })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -91,8 +139,8 @@ test("shows a snapshot indicator until the stream reports live ticks", async () 
   await waitForFrame((f) => f.includes("live"))
   await renderOnce()
   const frame = captureCharFrame()
-  expect(frame).toContain("● live")
-  expect(frame).not.toContain("snapshot")
+  expect(frame).toContain("VIOP  ● live")
+  expect(frame).not.toContain("VIOP  ○ snapshot")
 
   screen.destroy()
   renderer.destroy()
@@ -105,7 +153,7 @@ test("applies live price ticks in place and subscribes with instrument symbols",
   })
   const quotes = new FakeQuoteStream()
 
-  const screen = new WatchlistScreen(renderer, { instruments, news, quotes })
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news, quotes })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -136,6 +184,7 @@ test("notifies onSessionExpired when the session cannot be restored", async () =
 
   const screen = new WatchlistScreen(renderer, {
     instruments: failing,
+    candles,
     news,
     onSessionExpired: () => {
       expired = true
@@ -157,7 +206,7 @@ test("opens a news article on double-click and returns on a second double-click"
     height: 20,
   })
 
-  const screen = new WatchlistScreen(renderer, { instruments, news })
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -184,12 +233,13 @@ test("opens a news article with its full body on Enter and returns on Backspace"
     height: 20,
   })
 
-  const screen = new WatchlistScreen(renderer, { instruments, news })
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news })
   renderer.root.add(screen.root)
   screen.mount()
 
   await waitForFrame((f) => f.includes("BIST 30 güne"))
 
+  mockInput.pressTab() // move focus to the chart panel
   mockInput.pressTab() // move focus to the news panel
   mockInput.pressEnter() // open the selected article
   await waitForFrame((f) => f.includes("Full body text."))
@@ -200,5 +250,91 @@ test("opens a news article with its full body on Enter and returns on Backspace"
   expect(captureCharFrame()).not.toContain("Full body text.")
 
   screen.destroy()
+  renderer.destroy()
+})
+
+test("switches chart ranges and timeframes from the focused chart panel", async () => {
+  const { renderer, mockInput, waitForFrame, waitFor } = await createTestRenderer({ width: 120, height: 24 })
+  const requested: Array<{ range: string; interval: string }> = []
+  const trackingCandles: CandleSource = {
+    async loadCandles(instrumentUid, range, interval) {
+      requested.push({ range, interval })
+      return {
+        ...(await candles.loadCandles(instrumentUid, range, interval)),
+        range,
+        interval,
+      }
+    },
+  }
+  const screen = new WatchlistScreen(renderer, { instruments, candles: trackingCandles, news })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitForFrame((frame) => frame.includes("XU030"))
+  await waitFor(() => requested.some((request) => request.range === "INTRADAY" && request.interval === "MIN_5"))
+  mockInput.pressTab()
+  mockInput.pressArrow("right")
+  await waitFor(() => requested.some((request) => request.range === "WEEK" && request.interval === "HOUR_1"))
+  mockInput.pressArrow("down")
+  await waitFor(() => requested.some((request) => request.range === "WEEK" && request.interval === "MIN_10"))
+
+  expect(requested).toContainEqual({ range: "WEEK", interval: "HOUR_1" })
+  expect(requested).toContainEqual({ range: "WEEK", interval: "MIN_10" })
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("keeps the chart usable in an 80-column terminal", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 80, height: 24 })
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const frame = await waitForFrame((value) => value.includes("102,00") && value.includes("5Y") && value.includes("5m"))
+  expect(frame).not.toContain("Chart needs more room")
+  expect(frame).toMatch(/[█│━]/)
+
+  mockInput.pressTab()
+  mockInput.pressTab()
+  const newsFrame = await waitForFrame((value) => value.includes("BIST 30 güne"))
+  expect(newsFrame).toContain("News")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("streams the selected underlying stock into the live candle", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+  const equityQuotes = new FakeEquityQuoteStream()
+  const stockFutures: ViopInstrumentSource = {
+    async listInstruments() {
+      return [
+        { uid: "future-1", symbol: "F_TUPRS0826", displayName: "TUPRS", underlyingSymbol: "TUPRS", lastPrice: 329.85, changePercent: 1.2, currency: "TRY" },
+        { uid: "future-2", symbol: "F_THYAO0826", displayName: "THYAO", underlyingSymbol: "THYAO", lastPrice: 312.45, changePercent: -1.05, currency: "TRY" },
+      ]
+    },
+  }
+  const screen = new WatchlistScreen(renderer, {
+    instruments: stockFutures,
+    candles,
+    news,
+    equityQuotes,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitForFrame((frame) => frame.includes("TUPRS stock"))
+  expect(equityQuotes.startedSymbols).toEqual(["TUPRS"])
+  equityQuotes.emitConnection(true)
+  equityQuotes.emit("TUPRS", 110, 1_786_084_800_000)
+  const liveFrame = await waitForFrame((frame) => frame.includes("110,00") && frame.includes("● live"))
+  expect(liveFrame).toContain("TUPRS stock")
+
+  mockInput.pressArrow("down")
+  await waitForFrame((frame) => frame.includes("THYAO stock"))
+  expect(equityQuotes.startedSymbols).toEqual(["TUPRS", "THYAO"])
+
+  screen.destroy()
+  expect(equityQuotes.stopped).toBeTrue()
   renderer.destroy()
 })

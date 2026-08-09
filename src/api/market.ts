@@ -69,6 +69,41 @@ export interface InstrumentVariables {
   [key: string]: unknown
 }
 
+export interface AdvancedChartEntry {
+  o: number
+  h: number
+  l: number
+  c: number
+  d: number | null
+  v2: number | null
+  ed: number | null
+  m: boolean | null
+}
+
+export interface AdvancedChartData {
+  advancedChart?: {
+    data: AdvancedChartEntry[]
+    timeRange: string | null
+    selectedInterval: { id: string; displayName: string } | null
+    availableIntervalsByTimeRange: {
+      timeRange: string
+      intervals: { id: string; displayName: string }[]
+    }[]
+    currency: string | null
+    intervalMs: number | null
+    missingTimestampLabel: string | null
+    marketDataProviderInMaintenance: boolean | null
+  } | null
+}
+
+export interface AdvancedChartVariables {
+  instrumentUid: string
+  selectedIndicatorIds: string[]
+  timeRange: string
+  intervalId: string
+  [key: string]: unknown
+}
+
 // VIOP futures live prices arrive over SSE on the streaming host. The event is
 // named `PriceUpdate` and the payload keys are single letters.
 export const VIOP_PRICE_STREAM_PATH = "/reactive-viop-api/v1/viop/futures/price-quote"
@@ -120,5 +155,10 @@ export const marketOperations = {
     "getInstrument",
     "query",
     "query getInstrument($instrumentId: String!) { instrument(uid: $instrumentId) { __typename ... on Future { underlyingInstrumentUid } } }",
+  ),
+  advancedChart: defineOperation<AdvancedChartData, AdvancedChartVariables>(
+    "advancedChart",
+    "query",
+    "query advancedChart($instrumentUid: String!, $selectedIndicatorIds: [String!], $timeRange: TimeRange, $intervalId: String) { advancedChart(instrumentUid: $instrumentUid, selectedIndicatorIds: $selectedIndicatorIds, timeRange: $timeRange, intervalId: $intervalId, availableIndicatorPackVersion: \"1\") { data { o h l c v2 d ed m } currency availableIntervalsByTimeRange { timeRange intervals { id displayName } } timeRange selectedInterval { id displayName } intervalMs missingTimestampLabel marketDataProviderInMaintenance } }",
   ),
 } as const

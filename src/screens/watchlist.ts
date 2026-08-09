@@ -10,7 +10,10 @@ import {
   type RenderContext,
 } from "@opentui/core"
 import { CredentialsRequiredError } from "../api/index.ts"
+import { CandlestickChart } from "../components/candlestick-chart.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
+import type { CandleSource } from "../market/candle.ts"
+import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsArticle, NewsSource } from "../market/news.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
@@ -28,22 +31,28 @@ const NEWS_TIME_COLOR = "#8a8a8a"
 const NEWS_HEADLINE_COLOR = "#e0e0e0"
 
 const NEWS_POLL_INTERVAL_MS = 60_000
+const COMPACT_LAYOUT_WIDTH = 104
 
 export interface WatchlistScreenOptions {
   instruments: ViopInstrumentSource
+  candles: CandleSource
   news: NewsSource
+  equityQuotes?: EquityQuoteStream
   quotes?: QuoteStream
   onSessionExpired?: () => void
   newsIntervalMs?: number
 }
 
-type Focus = "instruments" | "news"
+type Focus = "instruments" | "chart" | "news"
 
 export class WatchlistScreen {
   readonly root: BoxRenderable
 
+  private readonly leftPanel: BoxRenderable
+  private readonly centerPanel: BoxRenderable
   private readonly instrumentList: SelectableList
-  private readonly chartBody: TextRenderable
+  private readonly chart: CandlestickChart
+  private readonly chartHeader: TextRenderable
   private readonly rightPanel: BoxRenderable
   private readonly viopHeader: TextRenderable
   private readonly newsHeader: TextRenderable
@@ -65,6 +74,8 @@ export class WatchlistScreen {
   private readerLastClickAt = 0
   private newsTimer: ReturnType<typeof setInterval> | null = null
   private connected = false
+  private equityConnected = false
+  private selectedEquitySymbol: string | null = null
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     if (this.articleOpen) {
@@ -78,6 +89,7 @@ export class WatchlistScreen {
       return
     }
     if (this.focus === "news") this.newsList.handleKey(key)
+    else if (this.focus === "chart") this.chart.handleKey(key)
     else this.instrumentList.handleKey(key)
   }
 
@@ -89,6 +101,7 @@ export class WatchlistScreen {
       flexDirection: "column",
       width: "100%",
       height: "100%",
+      onSizeChange: () => this.updateResponsiveLayout(),
     })
 
     const columns = new BoxRenderable(renderer, {
@@ -97,7 +110,7 @@ export class WatchlistScreen {
       width: "100%",
     })
 
-    const leftPanel = new BoxRenderable(renderer, {
+    this.leftPanel = new BoxRenderable(renderer, {
       width: 36,
       flexDirection: "column",
       paddingLeft: 1,
@@ -105,7 +118,7 @@ export class WatchlistScreen {
       backgroundColor: SIDE_PANEL_BG,
     })
     this.viopHeader = panelHeader(renderer, "VIOP")
-    leftPanel.add(this.viopHeader)
+    this.leftPanel.add(this.viopHeader)
     this.instrumentList = new SelectableList(renderer, {
       selectedBackgroundColor: SELECTED_ROW_BG,
       backgroundColor: SIDE_PANEL_BG,
@@ -113,20 +126,22 @@ export class WatchlistScreen {
       onSelect: (index) => this.onInstrumentSelected(index),
       onFocusRequest: () => this.setFocus("instruments"),
     })
-    leftPanel.add(this.instrumentList.root)
+    this.leftPanel.add(this.instrumentList.root)
 
-    const centerPanel = new BoxRenderable(renderer, {
+    this.centerPanel = new BoxRenderable(renderer, {
       flexGrow: 1,
       flexDirection: "column",
       paddingLeft: 2,
       paddingRight: 2,
     })
-    centerPanel.add(panelHeader(renderer, "Chart"))
-    this.chartBody = new TextRenderable(renderer, {
-      content: "Select an instrument to view its chart.",
-      fg: "#777777",
+    this.chartHeader = panelHeader(renderer, "Chart")
+    this.centerPanel.add(this.chartHeader)
+    this.chart = new CandlestickChart(renderer, {
+      source: options.candles,
+      onFocusRequest: () => this.setFocus("chart"),
+      onError: (error) => this.notifyIfSessionExpired(error),
     })
-    centerPanel.add(this.chartBody)
+    this.centerPanel.add(this.chart.root)
 
     this.rightPanel = new BoxRenderable(renderer, {
       width: 46,
@@ -165,12 +180,12 @@ export class WatchlistScreen {
     this.newsMessage = new TextRenderable(renderer, { content: "Loading news…", fg: "#777777" })
     this.setNewsContent(this.newsMessage)
 
-    columns.add(leftPanel)
-    columns.add(centerPanel)
+    columns.add(this.leftPanel)
+    columns.add(this.centerPanel)
     columns.add(this.rightPanel)
 
     const hint = new TextRenderable(renderer, {
-      content: "↑/↓ move · Tab switch · Enter/double-click read · Esc/⌫/double-click back · Ctrl+C exit",
+      content: "↑/↓ move · Tab switch panel · chart: ←/→ range, ↑/↓ timeframe · Enter/double-click read · Esc/⌫ back · Ctrl+C exit",
       fg: "#777777",
     })
 
@@ -179,6 +194,8 @@ export class WatchlistScreen {
 
     this.options.quotes?.subscribe((update) => this.onQuote(update))
     this.options.quotes?.onConnectionChange((connected) => this.setConnected(connected))
+    this.options.equityQuotes?.subscribe((update) => this.onEquityQuote(update))
+    this.options.equityQuotes?.onConnectionChange((connected) => this.setEquityConnected(connected))
   }
 
   mount(): void {
@@ -191,7 +208,9 @@ export class WatchlistScreen {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.chart.destroy()
     this.options.quotes?.stop()
+    this.options.equityQuotes?.stop()
     if (this.newsTimer) {
       clearInterval(this.newsTimer)
       this.newsTimer = null
@@ -223,13 +242,13 @@ export class WatchlistScreen {
         this.onInstrumentSelected(0)
         this.options.quotes?.start(instruments.map((instrument) => instrument.symbol))
       } else {
-        this.chartBody.content = "No VIOP instruments available."
+        this.chartHeader.content = "Chart  ·  No VIOP instruments"
       }
     } catch (error) {
       if (this.destroyed) return
       if (this.notifyIfSessionExpired(error)) return
-      this.chartBody.content = `Failed to load instruments: ${errorMessage(error)}`
-      this.chartBody.fg = "#ff6b6b"
+      this.chartHeader.content = `Chart  ·  Failed to load instruments: ${errorMessage(error)}`
+      this.chartHeader.fg = "#ff6b6b"
     }
   }
 
@@ -254,6 +273,13 @@ export class WatchlistScreen {
     })
   }
 
+  private onEquityQuote(update: EquityQuoteUpdate): void {
+    if (this.destroyed || update.symbol !== this.selectedEquitySymbol) return
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    if (!instrument) return
+    this.chart.updateLastPrice(instrument.uid, update.lastPrice, update.timestamp)
+  }
+
   private async refreshNews(): Promise<void> {
     if (this.destroyed || this.articleOpen) return
     const instrument = this.instruments[this.instrumentList.selectedIndex]
@@ -272,8 +298,11 @@ export class WatchlistScreen {
   private onInstrumentSelected(index: number): void {
     const instrument = this.instruments[index]
     if (!instrument) return
-    this.chartBody.content = `${instrument.symbol} — ${instrument.displayName}\n\nChart coming soon.`
-    this.chartBody.fg = "#aaaaaa"
+    this.chart.setInstrument(instrument)
+    this.selectedEquitySymbol = instrument.underlyingSymbol
+    if (this.selectedEquitySymbol) this.options.equityQuotes?.start(this.selectedEquitySymbol)
+    else this.options.equityQuotes?.stop()
+    this.renderChartHeader()
     void this.loadNews(instrument)
   }
 
@@ -372,7 +401,9 @@ export class WatchlistScreen {
   }
 
   private toggleFocus(): void {
-    this.setFocus(this.focus === "instruments" ? "news" : "instruments")
+    const order: Focus[] = ["instruments", "chart", "news"]
+    const index = order.indexOf(this.focus)
+    this.setFocus(order[(index + 1) % order.length] ?? "instruments")
   }
 
   private setFocus(focus: Focus): void {
@@ -389,7 +420,36 @@ export class WatchlistScreen {
 
   private updateFocusIndicator(): void {
     this.renderViopHeader()
+    this.renderChartHeader()
+    this.chart.setFocused(this.focus === "chart")
     this.newsHeader.fg = this.focus === "news" ? FOCUSED_HEADER : UNFOCUSED_HEADER
+    this.updateResponsiveLayout()
+  }
+
+  private setEquityConnected(connected: boolean): void {
+    if (this.equityConnected === connected) return
+    this.equityConnected = connected
+    this.renderChartHeader()
+  }
+
+  private renderChartHeader(): void {
+    const titleColor = this.focus === "chart" ? FOCUSED_HEADER : UNFOCUSED_HEADER
+    if (!this.selectedEquitySymbol) {
+      this.chartHeader.content = t`${fg(titleColor)("Chart")}`
+      return
+    }
+    const statusColor = this.equityConnected ? UP_COLOR : NEUTRAL_COLOR
+    const status = this.equityConnected ? "● live" : "○ snapshot"
+    this.chartHeader.content = t`${fg(titleColor)("Chart")}  ${fg(HEADER_COLOR)(`${this.selectedEquitySymbol} stock`)}  ${fg(statusColor)(status)}`
+  }
+
+  private updateResponsiveLayout(): void {
+    const compact = this.root.width < COMPACT_LAYOUT_WIDTH
+    this.leftPanel.width = compact ? 30 : 36
+    this.centerPanel.visible = !compact || this.focus !== "news"
+    this.rightPanel.visible = !compact || this.focus === "news"
+    this.rightPanel.width = compact ? "auto" : 46
+    this.rightPanel.flexGrow = compact ? 1 : 0
   }
 
   // "● live" (green) once real stream ticks are flowing, "○ snapshot" (gray)
