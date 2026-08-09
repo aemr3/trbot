@@ -33,6 +33,7 @@ export class SelectableList {
 
   private rowBoxes: BoxRenderable[] = []
   private indicators: TextRenderable[] = []
+  private contents: TextRenderable[] = []
   private selected = -1
   private lastClickIndex = -1
   private lastClickAt = 0
@@ -57,6 +58,7 @@ export class SelectableList {
     for (const child of this.root.getChildren()) this.root.remove(child)
     this.rowBoxes = []
     this.indicators = []
+    this.contents = []
 
     rows.forEach((row, index) => {
       const rowBox = new BoxRenderable(this.renderer, {
@@ -81,22 +83,31 @@ export class SelectableList {
         flexShrink: 0,
         wrapMode: "none",
       })
+      const content = new TextRenderable(this.renderer, {
+        content: row.content,
+        fg: row.color,
+        flexGrow: 1,
+        wrapMode: this.options.wrapContent ? "word" : "none",
+      })
       rowBox.add(indicator)
-      rowBox.add(
-        new TextRenderable(this.renderer, {
-          content: row.content,
-          fg: row.color,
-          flexGrow: 1,
-          wrapMode: this.options.wrapContent ? "word" : "none",
-        }),
-      )
+      rowBox.add(content)
       this.root.add(rowBox)
       this.rowBoxes.push(rowBox)
       this.indicators.push(indicator)
+      this.contents.push(content)
     })
 
     this.selected = rows.length > 0 ? 0 : -1
     this.paint(-1)
+  }
+
+  // Repaints one row's content in place, preserving selection and scroll — used
+  // for live price ticks that must not rebuild or reorder the list.
+  updateRow(index: number, update: { content?: string | StyledText; color?: string }): void {
+    const content = this.contents[index]
+    if (!content) return
+    if (update.content !== undefined) content.content = update.content
+    if (update.color !== undefined) content.fg = update.color
   }
 
   handleKey(key: KeyEvent): boolean {

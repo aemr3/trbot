@@ -2,11 +2,13 @@ import { constants, generateKeyPairSync, randomUUID, sign } from "node:crypto"
 import type { AuthState } from "../auth/state.ts"
 import type { AuthStore } from "../auth/store.ts"
 import { authOperations, type GraphqlOperation } from "./graphql.ts"
-import type { HttpResponse, Transport } from "./transport.ts"
+import type { HttpResponse, SseFrame, Transport } from "./transport.ts"
 
 const AUTH_ERROR_CODES = new Set([9002, 9008, 9010])
 const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 120_000
 const API_URL = "https://api.getmidas.com"
+const STREAM_URL = "https://stream.getmidas.com"
+const USER_AGENT = "Midas/3.2.1 (iPhone; iOS 18.1.1; Scale/3.00) AppleWebKit/605.1.15 (KHTML, like Gecko)"
 const DEVICE_MODEL = "iPhone 17 Pro Max"
 const CHECKSUM_SECRET = "MGCh5U5KVD"
 
@@ -130,6 +132,28 @@ export class ApiClient {
 
     const recovered = await this.runAuthentication(() => this.authenticateInternal(true))
     return this.request(operation, variables, recovered.accessToken, options.signal)
+  }
+
+  // Opens a server-sent-events channel against the streaming host, injecting the
+  // same bearer token the GraphQL calls use. Callers re-invoke this to reconnect;
+  // authenticate() refreshes the token when it has expired.
+  async *stream(options: { path: string; query?: Record<string, string>; signal?: AbortSignal }): AsyncGenerator<SseFrame> {
+    if (!this.options.transport.stream) throw new Error("The configured transport does not support streaming")
+    const session = await this.authenticate()
+    const state = await this.loadOrCreateState()
+    yield* this.options.transport.stream({
+      url: buildStreamUrl(`${STREAM_URL}${options.path}`, options.query),
+      headers: {
+        accept: "text/event-stream",
+        "accept-language": "tr",
+        "cache-control": "no-cache",
+        "user-agent": USER_AGENT,
+        "x-midas-app-id": "main",
+        "x-user-agent-uid": state.userAgentUid,
+        authorization: `Bearer ${session.accessToken}`,
+      },
+      signal: options.signal,
+    })
   }
 
   private async authenticateInternal(force: boolean): Promise<ApiSession> {
@@ -320,7 +344,7 @@ export class ApiClient {
         "apollographql-client-name": "Midas",
         "apollographql-client-version": "v3.2.1",
         "content-type": "application/json",
-        "user-agent": "Midas/3.2.1 (iPhone; iOS 18.1.1; Scale/3.00) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+        "user-agent": USER_AGENT,
         "x-midas-app-id": "main",
         "x-version": "2",
         "x-user-agent-uid": (await this.loadOrCreateState()).userAgentUid,
@@ -363,6 +387,14 @@ function parseResponse<TData>(operationName: string, response: HttpResponse): TD
   if (parsed.errors?.length) throw new GraphqlError(operationName, parsed.errors)
   if (parsed.data === undefined) throw new Error(`API operation ${operationName} returned no data`)
   return parsed.data
+}
+
+// Symbols are provider-safe (`F_TUPRS0826`) and the stream expects the comma
+// list unescaped, so keep the query assembly plain rather than URLSearchParams.
+function buildStreamUrl(base: string, query?: Record<string, string>): string {
+  if (!query) return base
+  const pairs = Object.entries(query).map(([key, value]) => `${key}=${value}`)
+  return pairs.length > 0 ? `${base}?${pairs.join("&")}` : base
 }
 
 function isAuthenticationError(error: unknown): boolean {

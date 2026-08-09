@@ -13,6 +13,7 @@ import { CredentialsRequiredError } from "../api/index.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsArticle, NewsSource } from "../market/news.ts"
+import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
 
 const UP_COLOR = "#70d7a1"
 const DOWN_COLOR = "#ff6b6b"
@@ -26,10 +27,14 @@ const LINK_COLOR = "#6cb6ff"
 const NEWS_TIME_COLOR = "#8a8a8a"
 const NEWS_HEADLINE_COLOR = "#e0e0e0"
 
+const NEWS_POLL_INTERVAL_MS = 60_000
+
 export interface WatchlistScreenOptions {
   instruments: ViopInstrumentSource
   news: NewsSource
+  quotes?: QuoteStream
   onSessionExpired?: () => void
+  newsIntervalMs?: number
 }
 
 type Focus = "instruments" | "news"
@@ -49,6 +54,8 @@ export class WatchlistScreen {
   private newsContent: Renderable | null = null
   private instruments: ViopInstrument[] = []
   private newsArticles: NewsArticle[] = []
+  private readonly symbolIndex = new Map<string, number>()
+  private readonly referenceClose = new Map<string, number>()
   private focus: Focus = "instruments"
   private articleOpen = false
   private destroyed = false
@@ -56,6 +63,8 @@ export class WatchlistScreen {
   private newsRequestUid: string | null = null
   private articleRequestUid: string | null = null
   private readerLastClickAt = 0
+  private newsTimer: ReturnType<typeof setInterval> | null = null
+  private connected = false
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     if (this.articleOpen) {
@@ -167,17 +176,26 @@ export class WatchlistScreen {
 
     this.root.add(columns)
     this.root.add(hint)
+
+    this.options.quotes?.subscribe((update) => this.onQuote(update))
+    this.options.quotes?.onConnectionChange((connected) => this.setConnected(connected))
   }
 
   mount(): void {
     this.renderer.keyInput.on("keypress", this.handleKeypress)
     this.updateFocusIndicator()
     void this.load()
+    this.newsTimer = setInterval(() => void this.refreshNews(), this.options.newsIntervalMs ?? NEWS_POLL_INTERVAL_MS)
   }
 
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.options.quotes?.stop()
+    if (this.newsTimer) {
+      clearInterval(this.newsTimer)
+      this.newsTimer = null
+    }
     this.renderer.keyInput.off("keypress", this.handleKeypress)
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
@@ -187,6 +205,13 @@ export class WatchlistScreen {
       const instruments = await this.options.instruments.listInstruments()
       if (this.destroyed) return
       this.instruments = instruments
+      this.symbolIndex.clear()
+      this.referenceClose.clear()
+      instruments.forEach((instrument, index) => {
+        this.symbolIndex.set(instrument.symbol, index)
+        const reference = referenceClose(instrument)
+        if (reference !== null) this.referenceClose.set(instrument.symbol, reference)
+      })
       this.instrumentList.setRows(
         instruments.map((instrument) => ({
           id: instrument.uid,
@@ -194,13 +219,53 @@ export class WatchlistScreen {
           color: changeColor(instrument.changePercent),
         })),
       )
-      if (instruments.length > 0) this.onInstrumentSelected(0)
-      else this.chartBody.content = "No VIOP instruments available."
+      if (instruments.length > 0) {
+        this.onInstrumentSelected(0)
+        this.options.quotes?.start(instruments.map((instrument) => instrument.symbol))
+      } else {
+        this.chartBody.content = "No VIOP instruments available."
+      }
     } catch (error) {
       if (this.destroyed) return
       if (this.notifyIfSessionExpired(error)) return
       this.chartBody.content = `Failed to load instruments: ${errorMessage(error)}`
       this.chartBody.fg = "#ff6b6b"
+    }
+  }
+
+  // Applies a live price tick in place. The stream carries only the traded
+  // price, so the daily change is re-derived against the session's reference
+  // close seeded from the opening screener snapshot.
+  private onQuote(update: QuoteUpdate): void {
+    if (this.destroyed) return
+    const index = this.symbolIndex.get(update.symbol)
+    if (index === undefined) return
+    const instrument = this.instruments[index]
+    if (!instrument) return
+
+    if (update.lastPrice !== null) instrument.lastPrice = update.lastPrice
+    const reference = this.referenceClose.get(update.symbol)
+    if (reference && reference > 0 && instrument.lastPrice !== null) {
+      instrument.changePercent = (instrument.lastPrice / reference - 1) * 100
+    }
+    this.instrumentList.updateRow(index, {
+      content: formatInstrumentRow(instrument),
+      color: changeColor(instrument.changePercent),
+    })
+  }
+
+  private async refreshNews(): Promise<void> {
+    if (this.destroyed || this.articleOpen) return
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    if (!instrument) return
+    const uid = instrument.uid
+    try {
+      const articles = await this.options.news.listNews({ instrumentUid: uid })
+      if (this.destroyed || this.articleOpen) return
+      if (this.instruments[this.instrumentList.selectedIndex]?.uid !== uid) return
+      if (newsListChanged(this.newsArticles, articles)) this.renderNews(articles, instrument.displayName)
+    } catch (error) {
+      if (!this.destroyed) this.notifyIfSessionExpired(error)
     }
   }
 
@@ -316,9 +381,24 @@ export class WatchlistScreen {
     this.updateFocusIndicator()
   }
 
+  private setConnected(connected: boolean): void {
+    if (this.connected === connected) return
+    this.connected = connected
+    this.renderViopHeader()
+  }
+
   private updateFocusIndicator(): void {
-    this.viopHeader.fg = this.focus === "instruments" ? FOCUSED_HEADER : UNFOCUSED_HEADER
+    this.renderViopHeader()
     this.newsHeader.fg = this.focus === "news" ? FOCUSED_HEADER : UNFOCUSED_HEADER
+  }
+
+  // "● live" (green) once real stream ticks are flowing, "○ snapshot" (gray)
+  // while the list is showing the opening screener values.
+  private renderViopHeader(): void {
+    const titleColor = this.focus === "instruments" ? FOCUSED_HEADER : UNFOCUSED_HEADER
+    const statusColor = this.connected ? UP_COLOR : NEUTRAL_COLOR
+    const status = this.connected ? "● live" : "○ snapshot"
+    this.viopHeader.content = t`${fg(titleColor)("VIOP")}  ${fg(statusColor)(status)}`
   }
 }
 
@@ -333,6 +413,19 @@ function panelHeader(renderer: RenderContext, title: string): TextRenderable {
     fg: HEADER_COLOR,
     marginBottom: 1,
   })
+}
+
+// Recovers the session reference (previous close) from the opening snapshot so
+// live ticks can be turned back into a daily change percentage.
+function referenceClose(instrument: ViopInstrument): number | null {
+  if (instrument.lastPrice === null || instrument.changePercent === null) return null
+  const reference = instrument.lastPrice / (1 + instrument.changePercent / 100)
+  return Number.isFinite(reference) && reference > 0 ? reference : null
+}
+
+function newsListChanged(current: NewsArticle[], next: NewsArticle[]): boolean {
+  if (current.length !== next.length) return true
+  return next.some((article, index) => article.uid !== current[index]?.uid)
 }
 
 function changeColor(changePercent: number | null): string {

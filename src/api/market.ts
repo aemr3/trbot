@@ -69,6 +69,42 @@ export interface InstrumentVariables {
   [key: string]: unknown
 }
 
+// VIOP futures live prices arrive over SSE on the streaming host. The event is
+// named `PriceUpdate` and the payload keys are single letters.
+export const VIOP_PRICE_STREAM_PATH = "/reactive-viop-api/v1/viop/futures/price-quote"
+export const VIOP_PRICE_STREAM_EVENT = "PriceUpdate"
+
+export interface FuturePriceUpdate {
+  symbol: string
+  lastPrice: number | null
+  ask: number | null
+  bid: number | null
+  sessionStatus: string | null
+  timestamp: number
+}
+
+export function parseFuturePriceUpdate(data: string): FuturePriceUpdate | null {
+  let raw: { s?: unknown; p?: unknown; a?: unknown; b?: unknown; ss?: unknown; ts?: unknown }
+  try {
+    raw = JSON.parse(data)
+  } catch {
+    return null
+  }
+  if (typeof raw.s !== "string" || raw.s.length === 0) return null
+  return {
+    symbol: raw.s,
+    lastPrice: numberOrNull(raw.p),
+    ask: numberOrNull(raw.a),
+    bid: numberOrNull(raw.b),
+    sessionStatus: typeof raw.ss === "string" ? raw.ss : null,
+    timestamp: numberOrNull(raw.ts) ?? 0,
+  }
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
 export const marketOperations = {
   screenerRetrieveV2: defineOperation<ScreenerRetrieveV2Data, ScreenerRetrieveV2Variables>(
     "screenerRetrieveV2",
