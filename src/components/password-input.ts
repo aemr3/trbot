@@ -69,5 +69,8 @@ export class PasswordInput {
 }
 
 function isPrintable(value: string): boolean {
-  return value.length > 0 && !/[\u0000-\u001f\u007f]/u.test(value)
+  return value.length > 0 && Array.from(value).every((character) => {
+    const codePoint = character.codePointAt(0)
+    return codePoint !== undefined && codePoint >= 0x20 && codePoint !== 0x7f
+  })
 }

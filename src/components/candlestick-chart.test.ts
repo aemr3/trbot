@@ -51,7 +51,7 @@ test("spaces and right-aligns candles with a current-price guide", () => {
   const plotWidth = 30
   const candlePositions = lines
     .slice(0, -1)
-    .flatMap((line) => [...line.slice(0, plotWidth)].flatMap((glyph, index) => /[┃╻╹╽╿│╷╵]/.test(glyph) ? [index] : []))
+    .flatMap((line) => Array.from(line.slice(0, plotWidth)).flatMap((glyph, index) => /[┃╻╹╽╿│╷╵]/.test(glyph) ? [index] : []))
 
   expect(Math.min(...candlePositions)).toBeGreaterThanOrEqual(22)
   expect(candlePositions.every((position) => position % 2 === 0)).toBe(true)
@@ -71,7 +71,7 @@ test("uses every plot column for a dense candle history", () => {
   const plotLines = chart.chunks.map((chunk) => chunk.text).join("").split("\n").slice(0, -1)
 
   const bodyGlyphs = /[┃╻╹╽╿]/
-  expect(Math.max(...plotLines.map((line) => [...line.slice(0, 30)].filter((glyph) => bodyGlyphs.test(glyph)).length))).toBe(24)
+  expect(Math.max(...plotLines.map((line) => Array.from(line.slice(0, 30)).filter((glyph) => bodyGlyphs.test(glyph)).length))).toBe(24)
   expect(plotLines.join("\n")).not.toContain("█")
 })
 
