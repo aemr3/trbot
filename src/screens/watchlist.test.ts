@@ -106,6 +106,20 @@ const instruments: ViopInstrumentSource = {
       { uid: "u2", symbol: "F_THYAO0826", displayName: "THYAO", underlyingSymbol: "THYAO", lastPrice: 312.45, changePercent: -1.05, volume: 1_000_000_000, currency: "TRY" },
     ]
   },
+  async loadContractDetails() {
+    return {
+      initialCollateral: 4_719.55,
+      leverage: 4.43,
+      contractSize: 100,
+      expiryDate: "31/08/2026",
+      sessionHigh: 210,
+      sessionLow: 195,
+      settlementPrice: 209.2,
+      previousSettlementPrice: 195.5,
+      volume: 1_040_270_720,
+      openInterest: 54_068,
+    }
+  },
 }
 
 const news: NewsSource = {
@@ -189,6 +203,11 @@ test("renders the VIOP, chart, and news panels with instrument data", async () =
   expect(frame).toContain("Chart")
   expect(frame).toContain("News")
   expect(frame).toContain("XU030")
+  expect(frame).toContain("1 contract")
+  expect(frame).toContain("Order size  ₺1.591.000,00")
+  expect(frame).toContain("Required    ₺4.719,55")
+  expect(frame).toContain("Stats · High ₺210,00 · Low ₺195,00")
+  expect(frame).toContain("Vol 1.040.270.720 · OI 54.068")
 
   screen.destroy()
   renderer.destroy()
@@ -358,7 +377,7 @@ test("sorts VIOP stocks by change or volume and preserves the selected stock", a
 function viopRowSymbols(frame: string): string[] {
   return frame
     .split("\n")
-    .map((line) => line.slice(0, 36).match(/\b(AAA|BBB|CCC)\b/)?.[1])
+    .map((line) => line.slice(0, 36).match(/^[ ▶]{3}(AAA|BBB|CCC)\s+\d/)?.[1])
     .filter((symbol): symbol is string => Boolean(symbol))
 }
 

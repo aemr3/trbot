@@ -139,3 +139,53 @@ test("stops paginating when totalSize is reached", async () => {
   expect(instruments).toHaveLength(1)
   expect(calls.result).toBe(1)
 })
+
+test("loads and normalizes contract details and statistics", async () => {
+  const client = {
+    call(op: Op, variables: Record<string, unknown>) {
+      expect(op.name).toBe(marketOperations.futureDetail.name)
+      expect(variables).toEqual({ instrumentUid: "future-1" })
+      return Promise.resolve({
+        futureDetail: {
+          contractDetails: {
+            title: "Kontrat Detayları",
+            description: null,
+            items: [
+              { key: "ic", text: "Başlangıç teminatı", value: "₺7.991,91", info: null },
+              { key: "lv", text: "Kaldıraç", value: "4,11", info: null },
+              { key: "un", text: "Sözleşme büyüklüğü", value: "100", info: null },
+              { key: "rd", text: "Vade sonu", value: "31/08/2026", info: null },
+            ],
+          },
+          stats: {
+            title: "İstatistikler",
+            description: null,
+            items: [
+              { key: "En yüksek", text: "En yüksek", value: "₺338,15", info: null },
+              { key: "En düşük", text: "En düşük", value: "₺324,55", info: null },
+              { key: "sp", text: "Uzlaşma fiyatı", value: "₺328,75", info: null },
+              { key: "psp", text: "Önceki uzlaşma", value: "₺328,85", info: null },
+              { key: "vo", text: "Hacim", value: "3.996.802.304,00", info: null },
+              { key: "oi", text: "Açık Pozisyon", value: "170.108", info: null },
+            ],
+          },
+        },
+      })
+    },
+  }
+
+  const details = await new ApiViopInstrumentSource(client as never).loadContractDetails("future-1")
+
+  expect(details).toEqual({
+    initialCollateral: 7_991.91,
+    leverage: 4.11,
+    contractSize: 100,
+    expiryDate: "31/08/2026",
+    sessionHigh: 338.15,
+    sessionLow: 324.55,
+    settlementPrice: 328.75,
+    previousSettlementPrice: 328.85,
+    volume: 3_996_802_304,
+    openInterest: 170_108,
+  })
+})

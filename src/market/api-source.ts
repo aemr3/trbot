@@ -5,7 +5,7 @@ import {
   type ScreenerInstrument,
   type ScreenerResultV2Variables,
 } from "../api/market.ts"
-import type { ViopInstrument, ViopInstrumentSource } from "./instrument.ts"
+import type { ViopContractDetails, ViopInstrument, ViopInstrumentSource } from "./instrument.ts"
 
 type MarketApiClient = Pick<ApiClient, "call">
 
@@ -70,6 +70,52 @@ export class ApiViopInstrumentSource implements ViopInstrumentSource {
 
     const tradable = instruments.filter((instrument) => !isExcludedContract(instrument))
     return frontMonthPerUnderlying(tradable).map(toInstrument)
+  }
+
+  async loadContractDetails(
+    instrumentUid: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ViopContractDetails> {
+    const data = await this.client.call(
+      marketOperations.futureDetail,
+      { instrumentUid },
+      { signal: options.signal },
+    )
+    const detail = data.futureDetail
+    if (!detail) return emptyContractDetails()
+
+    const contract = new Map(detail.contractDetails.items.map((item) => [item.key, item.value]))
+    const stats = new Map(detail.stats.items.map((item) => [item.key, item.value]))
+    const sessionHigh = detail.stats.items.find((item) => item.text === "En yüksek")?.value
+    const sessionLow = detail.stats.items.find((item) => item.text === "En düşük")?.value
+
+    return {
+      initialCollateral: parseTurkishNumber(contract.get("ic")),
+      leverage: parseTurkishNumber(contract.get("lv")),
+      contractSize: parseTurkishNumber(contract.get("un")),
+      expiryDate: contract.get("rd") ?? null,
+      sessionHigh: parseTurkishNumber(sessionHigh),
+      sessionLow: parseTurkishNumber(sessionLow),
+      settlementPrice: parseTurkishNumber(stats.get("sp")),
+      previousSettlementPrice: parseTurkishNumber(stats.get("psp")),
+      volume: parseTurkishNumber(stats.get("vo")),
+      openInterest: parseTurkishNumber(stats.get("oi")),
+    }
+  }
+}
+
+function emptyContractDetails(): ViopContractDetails {
+  return {
+    initialCollateral: null,
+    leverage: null,
+    contractSize: null,
+    expiryDate: null,
+    sessionHigh: null,
+    sessionLow: null,
+    settlementPrice: null,
+    previousSettlementPrice: null,
+    volume: null,
+    openInterest: null,
   }
 }
 

@@ -12,6 +12,7 @@ import {
 import { CredentialsRequiredError } from "../api/index.ts"
 import { AccountPanel } from "../components/account-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
+import { ContractDetailsPanel } from "../components/contract-details-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
 import type { CandleSource } from "../market/candle.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
@@ -59,6 +60,7 @@ export class WatchlistScreen {
   private readonly leftPanel: BoxRenderable
   private readonly centerPanel: BoxRenderable
   private readonly instrumentList: SelectableList
+  private readonly contractDetailsPanel: ContractDetailsPanel
   private readonly sortButtons = new Map<InstrumentSort, BoxRenderable>()
   private readonly sortButtonLabels = new Map<InstrumentSort, TextRenderable>()
   private readonly chart: CandlestickChart
@@ -82,6 +84,7 @@ export class WatchlistScreen {
   private sessionExpiredNotified = false
   private newsRequestUid: string | null = null
   private articleRequestUid: string | null = null
+  private contractDetailsRequest: AbortController | null = null
   private readerLastClickAt = 0
   private newsTimer: ReturnType<typeof setInterval> | null = null
   private connected = false
@@ -168,6 +171,8 @@ export class WatchlistScreen {
       onFocusRequest: () => this.setFocus("instruments"),
     })
     this.leftPanel.add(this.instrumentList.root)
+    this.contractDetailsPanel = new ContractDetailsPanel(renderer)
+    this.leftPanel.add(this.contractDetailsPanel.root)
 
     this.centerPanel = new BoxRenderable(renderer, {
       flexGrow: 1,
@@ -260,6 +265,8 @@ export class WatchlistScreen {
     this.destroyed = true
     this.chart.destroy()
     this.accountPanel.destroy()
+    this.contractDetailsRequest?.abort()
+    this.contractDetailsRequest = null
     this.options.quotes?.stop()
     this.options.equityQuotes?.stop()
     if (this.newsTimer) {
@@ -307,6 +314,7 @@ export class WatchlistScreen {
     if (!instrument) return
 
     if (update.lastPrice !== null) instrument.lastPrice = update.lastPrice
+    if (update.lastPrice !== null) this.contractDetailsPanel.applyPrice(update.symbol, update.lastPrice)
     const reference = this.referenceClose.get(update.symbol)
     if (reference && reference > 0 && instrument.lastPrice !== null) {
       instrument.changePercent = (instrument.lastPrice / reference - 1) * 100
@@ -347,12 +355,31 @@ export class WatchlistScreen {
   private onInstrumentSelected(index: number): void {
     const instrument = this.instruments[index]
     if (!instrument) return
+    this.contractDetailsPanel.selectInstrument(instrument, Boolean(this.options.instruments.loadContractDetails))
+    void this.loadContractDetails(instrument)
     this.chart.setInstrument(instrument)
     this.selectedEquitySymbol = instrument.underlyingSymbol
     if (this.selectedEquitySymbol) this.options.equityQuotes?.start(this.selectedEquitySymbol)
     else this.options.equityQuotes?.stop()
     this.renderChartHeader()
     void this.loadNews(instrument)
+  }
+
+  private async loadContractDetails(instrument: ViopInstrument): Promise<void> {
+    const source = this.options.instruments
+    if (!source.loadContractDetails) return
+    this.contractDetailsRequest?.abort()
+    const request = new AbortController()
+    this.contractDetailsRequest = request
+    try {
+      const details = await source.loadContractDetails(instrument.uid, { signal: request.signal })
+      if (this.destroyed || request.signal.aborted || this.contractDetailsRequest !== request) return
+      this.contractDetailsPanel.showDetails(instrument.uid, details)
+    } catch (error) {
+      if (this.destroyed || request.signal.aborted || this.contractDetailsRequest !== request || isAbortError(error)) return
+      if (this.notifyIfSessionExpired(error)) return
+      this.contractDetailsPanel.showError(instrument.uid)
+    }
   }
 
   private async loadNews(instrument: ViopInstrument): Promise<void> {
@@ -610,4 +637,8 @@ function instrumentComparator(sort: InstrumentSort, direction: SortDirection): (
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError"
 }

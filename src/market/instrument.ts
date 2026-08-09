@@ -11,6 +11,20 @@ export interface ViopInstrument {
   currency: string
 }
 
+export interface ViopContractDetails {
+  initialCollateral: number | null
+  leverage: number | null
+  contractSize: number | null
+  expiryDate: string | null
+  sessionHigh: number | null
+  sessionLow: number | null
+  settlementPrice: number | null
+  previousSettlementPrice: number | null
+  volume: number | null
+  openInterest: number | null
+}
+
 export interface ViopInstrumentSource {
   listInstruments(options?: { signal?: AbortSignal }): Promise<ViopInstrument[]>
+  loadContractDetails?(instrumentUid: string, options?: { signal?: AbortSignal }): Promise<ViopContractDetails>
 }

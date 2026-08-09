@@ -69,6 +69,31 @@ export interface InstrumentVariables {
   [key: string]: unknown
 }
 
+export interface FutureDetailItem {
+  key: string
+  text: string
+  value: string | null
+  info: { title: string; url: string } | null
+}
+
+export interface FutureDetailSection {
+  title: string
+  description: string | null
+  items: FutureDetailItem[]
+}
+
+export interface FutureDetailData {
+  futureDetail?: {
+    contractDetails: FutureDetailSection
+    stats: FutureDetailSection
+  } | null
+}
+
+export interface FutureDetailVariables {
+  instrumentUid: string
+  [key: string]: unknown
+}
+
 export interface AdvancedChartEntry {
   o: number
   h: number
@@ -155,6 +180,11 @@ export const marketOperations = {
     "getInstrument",
     "query",
     "query getInstrument($instrumentId: String!) { instrument(uid: $instrumentId) { __typename ... on Future { underlyingInstrumentUid } } }",
+  ),
+  futureDetail: defineOperation<FutureDetailData, FutureDetailVariables>(
+    "futureDetail",
+    "query",
+    "query futureDetail($instrumentUid: String!) { futureDetail(futureUid: $instrumentUid) { contractDetails { title description items { key text value info { title url } } } stats { title description items { key text value info { title url } } } } }",
   ),
   advancedChart: defineOperation<AdvancedChartData, AdvancedChartVariables>(
     "advancedChart",
