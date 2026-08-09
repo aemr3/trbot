@@ -22,6 +22,16 @@ interface InitialState {
   sessionExpired: boolean
 }
 
+const EXIT_SIGNALS: NodeJS.Signals[] = [
+  "SIGTERM",
+  "SIGQUIT",
+  "SIGABRT",
+  "SIGHUP",
+  "SIGBREAK",
+  "SIGPIPE",
+  "SIGBUS",
+]
+
 export async function startApp(): Promise<void> {
   const config = loadConfig()
   const initialState = await resolveInitialState(config)
@@ -30,6 +40,7 @@ export async function startApp(): Promise<void> {
   try {
     const renderer = await createCliRenderer({
       exitOnCtrlC: false,
+      exitSignals: EXIT_SIGNALS,
       onDestroy: () => app?.dispose(),
     })
     app = new App(renderer, config, initialState)
@@ -53,7 +64,7 @@ async function resolveInitialState(config: AppConfig): Promise<InitialState> {
   }
 }
 
-class App {
+export class App {
   private readonly root: BoxRenderable
   private screen: Screen | null = null
   private api: ApiClientHandle | null
@@ -66,13 +77,14 @@ class App {
     key.stopPropagation()
     if (this.shuttingDown) return
     this.shuttingDown = true
-    queueMicrotask(() => this.shutdown())
+    this.shutdown()
   }
 
   constructor(
     private readonly renderer: CliRenderer,
     private readonly config: AppConfig,
     initialState: InitialState,
+    private readonly exit: () => void = exitWithSigint,
   ) {
     this.api = initialState.api
     this.root = new BoxRenderable(renderer, {
@@ -176,6 +188,10 @@ class App {
   private shutdown(): void {
     this.dispose()
     this.renderer.destroy()
-    queueMicrotask(() => process.kill(process.pid, "SIGINT"))
+    this.exit()
   }
+}
+
+function exitWithSigint(): void {
+  process.kill(process.pid, "SIGINT")
 }
