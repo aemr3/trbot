@@ -4,19 +4,26 @@ import {
   TextRenderable,
   type KeyEvent,
   type RenderContext,
+  type StyledText,
 } from "@opentui/core"
+
+export const DOUBLE_CLICK_MS = 400
 
 export interface SelectableListRow {
   id: string
-  content: string
+  content: string | StyledText
   color?: string
 }
 
 export interface SelectableListOptions {
   onSelect?: (index: number) => void
+  onActivate?: (index: number) => void
+  onFocusRequest?: () => void
   selectedBackgroundColor?: string
   backgroundColor?: string
   indicatorColor?: string
+  wrapContent?: boolean
+  rowGap?: number
 }
 
 // A keyboard-navigable, scrolling list where each row is painted in its own
@@ -27,6 +34,8 @@ export class SelectableList {
   private rowBoxes: BoxRenderable[] = []
   private indicators: TextRenderable[] = []
   private selected = -1
+  private lastClickIndex = -1
+  private lastClickAt = 0
 
   constructor(
     private readonly renderer: RenderContext,
@@ -36,7 +45,7 @@ export class SelectableList {
       flexGrow: 1,
       width: "100%",
       backgroundColor: options.backgroundColor,
-      contentOptions: { flexDirection: "column", backgroundColor: options.backgroundColor },
+      contentOptions: { flexDirection: "column", gap: options.rowGap, paddingRight: 1, backgroundColor: options.backgroundColor },
     })
   }
 
@@ -55,15 +64,32 @@ export class SelectableList {
         flexDirection: "row",
         width: "100%",
         onMouseDown: (event) => {
-          if (event.button === 0) this.select(index)
+          if (event.button !== 0) return
+          this.options.onFocusRequest?.()
+          this.select(index)
+          const now = Date.now()
+          const isDoubleClick = index === this.lastClickIndex && now - this.lastClickAt < DOUBLE_CLICK_MS
+          this.lastClickIndex = index
+          this.lastClickAt = isDoubleClick ? 0 : now
+          if (isDoubleClick) this.options.onActivate?.(index)
         },
       })
       const indicator = new TextRenderable(this.renderer, {
         content: "  ",
         fg: this.options.indicatorColor ?? "#70d7a1",
+        width: 2,
+        flexShrink: 0,
+        wrapMode: "none",
       })
       rowBox.add(indicator)
-      rowBox.add(new TextRenderable(this.renderer, { content: row.content, fg: row.color }))
+      rowBox.add(
+        new TextRenderable(this.renderer, {
+          content: row.content,
+          fg: row.color,
+          flexGrow: 1,
+          wrapMode: this.options.wrapContent ? "word" : "none",
+        }),
+      )
       this.root.add(rowBox)
       this.rowBoxes.push(rowBox)
       this.indicators.push(indicator)
@@ -89,6 +115,10 @@ export class SelectableList {
         return true
       case "end":
         this.select(this.rowBoxes.length - 1)
+        return true
+      case "return":
+      case "enter":
+        if (this.selected >= 0) this.options.onActivate?.(this.selected)
         return true
       default:
         return false

@@ -57,6 +57,18 @@ export interface ScreenerResultV2Variables {
   [key: string]: unknown
 }
 
+export interface InstrumentData {
+  instrument?: {
+    __typename: string
+    underlyingInstrumentUid?: string | null
+  } | null
+}
+
+export interface InstrumentVariables {
+  instrumentId: string
+  [key: string]: unknown
+}
+
 export const marketOperations = {
   screenerRetrieveV2: defineOperation<ScreenerRetrieveV2Data, ScreenerRetrieveV2Variables>(
     "screenerRetrieveV2",
@@ -67,5 +79,10 @@ export const marketOperations = {
     "screenerRetrieveResultV2",
     "query",
     "query screenerRetrieveResultV2($pitId: String, $searchAfter: String, $sortBy: String, $sortDirection: String, $assetVertical: AssetVertical, $investmentType: InvestmentType, $filters: [ScreenerResultInputItem!], $columns: [ScreenerColumnInput!]) { screenerRetrieveResultV2(request: { pitId: $pitId searchAfter: $searchAfter sortBy: $sortBy sortDirection: $sortDirection assetVertical: $assetVertical investmentType: $investmentType selectedFilterItems: $filters selectedColumns: $columns } ) { pitId searchAfter totalSize sortBy sortDirection instruments { uid symbol values { key value situation } } } }",
+  ),
+  getInstrument: defineOperation<InstrumentData, InstrumentVariables>(
+    "getInstrument",
+    "query",
+    "query getInstrument($instrumentId: String!) { instrument(uid: $instrumentId) { __typename ... on Future { underlyingInstrumentUid } } }",
   ),
 } as const

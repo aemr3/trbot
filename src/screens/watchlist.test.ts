@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
+import { CredentialsRequiredError } from "../api/index.ts"
 import type { ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsSource } from "../market/news.ts"
 import { WatchlistScreen } from "./watchlist.ts"
@@ -15,7 +16,10 @@ const instruments: ViopInstrumentSource = {
 
 const news: NewsSource = {
   async listNews() {
-    return [{ uid: "n1", instrumentSymbol: "XU030", tag: "Endeks", headline: "BIST 30 güne yükselişle başladı", body: "Hacim arttı.", publishedAt: null }]
+    return [{ uid: "n1", tag: "08 Ağu", headline: "BIST 30 güne yükselişle başladı", body: "Hacim arttı.", publishedAt: null, url: null, attachments: [] }]
+  },
+  async getArticle(uid) {
+    return { uid, tag: "08 Ağu", headline: "BIST 30 güne yükselişle başladı", body: "Full body text.", publishedAt: null, url: null, attachments: [] }
   },
 }
 
@@ -37,6 +41,84 @@ test("renders the VIOP, chart, and news panels with instrument data", async () =
   expect(frame).toContain("Chart")
   expect(frame).toContain("News")
   expect(frame).toContain("XU030")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("notifies onSessionExpired when the session cannot be restored", async () => {
+  const { renderer, waitFor } = await createTestRenderer({ width: 80, height: 20 })
+  let expired = false
+  const failing: ViopInstrumentSource = {
+    async listInstruments() {
+      throw new CredentialsRequiredError()
+    },
+  }
+
+  const screen = new WatchlistScreen(renderer, {
+    instruments: failing,
+    news,
+    onSessionExpired: () => {
+      expired = true
+    },
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitFor(() => expired)
+  expect(expired).toBe(true)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("opens a news article on double-click and returns on a second double-click", async () => {
+  const { renderer, mockMouse, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({
+    width: 120,
+    height: 20,
+  })
+
+  const screen = new WatchlistScreen(renderer, { instruments, news })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitForFrame((f) => f.includes("BIST 30 güne"))
+  const lines = captureCharFrame().split("\n")
+  const y = lines.findIndex((l) => l.includes("BIST 30 güne"))
+  const x = lines[y]!.indexOf("BIST")
+
+  await mockMouse.doubleClick(x, y)
+  await waitForFrame((f) => f.includes("Full body text."))
+
+  await mockMouse.doubleClick(x, 2) // double-click the reader to go back
+  await waitForFrame((f) => !f.includes("Full body text.") && f.includes("BIST 30 güne"))
+  await renderOnce()
+  expect(captureCharFrame()).not.toContain("Full body text.")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("opens a news article with its full body on Enter and returns on Backspace", async () => {
+  const { renderer, mockInput, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({
+    width: 120,
+    height: 20,
+  })
+
+  const screen = new WatchlistScreen(renderer, { instruments, news })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitForFrame((f) => f.includes("BIST 30 güne"))
+
+  mockInput.pressTab() // move focus to the news panel
+  mockInput.pressEnter() // open the selected article
+  await waitForFrame((f) => f.includes("Full body text."))
+
+  mockInput.pressBackspace() // back to the headline list
+  await waitForFrame((f) => !f.includes("Full body text.") && f.includes("BIST 30 güne"))
+  await renderOnce()
+  expect(captureCharFrame()).not.toContain("Full body text.")
 
   screen.destroy()
   renderer.destroy()

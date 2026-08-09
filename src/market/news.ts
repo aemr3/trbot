@@ -1,12 +1,14 @@
 export interface NewsArticle {
   uid: string
-  instrumentSymbol: string | null
   tag: string | null
   headline: string
   body: string
   publishedAt: number | null
+  url: string | null
+  attachments: string[]
 }
 
 export interface NewsSource {
-  listNews(options?: { instrumentSymbol?: string; signal?: AbortSignal }): Promise<NewsArticle[]>
+  listNews(options?: { instrumentUid?: string; signal?: AbortSignal }): Promise<NewsArticle[]>
+  getArticle(uid: string, options?: { signal?: AbortSignal }): Promise<NewsArticle | null>
 }

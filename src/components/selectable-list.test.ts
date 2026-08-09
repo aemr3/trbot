@@ -33,7 +33,24 @@ test("navigates rows with wrap-around, home/end, and reports selection", async (
   expect(list.selectedIndex).toBe(2)
 
   expect(selected).toEqual([1, 0, 2, 0, 2])
-  expect(list.handleKey(key("enter"))).toBe(false)
+  expect(list.handleKey(key("space"))).toBe(false)
+
+  list.destroy()
+  renderer.destroy()
+})
+
+test("activates the selected row on Enter", async () => {
+  const { renderer } = await createTestRenderer({ width: 40, height: 10 })
+  const activated: number[] = []
+  const list = new SelectableList(renderer, { onActivate: (index) => activated.push(index) })
+  list.setRows([
+    { id: "a", content: "a" },
+    { id: "b", content: "b" },
+  ])
+
+  list.handleKey(key("down"))
+  expect(list.handleKey(key("return"))).toBe(true)
+  expect(activated).toEqual([1])
 
   list.destroy()
   renderer.destroy()
@@ -42,7 +59,11 @@ test("navigates rows with wrap-around, home/end, and reports selection", async (
 test("selects a row when it is clicked", async () => {
   const { renderer, mockMouse, renderOnce, captureCharFrame } = await createTestRenderer({ width: 40, height: 10 })
   const selected: number[] = []
-  const list = new SelectableList(renderer, { onSelect: (index) => selected.push(index) })
+  let focusRequests = 0
+  const list = new SelectableList(renderer, {
+    onSelect: (index) => selected.push(index),
+    onFocusRequest: () => focusRequests++,
+  })
   renderer.root.add(list.root)
   list.setRows([
     { id: "a", content: "AAA" },
@@ -57,6 +78,7 @@ test("selects a row when it is clicked", async () => {
 
   expect(list.selectedIndex).toBe(2)
   expect(selected).toEqual([2])
+  expect(focusRequests).toBe(1)
 
   list.destroy()
   renderer.destroy()

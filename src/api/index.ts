@@ -41,6 +41,8 @@ export async function resumeApiClient(config: AppConfig): Promise<ApiClientHandl
     return {
       client: new ApiClient({
         accountKey: state.accountKey,
+        username: config.credentials?.username,
+        password: config.credentials?.password,
         store,
         transport: new FetchTransport(),
       }),

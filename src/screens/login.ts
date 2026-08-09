@@ -9,12 +9,13 @@ import {
 } from "@opentui/core"
 import { createApiClient, OtpRequiredError, type ApiClient, type ApiClientHandle } from "../api/index.ts"
 import { PasswordInput } from "../components/password-input.ts"
-import type { AppConfig } from "../config.ts"
+import type { AppConfig, AppCredentials } from "../config.ts"
 
 type LoginMode = "username" | "password" | "authenticating" | "otp"
 
 export interface LoginScreenOptions {
   initialStatus?: string
+  credentials?: AppCredentials | null
   onAuthenticated(api: ApiClientHandle): void
 }
 
@@ -126,7 +127,12 @@ export class LoginScreen {
   mount(): void {
     this.renderer.keyInput.on("keypress", this.handleKeypress)
     this.renderer.keyInput.on("paste", this.handlePaste)
-    this.usernameInput.focus()
+    const credentials = this.options.credentials
+    if (credentials) {
+      void this.authenticateWith(credentials.username, credentials.password)
+    } else {
+      this.usernameInput.focus()
+    }
   }
 
   destroy(): void {
@@ -165,8 +171,13 @@ export class LoginScreen {
       this.status.content = "Enter both username and password"
       return
     }
+    await this.authenticateWith(username, password)
+  }
 
+  private async authenticateWith(username: string, password: string): Promise<void> {
+    if (this.mode === "authenticating") return
     this.mode = "authenticating"
+    this.usernameInput.blur()
     this.passwordInput.blur()
     this.status.content = "Authenticating…"
     this.status.fg = "#ffffff"
@@ -184,6 +195,7 @@ export class LoginScreen {
 
       this.api?.close()
       this.api = null
+      this.usernameInput.value = username
       this.passwordInput.clear()
       this.mode = "password"
       this.passwordInput.focus()
