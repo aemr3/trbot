@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import type { GraphqlOperation } from "../api/graphql.ts"
+import { tradingOperations } from "../api/trading.ts"
 import { ApiViopOrderSource } from "./api-order.ts"
 
 test("prepares a futures order with exchange limits, quote, collateral, and position intent", async () => {
@@ -49,7 +50,42 @@ test("rejects prices outside the prepared exchange limits", async () => {
     .rejects.toThrow("upper limit")
 })
 
-function fakeClient(calls: Array<{ name: string; variables: Record<string, unknown> }>, positionQuantity: number) {
+test("lists every pending futures order page and cancels each order", async () => {
+  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const source = new ApiViopOrderSource(fakeClient(calls, 0))
+
+  const orders = await source.listPendingOrders()
+  const result = await source.cancelPendingOrders({ orderUids: orders.map((order) => order.uid) })
+
+  expect(orders.map((order) => order.uid)).toEqual(["pending-1", "pending-2"])
+  expect(result).toEqual({ cancelledOrderUids: ["pending-1", "pending-2"], failures: [] })
+  expect(calls.filter((call) => call.name === "cancelOrder").map((call) => call.variables)).toEqual([
+    { accountId: "try-account", orderId: "pending-1", instrumentId: null },
+    { accountId: "try-account", orderId: "pending-2", instrumentId: null },
+  ])
+  expect(calls.filter((call) => call.name === "transactionHistoryForInvestmentType")).toHaveLength(2)
+  expect(tradingOperations.cancelOrder.operationId)
+    .toBe("dfe84cdc591a60e0b38ee2d54f4b31acacee29e744ad837cb42ed1ebfa5882a8")
+})
+
+test("continues cancelling remaining orders after an individual failure", async () => {
+  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const source = new ApiViopOrderSource(fakeClient(calls, 0, "pending-1"))
+
+  const result = await source.cancelPendingOrders({ orderUids: ["pending-1", "pending-2"] })
+
+  expect(result).toEqual({
+    cancelledOrderUids: ["pending-2"],
+    failures: [{ orderUid: "pending-1", message: "Cancellation rejected" }],
+  })
+  expect(calls.filter((call) => call.name === "cancelOrder")).toHaveLength(2)
+})
+
+function fakeClient(
+  calls: Array<{ name: string; variables: Record<string, unknown> }>,
+  positionQuantity: number,
+  cancelFailureUid?: string,
+) {
   return {
     async authenticate() {
       return { accessToken: "token", refreshToken: null, memberUid: "member" }
@@ -59,6 +95,9 @@ function fakeClient(calls: Array<{ name: string; variables: Record<string, unkno
       variables: TVariables,
     ): Promise<TData> {
       calls.push({ name: operation.name, variables })
+      if (operation.name === "cancelOrder" && variables.orderId === cancelFailureUid) {
+        throw new Error("Cancellation rejected")
+      }
       const response = operation.name === "overviewV7"
         ? { overviewV7: { accounts: [{ accountUid: "try-account", status: "ACTIVE", currency: "TRY" }] } }
         : operation.name === "viopOverviewPositions"
@@ -79,6 +118,22 @@ function fakeClient(calls: Array<{ name: string; variables: Record<string, unkno
                 }
               : operation.name === "accountViopMarginHealthDetail"
                 ? { accountViopMarginHealthDetail: { availableCollateral: 45_000 } }
+                : operation.name === "transactionHistoryForInvestmentType"
+                  ? Number(variables.page) === 0
+                    ? {
+                        transactionHistoryForInvestmentType: {
+                          items: [{ uid: "pending-1", detail: { title: "First order" } }],
+                          hasMore: true,
+                        },
+                      }
+                    : {
+                        transactionHistoryForInvestmentType: {
+                          items: [{ uid: "pending-2", detail: { title: "Second order" } }],
+                          hasMore: false,
+                        },
+                      }
+                  : operation.name === "cancelOrder"
+                    ? { cancelOrder: { order: { uid: variables.orderId, status: "PENDING_CANCEL" } } }
                 : operation.name === "placeOrder"
                   ? { placeOrderV2: { order: { uid: "order-1", status: "PENDING", statusDescription: "Bekliyor" } } }
                   : null

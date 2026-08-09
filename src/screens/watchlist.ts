@@ -20,7 +20,7 @@ import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.
 import type { NewsArticle, NewsSource } from "../market/news.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
 import type { AccountSource, AccountStream } from "../trading/account.ts"
-import type { ViopOrderSide, ViopOrderSource } from "../trading/order.ts"
+import type { ViopOrderCancellationSource, ViopOrderSide, ViopOrderSource } from "../trading/order.ts"
 import { ViopOrderTicket } from "./order-ticket.ts"
 import {
   DEFAULT_WATCHLIST_PREFERENCES,
@@ -45,6 +45,7 @@ const NEWS_HEADLINE_COLOR = "#e0e0e0"
 const NEWS_POLL_INTERVAL_MS = 60_000
 const COMPACT_LAYOUT_WIDTH = 104
 const SORT_LABELS = { change: "Change", volume: "Volume" } as const
+const WATCHLIST_HINT = "B buy · S sell · c cancel pending · ↑/↓ move · list: C/V sort · Tab panel · chart: ←/→ range, ↑/↓ TF, Shift+←/→ scroll · account: ←/→ tab, R refresh · Enter read · Esc back · Ctrl+C exit"
 
 export interface WatchlistScreenOptions {
   instruments: ViopInstrumentSource
@@ -53,6 +54,7 @@ export interface WatchlistScreenOptions {
   account?: AccountSource
   accountStream?: AccountStream
   orders?: ViopOrderSource
+  orderCancellation?: ViopOrderCancellationSource
   equityQuotes?: EquityQuoteStream
   quotes?: QuoteStream
   onSessionExpired?: () => void
@@ -82,6 +84,7 @@ export class WatchlistScreen {
   private readonly newsList: SelectableList
   private readonly newsReader: ScrollBoxRenderable
   private readonly newsMessage: TextRenderable
+  private readonly hint: TextRenderable
   private orderTicket: ViopOrderTicket | null = null
 
   private newsContent: Renderable | null = null
@@ -96,8 +99,10 @@ export class WatchlistScreen {
   private newsRequestUid: string | null = null
   private articleRequestUid: string | null = null
   private contractDetailsRequest: AbortController | null = null
+  private cancellationRequest: AbortController | null = null
   private readerLastClickAt = 0
   private newsTimer: ReturnType<typeof setInterval> | null = null
+  private hintTimer: ReturnType<typeof setTimeout> | null = null
   private connected = false
   private equityConnected = false
   private selectedEquitySymbol: string | null = null
@@ -120,6 +125,10 @@ export class WatchlistScreen {
       this.openOrderTicket(key.name === "b" ? "BUY" : "SELL")
       return
     }
+    if (isLowercaseShortcut(key, "c")) {
+      void this.cancelAllPendingOrders()
+      return
+    }
     if (key.name === "tab") {
       this.toggleFocus()
       return
@@ -127,8 +136,8 @@ export class WatchlistScreen {
     if (this.focus === "news") this.newsList.handleKey(key)
     else if (this.focus === "account") this.accountPanel.handleKey(key)
     else if (this.focus === "chart") this.chart.handleKey(key)
-    else if (!key.ctrl && key.name === "c") this.selectInstrumentSort("change")
-    else if (!key.ctrl && key.name === "v") this.selectInstrumentSort("volume")
+    else if (isCapitalShortcut(key, "c")) this.selectInstrumentSort("change")
+    else if (isCapitalShortcut(key, "v")) this.selectInstrumentSort("volume")
     else this.instrumentList.handleKey(key)
   }
 
@@ -267,13 +276,13 @@ export class WatchlistScreen {
     columns.add(this.centerPanel)
     columns.add(this.rightPanel)
 
-    const hint = new TextRenderable(renderer, {
-      content: "B buy · S sell · ↑/↓ move · list: C/V sort · Tab panel · chart: ←/→ range, ↑/↓ TF, Shift+←/→ scroll · account: ←/→ tab, R refresh · Enter read · Esc back · Ctrl+C exit",
+    this.hint = new TextRenderable(renderer, {
+      content: WATCHLIST_HINT,
       fg: "#777777",
     })
 
     this.root.add(columns)
-    this.root.add(hint)
+    this.root.add(this.hint)
 
     this.options.quotes?.subscribe((update) => this.onQuote(update))
     this.options.quotes?.onConnectionChange((connected) => this.setConnected(connected))
@@ -297,11 +306,17 @@ export class WatchlistScreen {
     this.closeOrderTicket()
     this.contractDetailsRequest?.abort()
     this.contractDetailsRequest = null
+    this.cancellationRequest?.abort()
+    this.cancellationRequest = null
     this.options.quotes?.stop()
     this.options.equityQuotes?.stop()
     if (this.newsTimer) {
       clearInterval(this.newsTimer)
       this.newsTimer = null
+    }
+    if (this.hintTimer) {
+      clearTimeout(this.hintTimer)
+      this.hintTimer = null
     }
     this.renderer.keyInput.off("keypress", this.handleKeypress)
     if (!this.root.isDestroyed) this.root.destroyRecursively()
@@ -459,6 +474,60 @@ export class WatchlistScreen {
     if (!this.root.isDestroyed && !ticket.root.isDestroyed) this.root.remove(ticket.root)
     ticket.destroy()
     this.renderer.requestRender()
+  }
+
+  private async cancelAllPendingOrders(): Promise<void> {
+    const source = this.options.orderCancellation
+    if (!source || this.cancellationRequest || this.destroyed) return
+    const request = new AbortController()
+    this.cancellationRequest = request
+    this.showHintStatus("Loading pending VIOP orders…", "#e5c07b")
+    try {
+      const orders = await source.listPendingOrders({ signal: request.signal })
+      if (this.destroyed || request.signal.aborted || this.cancellationRequest !== request) return
+      if (orders.length === 0) {
+        this.showHintStatus("No pending VIOP orders to cancel.", "#888888", 3_000)
+        return
+      }
+      this.showHintStatus(`Cancelling ${orders.length} pending VIOP order${orders.length === 1 ? "" : "s"}…`, "#e5c07b")
+      const result = await source.cancelPendingOrders({
+        orderUids: orders.map((order) => order.uid),
+        signal: request.signal,
+      })
+      if (this.destroyed || request.signal.aborted || this.cancellationRequest !== request) return
+      if (result.cancelledOrderUids.length > 0) void this.accountPanel.refresh()
+      if (result.failures.length === 0) {
+        const count = result.cancelledOrderUids.length
+        this.showHintStatus(`Cancelled ${count} pending VIOP order${count === 1 ? "" : "s"}.`, "#70d7a1", 4_000)
+      } else {
+        const message = result.failures[0]?.message ?? "Cancellation failed"
+        this.showHintStatus(
+          `Cancelled ${result.cancelledOrderUids.length}; ${result.failures.length} failed: ${message}`,
+          "#ff6b6b",
+          6_000,
+        )
+      }
+    } catch (error) {
+      if (this.destroyed || request.signal.aborted || this.cancellationRequest !== request || isAbortError(error)) return
+      if (this.notifyIfSessionExpired(error)) return
+      this.showHintStatus(`Failed to cancel pending orders: ${errorMessage(error)}`, "#ff6b6b", 6_000)
+    } finally {
+      if (this.cancellationRequest === request) this.cancellationRequest = null
+    }
+  }
+
+  private showHintStatus(content: string, color: string, resetAfterMs?: number): void {
+    if (this.hintTimer) clearTimeout(this.hintTimer)
+    this.hintTimer = null
+    this.hint.content = content
+    this.hint.fg = color
+    if (resetAfterMs === undefined) return
+    this.hintTimer = setTimeout(() => {
+      this.hintTimer = null
+      if (this.destroyed) return
+      this.hint.content = WATCHLIST_HINT
+      this.hint.fg = "#777777"
+    }, resetAfterMs)
   }
 
   private renderNews(articles: NewsArticle[], label: string): void {
@@ -703,6 +772,16 @@ function instrumentComparator(sort: InstrumentSort, direction: SortDirection): (
     }
     return left.displayName.localeCompare(right.displayName)
   }
+}
+
+function isCapitalShortcut(key: KeyEvent, letter: "c" | "v"): boolean {
+  if (key.ctrl || key.meta || key.option) return false
+  return key.sequence === letter.toUpperCase() || (key.shift && key.name === letter)
+}
+
+function isLowercaseShortcut(key: KeyEvent, letter: "c"): boolean {
+  if (key.ctrl || key.shift || key.meta || key.option) return false
+  return key.name === letter && key.sequence !== letter.toUpperCase()
 }
 
 function errorMessage(error: unknown): string {

@@ -169,12 +169,14 @@ export class App {
   }
 
   private createWatchlistScreen(api: ApiClientHandle): WatchlistScreen {
+    const orders = new ApiViopOrderSource(api.client)
     return new WatchlistScreen(this.renderer, {
       instruments: new ApiViopInstrumentSource(api.client),
       candles: new ApiCandleSource(api.client),
       news: new ApiNewsSource(api.client),
       account: new ApiAccountSource(api.client),
-      orders: new ApiViopOrderSource(api.client),
+      orders,
+      orderCancellation: orders,
       accountStream: new ApiAccountStream(api.client, {
         onError: (error) => {
           if (error instanceof CredentialsRequiredError) this.showLogin()

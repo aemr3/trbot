@@ -15,7 +15,11 @@ import type {
   AccountSource,
   AccountStream,
 } from "../trading/account.ts"
-import type { PlaceViopOrderRequest, ViopOrderSource } from "../trading/order.ts"
+import type {
+  PlaceViopOrderRequest,
+  ViopOrderCancellationSource,
+  ViopOrderSource,
+} from "../trading/order.ts"
 import { WatchlistScreen } from "./watchlist.ts"
 
 class FakeQuoteStream implements QuoteStream {
@@ -395,7 +399,7 @@ test("applies live price ticks in place and subscribes with instrument symbols",
 })
 
 test("sorts VIOP stocks by change or volume and preserves the selected stock", async () => {
-  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+  const { renderer, mockInput, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({ width: 120, height: 24 })
   const sortable: ViopInstrumentSource = {
     async listInstruments() {
       return [
@@ -414,20 +418,61 @@ test("sorts VIOP stocks by change or volume and preserves the selected stock", a
   expect(volumeFrame).toContain("AAA stock")
 
   await mockInput.typeText("c")
+  await renderOnce()
+  expect(captureCharFrame()).toContain("Volume ↓")
+
+  mockInput.pressKey("c", { shift: true })
   const changeDescFrame = await waitForFrame((frame) => frame.includes("Change ↓"))
   expect(changeDescFrame.indexOf("+3.00%")).toBeLessThan(changeDescFrame.indexOf("+1.00%"))
   expect(changeDescFrame.indexOf("+1.00%")).toBeLessThan(changeDescFrame.indexOf("-2.00%"))
   expect(changeDescFrame).toContain("AAA stock")
   expect(changeDescFrame).toMatch(/▶ AAA/)
 
-  await mockInput.typeText("c")
+  mockInput.pressKey("c", { shift: true })
   const changeAscFrame = await waitForFrame((frame) => frame.includes("Change ↑"))
   expect(changeAscFrame.indexOf("-2.00%")).toBeLessThan(changeAscFrame.indexOf("+1.00%"))
   expect(changeAscFrame.indexOf("+1.00%")).toBeLessThan(changeAscFrame.indexOf("+3.00%"))
 
-  await mockInput.typeText("v")
+  mockInput.pressKey("v", { shift: true })
   const volumeAgainFrame = await waitForFrame((frame) => frame.includes("Volume ↓"))
   expect(viopRowSymbols(volumeAgainFrame)).toEqual(["AAA", "BBB", "CCC"])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("cancels every pending VIOP order immediately with lowercase c", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+  const cancelled: string[][] = []
+  const cancellation: ViopOrderCancellationSource = {
+    async listPendingOrders() {
+      return [
+        { uid: "order-1", title: "First", description: null },
+        { uid: "order-2", title: "Second", description: null },
+      ]
+    },
+    async cancelPendingOrders({ orderUids }) {
+      cancelled.push(orderUids)
+      return { cancelledOrderUids: orderUids, failures: [] }
+    },
+  }
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    orderCancellation: cancellation,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("XU030 stock"))
+
+  mockInput.pressKey("c", { shift: true })
+  await waitForFrame((frame) => frame.includes("Change ↓"))
+  expect(cancelled).toHaveLength(0)
+  await mockInput.typeText("c")
+  await waitForFrame((frame) => frame.includes("Cancelled 2 pending VIOP orders."))
+  expect(cancelled).toEqual([["order-1", "order-2"]])
 
   screen.destroy()
   renderer.destroy()
@@ -468,7 +513,7 @@ test("restores and reports list and chart display choices", async () => {
   await waitForFrame((frame) => frame.includes("THYAO stock"))
   expect(changes.at(-1)).toMatchObject({ selectedInstrumentUid: "u2" })
 
-  await mockInput.typeText("c")
+  mockInput.pressKey("c", { shift: true })
   await waitForFrame((frame) => frame.includes("Change ↓"))
   expect(changes.at(-1)).toMatchObject({ instrumentSort: "change", sortDirection: "desc" })
 

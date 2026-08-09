@@ -45,6 +45,32 @@ export interface ViopOrderSource {
   placeOrder(request: PlaceViopOrderRequest): Promise<PlacedViopOrder>
 }
 
+export interface PendingViopOrder {
+  uid: string
+  title: string
+  description: string | null
+}
+
+export interface CancelPendingViopOrdersRequest {
+  orderUids: string[]
+  signal?: AbortSignal
+}
+
+export interface ViopOrderCancellationFailure {
+  orderUid: string
+  message: string
+}
+
+export interface ViopOrderCancellationResult {
+  cancelledOrderUids: string[]
+  failures: ViopOrderCancellationFailure[]
+}
+
+export interface ViopOrderCancellationSource {
+  listPendingOrders(options?: { signal?: AbortSignal }): Promise<PendingViopOrder[]>
+  cancelPendingOrders(request: CancelPendingViopOrdersRequest): Promise<ViopOrderCancellationResult>
+}
+
 export function resolveViopOrderPrice(
   kind: ViopOrderKind,
   side: ViopOrderSide,

@@ -1,17 +1,29 @@
 import type { ApiClient } from "../api/index.ts"
-import { accountOperations, type AccountOverviewData, type AccountPositionsData } from "../api/account.ts"
+import {
+  accountOperations,
+  type AccountOrderEntry,
+  type AccountOverviewData,
+  type AccountPositionsData,
+} from "../api/account.ts"
 import { tradingOperations, type OrderPreparationData } from "../api/trading.ts"
 import {
   viopPositionIntent,
   type PlaceViopOrderRequest,
   type PlacedViopOrder,
+  type PendingViopOrder,
   type PrepareViopOrderRequest,
+  type ViopOrderCancellationResult,
+  type ViopOrderCancellationSource,
   type ViopOrderPreparation,
   type ViopOrderSource,
   type ViopPositionIntent,
 } from "./order.ts"
 
 type OrderApiClient = Pick<ApiClient, "authenticate" | "call">
+
+const ASSET_VERTICAL = "TR"
+const INVESTMENT_TYPE = "FUTURES"
+const ORDER_PAGE_SIZE = 20
 
 interface PreparedOrderContext {
   accountUid: string
@@ -20,7 +32,7 @@ interface PreparedOrderContext {
   result: ViopOrderPreparation
 }
 
-export class ApiViopOrderSource implements ViopOrderSource {
+export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellationSource {
   constructor(private readonly client: OrderApiClient) {}
 
   async prepareOrder(request: PrepareViopOrderRequest): Promise<ViopOrderPreparation> {
@@ -78,6 +90,66 @@ export class ApiViopOrderSource implements ViopOrderSource {
       status: order.status ?? "PENDING",
       description: order.statusDescription ?? null,
     }
+  }
+
+  async listPendingOrders(options: { signal?: AbortSignal } = {}): Promise<PendingViopOrder[]> {
+    const session = await this.client.authenticate()
+    const orders: PendingViopOrder[] = []
+    const seen = new Set<string>()
+    for (let page = 0; ; page += 1) {
+      const data = await this.client.call(
+        accountOperations.orders,
+        {
+          memberId: session.memberUid,
+          status: "PENDING",
+          page,
+          size: ORDER_PAGE_SIZE,
+          assetVertical: ASSET_VERTICAL,
+          investmentType: INVESTMENT_TYPE,
+        },
+        options,
+      )
+      const result = data.transactionHistoryForInvestmentType
+      if (result?.error) throw new Error(providerOrderListError(result.error))
+      const entries = result?.items ?? []
+      for (const order of entries.flatMap(normalizePendingOrder)) {
+        if (seen.has(order.uid)) continue
+        seen.add(order.uid)
+        orders.push(order)
+      }
+      if (!result?.hasMore) return orders
+      if (entries.length === 0) throw new Error("Pending-order pagination returned an empty page")
+    }
+  }
+
+  async cancelPendingOrders(request: { orderUids: string[]; signal?: AbortSignal }): Promise<ViopOrderCancellationResult> {
+    const orderUids = [...new Set(request.orderUids.filter(Boolean))]
+    if (orderUids.length === 0) return { cancelledOrderUids: [], failures: [] }
+    const session = await this.client.authenticate()
+    const overview = await this.client.call(
+      accountOperations.overview,
+      { memberId: session.memberUid, currencyCode: "TRY", period: "DAY" },
+      { signal: request.signal },
+    )
+    const accountUid = activeTryAccountUid(overview)
+    const result: ViopOrderCancellationResult = { cancelledOrderUids: [], failures: [] }
+    for (const orderUid of orderUids) {
+      try {
+        const data = await this.client.call(
+          tradingOperations.cancelOrder,
+          { accountId: accountUid, orderId: orderUid, instrumentId: null },
+          { signal: request.signal },
+        )
+        const cancelledOrderUid = data.cancelOrder?.order?.uid
+        if (!cancelledOrderUid) throw new Error("Cancellation returned no order ID")
+        if (cancelledOrderUid !== orderUid) throw new Error("Cancellation returned a different order ID")
+        result.cancelledOrderUids.push(orderUid)
+      } catch (error) {
+        if (request.signal?.aborted || isAbortError(error)) throw error
+        result.failures.push({ orderUid, message: errorMessage(error) })
+      }
+    }
+    return result
   }
 
   private async prepareContext(request: PrepareViopOrderRequest): Promise<PreparedOrderContext> {
@@ -149,6 +221,16 @@ export class ApiViopOrderSource implements ViopOrderSource {
   }
 }
 
+function normalizePendingOrder(entry: AccountOrderEntry): PendingViopOrder[] {
+  if (!entry.uid) return []
+  const detail = entry.detail
+  return [{
+    uid: entry.uid,
+    title: detail?.title ?? entry.typeV2 ?? "VIOP order",
+    description: detail?.titleDescription?.description ?? detail?.titleDescription?.subDescription?.text ?? null,
+  }]
+}
+
 function activeTryAccountUid(data: AccountOverviewData): string {
   const account = data.overviewV7?.accounts?.find(
     (candidate) => candidate.status === "ACTIVE" && candidate.currency === "TRY" && candidate.accountUid,
@@ -190,4 +272,17 @@ function finiteNumber(value: unknown): number | null {
 function boundedScale(value: unknown): number {
   const parsed = finiteNumber(value)
   return parsed === null ? 2 : Math.max(0, Math.min(8, Math.floor(parsed)))
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function providerOrderListError(error: unknown): string {
+  if (typeof error === "string" && error) return error
+  return "Provider could not list pending VIOP orders"
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError"
 }
