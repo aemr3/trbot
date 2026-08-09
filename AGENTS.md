@@ -37,4 +37,5 @@
 
 - Colocate test files with the implementation they cover.
 - Test meaningful behavior and failure paths; do not add tests for trivial configuration mapping or simple type declarations.
-- Run `bun test` and `bun run typecheck` after relevant changes.
+- Run `bun run lint`, `bun run typecheck`, and `bun test` after relevant changes.
+- Before committing, require all three checks to pass unless the user explicitly approves a known failure.
