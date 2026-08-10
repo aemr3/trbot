@@ -279,7 +279,7 @@ test("opens modal buy and sell tickets and submits simulated market orders at ex
 })
 
 test("shows portfolio, orders, and positions in tabs below the chart", async () => {
-  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 160, height: 30 })
+  const { renderer, mockInput, mockMouse, waitForFrame } = await createTestRenderer({ width: 160, height: 30 })
   const screen = new WatchlistScreen(renderer, { instruments, candles, news, account })
   renderer.root.add(screen.root)
   screen.mount()
@@ -298,6 +298,13 @@ test("shows portfolio, orders, and positions in tabs below the chart", async () 
   mockInput.pressArrow("right")
   const positionsFrame = await waitForFrame((frame) => frame.includes("300,00→312,00"))
   expect(positionsFrame).toContain("+₺240,00")
+
+  const lines = positionsFrame.split("\n")
+  const positionY = lines.findIndex((line) => line.includes("300,00→312,00"))
+  const positionX = lines[positionY]?.indexOf("THYAO") ?? -1
+  expect(positionX).toBeGreaterThanOrEqual(0)
+  await mockMouse.click(positionX, positionY)
+  await waitForFrame((frame) => frame.includes("Chart  THYAO stock") && frame.includes("▶ THYAO"))
 
   screen.destroy()
   renderer.destroy()

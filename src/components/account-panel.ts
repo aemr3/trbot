@@ -42,6 +42,7 @@ export interface AccountPanelOptions {
   stream?: AccountStream
   onError?: (error: unknown) => void
   onFocusRequest?: () => void
+  onPositionSelect?: (position: AccountPosition) => void
   refreshIntervalMs?: number
 }
 
@@ -218,8 +219,7 @@ export class AccountPanel {
       this.renderContent()
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.request !== request || isAbortError(error)) return
-      this.content.content = `Failed to load account: ${errorMessage(error)}`
-      this.content.fg = DOWN_COLOR
+      this.showTextContent(`Failed to load account: ${errorMessage(error)}`, DOWN_COLOR)
       this.options.onError?.(error)
     }
   }
@@ -296,13 +296,52 @@ export class AccountPanel {
 
   private renderContent(): void {
     if (!this.snapshot) return
-    this.content.content =
-      this.tab === "portfolio"
-        ? renderPortfolio(this.snapshot.portfolio)
-        : this.tab === "orders"
-          ? renderOrders(this.snapshot.orders)
-          : renderPositions(this.snapshot.positions)
-    this.content.fg = "#cccccc"
+    if (this.tab === "positions" && this.snapshot.positions.length > 0) {
+      this.renderPositionRows(this.snapshot.positions)
+      return
+    }
+    const content = this.tab === "portfolio"
+      ? renderPortfolio(this.snapshot.portfolio)
+      : this.tab === "orders"
+        ? renderOrders(this.snapshot.orders)
+        : renderPositions(this.snapshot.positions)
+    this.showTextContent(content, "#cccccc")
+  }
+
+  private renderPositionRows(positions: AccountPosition[]): void {
+    this.clearBody()
+    positions.forEach((position) => {
+      const row = new BoxRenderable(this.renderer, {
+        width: "100%",
+        height: 1,
+        flexShrink: 0,
+        onMouseDown: (event) => {
+          if (event.button !== 0) return
+          this.options.onFocusRequest?.()
+          this.options.onPositionSelect?.(position)
+        },
+      })
+      row.add(new TextRenderable(this.renderer, {
+        content: new StyledText(positionChunks(position)),
+        width: "100%",
+        wrapMode: "none",
+      }))
+      this.body.add(row)
+    })
+  }
+
+  private showTextContent(content: StyledText | string, color: string): void {
+    this.clearBody()
+    this.content.content = content
+    this.content.fg = color
+    this.body.add(this.content)
+  }
+
+  private clearBody(): void {
+    for (const child of this.body.getChildren()) {
+      this.body.remove(child)
+      if (child !== this.content && !child.isDestroyed) child.destroyRecursively()
+    }
   }
 }
 
@@ -340,14 +379,20 @@ export function renderPositions(positions: AccountPosition[]): StyledText | stri
   if (positions.length === 0) return "No open VIOP positions."
   const chunks: TextChunk[] = []
   positions.forEach((position, index) => {
-    const pnlColor = (position.unrealizedProfitLoss ?? 0) >= 0 ? UP_COLOR : DOWN_COLOR
-    chunks.push(fg("#dddddd")(`${position.displayName}  `))
-    chunks.push(fg(MUTED_COLOR)(`${formatQuantity(position.quantity)}x  `))
-    chunks.push(fg("#bbbbbb")(`${formatNumber(position.averageCost)}→${formatNumber(position.currentPrice)}  `))
-    chunks.push(fg(pnlColor)(formatSignedMoney(position.unrealizedProfitLoss, position.currency)))
+    chunks.push(...positionChunks(position))
     if (index < positions.length - 1) chunks.push(fg("#cccccc")("\n"))
   })
   return new StyledText(chunks)
+}
+
+function positionChunks(position: AccountPosition): TextChunk[] {
+  const pnlColor = (position.unrealizedProfitLoss ?? 0) >= 0 ? UP_COLOR : DOWN_COLOR
+  return [
+    fg("#dddddd")(`${position.displayName}  `),
+    fg(MUTED_COLOR)(`${formatQuantity(position.quantity)}x  `),
+    fg("#bbbbbb")(`${formatNumber(position.averageCost)}→${formatNumber(position.currentPrice)}  `),
+    fg(pnlColor)(formatSignedMoney(position.unrealizedProfitLoss, position.currency)),
+  ]
 }
 
 function metricLine(label: string, value: string): TextChunk[] {

@@ -336,6 +336,7 @@ export class WatchlistScreen {
       stream: options.accountStream,
       refreshIntervalMs: options.accountIntervalMs,
       onFocusRequest: () => this.setFocus("account"),
+      onPositionSelect: (position) => this.selectPositionInstrument(position.uid, position.symbol),
       onError: (error) => this.notifyIfSessionExpired(error),
     })
     this.centerPanel.add(this.accountPanel.root)
@@ -521,6 +522,18 @@ export class WatchlistScreen {
     else this.options.equityQuotes?.stop()
     this.renderChartHeader()
     void this.loadNews(instrument)
+  }
+
+  private selectPositionInstrument(instrumentUid: string, symbol: string): void {
+    const index = this.instruments.findIndex(
+      (instrument) => instrument.uid === instrumentUid || instrument.symbol === symbol,
+    )
+    if (index < 0) {
+      this.showHintStatus(`Position contract ${symbol} is not in the watchlist.`, "#e5c07b", 4_000)
+      return
+    }
+    this.setFocus("instruments")
+    this.instrumentList.selectIndex(index)
   }
 
   private async loadContractDetails(instrument: ViopInstrument): Promise<void> {
