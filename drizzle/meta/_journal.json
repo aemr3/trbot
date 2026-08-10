@@ -36,6 +36,13 @@
       "when": 1786387711125,
       "tag": "0004_add_chart_target_preference",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1786392161513,
+      "tag": "0005_add_provider_state",
+      "breakpoints": true
     }
   ]
 }

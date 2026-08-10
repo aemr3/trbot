@@ -10,11 +10,13 @@ import {
   type RenderContext,
 } from "@opentui/core"
 import { CredentialsRequiredError } from "../api/index.ts"
+import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
 import { AccountPanel } from "../components/account-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
 import { ContractDetailsPanel } from "../components/contract-details-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
 import { isShortcutHelpKey, ShortcutHelp, type ShortcutHelpSection } from "../components/shortcut-help.ts"
+import { ProviderAccountModal } from "../components/provider-account-modal.ts"
 import type { CandleSource } from "../market/candle.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
@@ -58,6 +60,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
     title: "Global",
     bindings: [
       { keys: "?", description: "Toggle this help" },
+      { keys: "A", description: "Open AI provider account" },
       { keys: "/", description: "Search and switch ticker" },
       { keys: "B / S", description: "Open buy / sell ticket" },
       { keys: "c", description: "Cancel all pending VIOP orders" },
@@ -147,6 +150,7 @@ export interface WatchlistScreenOptions {
   accountIntervalMs?: number
   preferences?: WatchlistPreferences
   onPreferencesChange?: (preferences: WatchlistPreferences) => void
+  chatGptAccount?: ChatGptAccount
 }
 
 type Focus = "instruments" | "chart" | "account" | "news"
@@ -172,6 +176,7 @@ export class WatchlistScreen {
   private readonly hint: TextRenderable
   private orderTicket: ViopOrderTicket | null = null
   private shortcutHelp: ShortcutHelp | null = null
+  private providerAccountModal: ProviderAccountModal | null = null
   private tickerSearchQuery: string | null = null
   private tickerSearchMatchIndex = 0
 
@@ -209,6 +214,10 @@ export class WatchlistScreen {
       this.shortcutHelp.handleKey(key)
       return
     }
+    if (this.providerAccountModal) {
+      this.providerAccountModal.handleKey(key)
+      return
+    }
     if (isShortcutHelpKey(key)) {
       this.openShortcutHelp()
       return
@@ -225,6 +234,10 @@ export class WatchlistScreen {
     }
     if (isTickerSearchKey(key)) {
       this.openTickerSearch()
+      return
+    }
+    if (isCapitalShortcut(key, "a")) {
+      this.openProviderAccount()
       return
     }
     if (!key.ctrl && (key.name === "b" || key.name === "s")) {
@@ -425,6 +438,7 @@ export class WatchlistScreen {
     this.accountPanel.destroy()
     this.tickerSearchQuery = null
     this.closeShortcutHelp()
+    this.closeProviderAccount()
     this.closeOrderTicket()
     this.contractDetailsRequest?.abort()
     this.contractDetailsRequest = null
@@ -649,6 +663,28 @@ export class WatchlistScreen {
     })
     this.shortcutHelp = help
     this.root.add(help.root)
+    this.renderer.requestRender()
+  }
+
+  private openProviderAccount(): void {
+    const account = this.options.chatGptAccount
+    if (!account || this.providerAccountModal || this.destroyed) return
+    const modal = new ProviderAccountModal(this.renderer, {
+      account,
+      onClose: () => this.closeProviderAccount(),
+    })
+    this.providerAccountModal = modal
+    this.root.add(modal.root)
+    modal.mount()
+    this.renderer.requestRender()
+  }
+
+  private closeProviderAccount(): void {
+    const modal = this.providerAccountModal
+    if (!modal) return
+    this.providerAccountModal = null
+    if (!this.root.isDestroyed && !modal.root.isDestroyed) this.root.remove(modal.root)
+    modal.destroy()
     this.renderer.requestRender()
   }
 
@@ -1091,7 +1127,7 @@ function instrumentComparator(sort: InstrumentSort, direction: SortDirection): (
   }
 }
 
-function isCapitalShortcut(key: KeyEvent, letter: "c" | "v"): boolean {
+function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "v"): boolean {
   if (key.ctrl || key.meta || key.option) return false
   return key.sequence === letter.toUpperCase() || (key.shift && key.name === letter)
 }

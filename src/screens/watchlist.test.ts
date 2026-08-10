@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
+import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
 import { CredentialsRequiredError } from "../api/index.ts"
 import { DEFAULT_INTERVALS_BY_RANGE, type CandleSource } from "../market/candle.ts"
 import type {
@@ -587,6 +588,35 @@ test("opens the complete shortcut help with question mark and closes it again", 
 
   await mockInput.typeText("?")
   await waitForFrame((frame) => !frame.includes("Keyboard shortcuts") && frame.includes("XU030 stock"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("opens the ChatGPT provider modal with capital A", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chatGptAccount: ChatGptAccount = {
+    async getState() {
+      return null
+    },
+    async connect() {
+      throw new Error("not used")
+    },
+    async disconnect() {},
+  }
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news, chatGptAccount })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("XU030 stock"))
+
+  mockInput.pressKey("a", { shift: true })
+  await waitForFrame((frame) => frame.includes("AI provider") && frame.includes("Not connected"))
+  mockInput.pressEscape()
+  await waitForFrame((frame) => !frame.includes("AI provider") && frame.includes("XU030 stock"))
 
   screen.destroy()
   renderer.destroy()

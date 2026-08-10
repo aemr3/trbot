@@ -1,7 +1,9 @@
 import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core"
+import { ChatGptAccountService, type ChatGptAccount } from "./ai/chatgpt-account.ts"
 import { CredentialsRequiredError, resumeApiClient, type ApiClientHandle } from "./api/index.ts"
 import { loadConfig, type AppConfig } from "./config.ts"
 import { openDatabase, type DatabaseConnection } from "./db/client.ts"
+import { DrizzleProviderStateStore } from "./db/provider-state-store.ts"
 import { DrizzleWatchlistPreferencesStore } from "./db/watchlist-preferences-store.ts"
 import { ApiCandleSource } from "./market/api-candles.ts"
 import { ApiNewsSource } from "./market/api-news.ts"
@@ -31,6 +33,7 @@ interface AppOptions {
   savePreferences?: (preferences: WatchlistPreferences) => void
   closePreferences?: () => void
   exit?: () => void
+  chatGptAccount?: ChatGptAccount
 }
 
 const EXIT_SIGNALS: NodeJS.Signals[] = [
@@ -52,6 +55,7 @@ export async function startApp(): Promise<void> {
   try {
     preferencesConnection = await openDatabase(config.databaseUrl)
     const preferencesStore = new DrizzleWatchlistPreferencesStore(preferencesConnection.db)
+    const chatGptAccount = new ChatGptAccountService(new DrizzleProviderStateStore(preferencesConnection.db))
     const renderer = await createCliRenderer({
       exitOnCtrlC: false,
       exitSignals: EXIT_SIGNALS,
@@ -61,6 +65,7 @@ export async function startApp(): Promise<void> {
       preferences: preferencesStore.get(),
       savePreferences: (preferences) => preferencesStore.put(preferences),
       closePreferences: preferencesConnection.close,
+      chatGptAccount,
     })
     app.mount()
   } catch (error) {
@@ -96,6 +101,7 @@ export class App {
   private readonly persistPreferences: ((preferences: WatchlistPreferences) => void) | undefined
   private readonly closePreferences: (() => void) | undefined
   private readonly exit: () => void
+  private readonly chatGptAccount: ChatGptAccount | undefined
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     if (!key.ctrl || key.name !== "c") return
@@ -117,6 +123,7 @@ export class App {
     this.persistPreferences = options.savePreferences
     this.closePreferences = options.closePreferences
     this.exit = options.exit ?? exitWithSigint
+    this.chatGptAccount = options.chatGptAccount
     this.root = new BoxRenderable(renderer, {
       width: "100%",
       height: "100%",
@@ -199,6 +206,7 @@ export class App {
         this.persistPreferences?.(preferences)
       },
       onSessionExpired: () => this.showLogin(),
+      chatGptAccount: this.chatGptAccount,
     })
   }
 

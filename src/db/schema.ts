@@ -15,6 +15,17 @@ export const authState = sqliteTable("auth_state", {
   updatedAt: integer("updated_at").notNull(),
 })
 
+export const providerState = sqliteTable("provider_state", {
+  providerId: text("provider_id").primaryKey(),
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  accountId: text("account_id"),
+  email: text("email"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+})
+
 export const watchlistPreferences = sqliteTable("watchlist_preferences", {
   id: integer("id").primaryKey(),
   instrumentSort: text("instrument_sort").notNull(),
