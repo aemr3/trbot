@@ -87,6 +87,8 @@ export class AccountPanel {
     for (const tab of TABS) {
       const button = new BoxRenderable(renderer, {
         height: 1,
+        paddingLeft: 1,
+        paddingRight: 1,
         onMouseDown: (event) => {
           if (event.button !== 0) return
           this.options.onFocusRequest?.()

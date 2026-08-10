@@ -288,6 +288,7 @@ test("shows portfolio, orders, and positions in tabs below the chart", async () 
   expect(portfolioFrame).toContain("Portfolio")
   expect(portfolioFrame).toContain("Orders")
   expect(portfolioFrame).toContain("Positions")
+  expect(portfolioFrame).toContain("  Portfolio    Orders    Positions ")
 
   mockInput.pressTab()
   mockInput.pressTab()
