@@ -253,11 +253,12 @@ test("shows independent range and timeframe controls", async () => {
 
 test("starts with saved chart choices and reports subsequent changes", async () => {
   const setup = await createTestRenderer({ width: 80, height: 18 })
-  const requested: Array<{ range: string; interval: string }> = []
+  const requested: Array<{ range: string; interval: string; target: string | undefined }> = []
   const selected: Array<{ range: string; interval: string }> = []
+  const targets: string[] = []
   const source: CandleSource = {
-    async loadCandles(instrumentUid, range, interval) {
-      requested.push({ range, interval })
+    async loadCandles(instrumentUid, range, interval, options) {
+      requested.push({ range, interval, target: options?.target })
       return {
         instrumentUid,
         range,
@@ -273,17 +274,28 @@ test("starts with saved chart choices and reports subsequent changes", async () 
     source,
     initialRange: "WEEK",
     initialInterval: "MIN_15",
+    initialTarget: "INSTRUMENT",
     onSelectionChange: (range, interval) => selected.push({ range, interval }),
+    onTargetChange: (target) => targets.push(target),
   })
   setup.renderer.root.add(chart.root)
   chart.setInstrument({ uid: "future-1", symbol: "F_TUPRS0826", displayName: "TUPRS" })
 
   await setup.waitForFrame((frame) => frame.includes("15m · O"))
-  expect(requested[0]).toEqual({ range: "WEEK", interval: "MIN_15" })
+  expect(requested[0]).toEqual({ range: "WEEK", interval: "MIN_15", target: "INSTRUMENT" })
+  const targetFrame = setup.captureCharFrame()
+  expect(targetFrame).toContain("Asset")
+  expect(targetFrame).toContain("Stock")
+  expect(targetFrame).toContain("Futures")
 
   chart.handleKey({ name: "down" } as KeyEvent)
   await setup.waitForFrame((frame) => frame.includes("30m · O"))
   expect(selected.at(-1)).toEqual({ range: "WEEK", interval: "MIN_30" })
+
+  chart.handleKey({ name: "f" } as KeyEvent)
+  await setup.waitForFrame(() => requested.length === 3)
+  expect(requested.at(-1)?.target).toBe("UNDERLYING")
+  expect(targets).toEqual(["UNDERLYING"])
 
   chart.destroy()
   setup.renderer.destroy()

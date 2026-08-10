@@ -129,6 +129,39 @@ export interface AdvancedChartVariables {
   [key: string]: unknown
 }
 
+export interface CandlestickChartEntry {
+  o: number
+  h: number
+  l: number
+  c: number
+  d: number | null
+  v: number | null
+  ed: number | null
+  ts: string | null
+}
+
+export interface CandlestickChartData {
+  candlestickChartV2?: {
+    data: CandlestickChartEntry[]
+    timeRange: string
+    availableTimeRanges: string[]
+    currency: string
+    maxCount: number
+    intervalMs: number
+    missingTimestampLabel: string | null
+    rangeStartPrice: number
+    marketDataProviderInMaintenance: boolean | null
+    sessionInfoFeatureEnabled: boolean | null
+  } | null
+}
+
+export interface CandlestickChartVariables {
+  instrumentId: string
+  timeRange: string
+  currency: string
+  [key: string]: unknown
+}
+
 // VIOP futures live prices arrive over SSE on the streaming host. The event is
 // named `PriceUpdate` and the payload keys are single letters.
 export const VIOP_PRICE_STREAM_PATH = "/reactive-viop-api/v1/viop/futures/price-quote"
@@ -190,5 +223,10 @@ export const marketOperations = {
     "advancedChart",
     "query",
     "query advancedChart($instrumentUid: String!, $selectedIndicatorIds: [String!], $timeRange: TimeRange, $intervalId: String) { advancedChart(instrumentUid: $instrumentUid, selectedIndicatorIds: $selectedIndicatorIds, timeRange: $timeRange, intervalId: $intervalId, availableIndicatorPackVersion: \"1\") { data { o h l c v2 d ed m } currency availableIntervalsByTimeRange { timeRange intervals { id displayName } } timeRange selectedInterval { id displayName } intervalMs missingTimestampLabel marketDataProviderInMaintenance } }",
+  ),
+  candlestickChartV2: defineOperation<CandlestickChartData, CandlestickChartVariables>(
+    "candlestickChartV2",
+    "query",
+    "query candlestickChartV2($instrumentId: String!, $timeRange: TimeRange, $currency: CurrencyCode) { candlestickChartV2(instrumentUid: $instrumentId, timeRange: $timeRange, currency: $currency) { data { o h l c d v ed ts } timeRange availableTimeRanges currency maxCount intervalMs missingTimestampLabel rangeStartPrice marketDataProviderInMaintenance sessionInfoFeatureEnabled } }",
   ),
 } as const

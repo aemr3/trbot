@@ -30,6 +30,7 @@ describe("watchlist preferences store", () => {
       sortDirection: "asc",
       candleRange: "WEEK",
       candleInterval: "MIN_15",
+      chartTarget: "INSTRUMENT",
       selectedInstrumentUid: "future-2",
       orderKind: "MARKETABLE_LIMIT",
     })
@@ -42,6 +43,7 @@ describe("watchlist preferences store", () => {
       sortDirection: "asc",
       candleRange: "WEEK",
       candleInterval: "MIN_15",
+      chartTarget: "INSTRUMENT",
       selectedInstrumentUid: "future-2",
       orderKind: "MARKETABLE_LIMIT",
     })

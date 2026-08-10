@@ -92,6 +92,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
       { keys: "↑/↓ or j/k", description: "Change timeframe" },
       { keys: "Shift+←/→ or H/L", description: "Scroll candle history" },
       { keys: "Shift+Home / End", description: "Jump to oldest / newest candles" },
+      { keys: "f", description: "Toggle stock / futures chart" },
     ],
   },
   {
@@ -328,8 +329,13 @@ export class WatchlistScreen {
       source: options.candles,
       initialRange: this.preferences.candleRange,
       initialInterval: this.preferences.candleInterval,
+      initialTarget: this.preferences.chartTarget,
       onSelectionChange: (candleRange, candleInterval) => {
         this.savePreferences({ candleRange, candleInterval })
+      },
+      onTargetChange: (chartTarget) => {
+        this.savePreferences({ chartTarget })
+        this.renderChartHeader()
       },
       onFocusRequest: () => this.setFocus("chart"),
       onError: (error) => this.notifyIfSessionExpired(error),
@@ -481,6 +487,13 @@ export class WatchlistScreen {
     if (!instrument) return
 
     if (update.lastPrice !== null) instrument.lastPrice = update.lastPrice
+    if (
+      this.preferences.chartTarget === "INSTRUMENT"
+      && this.instruments[this.instrumentList.selectedIndex]?.uid === instrument.uid
+      && update.lastPrice !== null
+    ) {
+      this.chart.updateLastPrice(instrument.uid, update.lastPrice, update.timestamp)
+    }
     if (update.lastPrice !== null) this.contractDetailsPanel.applyPrice(update.symbol, update.lastPrice)
     if (this.orderTicket && this.instruments[this.instrumentList.selectedIndex]?.symbol === update.symbol) {
       this.orderTicket.applyQuote({ lastPrice: update.lastPrice, ask: update.ask, bid: update.bid })
@@ -528,7 +541,7 @@ export class WatchlistScreen {
   }
 
   private onEquityQuote(update: EquityQuoteUpdate): void {
-    if (this.destroyed || update.symbol !== this.selectedEquitySymbol) return
+    if (this.destroyed || this.preferences.chartTarget !== "UNDERLYING" || update.symbol !== this.selectedEquitySymbol) return
     const instrument = this.instruments[this.instrumentList.selectedIndex]
     if (!instrument) return
     this.chart.updateLastPrice(instrument.uid, update.lastPrice, update.timestamp)
@@ -924,6 +937,7 @@ export class WatchlistScreen {
     if (this.connected === connected) return
     this.connected = connected
     this.renderViopHeader()
+    if (this.preferences.chartTarget === "INSTRUMENT") this.renderChartHeader()
   }
 
   private updateFocusIndicator(): void {
@@ -948,9 +962,12 @@ export class WatchlistScreen {
       this.chartHeader.content = t`${fg(titleColor)("Chart")}`
       return
     }
-    const statusColor = this.equityConnected ? UP_COLOR : NEUTRAL_COLOR
-    const status = this.equityConnected ? "● live" : "○ snapshot"
-    this.chartHeader.content = t`${fg(titleColor)("Chart")}  ${fg(HEADER_COLOR)(`${this.selectedEquitySymbol} stock`)}  ${fg(statusColor)(status)}`
+    const futures = this.preferences.chartTarget === "INSTRUMENT"
+    const live = futures ? this.connected : this.equityConnected
+    const statusColor = live ? UP_COLOR : NEUTRAL_COLOR
+    const status = live ? "● live" : "○ snapshot"
+    const asset = futures ? "futures" : "stock"
+    this.chartHeader.content = t`${fg(titleColor)("Chart")}  ${fg(HEADER_COLOR)(`${this.selectedEquitySymbol} ${asset}`)}  ${fg(statusColor)(status)}`
   }
 
   private updateResponsiveLayout(): void {

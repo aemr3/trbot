@@ -5,6 +5,7 @@ import {
   isCandleInterval,
   isCandleRange,
   type Candle,
+  type CandleChartTarget,
   type CandleInterval,
   type CandleRange,
   type CandleSeries,
@@ -12,6 +13,27 @@ import {
 } from "./candle.ts"
 
 type MarketApiClient = Pick<ApiClient, "call">
+
+const FUTURE_INTERVALS_BY_RANGE: Record<CandleRange, CandleInterval[]> = {
+  INTRADAY: ["MIN_10"],
+  WEEK: ["HOUR_1"],
+  MONTH: ["HOUR_4"],
+  THREE_MONTH: ["DAY_1"],
+  YEAR: ["DAY_1"],
+  FIVE_YEAR: ["DAY_1"],
+}
+
+const INTERVAL_BY_DURATION_MS = new Map<number, CandleInterval>([
+  [5 * 60_000, "MIN_5"],
+  [10 * 60_000, "MIN_10"],
+  [15 * 60_000, "MIN_15"],
+  [30 * 60_000, "MIN_30"],
+  [60 * 60_000, "HOUR_1"],
+  [4 * 60 * 60_000, "HOUR_4"],
+  [24 * 60 * 60_000, "DAY_1"],
+  [7 * 24 * 60 * 60_000, "WEEK_1"],
+  [30 * 24 * 60 * 60_000, "MONTH_1"],
+])
 
 export class ApiCandleSource implements CandleSource {
   private readonly chartInstrumentUids = new Map<string, string>()
@@ -22,8 +44,11 @@ export class ApiCandleSource implements CandleSource {
     instrumentUid: string,
     range: CandleRange,
     interval: CandleInterval,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; target?: CandleChartTarget } = {},
   ): Promise<CandleSeries> {
+    if (options.target === "INSTRUMENT") {
+      return this.loadInstrumentCandles(instrumentUid, range, options.signal)
+    }
     const chartInstrumentUid = await this.resolveChartInstrumentUid(instrumentUid, options.signal)
     const data = await this.client.call(
       marketOperations.advancedChart,
@@ -50,6 +75,37 @@ export class ApiCandleSource implements CandleSource {
       candles: (chart?.data ?? []).flatMap(toCandle).sort((left, right) => left.timestamp - right.timestamp),
       availableIntervalsByRange,
       intervalMs: finiteNumber(chart?.intervalMs),
+      currency: chart?.currency ?? null,
+    }
+  }
+
+  private async loadInstrumentCandles(
+    instrumentUid: string,
+    range: CandleRange,
+    signal?: AbortSignal,
+  ): Promise<CandleSeries> {
+    const requestedRange = range === "YEAR" || range === "FIVE_YEAR" ? "ALL_TIME" : range
+    const data = await this.client.call(
+      marketOperations.candlestickChartV2,
+      { instrumentId: instrumentUid, timeRange: requestedRange, currency: "TRY" },
+      { signal },
+    )
+    const chart = data.candlestickChartV2
+    const intervalMs = finiteNumber(chart?.intervalMs)
+    const interval = (intervalMs === null ? undefined : INTERVAL_BY_DURATION_MS.get(intervalMs))
+      ?? FUTURE_INTERVALS_BY_RANGE[range][0]
+      ?? DEFAULT_INTERVALS_BY_RANGE[range][0]
+      ?? "DAY_1"
+
+    return {
+      instrumentUid,
+      range,
+      interval,
+      candles: (chart?.data ?? [])
+        .flatMap((entry) => toCandle({ ...entry, v2: entry.v }))
+        .sort((left, right) => left.timestamp - right.timestamp),
+      availableIntervalsByRange: FUTURE_INTERVALS_BY_RANGE,
+      intervalMs,
       currency: chart?.currency ?? null,
     }
   }

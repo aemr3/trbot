@@ -115,3 +115,67 @@ test("caches the resolved underlying stock uid between range requests", async ()
   expect(instrumentCalls).toBe(1)
   expect(chartInstrumentUids).toEqual(["stock-1", "stock-1"])
 })
+
+test("loads the selected futures contract without resolving its underlying stock", async () => {
+  const calls: Array<{ operation: string; instrumentId?: string; timeRange?: string }> = []
+  const client = {
+    async call(operation: { name: string }, variables: { instrumentId?: string; timeRange?: string }) {
+      calls.push({ operation: operation.name, instrumentId: variables.instrumentId, timeRange: variables.timeRange })
+      return {
+        candlestickChartV2: {
+          data: [
+            { o: 210, h: 212, l: 209, c: 211, d: 2000, v: 20, ed: 3000, ts: "REGULAR" },
+            { o: 208, h: 211, l: 207, c: 210, d: 1000, v: 10, ed: 2000, ts: "REGULAR" },
+          ],
+          timeRange: variables.timeRange,
+          availableTimeRanges: ["INTRADAY", "WEEK", "MONTH", "THREE_MONTH", "ALL_TIME"],
+          intervalMs: 600_000,
+          currency: "TRY",
+        },
+      }
+    },
+  }
+
+  const series = await new ApiCandleSource(client as never).loadCandles(
+    "future-1",
+    "INTRADAY",
+    "MIN_5",
+    { target: "INSTRUMENT" },
+  )
+
+  expect(calls).toEqual([{ operation: "candlestickChartV2", instrumentId: "future-1", timeRange: "INTRADAY" }])
+  expect(series.instrumentUid).toBe("future-1")
+  expect(series.interval).toBe("MIN_10")
+  expect(series.availableIntervalsByRange.INTRADAY).toEqual(["MIN_10"])
+  expect(series.candles.map((candle) => candle.timestamp)).toEqual([1000, 2000])
+  expect(series.candles.at(-1)).toMatchObject({ open: 210, close: 211, volume: 20 })
+})
+
+test("maps unsupported long futures ranges to the contract's all-time history", async () => {
+  const requestedRanges: string[] = []
+  const client = {
+    async call(_operation: { name: string }, variables: { timeRange: string }) {
+      requestedRanges.push(variables.timeRange)
+      return {
+        candlestickChartV2: {
+          data: [],
+          timeRange: "ALL_TIME",
+          availableTimeRanges: ["ALL_TIME"],
+          intervalMs: 86_400_000,
+          currency: "TRY",
+        },
+      }
+    },
+  }
+
+  const series = await new ApiCandleSource(client as never).loadCandles(
+    "future-1",
+    "FIVE_YEAR",
+    "WEEK_1",
+    { target: "INSTRUMENT" },
+  )
+
+  expect(requestedRanges).toEqual(["ALL_TIME"])
+  expect(series.range).toBe("FIVE_YEAR")
+  expect(series.interval).toBe("DAY_1")
+})

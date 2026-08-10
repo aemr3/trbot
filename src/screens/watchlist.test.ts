@@ -630,6 +630,7 @@ test("restores and reports list and chart display choices", async () => {
     sortDirection: string
     candleRange: string
     candleInterval: string
+    chartTarget: string
     selectedInstrumentUid: string | null
     orderKind: string
   }> = []
@@ -643,6 +644,7 @@ test("restores and reports list and chart display choices", async () => {
       sortDirection: "asc",
       candleRange: "WEEK",
       candleInterval: "MIN_15",
+      chartTarget: "UNDERLYING",
       selectedInstrumentUid: "u1",
       orderKind: "LIMIT",
     },
@@ -667,6 +669,10 @@ test("restores and reports list and chart display choices", async () => {
   await waitFor(() => changes.some((preferences) => preferences.candleRange === "MONTH"))
   expect(changes.at(-1)).toMatchObject({ candleRange: "MONTH", candleInterval: "HOUR_1" })
 
+  await mockInput.typeText("f")
+  await waitForFrame((frame) => frame.includes("Chart  THYAO futures"))
+  expect(changes.at(-1)).toMatchObject({ chartTarget: "INSTRUMENT" })
+
   await mockInput.typeText("b")
   await waitForFrame((frame) => frame.includes("Buy THYAO 08/26"))
   await mockInput.typeText("m")
@@ -689,6 +695,7 @@ test("falls back to an available contract when the saved contract no longer exis
       sortDirection: "desc",
       candleRange: "INTRADAY",
       candleInterval: "MIN_5",
+      chartTarget: "UNDERLYING",
       selectedInstrumentUid: "expired-contract",
       orderKind: "LIMIT",
     },
@@ -889,9 +896,10 @@ test("keeps the chart usable in an 80-column terminal", async () => {
   renderer.destroy()
 })
 
-test("streams the selected underlying stock into the live candle", async () => {
-  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+test("routes stock and futures streams to the selected chart asset", async () => {
+  const { renderer, mockInput, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({ width: 120, height: 24 })
   const equityQuotes = new FakeEquityQuoteStream()
+  const quotes = new FakeQuoteStream()
   const stockFutures: ViopInstrumentSource = {
     async listInstruments() {
       return [
@@ -905,6 +913,7 @@ test("streams the selected underlying stock into the live candle", async () => {
     candles,
     news,
     equityQuotes,
+    quotes,
   })
   renderer.root.add(screen.root)
   screen.mount()
@@ -920,7 +929,22 @@ test("streams the selected underlying stock into the live candle", async () => {
   await waitForFrame((frame) => frame.includes("THYAO stock"))
   expect(equityQuotes.startedSymbols).toEqual(["TUPRS", "THYAO"])
 
+  mockInput.pressTab()
+  await mockInput.typeText("f")
+  await waitForFrame((frame) => frame.includes("THYAO futures"))
+  quotes.emitConnection(true)
+  quotes.emit({ symbol: "F_THYAO0826", lastPrice: 120, sessionStatus: "OPEN", timestamp: 1_786_084_800_000 })
+  const futuresFrame = await waitForFrame(
+    (frame) => frame.includes("THYAO futures") && frame.includes("H 120,00") && frame.includes("● live"),
+  )
+  expect(futuresFrame).toContain("H 120,00")
+
+  equityQuotes.emit("THYAO", 130, 1_786_084_900_000)
+  await renderOnce()
+  expect(captureCharFrame()).not.toContain("C 130,00")
+
   screen.destroy()
+  expect(quotes.stopped).toBeTrue()
   expect(equityQuotes.stopped).toBeTrue()
   renderer.destroy()
 })

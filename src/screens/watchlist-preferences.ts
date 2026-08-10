@@ -1,4 +1,10 @@
-import { DEFAULT_INTERVAL_BY_RANGE, DEFAULT_INTERVALS_BY_RANGE, type CandleInterval, type CandleRange } from "../market/candle.ts"
+import {
+  DEFAULT_INTERVAL_BY_RANGE,
+  DEFAULT_INTERVALS_BY_RANGE,
+  type CandleChartTarget,
+  type CandleInterval,
+  type CandleRange,
+} from "../market/candle.ts"
 import type { ViopOrderKind } from "../trading/order.ts"
 
 export const INSTRUMENT_SORTS = ["change", "volume"] as const
@@ -20,6 +26,7 @@ export interface WatchlistPreferences {
   sortDirection: SortDirection
   candleRange: CandleRange
   candleInterval: CandleInterval
+  chartTarget: CandleChartTarget
   selectedInstrumentUid: string | null
   orderKind: ViopOrderKind
 }
@@ -29,6 +36,7 @@ export const DEFAULT_WATCHLIST_PREFERENCES: WatchlistPreferences = {
   sortDirection: "desc",
   candleRange: "INTRADAY",
   candleInterval: "MIN_5",
+  chartTarget: "UNDERLYING",
   selectedInstrumentUid: null,
   orderKind: "LIMIT",
 }

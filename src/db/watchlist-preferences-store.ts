@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm"
-import { isCandleInterval, isCandleRange } from "../market/candle.ts"
+import { isCandleChartTarget, isCandleInterval, isCandleRange } from "../market/candle.ts"
 import { isViopOrderKind } from "../trading/order.ts"
 import {
   DEFAULT_WATCHLIST_PREFERENCES,
@@ -28,6 +28,7 @@ export class DrizzleWatchlistPreferencesStore {
     if (!isSortDirection(row.sortDirection)) return { ...DEFAULT_WATCHLIST_PREFERENCES }
     if (!isCandleRange(row.candleRange)) return { ...DEFAULT_WATCHLIST_PREFERENCES }
     if (!isCandleInterval(row.candleInterval)) return { ...DEFAULT_WATCHLIST_PREFERENCES }
+    if (!isCandleChartTarget(row.chartTarget)) return { ...DEFAULT_WATCHLIST_PREFERENCES }
     if (!isViopOrderKind(row.orderKind)) return { ...DEFAULT_WATCHLIST_PREFERENCES }
 
     return normalizeWatchlistPreferences({
@@ -35,6 +36,7 @@ export class DrizzleWatchlistPreferencesStore {
       sortDirection: row.sortDirection,
       candleRange: row.candleRange,
       candleInterval: row.candleInterval,
+      chartTarget: row.chartTarget,
       selectedInstrumentUid: row.selectedInstrumentUid,
       orderKind: row.orderKind,
     })

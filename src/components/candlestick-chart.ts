@@ -9,6 +9,7 @@ import {
   type TextChunk,
 } from "@opentui/core"
 import {
+  CANDLE_CHART_TARGETS,
   CANDLE_INTERVALS,
   CANDLE_INTERVAL_LABELS,
   CANDLE_RANGES,
@@ -17,6 +18,7 @@ import {
   DEFAULT_INTERVALS_BY_RANGE,
   applyLivePrice,
   type Candle,
+  type CandleChartTarget,
   type CandleInterval,
   type CandleRange,
   type CandleSeries,
@@ -37,12 +39,18 @@ const BODY_EDGE_MAX = 0.75
 const PRICE_PADDING_RATIO = 0.02
 const MIN_HEIGHT_WITH_VOLUME = 14
 const MAX_VOLUME_HEIGHT = 8
+const CHART_TARGET_LABELS: Record<CandleChartTarget, string> = {
+  UNDERLYING: "Stock",
+  INSTRUMENT: "Futures",
+}
 
 export interface CandlestickChartOptions {
   source: CandleSource
   initialRange?: CandleRange
   initialInterval?: CandleInterval
+  initialTarget?: CandleChartTarget
   onSelectionChange?: (range: CandleRange, interval: CandleInterval) => void
+  onTargetChange?: (target: CandleChartTarget) => void
   onError?: (error: unknown) => void
   onFocusRequest?: () => void
 }
@@ -63,10 +71,13 @@ export class CandlestickChart {
   private readonly rangeButtonLabels = new Map<CandleRange, TextRenderable>()
   private readonly intervalButtons = new Map<CandleInterval, BoxRenderable>()
   private readonly intervalButtonLabels = new Map<CandleInterval, TextRenderable>()
+  private readonly targetButtons = new Map<CandleChartTarget, BoxRenderable>()
+  private readonly targetButtonLabels = new Map<CandleChartTarget, TextRenderable>()
   private instrument: ChartInstrument | null = null
   private series: CandleSeries | null = null
   private range: CandleRange
   private interval: CandleInterval
+  private target: CandleChartTarget
   private availableIntervalsByRange: Record<CandleRange, CandleInterval[]> = { ...DEFAULT_INTERVALS_BY_RANGE }
   private scrollOffset = 0
   private pendingLivePrice: { instrumentUid: string; price: number; timestamp: number } | null = null
@@ -80,6 +91,7 @@ export class CandlestickChart {
     private readonly options: CandlestickChartOptions,
   ) {
     this.range = options.initialRange ?? "INTRADAY"
+    this.target = options.initialTarget ?? "UNDERLYING"
     const initialInterval = options.initialInterval ?? DEFAULT_INTERVAL_BY_RANGE[this.range]
     this.interval = DEFAULT_INTERVALS_BY_RANGE[this.range].includes(initialInterval)
       ? initialInterval
@@ -98,6 +110,31 @@ export class CandlestickChart {
       marginBottom: 1,
       onSizeChange: () => this.renderSummary(),
     })
+
+    const targetToolbar = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      height: 1,
+      gap: 1,
+      marginBottom: 1,
+    })
+    targetToolbar.add(new TextRenderable(renderer, { content: "Asset", fg: MUTED_COLOR, width: 6 }))
+    for (const target of CANDLE_CHART_TARGETS) {
+      const button = new BoxRenderable(renderer, {
+        height: 1,
+        paddingLeft: 1,
+        paddingRight: 1,
+        onMouseDown: (event) => {
+          if (event.button !== 0) return
+          this.options.onFocusRequest?.()
+          this.selectTarget(target)
+        },
+      })
+      const label = new TextRenderable(renderer, { content: CHART_TARGET_LABELS[target] })
+      button.add(label)
+      targetToolbar.add(button)
+      this.targetButtons.set(target, button)
+      this.targetButtonLabels.set(target, label)
+    }
 
     const rangeToolbar = new BoxRenderable(renderer, {
       flexDirection: "row",
@@ -176,6 +213,7 @@ export class CandlestickChart {
     this.horizontalScrollBar.scrollStep = 1
 
     this.root.add(this.summary)
+    this.root.add(targetToolbar)
     this.root.add(rangeToolbar)
     this.root.add(intervalToolbar)
     this.root.add(this.body)
@@ -202,6 +240,10 @@ export class CandlestickChart {
   }
 
   handleKey(key: KeyEvent): boolean {
+    if (!key.ctrl && !key.shift && !key.meta && !key.option && key.name === "f") {
+      this.selectTarget(this.target === "UNDERLYING" ? "INSTRUMENT" : "UNDERLYING")
+      return true
+    }
     if (key.shift && (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l")) {
       this.scrollBy(key.name === "left" || key.name === "h" ? 1 : -1)
       return true
@@ -262,6 +304,16 @@ export class CandlestickChart {
     if (this.instrument) this.load()
   }
 
+  private selectTarget(target: CandleChartTarget): void {
+    if (this.target === target) return
+    this.target = target
+    this.pendingLivePrice = null
+    this.scrollOffset = 0
+    this.paintToolbar()
+    this.options.onTargetChange?.(target)
+    if (this.instrument) this.load()
+  }
+
   private selectInterval(interval: CandleInterval): void {
     if (!this.availableIntervalsByRange[this.range].includes(interval) || this.interval === interval) return
     this.interval = interval
@@ -284,7 +336,7 @@ export class CandlestickChart {
     this.body.fg = MUTED_COLOR
 
     void this.options.source
-      .loadCandles(instrument.uid, this.range, this.interval, { signal: request.signal })
+      .loadCandles(instrument.uid, this.range, this.interval, { signal: request.signal, target: this.target })
       .then((series) => {
         if (this.destroyed || request.signal.aborted || this.request !== request) return
         this.series = series
@@ -425,6 +477,14 @@ export class CandlestickChart {
   }
 
   private paintToolbar(): void {
+    for (const target of CANDLE_CHART_TARGETS) {
+      const selected = this.target === target
+      const button = this.targetButtons.get(target)
+      const label = this.targetButtonLabels.get(target)
+      if (!button || !label) continue
+      button.backgroundColor = selected ? ACTIVE_BUTTON_BG : undefined
+      label.fg = selected ? "#ffffff" : this.focused ? "#aaaaaa" : "#666666"
+    }
     for (const range of CANDLE_RANGES) {
       const selected = this.range === range
       const button = this.rangeButtons.get(range)

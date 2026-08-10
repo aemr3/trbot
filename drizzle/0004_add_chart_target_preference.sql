@@ -1,0 +1,1 @@
+ALTER TABLE `watchlist_preferences` ADD `chart_target` text DEFAULT 'UNDERLYING' NOT NULL;
