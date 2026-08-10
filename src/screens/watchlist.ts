@@ -477,7 +477,7 @@ export class WatchlistScreen {
     }
     if (this.instrumentSort === "change") {
       const selectedUid = this.instruments[this.instrumentList.selectedIndex]?.uid
-      this.sortAndRenderInstrumentList(selectedUid)
+      this.sortAndRenderInstrumentList(selectedUid, true)
       return
     }
     this.instrumentList.updateRow(index, {
@@ -947,7 +947,7 @@ export class WatchlistScreen {
     this.options.onPreferencesChange?.({ ...this.preferences })
   }
 
-  private sortAndRenderInstrumentList(selectedUid?: string): void {
+  private sortAndRenderInstrumentList(selectedUid?: string, preserveScroll = false): void {
     this.instruments.sort(instrumentComparator(this.instrumentSort, this.sortDirection))
     this.symbolIndex.clear()
     this.instruments.forEach((instrument, index) => this.symbolIndex.set(instrument.symbol, index))
@@ -958,6 +958,7 @@ export class WatchlistScreen {
         color: changeColor(instrument.changePercent),
       })),
       selectedUid,
+      { preserveScroll },
     )
   }
 

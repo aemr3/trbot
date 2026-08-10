@@ -83,6 +83,28 @@ test("preserves a selected row by id when rows are reordered", async () => {
   renderer.destroy()
 })
 
+test("preserves manual scroll while live data reorders existing rows", async () => {
+  const { renderer, renderOnce } = await createTestRenderer({ width: 40, height: 6 })
+  const list = new SelectableList(renderer)
+  renderer.root.add(list.root)
+  const rows = Array.from({ length: 20 }, (_, index) => ({ id: `row-${index}`, content: `row ${index}` }))
+  list.setRows(rows)
+  await renderOnce()
+  list.root.scrollTo({ x: 0, y: 8 })
+  await renderOnce()
+  const scrollTop = list.root.scrollTop
+  expect(scrollTop).toBeGreaterThan(0)
+
+  list.setRows([...rows].reverse(), "row-0", { preserveScroll: true })
+  await renderOnce()
+
+  expect(list.root.scrollTop).toBe(scrollTop)
+  expect(list.selectedIndex).toBe(19)
+
+  list.destroy()
+  renderer.destroy()
+})
+
 test("selects a row when it is clicked", async () => {
   const { renderer, mockMouse, renderOnce, captureCharFrame } = await createTestRenderer({ width: 40, height: 10 })
   const selected: number[] = []

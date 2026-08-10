@@ -26,6 +26,10 @@ export interface SelectableListOptions {
   rowGap?: number
 }
 
+export interface SelectableListSetRowsOptions {
+  preserveScroll?: boolean
+}
+
 // A keyboard-navigable, scrolling list where each row is painted in its own
 // color (SelectRenderable only supports one shared color across all rows).
 export class SelectableList {
@@ -60,7 +64,21 @@ export class SelectableList {
     return true
   }
 
-  setRows(rows: SelectableListRow[], selectedId?: string): void {
+  setRows(rows: SelectableListRow[], selectedId?: string, options: SelectableListSetRowsOptions = {}): void {
+    if (rows.length > 0 && rows.length === this.rowBoxes.length) {
+      const previous = this.selected
+      rows.forEach((row, index) => {
+        this.contents[index]!.content = row.content
+        this.contents[index]!.fg = row.color
+      })
+      const selectedIndex = selectedId ? rows.findIndex((row) => row.id === selectedId) : -1
+      this.selected = Math.max(0, selectedIndex)
+      this.paint(previous)
+      if (selectedId && !options.preserveScroll) this.root.scrollChildIntoView(`row-${this.selected}`)
+      return
+    }
+
+    const scrollTop = this.root.scrollTop
     for (const child of this.root.getChildren()) {
       this.root.remove(child)
       if (!child.isDestroyed) child.destroyRecursively()
@@ -109,7 +127,8 @@ export class SelectableList {
     const selectedIndex = selectedId ? rows.findIndex((row) => row.id === selectedId) : -1
     this.selected = rows.length > 0 ? Math.max(0, selectedIndex) : -1
     this.paint(-1)
-    if (selectedId && this.selected >= 0) this.root.scrollChildIntoView(`row-${this.selected}`)
+    if (options.preserveScroll) this.root.scrollTop = scrollTop
+    else if (selectedId && this.selected >= 0) this.root.scrollChildIntoView(`row-${this.selected}`)
   }
 
   // Repaints one row's content in place, preserving selection and scroll — used
