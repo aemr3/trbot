@@ -451,6 +451,46 @@ test("sorts VIOP stocks by change or volume and preserves the selected stock", a
   renderer.destroy()
 })
 
+test("refreshes snapshot volumes and re-sorts without replacing live prices", async () => {
+  const { renderer, waitFor, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+  let calls = 0
+  const refreshing: ViopInstrumentSource = {
+    async listInstruments() {
+      calls++
+      if (calls === 1) {
+        return [
+          { uid: "a", symbol: "F_AAA0826", displayName: "AAA", underlyingSymbol: "AAA", lastPrice: 101, changePercent: 1, volume: 3_000, currency: "TRY" },
+          { uid: "b", symbol: "F_BBB0826", displayName: "BBB", underlyingSymbol: "BBB", lastPrice: 102, changePercent: 2, volume: 2_000, currency: "TRY" },
+          { uid: "c", symbol: "F_CCC0826", displayName: "CCC", underlyingSymbol: "CCC", lastPrice: 103, changePercent: 3, volume: 1_000, currency: "TRY" },
+        ]
+      }
+      return [
+        { uid: "a", symbol: "F_AAA0826", displayName: "AAA", underlyingSymbol: "AAA", lastPrice: 1, changePercent: -99, volume: 1_000, currency: "TRY" },
+        { uid: "b", symbol: "F_BBB0826", displayName: "BBB", underlyingSymbol: "BBB", lastPrice: 1, changePercent: -99, volume: 2_000, currency: "TRY" },
+        { uid: "c", symbol: "F_CCC0826", displayName: "CCC", underlyingSymbol: "CCC", lastPrice: 1, changePercent: -99, volume: 4_000, currency: "TRY" },
+      ]
+    },
+  }
+  const screen = new WatchlistScreen(renderer, {
+    instruments: refreshing,
+    candles,
+    news,
+    instrumentIntervalMs: 10,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const initialFrame = await waitForFrame((frame) => frame.includes("AAA stock"))
+  expect(viopRowSymbols(initialFrame)).toEqual(["AAA", "BBB", "CCC"])
+  await waitFor(() => calls >= 2)
+  const refreshedFrame = await waitForFrame((frame) => viopRowSymbols(frame).join(",") === "CCC,BBB,AAA")
+  expect(refreshedFrame).toContain("103,00")
+  expect(refreshedFrame).toContain("+3.00%")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("cancels every pending VIOP order immediately with lowercase c", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
   const cancelled: string[][] = []

@@ -49,6 +49,7 @@ const NEWS_TIME_COLOR = "#8a8a8a"
 const NEWS_HEADLINE_COLOR = "#e0e0e0"
 
 const NEWS_POLL_INTERVAL_MS = 60_000
+const INSTRUMENT_POLL_INTERVAL_MS = 60_000
 const COMPACT_LAYOUT_WIDTH = 104
 const SORT_LABELS = { change: "Change", volume: "Volume" } as const
 const WATCHLIST_HINT = "B/S trade · / ticker · c cancel · x exit · ? help · Ctrl+C quit"
@@ -141,6 +142,7 @@ export interface WatchlistScreenOptions {
   quotes?: QuoteStream
   onSessionExpired?: () => void
   newsIntervalMs?: number
+  instrumentIntervalMs?: number
   accountIntervalMs?: number
   preferences?: WatchlistPreferences
   onPreferencesChange?: (preferences: WatchlistPreferences) => void
@@ -187,6 +189,8 @@ export class WatchlistScreen {
   private tradingActionRequest: AbortController | null = null
   private readerLastClickAt = 0
   private newsTimer: ReturnType<typeof setInterval> | null = null
+  private instrumentTimer: ReturnType<typeof setInterval> | null = null
+  private instrumentRefreshRequest: AbortController | null = null
   private hintTimer: ReturnType<typeof setTimeout> | null = null
   private connected = false
   private equityConnected = false
@@ -402,6 +406,10 @@ export class WatchlistScreen {
     this.accountPanel.mount()
     void this.load()
     this.newsTimer = setInterval(() => void this.refreshNews(), this.options.newsIntervalMs ?? NEWS_POLL_INTERVAL_MS)
+    this.instrumentTimer = setInterval(
+      () => void this.refreshInstrumentVolumes(),
+      this.options.instrumentIntervalMs ?? INSTRUMENT_POLL_INTERVAL_MS,
+    )
   }
 
   destroy(): void {
@@ -416,11 +424,17 @@ export class WatchlistScreen {
     this.contractDetailsRequest = null
     this.tradingActionRequest?.abort()
     this.tradingActionRequest = null
+    this.instrumentRefreshRequest?.abort()
+    this.instrumentRefreshRequest = null
     this.options.quotes?.stop()
     this.options.equityQuotes?.stop()
     if (this.newsTimer) {
       clearInterval(this.newsTimer)
       this.newsTimer = null
+    }
+    if (this.instrumentTimer) {
+      clearInterval(this.instrumentTimer)
+      this.instrumentTimer = null
     }
     if (this.hintTimer) {
       clearTimeout(this.hintTimer)
@@ -484,6 +498,33 @@ export class WatchlistScreen {
       content: formatInstrumentRow(instrument),
       color: changeColor(instrument.changePercent),
     })
+  }
+
+  private async refreshInstrumentVolumes(): Promise<void> {
+    if (this.destroyed || this.instruments.length === 0 || this.instrumentRefreshRequest) return
+    const request = new AbortController()
+    this.instrumentRefreshRequest = request
+    try {
+      const refreshed = await this.options.instruments.listInstruments({ signal: request.signal })
+      if (this.destroyed || request.signal.aborted || this.instrumentRefreshRequest !== request) return
+      const volumes = new Map(refreshed.map((instrument) => [instrument.symbol, instrument.volume]))
+      let changed = false
+      for (const instrument of this.instruments) {
+        if (!volumes.has(instrument.symbol)) continue
+        const volume = volumes.get(instrument.symbol) ?? null
+        if (instrument.volume === volume) continue
+        instrument.volume = volume
+        changed = true
+      }
+      if (changed && this.instrumentSort === "volume") {
+        const selectedUid = this.instruments[this.instrumentList.selectedIndex]?.uid
+        this.sortAndRenderInstrumentList(selectedUid, true)
+      }
+    } catch (error) {
+      if (!this.destroyed && !request.signal.aborted && !isAbortError(error)) this.notifyIfSessionExpired(error)
+    } finally {
+      if (this.instrumentRefreshRequest === request) this.instrumentRefreshRequest = null
+    }
   }
 
   private onEquityQuote(update: EquityQuoteUpdate): void {
