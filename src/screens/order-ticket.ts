@@ -61,7 +61,7 @@ export class ViopOrderTicket {
   private destroyed = false
 
   constructor(
-    private readonly renderer: RenderContext,
+    renderer: RenderContext,
     private readonly options: ViopOrderTicketOptions,
   ) {
     this.kind = options.initialKind ?? "LIMIT"

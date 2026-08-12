@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
-import type { ReinforcementBacktestSource } from "../automation/reinforcement/backtest-runner.ts"
 import { AuthenticationError } from "../api/index.ts"
 import { DEFAULT_INTERVALS_BY_RANGE, type CandleSource } from "../market/candle.ts"
 import { ApplicationLog } from "../logging/application-log.ts"
@@ -25,7 +24,6 @@ import type {
   ViopPositionExitSource,
 } from "../trading/order.ts"
 import { LogsScreen } from "./logs.ts"
-import { ReinforcementBacktestScreen } from "./reinforcement-backtest.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 import { WatchlistScreen } from "./watchlist.ts"
 import type { WatchlistPreferences } from "./watchlist-preferences.ts"
@@ -296,84 +294,13 @@ test("switches between selected-stock and index news feeds", async () => {
   renderer.destroy()
 })
 
-test("opens a 10-minute reinforcement backtest for the complete futures universe", async () => {
-  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 160, height: 36, kittyKeyboard: true })
-  let selectedUids: string[] = []
-  const runControl: { reject?: (error: Error) => void } = {}
-  let aborted = false
-  const backtests: ReinforcementBacktestSource = {
-    run(selected, options) {
-      selectedUids = selected.map((instrument) => instrument.uid)
-      options.onProgress?.({
-        phase: "LOADING_HISTORY",
-        completed: 0,
-        total: selected.length,
-        currentSymbol: null,
-        sessionDates: 0,
-        instruments: 0,
-        skippedInstruments: 0,
-      })
-      options.signal?.addEventListener("abort", () => { aborted = true })
-      return new Promise((_, reject) => { runControl.reject = reject })
-    },
-  }
-  const logs = new ApplicationLog()
-  let workspace: TradingWorkspaceScreen | null = null
-  const screen = new WatchlistScreen(renderer, {
-    instruments,
-    candles,
-    news,
-    logs,
-    manageInput: false,
-    onOpenBacktest: () => workspace?.selectTab("backtest"),
-    onOpenLogs: () => workspace?.selectTab("logs"),
-  })
-  const backtest = new ReinforcementBacktestScreen(renderer, {
-    source: backtests,
-    instruments: () => screen.availableInstruments(),
-    onClose: () => workspace?.selectTab("watchlist"),
-    onOpenLogs: () => workspace?.selectTab("logs"),
-  })
-  const logScreen = new LogsScreen(renderer, { logs, onClose: () => workspace?.selectTab("watchlist") })
-  workspace = new TradingWorkspaceScreen(renderer, { watchlist: screen, backtest, logs: logScreen })
-  renderer.root.add(workspace.root)
-  workspace.mount()
-  const watchlistFrame = await waitForFrame((frame) => frame.includes("XU030 stock"))
-  const watchlistLines = watchlistFrame.split("\n")
-  expect(watchlistLines[0]).toContain("WATCHLIST")
-  expect(watchlistLines[1]).toContain("VIOP")
-
-  await mockInput.typeText("T")
-  const idleFrame = await waitForFrame((value) => value.includes("Ready to run"))
-  expect(idleFrame).not.toContain("PAPER REPLAY")
-  expect(selectedUids).toEqual([])
-  mockInput.pressEnter()
-  await waitForFrame((value) => value.includes("Loading historical candles"))
-  mockInput.pressKey("g", { shift: true })
-  await waitForFrame((value) => value.includes("APPLICATION LOGS"))
-  expect(aborted).toBe(false)
-  mockInput.pressKey("t", { shift: true })
-  await waitForFrame((value) => value.includes("Loading historical candles"))
-  expect(aborted).toBe(false)
-  runControl.reject?.(new Error("Backtest fixture stopped"))
-  await waitForFrame((value) => value.includes("Experiment failed") && value.includes("Backtest fixture stopped"))
-  expect(selectedUids).toEqual(["u1", "u2"])
-
-  workspace.destroy()
-  renderer.destroy()
-})
-
-test("opens application logs and retains full reinforcement backtest error details", async () => {
+test("opens application logs and returns to the watchlist", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 28, kittyKeyboard: true })
   const logs = new ApplicationLog()
-  const backtests: ReinforcementBacktestSource = {
-    async run() {
-      throw Object.assign(new Error("Bad Request"), {
-        statusCode: 400,
-        responseBody: '{"detail":"Unknown parameter: max_output_tokens"}',
-      })
-    },
-  }
+  logs.error("Market data", Object.assign(new Error("Bad Request"), {
+    statusCode: 400,
+    responseBody: '{"detail":"Unknown parameter: candles"}',
+  }))
   let workspace: TradingWorkspaceScreen | null = null
   const screen = new WatchlistScreen(renderer, {
     instruments,
@@ -381,33 +308,18 @@ test("opens application logs and retains full reinforcement backtest error detai
     news,
     logs,
     manageInput: false,
-    onOpenBacktest: () => workspace?.selectTab("backtest"),
     onOpenLogs: () => workspace?.selectTab("logs"),
-  })
-  const backtest = new ReinforcementBacktestScreen(renderer, {
-    source: backtests,
-    instruments: () => screen.availableInstruments(),
-    onClose: () => workspace?.selectTab("watchlist"),
-    onOpenLogs: () => workspace?.selectTab("logs"),
-    onError: (error) => logs.error("Reinforcement backtest", error),
   })
   const logScreen = new LogsScreen(renderer, { logs, onClose: () => workspace?.selectTab("watchlist") })
-  workspace = new TradingWorkspaceScreen(renderer, { watchlist: screen, backtest, logs: logScreen })
+  workspace = new TradingWorkspaceScreen(renderer, { watchlist: screen, logs: logScreen })
   renderer.root.add(workspace.root)
   workspace.mount()
   await waitForFrame((frame) => frame.includes("XU030 stock"))
 
-  mockInput.pressKey("t", { shift: true })
-  await waitForFrame((frame) => frame.includes("Ready to run"))
-  mockInput.pressEnter()
-  await waitForFrame((frame) => frame.includes("Experiment failed") && frame.includes("Bad Request"))
-
   mockInput.pressKey("g", { shift: true })
   const logFrame = await waitForFrame((frame) => frame.includes("APPLICATION LOGS") && frame.includes("Unknown parameter"))
-  expect(logFrame).toContain("Reinforcement backtest")
+  expect(logFrame).toContain("Market data")
   expect(logFrame).toContain("statusCode")
-  mockInput.pressKey("t", { shift: true })
-  await waitForFrame((frame) => frame.includes("Experiment failed") && !frame.includes("APPLICATION LOGS"))
   mockInput.pressKey("w", { shift: true })
   await waitForFrame((frame) => frame.includes("XU030 stock") && !frame.includes("APPLICATION LOGS"))
 

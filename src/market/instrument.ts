@@ -1,5 +1,3 @@
-export type MarketVertical = "TR"
-
 export interface ViopInstrument {
   uid: string
   symbol: string

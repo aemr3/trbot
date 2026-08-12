@@ -43,27 +43,6 @@
       "when": 1786392161513,
       "tag": "0005_add_provider_state",
       "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "6",
-      "when": 1786393801836,
-      "tag": "0006_add_reinforcement_backtesting",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "6",
-      "when": 1786483349883,
-      "tag": "0007_add_reinforcement_experiments",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "6",
-      "when": 1786486103313,
-      "tag": "0008_allow_rejected_experiments",
-      "breakpoints": true
     }
   ]
 }

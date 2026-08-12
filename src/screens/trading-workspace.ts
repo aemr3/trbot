@@ -1,7 +1,7 @@
 import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
 import { WORKSPACE_ACTIVE_BACKGROUND, WORKSPACE_CHROME_BACKGROUND } from "../components/workspace-chrome.ts"
 
-export type TradingWorkspaceTab = "watchlist" | "backtest" | "logs"
+export type TradingWorkspaceTab = "watchlist" | "logs"
 
 interface WorkspacePanel {
   readonly root: BoxRenderable
@@ -12,13 +12,11 @@ interface WorkspacePanel {
 
 interface TradingWorkspaceScreenOptions {
   watchlist: WorkspacePanel
-  backtest: WorkspacePanel
   logs: WorkspacePanel
 }
 
 const TABS: { id: TradingWorkspaceTab; label: string }[] = [
   { id: "watchlist", label: "WATCHLIST" },
-  { id: "backtest", label: "BACKTEST" },
   { id: "logs", label: "LOGS" },
 ]
 
@@ -106,7 +104,6 @@ export class TradingWorkspaceScreen {
     this.mounted = true
     this.renderer.keyInput.on("keypress", this.handleKeypress)
     this.options.watchlist.mount?.()
-    this.options.backtest.mount?.()
     this.options.logs.mount?.()
   }
 
@@ -132,7 +129,6 @@ export class TradingWorkspaceScreen {
     this.destroyed = true
     if (this.mounted) this.renderer.keyInput.off("keypress", this.handleKeypress)
     this.options.watchlist.destroy()
-    this.options.backtest.destroy()
     this.options.logs.destroy()
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
@@ -152,7 +148,6 @@ function tabShortcut(key: KeyEvent): TradingWorkspaceTab | null {
   if (key.ctrl || key.meta || key.option) return null
   const value = key.sequence || (key.shift ? key.name.toUpperCase() : key.name)
   if (value === "W") return "watchlist"
-  if (value === "T") return "backtest"
   if (value === "G") return "logs"
   return null
 }

@@ -61,14 +61,13 @@ const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
 type DestructiveAction = "cancel-orders" | "exit-positions"
 const NEWS_FEED_LABELS: Record<NewsFeed, string> = { instrument: "Stock", index: "Index" }
-const WATCHLIST_HINT = "B/S trade · T backtest · G logs · / ticker · ? help · Ctrl+C quit"
+const WATCHLIST_HINT = "B/S trade · G logs · / ticker · ? help · Ctrl+C quit"
 const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
   {
     title: "Global",
     bindings: [
       { keys: "?", description: "Toggle this help" },
       { keys: "A", description: "Open AI provider account" },
-      { keys: "T", description: "Open 10m reinforcement backtest" },
       { keys: "G", description: "Open application logs" },
       { keys: "/", description: "Search and switch ticker" },
       { keys: "B / S", description: "Open buy / sell ticket" },
@@ -164,7 +163,6 @@ export interface WatchlistScreenOptions {
   chatGptAccount?: ChatGptAccount
   logs?: ApplicationLog
   manageInput?: boolean
-  onOpenBacktest?: () => void
   onOpenLogs?: () => void
 }
 
@@ -260,10 +258,6 @@ export class WatchlistScreen {
     }
     if (isCapitalShortcut(key, "a")) {
       this.openProviderAccount()
-      return
-    }
-    if (isCapitalShortcut(key, "t")) {
-      this.openBacktest()
       return
     }
     if (isCapitalShortcut(key, "g")) {
@@ -544,10 +538,6 @@ export class WatchlistScreen {
     this.handleKeypress(key)
   }
 
-  availableInstruments(): ViopInstrument[] {
-    return [...this.instruments]
-  }
-
   private async load(): Promise<void> {
     try {
       const instruments = await this.options.instruments.listInstruments()
@@ -797,11 +787,6 @@ export class WatchlistScreen {
     if (!this.root.isDestroyed && !modal.root.isDestroyed) this.root.remove(modal.root)
     modal.destroy()
     this.renderer.requestRender()
-  }
-
-  private openBacktest(): void {
-    if (this.destroyed) return
-    this.options.onOpenBacktest?.()
   }
 
   private openLogs(): void {

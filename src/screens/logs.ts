@@ -73,7 +73,7 @@ export class LogsScreen {
       backgroundColor: WORKSPACE_CHROME_BACKGROUND,
     })
     footer.add(new TextRenderable(renderer, {
-      content: "W / Esc watchlist · T backtest · ↑/↓ scroll · PgUp/PgDn · Home/End jump · c clear",
+      content: "W / Esc watchlist · ↑/↓ scroll · PgUp/PgDn · Home/End jump · c clear",
       fg: MUTED_COLOR,
       width: "100%",
     }))

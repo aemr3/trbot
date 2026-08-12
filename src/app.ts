@@ -1,12 +1,6 @@
 import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core"
 import { ChatGptAccountService, type ChatGptAccount } from "./ai/chatgpt-account.ts"
 import {
-  HistoricalReinforcementBacktestRunner,
-  type ReinforcementBacktestSource,
-} from "./automation/reinforcement/backtest-runner.ts"
-import type { ReinforcementExperimentStore } from "./automation/reinforcement/experiment-store.ts"
-import type { ReinforcementPolicyStore } from "./automation/reinforcement/store.ts"
-import {
   ApiHttpError,
   createApiClient,
   requiresAuthentication,
@@ -14,24 +8,18 @@ import {
   type ApiClientHandle,
 } from "./api/index.ts"
 import { isTransientStreamError } from "./api/transport.ts"
-import { HttpHistoricalBarSource } from "./api/historical-bars.ts"
 import { loadConfig, type AppConfig, type AppCredentials } from "./config.ts"
 import { openDatabase, type DatabaseConnection } from "./db/client.ts"
-import { DrizzleCandleHistoryStore } from "./db/candle-history-store.ts"
-import { DrizzleReinforcementExperimentStore } from "./db/reinforcement-experiment-store.ts"
 import { DrizzleProviderStateStore } from "./db/provider-state-store.ts"
-import { DrizzleReinforcementPolicyStore } from "./db/reinforcement-policy-store.ts"
 import { DrizzleWatchlistPreferencesStore } from "./db/watchlist-preferences-store.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
 import { ApiCandleSource } from "./market/api-candles.ts"
-import { HistoricalBacktestCandleSource, type CandleHistoryStore } from "./market/candle-history.ts"
 import { ApiNewsSource } from "./market/api-news.ts"
 import { ApiEquityQuoteStream } from "./market/equity-quote-stream.ts"
 import { ApiQuoteStream } from "./market/quote-stream.ts"
 import { ApiViopInstrumentSource } from "./market/api-source.ts"
 import { LoginScreen } from "./screens/login.ts"
 import { LogsScreen } from "./screens/logs.ts"
-import { ReinforcementBacktestScreen } from "./screens/reinforcement-backtest.ts"
 import { TradingWorkspaceScreen } from "./screens/trading-workspace.ts"
 import { WatchlistScreen } from "./screens/watchlist.ts"
 import type { WatchlistPreferences } from "./screens/watchlist-preferences.ts"
@@ -56,9 +44,6 @@ interface AppOptions {
   closePreferences?: () => void
   exit?: () => void
   chatGptAccount?: ChatGptAccount
-  reinforcementPolicies?: ReinforcementPolicyStore
-  reinforcementExperiments?: ReinforcementExperimentStore
-  candleHistory?: CandleHistoryStore
   logs?: ApplicationLog
   recoverSession?: (credentials: AppCredentials) => Promise<ApiClientHandle>
 }
@@ -84,8 +69,6 @@ export async function startApp(): Promise<void> {
     preferencesConnection = await openDatabase(config.databaseUrl)
     const preferencesStore = new DrizzleWatchlistPreferencesStore(preferencesConnection.db)
     const chatGptAccount = new ChatGptAccountService(new DrizzleProviderStateStore(preferencesConnection.db))
-    const reinforcementPolicies = new DrizzleReinforcementPolicyStore(preferencesConnection.db)
-    const reinforcementExperiments = new DrizzleReinforcementExperimentStore(preferencesConnection.db)
     const renderer = await createCliRenderer({
       exitOnCtrlC: false,
       exitSignals: EXIT_SIGNALS,
@@ -96,9 +79,6 @@ export async function startApp(): Promise<void> {
       savePreferences: (preferences) => preferencesStore.put(preferences),
       closePreferences: preferencesConnection.close,
       chatGptAccount,
-      reinforcementPolicies,
-      reinforcementExperiments,
-      candleHistory: new DrizzleCandleHistoryStore(preferencesConnection.db),
     })
     app.mount()
   } catch (error) {
@@ -138,9 +118,6 @@ export class App {
   private readonly closePreferences: (() => void) | undefined
   private readonly exit: () => void
   private readonly chatGptAccount: ChatGptAccount | undefined
-  private readonly reinforcementPolicies: ReinforcementPolicyStore | undefined
-  private readonly reinforcementExperiments: ReinforcementExperimentStore | undefined
-  private readonly candleHistory: CandleHistoryStore | undefined
   private readonly logs: ApplicationLog
   private readonly recoverSession: (credentials: AppCredentials) => Promise<ApiClientHandle>
 
@@ -165,9 +142,6 @@ export class App {
     this.closePreferences = options.closePreferences
     this.exit = options.exit ?? exitWithSigint
     this.chatGptAccount = options.chatGptAccount
-    this.reinforcementPolicies = options.reinforcementPolicies
-    this.reinforcementExperiments = options.reinforcementExperiments
-    this.candleHistory = options.candleHistory
     this.logs = options.logs ?? new ApplicationLog()
     this.recoverSession = options.recoverSession ?? ((credentials) => authenticateApiClient(config, credentials))
     this.root = new BoxRenderable(renderer, {
@@ -228,18 +202,6 @@ export class App {
     const orders = new ApiViopOrderSource(api.client)
     const instruments = new ApiViopInstrumentSource(api.client)
     const candles = new ApiCandleSource(api.client)
-    const backtestCandles = this.candleHistory
-      ? new HistoricalBacktestCandleSource(new HttpHistoricalBarSource(), this.candleHistory)
-      : undefined
-    const backtests = this.reinforcementPolicies && this.reinforcementExperiments && backtestCandles
-      ? new HistoricalReinforcementBacktestRunner({
-          candles: backtestCandles,
-          instruments,
-          orderPreparation: orders,
-          policies: this.reinforcementPolicies,
-          experiments: this.reinforcementExperiments,
-        })
-      : unavailableBacktestSource()
     let workspace: TradingWorkspaceScreen | null = null
     const watchlist = new WatchlistScreen(this.renderer, {
       instruments,
@@ -267,22 +229,13 @@ export class App {
       chatGptAccount: this.chatGptAccount,
       logs: this.logs,
       manageInput: false,
-      onOpenBacktest: () => workspace?.selectTab("backtest"),
       onOpenLogs: () => workspace?.selectTab("logs"),
-    })
-    const backtest = new ReinforcementBacktestScreen(this.renderer, {
-      source: backtests,
-      experiments: this.reinforcementExperiments,
-      instruments: () => watchlist.availableInstruments(),
-      onClose: () => workspace?.selectTab("watchlist"),
-      onOpenLogs: () => workspace?.selectTab("logs"),
-      onError: (error) => this.logs.error("Reinforcement backtest", error),
     })
     const logs = new LogsScreen(this.renderer, {
       logs: this.logs,
       onClose: () => workspace?.selectTab("watchlist"),
     })
-    workspace = new TradingWorkspaceScreen(this.renderer, { watchlist, backtest, logs })
+    workspace = new TradingWorkspaceScreen(this.renderer, { watchlist, logs })
     this.workspace = workspace
     return workspace
   }
@@ -367,14 +320,6 @@ export class App {
 
 function exitWithSigint(): void {
   process.kill(process.pid, "SIGINT")
-}
-
-function unavailableBacktestSource(): ReinforcementBacktestSource {
-  return {
-    async run() {
-      throw new Error("Reinforcement backtesting is unavailable because historical storage is not configured.")
-    },
-  }
 }
 
 async function authenticateApiClient(config: AppConfig, credentials: AppCredentials): Promise<ApiClientHandle> {

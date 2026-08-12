@@ -6,7 +6,7 @@ import { LogsScreen } from "./logs.ts"
 test("renders, scrolls, clears, and closes application logs", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const logs = new ApplicationLog(10, () => Date.parse("2026-08-11T09:30:00+03:00"))
-  logs.error("Reinforcement backtest", Object.assign(new Error("Bad Request"), {
+  logs.error("Market data", Object.assign(new Error("Bad Request"), {
     statusCode: 400,
     responseBody: '{"detail":"Unknown parameter: max_output_tokens"}',
   }))
@@ -17,7 +17,7 @@ test("renders, scrolls, clears, and closes application logs", async () => {
 
   const frame = await waitForFrame((value) => value.includes("APPLICATION LOGS") && value.includes("Unknown parameter"))
   expect(frame).toContain("ERROR")
-  expect(frame).toContain("Reinforcement backtest")
+  expect(frame).toContain("Market data")
   expect(frame).toContain("Bad Request")
   const lines = frame.split("\n")
   expect(lines[0]?.indexOf("APPLICATION LOGS")).toBe(1)
