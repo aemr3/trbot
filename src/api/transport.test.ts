@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { readSse, type SseFrame } from "./transport.ts"
+import { isTransientStreamError, readSse, StreamHttpError, type SseFrame } from "./transport.ts"
 
 function streamFrom(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
@@ -46,4 +46,11 @@ test("reassembles frames split across chunks", async () => {
 test("emits a trailing frame that has no closing blank line", async () => {
   const frames = await collect(["data: tail"])
   expect(frames).toEqual([{ event: null, data: "tail" }])
+})
+
+test("classifies retryable stream disconnects without hiding other failures", () => {
+  expect(isTransientStreamError(new StreamHttpError(504))).toBe(true)
+  expect(isTransientStreamError(new Error("The socket connection was closed unexpectedly. For more information"))).toBe(true)
+  expect(isTransientStreamError(new Error("Invalid stream payload"))).toBe(false)
+  expect(isTransientStreamError(new StreamHttpError(401))).toBe(false)
 })

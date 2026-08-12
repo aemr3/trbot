@@ -2,7 +2,7 @@ export const CANDLE_RANGES = ["INTRADAY", "WEEK", "MONTH", "THREE_MONTH", "YEAR"
 
 export type CandleRange = (typeof CANDLE_RANGES)[number]
 
-export const CANDLE_CHART_TARGETS = ["UNDERLYING", "INSTRUMENT"] as const
+export const CANDLE_CHART_TARGETS = ["UNDERLYING", "INSTRUMENT", "BIST_100", "BIST_30"] as const
 export type CandleChartTarget = (typeof CANDLE_CHART_TARGETS)[number]
 
 export function isCandleChartTarget(value: string): value is CandleChartTarget {

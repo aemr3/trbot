@@ -287,6 +287,8 @@ test("starts with saved chart choices and reports subsequent changes", async () 
   expect(targetFrame).toContain("Asset")
   expect(targetFrame).toContain("Stock")
   expect(targetFrame).toContain("Futures")
+  expect(targetFrame).toContain("XU100")
+  expect(targetFrame).toContain("XU030")
 
   chart.handleKey({ name: "down" } as KeyEvent)
   await setup.waitForFrame((frame) => frame.includes("30m · O"))
@@ -294,8 +296,17 @@ test("starts with saved chart choices and reports subsequent changes", async () 
 
   chart.handleKey({ name: "f" } as KeyEvent)
   await setup.waitForFrame(() => requested.length === 3)
+  expect(requested.at(-1)?.target).toBe("BIST_100")
+  expect(targets).toEqual(["BIST_100"])
+
+  chart.handleKey({ name: "f" } as KeyEvent)
+  await setup.waitForFrame(() => requested.length === 4)
+  expect(requested.at(-1)?.target).toBe("BIST_30")
+
+  chart.handleKey({ name: "f" } as KeyEvent)
+  await setup.waitForFrame(() => requested.length === 5)
   expect(requested.at(-1)?.target).toBe("UNDERLYING")
-  expect(targets).toEqual(["UNDERLYING"])
+  expect(targets).toEqual(["BIST_100", "BIST_30", "UNDERLYING"])
 
   chart.destroy()
   setup.renderer.destroy()

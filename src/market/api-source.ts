@@ -31,24 +31,19 @@ export class ApiViopInstrumentSource implements ViopInstrumentSource {
 
   async listInstruments(options: { signal?: AbortSignal } = {}): Promise<ViopInstrument[]> {
     const { signal } = options
-    const screener = await this.client.call(
-      marketOperations.screenerRetrieveV2,
-      { id: null, assetVertical: ASSET_VERTICAL, sectorId: null, investmentType: INVESTMENT_TYPE },
-      { signal },
-    )
-    const base = screener.screenerRetrieveV2?.result
-    if (!base) return []
-
     const instruments: ScreenerInstrument[] = []
     const seen = new Set<string>()
+    let pitId: string | null = null
     let searchAfter: string | null = null
+    const sortBy = "stats.volume"
+    const sortDirection = "DESC"
 
     for (let page = 0; page < MAX_PAGES; page++) {
       const variables: ScreenerResultV2Variables = {
-        pitId: base.pitId,
+        pitId,
         searchAfter,
-        sortBy: base.sortBy,
-        sortDirection: base.sortDirection,
+        sortBy,
+        sortDirection,
         assetVertical: ASSET_VERTICAL,
         investmentType: INVESTMENT_TYPE,
         filters: [],
@@ -64,6 +59,7 @@ export class ApiViopInstrumentSource implements ViopInstrumentSource {
         instruments.push(instrument)
       }
 
+      pitId = result.pitId
       searchAfter = result.searchAfter
       if (!searchAfter || instruments.length >= result.totalSize) break
     }

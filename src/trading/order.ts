@@ -17,6 +17,7 @@ export interface ViopOrderPreparation {
   contractSize: number | null
   initialCollateral: number | null
   availableCollateral: number | null
+  currentPositionQuantity: number
   positionIntent: ViopPositionIntent
 }
 
@@ -124,6 +125,42 @@ export function viopAffordableContracts(
   const available = nonNegativeFinite(availableCollateral)
   const required = positiveFinite(initialCollateral)
   return available === null || required === null ? null : Math.floor(available / required)
+}
+
+export function viopRequiredOrderCollateral(
+  quantity: number,
+  initialCollateral: number | null,
+  currentPositionQuantity: number,
+  side: ViopOrderSide,
+): number | null {
+  const additionalContracts = viopAdditionalExposureContracts(quantity, currentPositionQuantity, side)
+  if (additionalContracts === null) return null
+  if (additionalContracts === 0) return 0
+  return viopRequiredCollateral(additionalContracts, initialCollateral)
+}
+
+export function viopAffordableOrderContracts(
+  availableCollateral: number | null,
+  initialCollateral: number | null,
+  currentPositionQuantity: number,
+  side: ViopOrderSide,
+): number | null {
+  if (!Number.isInteger(currentPositionQuantity)) return null
+  const openingCapacity = viopAffordableContracts(availableCollateral, initialCollateral)
+  if (openingCapacity === null) return null
+  const closesCurrentPosition = currentPositionQuantity !== 0
+    && Math.sign(currentPositionQuantity) !== (side === "BUY" ? 1 : -1)
+  return openingCapacity + (closesCurrentPosition ? 2 * Math.abs(currentPositionQuantity) : 0)
+}
+
+function viopAdditionalExposureContracts(
+  quantity: number,
+  currentPositionQuantity: number,
+  side: ViopOrderSide,
+): number | null {
+  if (!Number.isInteger(quantity) || quantity <= 0 || !Number.isInteger(currentPositionQuantity)) return null
+  const positionAfterOrder = currentPositionQuantity + (side === "BUY" ? quantity : -quantity)
+  return Math.max(0, Math.abs(positionAfterOrder) - Math.abs(currentPositionQuantity))
 }
 
 export function viopPositionIntent(positionQuantity: number, side: ViopOrderSide): ViopPositionIntent {

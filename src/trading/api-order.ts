@@ -300,6 +300,7 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
         contractSize: finiteNumber(asset?.multiplier),
         initialCollateral: finiteNumber(preparation.initialCollateral),
         availableCollateral: finiteNumber(margin.accountViopMarginHealthDetail?.availableCollateral),
+        currentPositionQuantity: positionQuantity,
         positionIntent,
       },
     }
@@ -325,8 +326,10 @@ function activeTryAccountUid(data: AccountOverviewData): string {
 }
 
 function currentPositionQuantity(data: AccountPositionsData, instrumentUid: string): number {
-  const entry = data.viopOverviewPositions?.positions?.find((position) => position.assetUid === instrumentUid)
-  return finiteNumber(entry?.quantity) ?? 0
+  return (data.viopOverviewPositions?.positions ?? []).reduce((quantity, position) => {
+    if (position.assetUid !== instrumentUid) return quantity
+    return quantity + (finiteNumber(position.quantity) ?? 0)
+  }, 0)
 }
 
 function openPositions(data: AccountPositionsData): Array<{ instrumentUid: string; symbol: string; quantity: number }> {

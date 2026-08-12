@@ -42,6 +42,8 @@ const MAX_VOLUME_HEIGHT = 8
 const CHART_TARGET_LABELS: Record<CandleChartTarget, string> = {
   UNDERLYING: "Stock",
   INSTRUMENT: "Futures",
+  BIST_100: "XU100",
+  BIST_30: "XU030",
 }
 
 export interface CandlestickChartOptions {
@@ -114,7 +116,7 @@ export class CandlestickChart {
     const targetToolbar = new BoxRenderable(renderer, {
       flexDirection: "row",
       height: 1,
-      gap: 1,
+      gap: 0,
       marginBottom: 1,
     })
     targetToolbar.add(new TextRenderable(renderer, { content: "Asset", fg: MUTED_COLOR, width: 6 }))
@@ -241,7 +243,9 @@ export class CandlestickChart {
 
   handleKey(key: KeyEvent): boolean {
     if (!key.ctrl && !key.shift && !key.meta && !key.option && key.name === "f") {
-      this.selectTarget(this.target === "UNDERLYING" ? "INSTRUMENT" : "UNDERLYING")
+      const current = CANDLE_CHART_TARGETS.indexOf(this.target)
+      const target = CANDLE_CHART_TARGETS[(current + 1) % CANDLE_CHART_TARGETS.length]
+      if (target) this.selectTarget(target)
       return true
     }
     if (key.shift && (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l")) {

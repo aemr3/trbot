@@ -9,7 +9,7 @@ import {
   type Renderable,
   type RenderContext,
 } from "@opentui/core"
-import { CredentialsRequiredError } from "../api/index.ts"
+import { requiresAuthentication } from "../api/index.ts"
 import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
 import { AccountPanel } from "../components/account-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
@@ -17,6 +17,8 @@ import { ContractDetailsPanel } from "../components/contract-details-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
 import { isShortcutHelpKey, ShortcutHelp, type ShortcutHelpSection } from "../components/shortcut-help.ts"
 import { ProviderAccountModal } from "../components/provider-account-modal.ts"
+import { WORKSPACE_CHROME_BACKGROUND } from "../components/workspace-chrome.ts"
+import type { ApplicationLog } from "../logging/application-log.ts"
 import type { CandleSource } from "../market/candle.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
@@ -52,19 +54,26 @@ const NEWS_HEADLINE_COLOR = "#e0e0e0"
 
 const NEWS_POLL_INTERVAL_MS = 60_000
 const INSTRUMENT_POLL_INTERVAL_MS = 60_000
+const DESTRUCTIVE_CONFIRMATION_TIMEOUT_MS = 3_000
 const COMPACT_LAYOUT_WIDTH = 104
 const SORT_LABELS = { change: "Change", volume: "Volume" } as const
-const WATCHLIST_HINT = "B/S trade · / ticker · c cancel · x exit · ? help · Ctrl+C quit"
+const NEWS_FEEDS = ["instrument", "index"] as const
+type NewsFeed = (typeof NEWS_FEEDS)[number]
+type DestructiveAction = "cancel-orders" | "exit-positions"
+const NEWS_FEED_LABELS: Record<NewsFeed, string> = { instrument: "Stock", index: "Index" }
+const WATCHLIST_HINT = "B/S trade · T backtest · G logs · / ticker · ? help · Ctrl+C quit"
 const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
   {
     title: "Global",
     bindings: [
       { keys: "?", description: "Toggle this help" },
       { keys: "A", description: "Open AI provider account" },
+      { keys: "T", description: "Open 10m reinforcement backtest" },
+      { keys: "G", description: "Open application logs" },
       { keys: "/", description: "Search and switch ticker" },
       { keys: "B / S", description: "Open buy / sell ticket" },
-      { keys: "c", description: "Cancel all pending VIOP orders" },
-      { keys: "x", description: "Exit all VIOP positions" },
+      { keys: "c c", description: "Cancel all pending VIOP orders" },
+      { keys: "x x", description: "Exit all VIOP positions" },
       { keys: "Tab", description: "Move focus to the next panel" },
       { keys: "Ctrl+C", description: "Quit" },
     ],
@@ -95,7 +104,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
       { keys: "↑/↓ or j/k", description: "Change timeframe" },
       { keys: "Shift+←/→ or H/L", description: "Scroll candle history" },
       { keys: "Shift+Home / End", description: "Jump to oldest / newest candles" },
-      { keys: "f", description: "Toggle stock / futures chart" },
+      { keys: "f", description: "Cycle chart asset" },
     ],
   },
   {
@@ -110,6 +119,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
   {
     title: "News",
     bindings: [
+      { keys: "←/→ or h/l", description: "Change stock / index feed" },
       { keys: "↑/↓ or j/k", description: "Move selection or scroll article" },
       { keys: "Home / End", description: "Select first / last article" },
       { keys: "Enter", description: "Open selected article" },
@@ -148,9 +158,14 @@ export interface WatchlistScreenOptions {
   newsIntervalMs?: number
   instrumentIntervalMs?: number
   accountIntervalMs?: number
+  destructiveConfirmationTimeoutMs?: number
   preferences?: WatchlistPreferences
   onPreferencesChange?: (preferences: WatchlistPreferences) => void
   chatGptAccount?: ChatGptAccount
+  logs?: ApplicationLog
+  manageInput?: boolean
+  onOpenBacktest?: () => void
+  onOpenLogs?: () => void
 }
 
 type Focus = "instruments" | "chart" | "account" | "news"
@@ -170,6 +185,8 @@ export class WatchlistScreen {
   private readonly rightPanel: BoxRenderable
   private readonly viopHeader: TextRenderable
   private readonly newsHeader: TextRenderable
+  private readonly newsFeedButtons = new Map<NewsFeed, BoxRenderable>()
+  private readonly newsFeedButtonLabels = new Map<NewsFeed, TextRenderable>()
   private readonly newsList: SelectableList
   private readonly newsReader: ScrollBoxRenderable
   private readonly newsMessage: TextRenderable
@@ -179,8 +196,10 @@ export class WatchlistScreen {
   private providerAccountModal: ProviderAccountModal | null = null
   private tickerSearchQuery: string | null = null
   private tickerSearchMatchIndex = 0
+  private pendingDestructiveAction: DestructiveAction | null = null
 
   private newsContent: Renderable | null = null
+  private newsFeed: NewsFeed = "instrument"
   private instruments: ViopInstrument[] = []
   private newsArticles: NewsArticle[] = []
   private readonly symbolIndex = new Map<string, number>()
@@ -198,6 +217,7 @@ export class WatchlistScreen {
   private instrumentTimer: ReturnType<typeof setInterval> | null = null
   private instrumentRefreshRequest: AbortController | null = null
   private hintTimer: ReturnType<typeof setTimeout> | null = null
+  private destructiveConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private connected = false
   private equityConnected = false
   private selectedEquitySymbol: string | null = null
@@ -206,6 +226,8 @@ export class WatchlistScreen {
   private sortDirection: SortDirection
 
   private readonly handleKeypress = (key: KeyEvent): void => {
+    const destructiveAction = destructiveActionForKey(key)
+    if (!destructiveAction) this.clearDestructiveConfirmation()
     if (this.tickerSearchQuery !== null) {
       this.handleTickerSearchKey(key)
       return
@@ -240,23 +262,39 @@ export class WatchlistScreen {
       this.openProviderAccount()
       return
     }
+    if (isCapitalShortcut(key, "t")) {
+      this.openBacktest()
+      return
+    }
+    if (isCapitalShortcut(key, "g")) {
+      this.openLogs()
+      return
+    }
     if (!key.ctrl && (key.name === "b" || key.name === "s")) {
       this.openOrderTicket(key.name === "b" ? "BUY" : "SELL")
       return
     }
-    if (isLowercaseShortcut(key, "c")) {
-      void this.cancelAllPendingOrders()
-      return
-    }
-    if (isLowercaseShortcut(key, "x")) {
-      void this.exitAllPositions()
+    if (destructiveAction) {
+      if (this.confirmDestructiveAction(destructiveAction)) {
+        if (destructiveAction === "cancel-orders") void this.cancelAllPendingOrders()
+        else void this.exitAllPositions()
+      }
       return
     }
     if (key.name === "tab") {
       this.toggleFocus()
       return
     }
-    if (this.focus === "news") this.newsList.handleKey(key)
+    if (this.focus === "news") {
+      if (!key.ctrl && !key.shift && !key.meta && !key.option && (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l")) {
+        const direction = key.name === "left" || key.name === "h" ? -1 : 1
+        const current = NEWS_FEEDS.indexOf(this.newsFeed)
+        const feed = NEWS_FEEDS[(current + direction + NEWS_FEEDS.length) % NEWS_FEEDS.length]
+        if (feed) this.selectNewsFeed(feed)
+      } else {
+        this.newsList.handleKey(key)
+      }
+    }
     else if (this.focus === "account") this.accountPanel.handleKey(key)
     else if (this.focus === "chart") this.chart.handleKey(key)
     else if (isCapitalShortcut(key, "c")) this.selectInstrumentSort("change")
@@ -348,10 +386,11 @@ export class WatchlistScreen {
       },
       onTargetChange: (chartTarget) => {
         this.savePreferences({ chartTarget })
+        this.syncChartQuoteSubscription()
         this.renderChartHeader()
       },
       onFocusRequest: () => this.setFocus("chart"),
-      onError: (error) => this.notifyIfSessionExpired(error),
+      onError: (error) => this.reportError("Chart", error),
     })
     this.centerPanel.add(this.chart.root)
     this.accountPanel = new AccountPanel(renderer, {
@@ -360,7 +399,7 @@ export class WatchlistScreen {
       refreshIntervalMs: options.accountIntervalMs,
       onFocusRequest: () => this.setFocus("account"),
       onPositionSelect: (position) => this.selectPositionInstrument(position.uid, position.symbol),
-      onError: (error) => this.notifyIfSessionExpired(error),
+      onError: (error) => this.reportError("Account", error),
     })
     this.centerPanel.add(this.accountPanel.root)
 
@@ -373,6 +412,31 @@ export class WatchlistScreen {
     })
     this.newsHeader = panelHeader(renderer, "News")
     this.rightPanel.add(this.newsHeader)
+    const newsFeedToolbar = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      height: 1,
+      gap: 1,
+      marginBottom: 1,
+    })
+    newsFeedToolbar.add(new TextRenderable(renderer, { content: "Feed", fg: NEUTRAL_COLOR, width: 5 }))
+    for (const feed of NEWS_FEEDS) {
+      const button = new BoxRenderable(renderer, {
+        height: 1,
+        paddingLeft: 1,
+        paddingRight: 1,
+        onMouseDown: (event) => {
+          if (event.button !== 0) return
+          this.setFocus("news")
+          this.selectNewsFeed(feed)
+        },
+      })
+      const label = new TextRenderable(renderer, { content: NEWS_FEED_LABELS[feed] })
+      button.add(label)
+      newsFeedToolbar.add(button)
+      this.newsFeedButtons.set(feed, button)
+      this.newsFeedButtonLabels.set(feed, label)
+    }
+    this.rightPanel.add(newsFeedToolbar)
     this.newsList = new SelectableList(renderer, {
       selectedBackgroundColor: SELECTED_ROW_BG,
       backgroundColor: SIDE_PANEL_BG,
@@ -408,10 +472,18 @@ export class WatchlistScreen {
     this.hint = new TextRenderable(renderer, {
       content: WATCHLIST_HINT,
       fg: "#777777",
+      width: "100%",
     })
+    const footer = new BoxRenderable(renderer, {
+      width: "100%",
+      height: 1,
+      flexShrink: 0,
+      backgroundColor: WORKSPACE_CHROME_BACKGROUND,
+    })
+    footer.add(this.hint)
 
     this.root.add(columns)
-    this.root.add(this.hint)
+    this.root.add(footer)
 
     this.options.quotes?.subscribe((update) => this.onQuote(update))
     this.options.quotes?.onConnectionChange((connected) => this.setConnected(connected))
@@ -420,7 +492,7 @@ export class WatchlistScreen {
   }
 
   mount(): void {
-    this.renderer.keyInput.on("keypress", this.handleKeypress)
+    if (this.options.manageInput !== false) this.renderer.keyInput.on("keypress", this.handleKeypress)
     this.updateFocusIndicator()
     this.accountPanel.mount()
     void this.load()
@@ -460,8 +532,20 @@ export class WatchlistScreen {
       clearTimeout(this.hintTimer)
       this.hintTimer = null
     }
-    this.renderer.keyInput.off("keypress", this.handleKeypress)
+    if (this.destructiveConfirmationTimer) {
+      clearTimeout(this.destructiveConfirmationTimer)
+      this.destructiveConfirmationTimer = null
+    }
+    if (this.options.manageInput !== false) this.renderer.keyInput.off("keypress", this.handleKeypress)
     if (!this.root.isDestroyed) this.root.destroyRecursively()
+  }
+
+  handleKey(key: KeyEvent): void {
+    this.handleKeypress(key)
+  }
+
+  availableInstruments(): ViopInstrument[] {
+    return [...this.instruments]
   }
 
   private async load(): Promise<void> {
@@ -483,8 +567,8 @@ export class WatchlistScreen {
       }
     } catch (error) {
       if (this.destroyed) return
-      if (this.notifyIfSessionExpired(error)) return
-      this.chartHeader.content = `Chart  ·  Failed to load instruments: ${errorMessage(error)}`
+      if (this.reportError("Watchlist", error)) return
+      this.chartHeader.content = "Chart  ·  Failed to load instruments · See Logs"
       this.chartHeader.fg = "#ff6b6b"
     }
   }
@@ -548,31 +632,49 @@ export class WatchlistScreen {
         this.sortAndRenderInstrumentList(selectedUid, true)
       }
     } catch (error) {
-      if (!this.destroyed && !request.signal.aborted && !isAbortError(error)) this.notifyIfSessionExpired(error)
+      if (!this.destroyed && !request.signal.aborted && !isAbortError(error)) this.reportError("Watchlist refresh", error)
     } finally {
       if (this.instrumentRefreshRequest === request) this.instrumentRefreshRequest = null
     }
   }
 
   private onEquityQuote(update: EquityQuoteUpdate): void {
-    if (this.destroyed || this.preferences.chartTarget !== "UNDERLYING" || update.symbol !== this.selectedEquitySymbol) return
+    if (this.destroyed || update.symbol !== this.activeEquityQuoteSymbol()) return
     const instrument = this.instruments[this.instrumentList.selectedIndex]
     if (!instrument) return
     this.chart.updateLastPrice(instrument.uid, update.lastPrice, update.timestamp)
+  }
+
+  private activeEquityQuoteSymbol(): string | null {
+    if (this.preferences.chartTarget === "BIST_100") return "XU100"
+    if (this.preferences.chartTarget === "BIST_30") return "XU030"
+    if (this.preferences.chartTarget === "UNDERLYING") return this.selectedEquitySymbol
+    return null
+  }
+
+  private syncChartQuoteSubscription(): void {
+    const symbol = this.activeEquityQuoteSymbol()
+    this.setEquityConnected(false)
+    if (symbol) this.options.equityQuotes?.start(symbol)
+    else this.options.equityQuotes?.stop()
   }
 
   private async refreshNews(): Promise<void> {
     if (this.destroyed || this.articleOpen) return
     const instrument = this.instruments[this.instrumentList.selectedIndex]
     if (!instrument) return
-    const uid = instrument.uid
+    const feed = this.newsFeed
+    const requestKey = feed === "index" ? "INDEX" : instrument.uid
     try {
-      const articles = await this.options.news.listNews({ instrumentUid: uid })
+      const articles = await this.options.news.listNews(feed === "index" ? {} : { instrumentUid: instrument.uid })
       if (this.destroyed || this.articleOpen) return
-      if (this.instruments[this.instrumentList.selectedIndex]?.uid !== uid) return
-      if (newsListChanged(this.newsArticles, articles)) this.renderNews(articles, instrument.displayName)
+      if (this.newsFeed !== feed) return
+      if (feed === "instrument" && this.instruments[this.instrumentList.selectedIndex]?.uid !== requestKey) return
+      if (newsListChanged(this.newsArticles, articles)) {
+        this.renderNews(articles, feed === "index" ? "BIST indices" : instrument.displayName)
+      }
     } catch (error) {
-      if (!this.destroyed) this.notifyIfSessionExpired(error)
+      if (!this.destroyed) this.reportError("News refresh", error)
     }
   }
 
@@ -586,8 +688,7 @@ export class WatchlistScreen {
     void this.loadContractDetails(instrument)
     this.chart.setInstrument(instrument)
     this.selectedEquitySymbol = instrument.underlyingSymbol
-    if (this.selectedEquitySymbol) this.options.equityQuotes?.start(this.selectedEquitySymbol)
-    else this.options.equityQuotes?.stop()
+    this.syncChartQuoteSubscription()
     this.renderChartHeader()
     void this.loadNews(instrument)
   }
@@ -616,24 +717,34 @@ export class WatchlistScreen {
       this.contractDetailsPanel.showDetails(instrument.uid, details)
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.contractDetailsRequest !== request || isAbortError(error)) return
-      if (this.notifyIfSessionExpired(error)) return
+      if (this.reportError("Contract details", error)) return
       this.contractDetailsPanel.showError(instrument.uid)
     }
   }
 
   private async loadNews(instrument: ViopInstrument): Promise<void> {
-    this.newsRequestUid = instrument.uid
+    const feed = this.newsFeed
+    const requestKey = feed === "index" ? "INDEX" : instrument.uid
+    this.newsRequestUid = requestKey
     this.articleOpen = false
     this.setMessage("Loading news…", "#777777")
     try {
-      const articles = await this.options.news.listNews({ instrumentUid: instrument.uid })
-      if (this.destroyed || this.newsRequestUid !== instrument.uid) return
-      this.renderNews(articles, instrument.displayName)
+      const articles = await this.options.news.listNews(feed === "index" ? {} : { instrumentUid: instrument.uid })
+      if (this.destroyed || this.newsFeed !== feed || this.newsRequestUid !== requestKey) return
+      this.renderNews(articles, feed === "index" ? "BIST indices" : instrument.displayName)
     } catch (error) {
-      if (this.destroyed || this.newsRequestUid !== instrument.uid) return
-      if (this.notifyIfSessionExpired(error)) return
+      if (this.destroyed || this.newsFeed !== feed || this.newsRequestUid !== requestKey) return
+      if (this.reportError("News", error)) return
       this.setMessage(`Failed to load news: ${errorMessage(error)}`, "#ff6b6b")
     }
+  }
+
+  private selectNewsFeed(feed: NewsFeed): void {
+    if (this.newsFeed === feed) return
+    this.newsFeed = feed
+    this.paintNewsFeedToolbar()
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    if (instrument) void this.loadNews(instrument)
   }
 
   private openOrderTicket(side: ViopOrderSide): void {
@@ -648,7 +759,7 @@ export class WatchlistScreen {
       onClose: () => this.closeOrderTicket(),
       onKindChange: (orderKind) => this.savePreferences({ orderKind }),
       onPlaced: () => void this.accountPanel.refresh(),
-      onError: (error) => this.notifyIfSessionExpired(error),
+      onError: (error) => this.reportError("Order ticket", error),
     })
     this.orderTicket = ticket
     this.root.add(ticket.root)
@@ -686,6 +797,16 @@ export class WatchlistScreen {
     if (!this.root.isDestroyed && !modal.root.isDestroyed) this.root.remove(modal.root)
     modal.destroy()
     this.renderer.requestRender()
+  }
+
+  private openBacktest(): void {
+    if (this.destroyed) return
+    this.options.onOpenBacktest?.()
+  }
+
+  private openLogs(): void {
+    if (this.destroyed) return
+    this.options.onOpenLogs?.()
   }
 
   private openTickerSearch(): void {
@@ -792,6 +913,37 @@ export class WatchlistScreen {
     this.renderer.requestRender()
   }
 
+  private confirmDestructiveAction(action: DestructiveAction): boolean {
+    if (this.pendingDestructiveAction === action) {
+      this.clearDestructiveConfirmation()
+      return true
+    }
+    this.clearDestructiveConfirmation()
+    this.pendingDestructiveAction = action
+    const key = action === "cancel-orders" ? "c" : "x"
+    const description = action === "cancel-orders" ? "cancel all pending orders" : "exit all open positions"
+    this.showHintStatus(`Press ${key} again to ${description}.`, "#e5c07b")
+    this.destructiveConfirmationTimer = setTimeout(() => {
+      if (this.pendingDestructiveAction !== action || this.destroyed) return
+      this.clearDestructiveConfirmation()
+    }, this.options.destructiveConfirmationTimeoutMs ?? DESTRUCTIVE_CONFIRMATION_TIMEOUT_MS)
+    return false
+  }
+
+  private clearDestructiveConfirmation(): void {
+    if (this.destructiveConfirmationTimer) {
+      clearTimeout(this.destructiveConfirmationTimer)
+      this.destructiveConfirmationTimer = null
+    }
+    if (!this.pendingDestructiveAction) return
+    this.pendingDestructiveAction = null
+    if (this.hintTimer) clearTimeout(this.hintTimer)
+    this.hintTimer = null
+    this.hint.content = WATCHLIST_HINT
+    this.hint.fg = "#777777"
+    this.renderer.requestRender()
+  }
+
   private async cancelAllPendingOrders(): Promise<void> {
     const source = this.options.orderCancellation
     if (!source || this.tradingActionRequest || this.destroyed) return
@@ -825,7 +977,7 @@ export class WatchlistScreen {
       }
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request || isAbortError(error)) return
-      if (this.notifyIfSessionExpired(error)) return
+      if (this.reportError("Order cancellation", error)) return
       this.showHintStatus(`Failed to cancel pending orders: ${errorMessage(error)}`, "#ff6b6b", 6_000)
     } finally {
       if (this.tradingActionRequest === request) this.tradingActionRequest = null
@@ -857,7 +1009,7 @@ export class WatchlistScreen {
       }
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request || isAbortError(error)) return
-      if (this.notifyIfSessionExpired(error)) return
+      if (this.reportError("Position exit", error)) return
       this.showHintStatus(`Failed to exit positions: ${errorMessage(error)}`, "#ff6b6b", 6_000)
     } finally {
       if (this.tradingActionRequest === request) this.tradingActionRequest = null
@@ -901,18 +1053,23 @@ export class WatchlistScreen {
       this.renderReader(full ?? article)
     } catch (error) {
       if (this.destroyed || this.articleRequestUid !== article.uid) return
-      if (this.notifyIfSessionExpired(error)) return
+      if (this.reportError("News article", error)) return
       this.renderReaderMessage(`Failed to load article: ${errorMessage(error)}`, "#ff6b6b")
     }
   }
 
   private notifyIfSessionExpired(error: unknown): boolean {
-    if (!(error instanceof CredentialsRequiredError)) return false
+    if (!requiresAuthentication(error)) return false
     if (!this.sessionExpiredNotified) {
       this.sessionExpiredNotified = true
       this.options.onSessionExpired?.()
     }
     return true
+  }
+
+  private reportError(scope: string, error: unknown): boolean {
+    this.options.logs?.error(scope, error)
+    return this.notifyIfSessionExpired(error)
   }
 
   private closeArticle(): void {
@@ -983,7 +1140,19 @@ export class WatchlistScreen {
     this.chart.setFocused(this.focus === "chart")
     this.accountPanel.setFocused(this.focus === "account")
     this.newsHeader.fg = this.focus === "news" ? FOCUSED_HEADER : UNFOCUSED_HEADER
+    this.paintNewsFeedToolbar()
     this.updateResponsiveLayout()
+  }
+
+  private paintNewsFeedToolbar(): void {
+    for (const feed of NEWS_FEEDS) {
+      const selected = this.newsFeed === feed
+      const button = this.newsFeedButtons.get(feed)
+      const label = this.newsFeedButtonLabels.get(feed)
+      if (!button || !label) continue
+      button.backgroundColor = selected ? SELECTED_ROW_BG : undefined
+      label.fg = selected ? "#ffffff" : this.focus === "news" ? "#aaaaaa" : "#666666"
+    }
   }
 
   private setEquityConnected(connected: boolean): void {
@@ -994,6 +1163,14 @@ export class WatchlistScreen {
 
   private renderChartHeader(): void {
     const titleColor = this.focus === "chart" ? FOCUSED_HEADER : UNFOCUSED_HEADER
+    if (this.preferences.chartTarget === "BIST_100" || this.preferences.chartTarget === "BIST_30") {
+      const index = this.preferences.chartTarget === "BIST_100" ? "XU100" : "XU030"
+      const live = this.equityConnected
+      const statusColor = live ? UP_COLOR : NEUTRAL_COLOR
+      const status = live ? "● live" : "○ snapshot"
+      this.chartHeader.content = t`${fg(titleColor)("Chart")}  ${fg(HEADER_COLOR)(`${index} index`)}  ${fg(statusColor)(status)}`
+      return
+    }
     if (!this.selectedEquitySymbol) {
       this.chartHeader.content = t`${fg(titleColor)("Chart")}`
       return
@@ -1127,7 +1304,7 @@ function instrumentComparator(sort: InstrumentSort, direction: SortDirection): (
   }
 }
 
-function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "v"): boolean {
+function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "g" | "t" | "v"): boolean {
   if (key.ctrl || key.meta || key.option) return false
   return key.sequence === letter.toUpperCase() || (key.shift && key.name === letter)
 }
@@ -1135,6 +1312,12 @@ function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "v"): boolean {
 function isLowercaseShortcut(key: KeyEvent, letter: "c" | "x"): boolean {
   if (key.ctrl || key.shift || key.meta || key.option) return false
   return key.name === letter && key.sequence !== letter.toUpperCase()
+}
+
+function destructiveActionForKey(key: KeyEvent): DestructiveAction | null {
+  if (isLowercaseShortcut(key, "c")) return "cancel-orders"
+  if (isLowercaseShortcut(key, "x")) return "exit-positions"
+  return null
 }
 
 function isTickerSearchKey(key: KeyEvent): boolean {

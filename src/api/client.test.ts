@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test"
 import { generateKeyPairSync } from "node:crypto"
 import type { AuthState } from "../auth/state.ts"
 import type { AuthStore } from "../auth/store.ts"
-import { ApiClient, CredentialsRequiredError, OtpRequiredError } from "./client.ts"
+import {
+  ApiClient,
+  ApiHttpError,
+  CredentialsRequiredError,
+  OtpRequiredError,
+  requiresAuthentication,
+} from "./client.ts"
 import { defineOperation } from "./graphql.ts"
 import type { HttpRequest, HttpResponse, Transport } from "./transport.ts"
 
@@ -24,6 +30,37 @@ describe("API authentication", () => {
     const session = await client(store, transport).authenticate()
 
     expect(session.accessToken).toBe(accessToken)
+    expect(transport.requests).toHaveLength(0)
+  })
+
+  test("forces server-side reauthentication for an explicit login", async () => {
+    const state = authState({ accessTokenExpiresAt: NOW + 3_600_000 })
+    const store = new MemoryAuthStore(state)
+    const nextAccessToken = jwt(900)
+    const transport = new FakeTransport((request) => {
+      expect(operationName(request)).toBe("refreshMemberTokenV2")
+      return data({
+        refreshMemberTokenV2: {
+          token: { access_token: nextAccessToken, refresh_token: "refresh-new" },
+        },
+      })
+    })
+
+    const session = await client(store, transport).reauthenticate()
+
+    expect(session.accessToken).toBe(nextAccessToken)
+    expect(transport.requests.map(operationName)).toEqual(["refreshMemberTokenV2"])
+  })
+
+  test("does not bypass an unfinished SMS challenge during forced reauthentication", async () => {
+    const store = new MemoryAuthStore(authState({ loginReferenceCode: "reference-1" }))
+    const transport = new FakeTransport(() => {
+      throw new Error("transport should not be called")
+    })
+
+    const error = await client(store, transport).reauthenticate().catch((reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(OtpRequiredError)
     expect(transport.requests).toHaveLength(0)
   })
 
@@ -129,6 +166,57 @@ describe("API authentication", () => {
       "retrieveLoginNonce",
       "deviceBindingLoginCompleteWithPasswordV2",
     ])
+  })
+
+  test("preserves a rate-limit error from device relogin", async () => {
+    const store = new MemoryAuthStore(authState({ accessTokenExpiresAt: NOW - 1 }))
+    const transport = new FakeTransport((request) => {
+      if (operationName(request) === "refreshMemberTokenV2") return graphqlError(9008)
+      if (operationName(request) === "retrieveLoginNonce") {
+        return { status: 429, body: "Unknown Error", retryAfterMs: 12_000 }
+      }
+      throw new Error(`unexpected operation ${operationName(request)}`)
+    })
+
+    const error = await client(store, transport).authenticate().catch((reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(ApiHttpError)
+    expect((error as Error).message).toBe("API rate limit reached. Retry in 12s.")
+    expect((error as ApiHttpError).operationName).toBe("retrieveLoginNonce")
+    expect((error as ApiHttpError).retryAfterMs).toBe(12_000)
+    expect(requiresAuthentication(error)).toBe(false)
+  })
+
+  test("does not retry authentication before the provider rate limit expires", async () => {
+    let now = NOW
+    const store = new MemoryAuthStore(authState({ accessTokenExpiresAt: NOW - 1 }))
+    const transport = new FakeTransport((request) => {
+      if (operationName(request) === "refreshMemberTokenV2") return graphqlError(9008)
+      if (operationName(request) === "retrieveLoginNonce") {
+        return { status: 429, body: "Unknown Error", retryAfterMs: 12_000 }
+      }
+      throw new Error(`unexpected operation ${operationName(request)}`)
+    })
+    const api = new ApiClient({
+      username: "+905551234567",
+      password: "password",
+      store,
+      transport,
+      now: () => now,
+    })
+
+    await api.authenticate().catch(() => {})
+    const requestsAfterFirstAttempt = transport.requests.length
+    now += 5_000
+    const blocked = await api.authenticate().catch((reason: unknown) => reason)
+
+    expect(blocked).toBeInstanceOf(ApiHttpError)
+    expect((blocked as ApiHttpError).retryAfterMs).toBe(7_000)
+    expect(transport.requests).toHaveLength(requestsAfterFirstAttempt)
+
+    now += 7_000
+    await api.authenticate().catch(() => {})
+    expect(transport.requests.length).toBeGreaterThan(requestsAfterFirstAttempt)
   })
 
   test("requests credentials instead of starting SMS login when session-only recovery fails", async () => {

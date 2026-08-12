@@ -29,20 +29,13 @@ function instrument(
 }
 
 function fakeClient(pages: ScreenerResult[]) {
-  const calls: { screener: number; result: number } = { screener: 0, result: 0 }
+  const calls: { result: number; variables: Record<string, unknown>[] } = { result: 0, variables: [] }
   let page = 0
   const client = {
-    call(op: Op) {
-      if (op.name === marketOperations.screenerRetrieveV2.name) {
-        calls.screener++
-        return Promise.resolve({
-          screenerRetrieveV2: {
-            uid: "default_TR_FUTURES",
-            result: { pitId: "pit-1", searchAfter: null, totalSize: pages[0]?.totalSize ?? 0, sortBy: "stats.volume", sortDirection: "DESC", instruments: [] },
-          },
-        })
-      }
+    call(op: Op, variables: Record<string, unknown>) {
+      expect(op.name).toBe(marketOperations.screenerRetrieveResultV2.name)
       calls.result++
+      calls.variables.push(variables)
       const current = pages[page++]
       return Promise.resolve({ screenerRetrieveResultV2: current })
     },
@@ -81,8 +74,9 @@ test("aggregates all pages, dedupes by uid, and parses Turkish-formatted values"
   const instruments = await source.listInstruments()
 
   expect(instruments.map((i) => i.uid)).toEqual(["u1", "u2", "u3"])
-  expect(calls.screener).toBe(1)
   expect(calls.result).toBe(2)
+  expect(calls.variables[0]).toMatchObject({ pitId: null, searchAfter: null, sortBy: "stats.volume", sortDirection: "DESC" })
+  expect(calls.variables[1]).toMatchObject({ pitId: "pit-1", searchAfter: "cursor-1" })
 
   const xu030 = instruments[0]
   expect(xu030?.symbol).toBe("F_XU0300826")

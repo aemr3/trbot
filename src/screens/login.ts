@@ -15,6 +15,7 @@ type LoginMode = "username" | "password" | "authenticating" | "otp"
 
 export interface LoginScreenOptions {
   initialStatus?: string
+  initialUsername?: string
   credentials?: AppCredentials | null
   onAuthenticated(api: ApiClientHandle): void
 }
@@ -130,6 +131,9 @@ export class LoginScreen {
     const credentials = this.options.credentials
     if (credentials) {
       void this.authenticateWith(credentials.username, credentials.password)
+    } else if (this.options.initialUsername) {
+      this.usernameInput.value = this.options.initialUsername
+      this.focusPassword()
     } else {
       this.usernameInput.focus()
     }

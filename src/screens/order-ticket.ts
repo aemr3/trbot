@@ -2,9 +2,9 @@ import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type Rend
 import type { ViopInstrument } from "../market/instrument.ts"
 import {
   resolveViopOrderPrice,
-  viopAffordableContracts,
+  viopAffordableOrderContracts,
   viopOrderSize,
-  viopRequiredCollateral,
+  viopRequiredOrderCollateral,
   type PlacedViopOrder,
   type ViopOrderKind,
   type ViopOrderPreparation,
@@ -322,7 +322,12 @@ export class ViopOrderTicket {
     }
     if (preparation.lowerLimit !== null && price < preparation.lowerLimit) return "Limit price is below the lower limit"
     if (preparation.upperLimit !== null && price > preparation.upperLimit) return "Limit price is above the upper limit"
-    const required = viopRequiredCollateral(quantity, preparation.initialCollateral)
+    const required = viopRequiredOrderCollateral(
+      quantity,
+      preparation.initialCollateral,
+      preparation.currentPositionQuantity,
+      this.options.side,
+    )
     if (required !== null && preparation.availableCollateral !== null && required > preparation.availableCollateral) {
       return "Available collateral is insufficient for this order"
     }
@@ -370,10 +375,17 @@ export class ViopOrderTicket {
     const quantity = this.quantity() ?? 0
     const price = this.resolvedPrice()
     const orderSize = viopOrderSize(price, quantity, preparation?.contractSize ?? null)
-    const required = viopRequiredCollateral(quantity, preparation?.initialCollateral ?? null)
-    const affordable = viopAffordableContracts(
+    const required = viopRequiredOrderCollateral(
+      quantity,
+      preparation?.initialCollateral ?? null,
+      preparation?.currentPositionQuantity ?? 0,
+      this.options.side,
+    )
+    const affordable = viopAffordableOrderContracts(
       preparation?.availableCollateral ?? null,
       preparation?.initialCollateral ?? null,
+      preparation?.currentPositionQuantity ?? 0,
+      this.options.side,
     )
     const sideColor = this.options.side === "BUY" ? BUY_COLOR : SELL_COLOR
     const chunks: TextChunk[] = [
@@ -449,7 +461,15 @@ export class ViopOrderTicket {
       fg(VALUE_COLOR)("\n"),
       ...metricLine("Order size", formatMoney(viopOrderSize(price, quantity, preparation?.contractSize ?? null), this.options.instrument.currency)),
       fg(VALUE_COLOR)("\n"),
-      ...metricLine("Required collateral", formatMoney(viopRequiredCollateral(quantity, preparation?.initialCollateral ?? null), this.options.instrument.currency)),
+      ...metricLine(
+        "Required collateral",
+        formatMoney(viopRequiredOrderCollateral(
+          quantity,
+          preparation?.initialCollateral ?? null,
+          preparation?.currentPositionQuantity ?? 0,
+          this.options.side,
+        ), this.options.instrument.currency),
+      ),
       fg(VALUE_COLOR)("\n\n"),
     ]
     if (this.kind === "MARKETABLE_LIMIT") {

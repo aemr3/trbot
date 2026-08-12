@@ -20,6 +20,7 @@ test("prepares a futures order with exchange limits, quote, collateral, and posi
     contractSize: 100,
     initialCollateral: 4_719.55,
     availableCollateral: 45_000,
+    currentPositionQuantity: 2,
     positionIntent: "SELL_TO_CLOSE",
   })
   expect(calls.find((call) => call.name === "prepareOrder")?.variables.positionIntent).toBe("SELL_TO_CLOSE")

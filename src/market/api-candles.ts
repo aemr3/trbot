@@ -35,8 +35,14 @@ const INTERVAL_BY_DURATION_MS = new Map<number, CandleInterval>([
   [30 * 24 * 60 * 60_000, "MONTH_1"],
 ])
 
+const INDEX_SYMBOL_BY_TARGET: Partial<Record<CandleChartTarget, string>> = {
+  BIST_100: "XU100",
+  BIST_30: "XU030",
+}
+
 export class ApiCandleSource implements CandleSource {
   private readonly chartInstrumentUids = new Map<string, string>()
+  private readonly indexInstrumentUids = new Map<string, string>()
 
   constructor(private readonly client: MarketApiClient) {}
 
@@ -49,7 +55,10 @@ export class ApiCandleSource implements CandleSource {
     if (options.target === "INSTRUMENT") {
       return this.loadInstrumentCandles(instrumentUid, range, options.signal)
     }
-    const chartInstrumentUid = await this.resolveChartInstrumentUid(instrumentUid, options.signal)
+    const indexSymbol = options.target ? INDEX_SYMBOL_BY_TARGET[options.target] : undefined
+    const chartInstrumentUid = indexSymbol
+      ? await this.resolveIndexInstrumentUid(indexSymbol, options.signal)
+      : await this.resolveChartInstrumentUid(instrumentUid, options.signal)
     const data = await this.client.call(
       marketOperations.advancedChart,
       { instrumentUid: chartInstrumentUid, selectedIndicatorIds: [], timeRange: range, intervalId: interval },
@@ -117,6 +126,22 @@ export class ApiCandleSource implements CandleSource {
     const chartInstrumentUid = data.instrument?.underlyingInstrumentUid ?? instrumentUid
     this.chartInstrumentUids.set(instrumentUid, chartInstrumentUid)
     return chartInstrumentUid
+  }
+
+  private async resolveIndexInstrumentUid(symbol: string, signal?: AbortSignal): Promise<string> {
+    const cached = this.indexInstrumentUids.get(symbol)
+    if (cached) return cached
+    const data = await this.client.call(
+      marketOperations.searchByAdvancedTools,
+      { query: symbol, tool: "ADVANCED_CHART", page: 0, size: 10 },
+      { signal },
+    )
+    const instrument = data.searchByAdvancedTools?.results.find(
+      (result) => result.symbol?.toUpperCase() === symbol,
+    )
+    if (!instrument) throw new Error(`${symbol} index is unavailable`)
+    this.indexInstrumentUids.set(symbol, instrument.uid)
+    return instrument.uid
   }
 }
 

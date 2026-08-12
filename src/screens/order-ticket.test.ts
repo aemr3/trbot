@@ -154,6 +154,7 @@ test("blocks review when available collateral is insufficient", async () => {
     contractSize: 100,
     initialCollateral: 4_719.55,
     availableCollateral: 0,
+    currentPositionQuantity: 0,
     positionIntent: side === "BUY" ? "BUY_TO_OPEN" : "SELL_TO_OPEN",
   })
   const ticket = new ViopOrderTicket(setup.renderer, {
@@ -174,6 +175,44 @@ test("blocks review when available collateral is insufficient", async () => {
   setup.renderer.destroy()
 })
 
+test("uses only residual reversal exposure for the collateral check", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 28 })
+  const source = fakeOrderSource()
+  source.prepareOrder = async () => ({
+    lowerLimit: 188.3,
+    upperLimit: 230.1,
+    lastPrice: 209.55,
+    ask: 210,
+    bid: 209.55,
+    priceScale: 2,
+    contractSize: 100,
+    initialCollateral: 4_719.55,
+    availableCollateral: 4_719.55,
+    currentPositionQuantity: 2,
+    positionIntent: "SELL_TO_CLOSE",
+  })
+  const ticket = new ViopOrderTicket(setup.renderer, {
+    source,
+    instrument,
+    side: "SELL",
+    onClose() {},
+  })
+  setup.renderer.root.add(ticket.root)
+  ticket.mount()
+
+  const closeFrame = await setup.waitForFrame((value) => value.includes("5 contracts available by collateral"))
+  expect(closeFrame.split("\n").find((line) => line.includes("Required collateral"))).toContain("₺0,00")
+
+  ticket.handleKey({ name: "5", sequence: "5" } as KeyEvent)
+  const reversalFrame = await setup.waitForFrame((value) => value.includes("₺104.775,00"))
+  expect(reversalFrame.split("\n").find((line) => line.includes("Required collateral"))).toContain("₺4.719,55")
+  ticket.handleKey({ name: "r", sequence: "r" } as KeyEvent)
+  await setup.waitForFrame((value) => value.includes("Review sell order"))
+
+  ticket.destroy()
+  setup.renderer.destroy()
+})
+
 function fakeOrderSource(placed: PlaceViopOrderRequest[] = []): ViopOrderSource {
   return {
     async prepareOrder({ side }) {
@@ -187,6 +226,7 @@ function fakeOrderSource(placed: PlaceViopOrderRequest[] = []): ViopOrderSource 
         contractSize: 100,
         initialCollateral: 4_719.55,
         availableCollateral: 50_000,
+        currentPositionQuantity: 0,
         positionIntent: side === "BUY" ? "BUY_TO_OPEN" : "SELL_TO_OPEN",
       }
     },

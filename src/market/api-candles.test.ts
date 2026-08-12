@@ -116,6 +116,66 @@ test("caches the resolved underlying stock uid between range requests", async ()
   expect(chartInstrumentUids).toEqual(["stock-1", "stock-1"])
 })
 
+test("resolves and caches BIST index instruments for advanced charts", async () => {
+  const calls: Array<{ operation: string; variables: Record<string, unknown> }> = []
+  const client = {
+    async call(operation: { name: string }, variables: Record<string, unknown>) {
+      calls.push({ operation: operation.name, variables })
+      if (operation.name === marketOperations.searchByAdvancedTools.name) {
+        return {
+          searchByAdvancedTools: {
+            results: [
+              { __typename: "InstrumentSearchResultItem", uid: "index-100", type: "INDEX", symbol: "XU100" },
+            ],
+            page: 0,
+            hasNext: false,
+          },
+        }
+      }
+      return {
+        advancedChart: {
+          data: [],
+          timeRange: variables.timeRange,
+          selectedInterval: { id: variables.intervalId, displayName: "" },
+          availableIntervalsByTimeRange: [],
+          intervalMs: 600_000,
+          currency: "TRY",
+        },
+      }
+    },
+  }
+  const source = new ApiCandleSource(client as never)
+
+  const first = await source.loadCandles("future-1", "INTRADAY", "MIN_10", { target: "BIST_100" })
+  await source.loadCandles("future-2", "WEEK", "HOUR_1", { target: "BIST_100" })
+
+  expect(first.instrumentUid).toBe("index-100")
+  expect(calls).toEqual([
+    {
+      operation: "searchByAdvancedTools",
+      variables: { query: "XU100", tool: "ADVANCED_CHART", page: 0, size: 10 },
+    },
+    {
+      operation: "advancedChart",
+      variables: {
+        instrumentUid: "index-100",
+        selectedIndicatorIds: [],
+        timeRange: "INTRADAY",
+        intervalId: "MIN_10",
+      },
+    },
+    {
+      operation: "advancedChart",
+      variables: {
+        instrumentUid: "index-100",
+        selectedIndicatorIds: [],
+        timeRange: "WEEK",
+        intervalId: "HOUR_1",
+      },
+    },
+  ])
+})
+
 test("loads the selected futures contract without resolving its underlying stock", async () => {
   const calls: Array<{ operation: string; instrumentId?: string; timeRange?: string }> = []
   const client = {

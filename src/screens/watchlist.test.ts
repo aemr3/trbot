@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
-import { CredentialsRequiredError } from "../api/index.ts"
+import type { ReinforcementBacktestSource } from "../automation/reinforcement/backtest-runner.ts"
+import { AuthenticationError } from "../api/index.ts"
 import { DEFAULT_INTERVALS_BY_RANGE, type CandleSource } from "../market/candle.ts"
+import { ApplicationLog } from "../logging/application-log.ts"
 import type {
   EquityQuoteListener,
   EquityQuoteStream,
@@ -22,6 +24,9 @@ import type {
   ViopOrderSource,
   ViopPositionExitSource,
 } from "../trading/order.ts"
+import { LogsScreen } from "./logs.ts"
+import { ReinforcementBacktestScreen } from "./reinforcement-backtest.ts"
+import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 import { WatchlistScreen } from "./watchlist.ts"
 import type { WatchlistPreferences } from "./watchlist-preferences.ts"
 
@@ -204,6 +209,7 @@ function fakeOrderSource(placed: PlaceViopOrderRequest[] = []): ViopOrderSource 
         contractSize: 10,
         initialCollateral: 4_719.55,
         availableCollateral: 45_000,
+        currentPositionQuantity: 0,
         positionIntent: side === "BUY" ? "BUY_TO_OPEN" : "SELL_TO_OPEN",
       }
     },
@@ -241,6 +247,171 @@ test("renders the VIOP, chart, and news panels with instrument data", async () =
   expect(frame).toContain("Vol 1.040.270.720 · OI 54.068")
 
   screen.destroy()
+  renderer.destroy()
+})
+
+test("switches between selected-stock and index news feeds", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const requests: Array<string | null> = []
+  const scopedNews: NewsSource = {
+    async listNews(options = {}) {
+      requests.push(options.instrumentUid ?? null)
+      const indexFeed = options.instrumentUid === undefined
+      return [{
+        uid: indexFeed ? "index-news" : "stock-news",
+        tag: "11 Ağu",
+        headline: indexFeed ? "BIST 100 closes higher" : "Selected stock announces results",
+        body: "",
+        publishedAt: null,
+        url: null,
+        attachments: [],
+      }]
+    },
+    async getArticle() {
+      return null
+    },
+  }
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news: scopedNews })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const stockFrame = await waitForFrame((frame) => frame.includes("Selected stock announces results"))
+  expect(stockFrame).toContain("Feed")
+  expect(stockFrame).toContain("Stock")
+  expect(stockFrame).toContain("Index")
+  expect(requests.at(-1)).toBe("u1")
+
+  mockInput.pressTab()
+  mockInput.pressTab()
+  mockInput.pressTab()
+  mockInput.pressArrow("right")
+  await waitForFrame((frame) => frame.includes("BIST 100 closes higher"))
+  expect(requests.at(-1)).toBeNull()
+
+  mockInput.pressArrow("left")
+  await waitForFrame((frame) => frame.includes("Selected stock announces results"))
+  expect(requests.at(-1)).toBe("u1")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("opens a 10-minute reinforcement backtest for the complete futures universe", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 160, height: 36, kittyKeyboard: true })
+  let selectedUids: string[] = []
+  const runControl: { reject?: (error: Error) => void } = {}
+  let aborted = false
+  const backtests: ReinforcementBacktestSource = {
+    run(selected, options) {
+      selectedUids = selected.map((instrument) => instrument.uid)
+      options.onProgress?.({
+        phase: "LOADING_HISTORY",
+        completed: 0,
+        total: selected.length,
+        currentSymbol: null,
+        sessionDates: 0,
+        instruments: 0,
+        skippedInstruments: 0,
+      })
+      options.signal?.addEventListener("abort", () => { aborted = true })
+      return new Promise((_, reject) => { runControl.reject = reject })
+    },
+  }
+  const logs = new ApplicationLog()
+  let workspace: TradingWorkspaceScreen | null = null
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    logs,
+    manageInput: false,
+    onOpenBacktest: () => workspace?.selectTab("backtest"),
+    onOpenLogs: () => workspace?.selectTab("logs"),
+  })
+  const backtest = new ReinforcementBacktestScreen(renderer, {
+    source: backtests,
+    instruments: () => screen.availableInstruments(),
+    onClose: () => workspace?.selectTab("watchlist"),
+    onOpenLogs: () => workspace?.selectTab("logs"),
+  })
+  const logScreen = new LogsScreen(renderer, { logs, onClose: () => workspace?.selectTab("watchlist") })
+  workspace = new TradingWorkspaceScreen(renderer, { watchlist: screen, backtest, logs: logScreen })
+  renderer.root.add(workspace.root)
+  workspace.mount()
+  const watchlistFrame = await waitForFrame((frame) => frame.includes("XU030 stock"))
+  const watchlistLines = watchlistFrame.split("\n")
+  expect(watchlistLines[0]).toContain("WATCHLIST")
+  expect(watchlistLines[1]).toContain("VIOP")
+
+  await mockInput.typeText("T")
+  const idleFrame = await waitForFrame((value) => value.includes("Ready to run"))
+  expect(idleFrame).not.toContain("PAPER REPLAY")
+  expect(selectedUids).toEqual([])
+  mockInput.pressEnter()
+  await waitForFrame((value) => value.includes("Loading historical candles"))
+  mockInput.pressKey("g", { shift: true })
+  await waitForFrame((value) => value.includes("APPLICATION LOGS"))
+  expect(aborted).toBe(false)
+  mockInput.pressKey("t", { shift: true })
+  await waitForFrame((value) => value.includes("Loading historical candles"))
+  expect(aborted).toBe(false)
+  runControl.reject?.(new Error("Backtest fixture stopped"))
+  await waitForFrame((value) => value.includes("Experiment failed") && value.includes("Backtest fixture stopped"))
+  expect(selectedUids).toEqual(["u1", "u2"])
+
+  workspace.destroy()
+  renderer.destroy()
+})
+
+test("opens application logs and retains full reinforcement backtest error details", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 28, kittyKeyboard: true })
+  const logs = new ApplicationLog()
+  const backtests: ReinforcementBacktestSource = {
+    async run() {
+      throw Object.assign(new Error("Bad Request"), {
+        statusCode: 400,
+        responseBody: '{"detail":"Unknown parameter: max_output_tokens"}',
+      })
+    },
+  }
+  let workspace: TradingWorkspaceScreen | null = null
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    logs,
+    manageInput: false,
+    onOpenBacktest: () => workspace?.selectTab("backtest"),
+    onOpenLogs: () => workspace?.selectTab("logs"),
+  })
+  const backtest = new ReinforcementBacktestScreen(renderer, {
+    source: backtests,
+    instruments: () => screen.availableInstruments(),
+    onClose: () => workspace?.selectTab("watchlist"),
+    onOpenLogs: () => workspace?.selectTab("logs"),
+    onError: (error) => logs.error("Reinforcement backtest", error),
+  })
+  const logScreen = new LogsScreen(renderer, { logs, onClose: () => workspace?.selectTab("watchlist") })
+  workspace = new TradingWorkspaceScreen(renderer, { watchlist: screen, backtest, logs: logScreen })
+  renderer.root.add(workspace.root)
+  workspace.mount()
+  await waitForFrame((frame) => frame.includes("XU030 stock"))
+
+  mockInput.pressKey("t", { shift: true })
+  await waitForFrame((frame) => frame.includes("Ready to run"))
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Experiment failed") && frame.includes("Bad Request"))
+
+  mockInput.pressKey("g", { shift: true })
+  const logFrame = await waitForFrame((frame) => frame.includes("APPLICATION LOGS") && frame.includes("Unknown parameter"))
+  expect(logFrame).toContain("Reinforcement backtest")
+  expect(logFrame).toContain("statusCode")
+  mockInput.pressKey("t", { shift: true })
+  await waitForFrame((frame) => frame.includes("Experiment failed") && !frame.includes("APPLICATION LOGS"))
+  mockInput.pressKey("w", { shift: true })
+  await waitForFrame((frame) => frame.includes("XU030 stock") && !frame.includes("APPLICATION LOGS"))
+
+  workspace.destroy()
   renderer.destroy()
 })
 
@@ -492,7 +663,7 @@ test("refreshes snapshot volumes and re-sorts without replacing live prices", as
   renderer.destroy()
 })
 
-test("cancels every pending VIOP order immediately with lowercase c", async () => {
+test("requires lowercase c twice before cancelling every pending VIOP order", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
   const cancelled: string[][] = []
   const cancellation: ViopOrderCancellationSource = {
@@ -522,6 +693,14 @@ test("cancels every pending VIOP order immediately with lowercase c", async () =
   await waitForFrame((frame) => frame.includes("Change ↓"))
   expect(cancelled).toHaveLength(0)
   await mockInput.typeText("c")
+  await waitForFrame((frame) => frame.includes("Press c again to cancel all pending orders."))
+  expect(cancelled).toHaveLength(0)
+  mockInput.pressArrow("down")
+  await waitForFrame((frame) => !frame.includes("Press c again to cancel all pending orders."))
+  await mockInput.typeText("c")
+  await waitForFrame((frame) => frame.includes("Press c again to cancel all pending orders."))
+  expect(cancelled).toHaveLength(0)
+  await mockInput.typeText("c")
   await waitForFrame((frame) => frame.includes("Cancelled 2 pending VIOP orders."))
   expect(cancelled).toEqual([["order-1", "order-2"]])
 
@@ -529,7 +708,7 @@ test("cancels every pending VIOP order immediately with lowercase c", async () =
   renderer.destroy()
 })
 
-test("submits exits for every VIOP position immediately with lowercase x", async () => {
+test("requires lowercase x twice before submitting exits for every VIOP position", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
   let exits = 0
   const positionExit: ViopPositionExitSource = {
@@ -558,8 +737,47 @@ test("submits exits for every VIOP position immediately with lowercase x", async
   mockInput.pressKey("x", { shift: true })
   expect(exits).toBe(0)
   await mockInput.typeText("x")
+  await waitForFrame((frame) => frame.includes("Press x again to exit all open positions."))
+  expect(exits).toBe(0)
+  await mockInput.typeText("x")
   await waitForFrame((frame) => frame.includes("Submitted exit orders for 2 VIOP positions."))
   expect(exits).toBe(1)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("expires destructive-action confirmation after its timeout", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+  let cancellations = 0
+  const cancellation: ViopOrderCancellationSource = {
+    async listPendingOrders() {
+      cancellations += 1
+      return []
+    },
+    async cancelPendingOrders() {
+      return { cancelledOrderUids: [], failures: [] }
+    },
+  }
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    orderCancellation: cancellation,
+    destructiveConfirmationTimeoutMs: 50,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("XU030 stock"))
+
+  await mockInput.typeText("c")
+  await waitForFrame((frame) => frame.includes("Press c again to cancel all pending orders."))
+  await Bun.sleep(75)
+  await waitForFrame((frame) => !frame.includes("Press c again to cancel all pending orders."))
+  await mockInput.typeText("c")
+  await waitForFrame((frame) => frame.includes("Press c again to cancel all pending orders."))
+  expect(cancellations).toBe(0)
 
   screen.destroy()
   renderer.destroy()
@@ -748,12 +966,12 @@ function viopRowSymbols(frame: string): string[] {
     .filter((symbol): symbol is string => Boolean(symbol))
 }
 
-test("notifies onSessionExpired when the session cannot be restored", async () => {
+test("notifies onSessionExpired when device relogin fails", async () => {
   const { renderer, waitFor } = await createTestRenderer({ width: 80, height: 20 })
   let expired = false
   const failing: ViopInstrumentSource = {
     async listInstruments() {
-      throw new CredentialsRequiredError()
+      throw new AuthenticationError("Device relogin failed")
     },
   }
 
@@ -793,7 +1011,9 @@ test("opens a news article on double-click and returns on a second double-click"
   await mockMouse.doubleClick(x, y)
   await waitForFrame((f) => f.includes("Full body text."))
 
-  await mockMouse.doubleClick(x, 2) // double-click the reader to go back
+  const readerLines = captureCharFrame().split("\n")
+  const readerY = readerLines.findIndex((line) => line.includes("Full body text."))
+  await mockMouse.doubleClick(x, readerY)
   await waitForFrame((f) => !f.includes("Full body text.") && f.includes("BIST 30 güne"))
   await renderOnce()
   expect(captureCharFrame()).not.toContain("Full body text.")
@@ -926,7 +1146,7 @@ test("keeps the chart usable in an 80-column terminal", async () => {
   renderer.destroy()
 })
 
-test("routes stock and futures streams to the selected chart asset", async () => {
+test("routes stock, futures, and index streams to the selected chart asset", async () => {
   const { renderer, mockInput, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({ width: 120, height: 24 })
   const equityQuotes = new FakeEquityQuoteStream()
   const quotes = new FakeQuoteStream()
@@ -972,6 +1192,24 @@ test("routes stock and futures streams to the selected chart asset", async () =>
   equityQuotes.emit("THYAO", 130, 1_786_084_900_000)
   await renderOnce()
   expect(captureCharFrame()).not.toContain("C 130,00")
+
+  await mockInput.typeText("f")
+  await waitForFrame((frame) => frame.includes("XU100 index"))
+  expect(equityQuotes.startedSymbols.at(-1)).toBe("XU100")
+  equityQuotes.emitConnection(true)
+  equityQuotes.emit("XU100", 11_250, 1_786_084_900_000)
+  await waitForFrame(
+    (frame) => frame.includes("XU100 index") && frame.includes("11.250,00") && frame.includes("● live"),
+  )
+
+  await mockInput.typeText("f")
+  await waitForFrame((frame) => frame.includes("XU030 index"))
+  expect(equityQuotes.startedSymbols.at(-1)).toBe("XU030")
+  equityQuotes.emitConnection(true)
+  equityQuotes.emit("XU030", 12_800, 1_786_085_000_000)
+  await waitForFrame(
+    (frame) => frame.includes("XU030 index") && frame.includes("12.800,00") && frame.includes("● live"),
+  )
 
   screen.destroy()
   expect(quotes.stopped).toBeTrue()

@@ -69,6 +69,29 @@ export interface InstrumentVariables {
   [key: string]: unknown
 }
 
+export interface AdvancedToolSearchResult {
+  __typename: string
+  uid: string
+  type: string | null
+  symbol?: string | null
+}
+
+export interface AdvancedToolSearchData {
+  searchByAdvancedTools?: {
+    results: AdvancedToolSearchResult[]
+    page: number
+    hasNext: boolean
+  } | null
+}
+
+export interface AdvancedToolSearchVariables {
+  query: string
+  tool: string
+  page: number
+  size: number
+  [key: string]: unknown
+}
+
 export interface FutureDetailItem {
   key: string
   text: string
@@ -213,6 +236,11 @@ export const marketOperations = {
     "getInstrument",
     "query",
     "query getInstrument($instrumentId: String!) { instrument(uid: $instrumentId) { __typename ... on Future { underlyingInstrumentUid } } }",
+  ),
+  searchByAdvancedTools: defineOperation<AdvancedToolSearchData, AdvancedToolSearchVariables>(
+    "searchByAdvancedTools",
+    "query",
+    "query searchByAdvancedTools($query: String!, $tool: DiscoveryAdvancedTool!, $page: Int!, $size: Int!) { searchByAdvancedTools(query: $query, tool: $tool, page: $page, size: $size) { results { __typename uid type ... on InstrumentSearchResultItem { symbol } } page hasNext } }",
   ),
   futureDetail: defineOperation<FutureDetailData, FutureDetailVariables>(
     "futureDetail",

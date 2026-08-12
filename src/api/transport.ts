@@ -8,6 +8,7 @@ export interface HttpRequest {
 export interface HttpResponse {
   status: number
   body: string
+  retryAfterMs?: number
 }
 
 export interface StreamRequest {
@@ -35,6 +36,25 @@ export class StreamHttpError extends Error {
   }
 }
 
+export function isTransientStreamError(error: unknown): boolean {
+  const pending: unknown[] = [error]
+  const seen = new Set<object>()
+  while (pending.length > 0) {
+    const value = pending.shift()
+    if (!value || typeof value !== "object" || seen.has(value)) continue
+    seen.add(value)
+    if (value instanceof StreamHttpError && value.status >= 500) return true
+    if (value instanceof Error && value.message.includes("socket connection was closed unexpectedly")) return true
+    const record = value as Record<string, unknown>
+    for (const key of ["cause", "error", "errors"]) {
+      const nested = record[key]
+      if (Array.isArray(nested)) pending.push(...nested)
+      else if (nested !== undefined) pending.push(nested)
+    }
+  }
+  return false
+}
+
 export class FetchTransport implements Transport {
   async request(request: HttpRequest): Promise<HttpResponse> {
     const response = await fetch(request.url, {
@@ -47,6 +67,7 @@ export class FetchTransport implements Transport {
     return {
       status: response.status,
       body: await response.text(),
+      retryAfterMs: parseRetryAfter(response.headers.get("retry-after")),
     }
   }
 
@@ -61,6 +82,14 @@ export class FetchTransport implements Transport {
     }
     yield* readSse(response.body, request.signal)
   }
+}
+
+function parseRetryAfter(value: string | null, now: number = Date.now()): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000)
+  const date = Date.parse(value)
+  return Number.isFinite(date) ? Math.max(0, date - now) : undefined
 }
 
 // Parses a text/event-stream body into discrete frames. Frames are separated by

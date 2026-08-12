@@ -6,6 +6,7 @@ import type { HttpResponse, SseFrame, Transport } from "./transport.ts"
 
 const AUTH_ERROR_CODES = new Set([9002, 9008, 9010])
 const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 120_000
+const DEFAULT_AUTH_RATE_LIMIT_MS = 30_000
 const API_URL = "https://api.getmidas.com"
 const STREAM_URL = "https://stream.getmidas.com"
 const USER_AGENT = "Midas/3.2.1 (iPhone; iOS 18.1.1; Scale/3.00) AppleWebKit/605.1.15 (KHTML, like Gecko)"
@@ -55,8 +56,11 @@ export class ApiHttpError extends Error {
   constructor(
     readonly status: number,
     readonly responseBody: string,
+    readonly retryAfterMs?: number,
+    readonly operationName?: string,
   ) {
-    super(`API returned HTTP ${status}`)
+    const retry = retryAfterMs === undefined ? "Wait a moment and try again." : `Retry in ${Math.ceil(retryAfterMs / 1_000)}s.`
+    super(status === 429 ? `API rate limit reached. ${retry}` : `API returned HTTP ${status}`)
     this.name = "ApiHttpError"
   }
 }
@@ -82,6 +86,7 @@ export class GraphqlError extends Error {
 export class ApiClient {
   private readonly now: () => number
   private authenticationInFlight: Promise<ApiSession> | null = null
+  private authenticationRateLimit: { until: number; operationName?: string } | null = null
 
   constructor(private readonly options: ApiClientOptions) {
     this.now = options.now ?? Date.now
@@ -89,6 +94,10 @@ export class ApiClient {
 
   authenticate(): Promise<ApiSession> {
     return this.runAuthentication(() => this.authenticateInternal(false))
+  }
+
+  reauthenticate(): Promise<ApiSession> {
+    return this.runAuthentication(() => this.authenticateInternal(true))
   }
 
   async completeLogin(verificationCode: string): Promise<ApiSession> {
@@ -127,7 +136,7 @@ export class ApiClient {
     try {
       return await this.request(operation, variables, session.accessToken, options.signal)
     } catch (error) {
-      if (!isAuthenticationError(error)) throw error
+      if (!isApiAuthenticationError(error)) throw error
     }
 
     const recovered = await this.runAuthentication(() => this.authenticateInternal(true))
@@ -160,16 +169,17 @@ export class ApiClient {
     const state = await this.loadOrCreateState()
 
     if (!force && hasUsableAccessToken(state, this.now())) return sessionFrom(state)
-    if (!force && state.loginReferenceCode) {
+    if (state.loginReferenceCode) {
       if (!this.hasCredentials()) throw new CredentialsRequiredError()
       throw new OtpRequiredError(state.loginReferenceCode, null)
     }
+    this.throwIfAuthenticationRateLimited()
 
     if (state.refreshToken && state.memberUid) {
       try {
         return await this.refresh(state)
       } catch (error) {
-        if (!isAuthenticationError(error)) throw error
+        if (!isApiAuthenticationError(error)) throw error
       }
     }
 
@@ -178,7 +188,7 @@ export class ApiClient {
       try {
         return await this.passwordRelogin(state)
       } catch (error) {
-        if (isAuthenticationError(error)) {
+        if (isApiAuthenticationError(error)) {
           const resetState: AuthState = {
             ...state,
             memberUid: null,
@@ -191,10 +201,7 @@ export class ApiClient {
           await this.options.store.put(resetState)
           return this.initializeLogin(resetState)
         }
-        throw new AuthenticationError(
-          "Device relogin failed",
-          { cause: error },
-        )
+        throw error
       }
     }
 
@@ -366,16 +373,37 @@ export class ApiClient {
 
   private runAuthentication(work: () => Promise<ApiSession>): Promise<ApiSession> {
     if (this.authenticationInFlight) return this.authenticationInFlight
-    this.authenticationInFlight = work().finally(() => {
-      this.authenticationInFlight = null
-    })
+    this.authenticationInFlight = work()
+      .catch((error: unknown) => {
+        if (error instanceof ApiHttpError && error.status === 429) {
+          this.authenticationRateLimit = {
+            until: this.now() + (error.retryAfterMs ?? DEFAULT_AUTH_RATE_LIMIT_MS),
+            operationName: error.operationName,
+          }
+        }
+        throw error
+      })
+      .finally(() => {
+        this.authenticationInFlight = null
+      })
     return this.authenticationInFlight
+  }
+
+  private throwIfAuthenticationRateLimited(): void {
+    const rateLimit = this.authenticationRateLimit
+    if (!rateLimit) return
+    const remaining = rateLimit.until - this.now()
+    if (remaining <= 0) {
+      this.authenticationRateLimit = null
+      return
+    }
+    throw new ApiHttpError(429, "Unknown Error", remaining, rateLimit.operationName)
   }
 }
 
 function parseResponse<TData>(operationName: string, response: HttpResponse): TData {
   if (response.status < 200 || response.status >= 300) {
-    throw new ApiHttpError(response.status, response.body)
+    throw new ApiHttpError(response.status, response.body, response.retryAfterMs, operationName)
   }
 
   let parsed: { data?: TData; errors?: unknown[] }
@@ -397,7 +425,13 @@ function buildStreamUrl(base: string, query?: Record<string, string>): string {
   return pairs.length > 0 ? `${base}?${pairs.join("&")}` : base
 }
 
-function isAuthenticationError(error: unknown): boolean {
+export function requiresAuthentication(error: unknown): boolean {
+  return error instanceof AuthenticationError
+    || error instanceof OtpRequiredError
+    || isApiAuthenticationError(error)
+}
+
+function isApiAuthenticationError(error: unknown): boolean {
   if (error instanceof ApiHttpError) return error.status === 401 || error.status === 403
   return error instanceof GraphqlError && error.codes.some((code) => AUTH_ERROR_CODES.has(code))
 }
