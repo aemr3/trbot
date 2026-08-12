@@ -1,0 +1,309 @@
+{
+  "formatVersion": 1,
+  "baseUrl": "https://stream.getmidas.com",
+  "method": "GET",
+  "accept": "text/event-stream",
+  "authentication": "Bearer access token",
+  "payloadSchemas": "sse-streams.md",
+  "endpoints": [
+    {
+      "name": "MemberFeature",
+      "path": "/reactive-member-feature-api/api/v1/sse/member-features/{memberUid}",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true }
+      ],
+      "responseType": "MemberFeatureEvent"
+    },
+    {
+      "name": "AdvancedChart",
+      "path": "/reactive-chart-api/v1/charts/advanced-chart/stream",
+      "parameters": [
+        { "name": "symbol", "location": "query", "type": "string", "required": true },
+        { "name": "country", "location": "query", "type": "string", "required": true }
+      ],
+      "responseType": "AdvancedChartUpdate"
+    },
+    {
+      "name": "Candlestick",
+      "path": "/reactive-chart-api/v2/charts/candle-stick/stream",
+      "parameters": [
+        { "name": "symbol", "location": "query", "type": "string", "required": true },
+        { "name": "country", "location": "query", "type": "string", "required": true },
+        { "name": "currency", "location": "query", "type": "string", "required": true },
+        { "name": "overnightEnabled", "location": "query", "type": "boolean", "required": true, "fixedValue": true }
+      ],
+      "responseType": "CandlestickUpdate"
+    },
+    {
+      "name": "Ticker",
+      "path": "/reactive-market-api/v1/instruments/trade-price/stream",
+      "parameters": [
+        { "name": "<countryCode>", "location": "query-key", "type": "string", "required": true, "description": "One or more dynamic country-code keys whose values are instrument symbols" },
+        { "name": "overnightEnabled", "location": "query", "type": "boolean", "required": true, "fixedValue": true },
+        { "name": "currency", "location": "query", "type": "string", "required": false }
+      ],
+      "responseType": "TickerUpdate[]"
+    },
+    {
+      "name": "OrderBook",
+      "path": "/reactive-market-depth-api/v2/depth/stream",
+      "parameters": [
+        { "name": "symbol", "location": "query", "type": "string", "required": true },
+        { "name": "type", "location": "query", "type": "string", "required": true, "fixedValue": "DETAIL" }
+      ],
+      "responseType": "OrderBookUpdate"
+    },
+    {
+      "name": "OrderBookSummary",
+      "path": "/reactive-market-depth-api/v2/depth/stream",
+      "parameters": [
+        { "name": "symbol", "location": "query", "type": "string", "required": true },
+        { "name": "type", "location": "query", "type": "string", "required": true, "fixedValue": "SUMMARY" }
+      ],
+      "responseType": "OrderBookSummaryUpdate"
+    },
+    {
+      "name": "Positions",
+      "path": "/reactive-position-api/v2/stream/members/{memberUid}",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "eventTypes", "location": "query", "type": "string", "required": true, "fixedValue": "position" }
+      ],
+      "responseType": "PositionUpdate[]"
+    },
+    {
+      "name": "PositionAndOrder",
+      "path": "/reactive-order-api/v2/stream/members/{memberUid}/assets/{assetUid}",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "assetUid", "location": "path", "type": "string", "required": true },
+        { "name": "eventTypes", "location": "query", "type": "string", "required": true, "fixedValue": "position,order,dividendPayment,optionExercise" }
+      ],
+      "responseType": "PositionUpdate[] | OrderUpdate[] | DividendPaymentUpdate[] | OptionExerciseUpdate[]",
+      "eventDispatch": [
+        { "event": "position", "responseType": "PositionUpdate[]" },
+        { "event": "order", "responseType": "OrderUpdate[]" },
+        { "event": "dividendPayment", "responseType": "DividendPaymentUpdate[]" },
+        { "event": "optionExercise", "responseType": "OptionExerciseUpdate[]" }
+      ]
+    },
+    {
+      "name": "OrderResult",
+      "path": "/reactive-order-api/v1/stream/members/{memberUid}/order/{orderUid}",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "orderUid", "location": "path", "type": "string", "required": true }
+      ],
+      "responseType": "OrderResultUpdate"
+    },
+    {
+      "name": "OptionExerciseResult",
+      "path": "/reactive-order-api/v1/stream/members/{memberUid}/exercise/{exerciseUid}",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "exerciseUid", "location": "path", "type": "string", "required": true }
+      ],
+      "responseType": "OptionExerciseResultUpdate"
+    },
+    {
+      "name": "Overview",
+      "path": "/reactive-portfolio-api/v1/stream/overview-sse",
+      "parameters": [],
+      "responseType": "OverviewCollateralInfoPayload | OverviewPendingStockPayload | OverviewPendingCashPayload | void",
+      "eventDispatch": [
+        { "event": "COLLATERAL_INFO", "responseType": "OverviewCollateralInfoPayload" },
+        { "event": "VIOP_ACCOUNT_CREATED", "responseType": "void" },
+        { "event": "PENDING_STOCK", "responseType": "OverviewPendingStockPayload" },
+        { "event": "PENDING_CASH", "responseType": "OverviewPendingCashPayload" }
+      ]
+    },
+    {
+      "name": "PortfolioValue",
+      "path": "/reactive-portfolio-api/v1/stream/portfolio-value",
+      "parameters": [
+        { "name": "timeRange", "location": "query", "type": "string", "required": true }
+      ],
+      "responseType": "PortfolioValueUpdate"
+    },
+    {
+      "name": "ReactivePortfolio",
+      "path": "/reactive-portfolio-api/v1/stream/account-summary-evictions",
+      "parameters": [],
+      "responseType": "void",
+      "responseNotes": "Every received frame invalidates account-summary state; the client deliberately ignores frame data"
+    },
+    {
+      "name": "PriceUpdate",
+      "path": "/reactive-viop-api/v1/viop/futures/price-quote",
+      "parameters": [
+        { "name": "symbol", "location": "query", "type": "comma-separated string", "required": true }
+      ],
+      "responseType": "FuturePriceUpdate"
+    },
+    {
+      "name": "FuturePreviewUpdate",
+      "path": "/reactive-viop-api/v1/viop/futures/detail",
+      "parameters": [
+        { "name": "symbol", "location": "query", "type": "comma-separated string", "required": true }
+      ],
+      "responseType": "FuturePreviewUpdate"
+    },
+    {
+      "name": "OptionPriceUpdate",
+      "path": "/reactive-options-api/v1/options/trade-quotes/stream",
+      "parameters": [
+        { "name": "symbol", "location": "query", "type": "comma-separated string", "required": true }
+      ],
+      "responseType": "OptionPriceUpdate"
+    },
+    {
+      "name": "OptionPreviewUpdate",
+      "path": "/reactive-options-api/v1/options/preview/stream",
+      "parameters": [
+        { "name": "symbol", "location": "query", "type": "comma-separated string", "required": true },
+        { "name": "optionOrderType", "location": "query", "type": "OrderTransactionType", "required": true }
+      ],
+      "responseType": "OptionPreviewUpdate"
+    },
+    {
+      "name": "OptionChainUpdate",
+      "path": "/reactive-options-api/v1/options/chain/stream",
+      "parameters": [
+        { "name": "underlyingInstrumentSymbol", "location": "query", "type": "string", "required": true },
+        { "name": "date", "location": "query", "type": "date (yyyy-MM-dd)", "required": true },
+        { "name": "optionType", "location": "query", "type": "OptionType", "required": true },
+        { "name": "optionOrderType", "location": "query", "type": "OrderTransactionType", "required": true }
+      ],
+      "responseType": "OptionChainUpdate"
+    },
+    {
+      "name": "OptionPositionUpdate",
+      "path": "/reactive-order-api/v2/stream/members/{memberUid}/underlyingInstrument/{instrumentUid}",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "instrumentUid", "location": "path", "type": "string", "required": true }
+      ],
+      "responseType": "OptionPositionUpdate"
+    },
+    {
+      "name": "WarrantPriceUpdate",
+      "path": "/reactive-warrant-api/v1/price/stream",
+      "parameters": [
+        { "name": "symbol", "location": "query", "type": "comma-separated string", "required": true }
+      ],
+      "responseType": "WarrantPriceUpdate"
+    },
+    {
+      "name": "WarrantChainUpdate",
+      "path": "/reactive-warrant-api/v1/chain/stream",
+      "parameters": [
+        { "name": "symbol", "location": "query", "type": "comma-separated string", "required": true }
+      ],
+      "responseType": "WarrantChainUpdate"
+    },
+    {
+      "name": "WarrantPositionUpdate",
+      "path": "/reactive-order-api/v2/stream/members/{memberUid}/underlyingInstrument/{instrumentUid}",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "instrumentUid", "location": "path", "type": "string", "required": true }
+      ],
+      "responseType": "WarrantPositionUpdate"
+    },
+    {
+      "name": "CryptoAdvancedChart",
+      "path": "/crypto-chart-stream/v1/advanced-chart/stream",
+      "parameters": [
+        { "name": "symbols", "location": "query", "type": "string", "required": true }
+      ],
+      "responseType": "CryptoAdvancedChartUpdate"
+    },
+    {
+      "name": "CryptoCandlestick",
+      "path": "/crypto-chart-stream/v1/candlestick/stream",
+      "parameters": [
+        { "name": "symbols", "location": "query", "type": "string", "required": true }
+      ],
+      "responseType": "CryptoCandlestickUpdate"
+    },
+    {
+      "name": "CryptoTicker",
+      "path": "/crypto-price-stream/v1/prices/stream",
+      "parameters": [
+        { "name": "symbols", "location": "query", "type": "comma-separated string", "required": true },
+        { "name": "sourcePage", "location": "query", "type": "string", "required": false },
+        { "name": "orderType", "location": "query", "type": "CryptoOrderType", "required": false },
+        { "name": "ignoreSpread", "location": "query", "type": "boolean", "required": false }
+      ],
+      "responseType": "CryptoTickerUpdate[]"
+    },
+    {
+      "name": "CryptoPositions",
+      "path": "/crypto-portfolio-stream/v1/members/{memberUid}/positions/overview",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "instrument_uid", "location": "query", "type": "string", "required": true },
+        { "name": "currency_instrument_uid", "location": "query", "type": "string", "required": false },
+        { "name": "is_usdt_cash", "location": "query", "type": "boolean", "required": true, "fixedValue": false }
+      ],
+      "responseType": "CryptoPositionUpdate[]",
+      "eventDispatch": [
+        { "event": "position", "responseType": "CryptoPositionUpdate[]" }
+      ]
+    },
+    {
+      "name": "CryptoOverview",
+      "path": "/crypto-portfolio-stream/v1/members/{memberUid}/positions/overview",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "currency_instrument_symbol", "location": "query", "type": "string", "required": false },
+        { "name": "is_usdt_cash", "location": "query", "type": "boolean", "required": true, "fixedValue": true }
+      ],
+      "responseType": "CryptoPositionUpdate[] | CryptoCashBalanceUpdate[] | CryptoPortfolioPerformanceUpdate[]",
+      "eventDispatch": [
+        { "event": "position", "responseType": "CryptoPositionUpdate[]" },
+        { "event": "cash", "responseType": "CryptoCashBalanceUpdate[]" },
+        { "event": "performance", "responseType": "CryptoPortfolioPerformanceUpdate[]" }
+      ]
+    },
+    {
+      "name": "CryptoOrderResult",
+      "path": "/crypto-transaction-query-stream/v1/members/{memberUid}/orders/{orderUid}",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "orderUid", "location": "path", "type": "string", "required": true },
+        { "name": "streamVersion", "location": "query", "type": "integer", "required": true, "fixedValue": 2 }
+      ],
+      "responseType": "CryptoOrderResultSubscriptionResponse"
+    },
+    {
+      "name": "CryptoWithdrawResult",
+      "path": "/crypto-transaction-query-stream/v1/members/{memberUid}/crypto-transfers/{transferUid}",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "transferUid", "location": "path", "type": "string", "required": true }
+      ],
+      "responseType": "CryptoWithdrawResultSubscriptionResponse"
+    },
+    {
+      "name": "CryptoFixedStakingResult",
+      "path": "/crypto-transaction-query-stream/v1/members/{memberUid}/crypto-staking-actions/{actionUid}",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "actionUid", "location": "path", "type": "string", "required": true }
+      ],
+      "responseType": "CryptoFixedStakingResultSubscriptionResponse"
+    },
+    {
+      "name": "AIAnalysis",
+      "path": "/pro-genai-api/v1/stream",
+      "parameters": [
+        { "name": "instrumentUid", "location": "query", "type": "string", "required": true },
+        { "name": "advancedTool", "location": "query", "type": "AdvancedTool", "required": true },
+        { "name": "startDate", "location": "query", "type": "string", "format": "yyyy-MM-dd", "timezone": "UTC", "required": false },
+        { "name": "endDate", "location": "query", "type": "string", "format": "yyyy-MM-dd", "timezone": "UTC", "required": false }
+      ],
+      "responseType": "AIAnalysis"
+    }
+  ]
+}

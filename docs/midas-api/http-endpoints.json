@@ -1,0 +1,111 @@
+{
+  "formatVersion": 1,
+  "baseUrl": "https://api.getmidas.com",
+  "endpoints": [
+    {
+      "method": "POST",
+      "baseUrl": "https://api.getmidas.com",
+      "path": "/router-graphql",
+      "authentication": "Bearer access token except initial authentication operations",
+      "contentType": "application/json",
+      "parameters": [
+        { "name": "operationName", "location": "body", "type": "string", "required": true },
+        { "name": "query", "location": "body", "type": "string", "required": true },
+        { "name": "variables", "location": "body", "type": "object", "required": true }
+      ],
+      "responseType": "GraphqlResponse<T>",
+      "operationContracts": "graphql-operations.json.gz"
+    },
+    {
+      "method": "POST",
+      "path": "/onboarding-api/v1/members/phone-number/change/{phoneNumberChangeUid}/document",
+      "contentType": "multipart/form-data",
+      "parameters": [
+        { "name": "phoneNumberChangeUid", "location": "path", "type": "string", "required": true },
+        { "name": "fileType", "location": "query", "type": "string", "required": true },
+        { "name": "multipartFile", "location": "multipart", "type": "binary", "required": true }
+      ],
+      "responseType": "void"
+    },
+    {
+      "method": "POST",
+      "path": "/onboarding-api/v1/members/{memberUid}/document/upload",
+      "contentType": "multipart/form-data",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "fileType", "location": "query", "type": "string", "required": true },
+        { "name": "fileSubType", "location": "query", "type": "string", "required": true },
+        { "name": "multipartFile", "location": "multipart", "type": "binary", "required": true }
+      ],
+      "responseType": "void"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/salesforce/members/{memberUid}/case/{caseId}/content-version/upload",
+      "contentType": "multipart/form-data",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "caseId", "location": "path", "type": "string", "required": true },
+        { "name": "file", "location": "multipart", "type": "binary", "required": true }
+      ],
+      "responseType": "void"
+    },
+    {
+      "method": "POST",
+      "path": "/onboarding-api/v1/members/{memberUid}/qualified-investor/document/upload",
+      "contentType": "multipart/form-data",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "multipartFile", "location": "multipart", "type": "binary", "required": true }
+      ],
+      "responseType": "UploadQualifiedInvestorDocumentResponse"
+    },
+    {
+      "method": "POST",
+      "path": "/identity-verification-api/v1/identity-verification/{memberUid}/document/upload",
+      "contentType": "multipart/form-data",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "fileSubType", "location": "query", "type": "string", "required": true },
+        { "name": "documentList[0].fileType", "location": "multipart", "type": "string", "required": true, "fixedValue": "IDENTITY_FRONT" },
+        { "name": "documentList[0].multipartFile", "location": "multipart", "type": "binary", "required": true },
+        { "name": "documentList[1].fileType", "location": "multipart", "type": "string", "required": false, "fixedValue": "IDENTITY_BACK", "requiredWhen": "documentList[1].multipartFile is present" },
+        { "name": "documentList[1].multipartFile", "location": "multipart", "type": "binary", "required": false }
+      ],
+      "responseType": "OnboardingStatusResponse"
+    },
+    {
+      "method": "POST",
+      "path": "/identity-verification-api/v1/identity-verification/{memberUid}/documents",
+      "contentType": "multipart/form-data",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "fileType", "location": "query", "type": "string", "required": true },
+        { "name": "multipartFile", "location": "multipart", "type": "binary", "required": true }
+      ],
+      "responseType": "void"
+    },
+    {
+      "method": "POST",
+      "path": "/onboarding-api/v1/members/{memberUid}/address/document",
+      "contentType": "multipart/form-data",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "fileSubType", "location": "query", "type": "string", "required": true },
+        { "name": "addressDocument", "location": "multipart", "type": "binary", "required": true }
+      ],
+      "responseType": "OnboardingStatusResponse"
+    },
+    {
+      "method": "POST",
+      "path": "/onboarding-api/v1/members/{memberUid}/company/corporate-documents",
+      "contentType": "multipart/form-data",
+      "parameters": [
+        { "name": "memberUid", "location": "path", "type": "string", "required": true },
+        { "name": "signatureCircular", "location": "multipart", "type": "binary", "required": true },
+        { "name": "shareholderIdentities", "location": "multipart", "type": "binary", "required": false }
+      ],
+      "responseType": "OnboardingStatusResponse"
+    }
+  ]
+}
