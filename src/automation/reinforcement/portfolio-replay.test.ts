@@ -47,6 +47,31 @@ test("keeps portfolio evaluation frozen across multiple tickers", () => {
   expect(policy.snapshot()).toEqual(snapshot)
 })
 
+test("maintains prior decision state incrementally between prepared events", () => {
+  const input = episode("future-1", "F_ONE0826")
+  input.candles.push({
+    timestamp: input.candles[20]!.timestamp + 10 * 60_000,
+    open: 101,
+    high: 102.2,
+    low: 100.8,
+    close: 102,
+    volume: 2_000,
+  })
+  input.decisionIndexes = [19, 20]
+
+  const result = replayPortfolioSession(longPolicy(), [input])
+
+  expect(result.records[1]!.context.strategyState).toMatchObject({
+    runningBalance: 20_100,
+    cumulativeNetPnl: 100,
+    priorPredictions: 1,
+    priorNonFlatTargets: 1,
+    priorPositiveIntervals: 1,
+    priorNegativeIntervals: 0,
+  })
+  expect(result.records[1]!.context.strategyState.recentDecisions).toHaveLength(1)
+})
+
 test("applies turnover penalty only to training reward without changing execution P&L", () => {
   const unpenalized = replayPortfolioSession(longPolicy(), [episode("future-1", "F_ONE0826")], {
     training: true,

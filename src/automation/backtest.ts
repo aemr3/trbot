@@ -150,6 +150,7 @@ export interface TradingContextState {
   priorDecisions: PriorDecisionSnapshot[]
   startingBalance: number
   portfolio: PortfolioStateSnapshot | null
+  strategyState: StrategyStateSnapshot | null
 }
 
 export interface TradingContext {
@@ -167,6 +168,13 @@ export interface TradingContext {
   collateral: CollateralSnapshot
   rules: MarketRuleSnapshot
   costs: BacktestCosts
+}
+
+export interface PointInTimeMarketSnapshot {
+  asOf: number
+  candles: Candle[]
+  indicators: IndicatorSnapshot
+  session: TradingSessionSnapshot
 }
 
 export interface TradingDecision {
@@ -326,6 +334,19 @@ export function buildTradingContext(
   state: Partial<TradingContextState> = {},
   costs: BacktestCosts = DEFAULT_BACKTEST_COSTS,
 ): TradingContext {
+  return buildTradingContextFromSnapshot(
+    prepareTradingMarketSnapshot(candles, decisionIndex),
+    identity,
+    rules,
+    state,
+    costs,
+  )
+}
+
+export function prepareTradingMarketSnapshot(
+  candles: Candle[],
+  decisionIndex: number,
+): PointInTimeMarketSnapshot {
   if (decisionIndex < BACKTEST_MIN_CONTEXT_BARS - 1 || decisionIndex >= candles.length) {
     throw new Error("Backtest decision does not have enough point-in-time candle history")
   }
@@ -333,6 +354,23 @@ export function buildTradingContext(
   const contextCandles = history.slice(-BACKTEST_MAX_CONTEXT_BARS).map((candle) => ({ ...candle }))
   const current = history.at(-1)
   if (!current) throw new Error("Backtest decision candle is missing")
+  return {
+    asOf: current.timestamp,
+    candles: contextCandles,
+    indicators: calculateIndicatorSnapshot(history),
+    session: calculateSessionSnapshot(history),
+  }
+}
+
+export function buildTradingContextFromSnapshot(
+  market: PointInTimeMarketSnapshot,
+  identity: ContextIdentity,
+  rules: MarketRuleSnapshot,
+  state: Partial<TradingContextState> = {},
+  costs: BacktestCosts = DEFAULT_BACKTEST_COSTS,
+): TradingContext {
+  const current = market.candles.at(-1)
+  if (!current) throw new Error("Backtest market snapshot has no candles")
   const startingBalance = positiveFinite(state.startingBalance)
     ?? positiveFinite(rules.initialCollateral)
     ?? current.close * rules.contractMultiplier
@@ -343,27 +381,28 @@ export function buildTradingContext(
   const usedByThisContract = portfolio.positions.find(
     (position) => position.instrumentUid === identity.instrumentUid,
   )?.initialCollateral ?? 0
+  const strategyState = state.strategyState ?? {
+    startingBalance,
+    runningBalance: startingBalance + cumulativeNetPnl,
+    cumulativeNetPnl,
+    priorPredictions: priorDecisions.length,
+    priorNonFlatTargets: priorDecisions.filter((decision) => decision.action !== "FLAT").length,
+    priorPositiveIntervals: priorDecisions.filter((decision) => decision.netPnl > 0).length,
+    priorNegativeIntervals: priorDecisions.filter((decision) => decision.netPnl < 0).length,
+    recentDecisions: priorDecisions.slice(-5).map((decision) => ({ ...decision })),
+  }
 
   return {
     instrumentUid: identity.instrumentUid,
     symbol: identity.symbol,
     timeframe: BACKTEST_TIMEFRAME,
     horizonBars: BACKTEST_HORIZON_BARS,
-    asOf: current.timestamp,
-    candles: contextCandles,
-    indicators: calculateIndicatorSnapshot(history),
-    session: calculateSessionSnapshot(history),
+    asOf: market.asOf,
+    candles: market.candles,
+    indicators: market.indicators,
+    session: market.session,
     universe: state.universe ?? null,
-    strategyState: {
-      startingBalance,
-      runningBalance: startingBalance + cumulativeNetPnl,
-      cumulativeNetPnl,
-      priorPredictions: priorDecisions.length,
-      priorNonFlatTargets: priorDecisions.filter((decision) => decision.action !== "FLAT").length,
-      priorPositiveIntervals: priorDecisions.filter((decision) => decision.netPnl > 0).length,
-      priorNegativeIntervals: priorDecisions.filter((decision) => decision.netPnl < 0).length,
-      recentDecisions: priorDecisions.slice(-5).map((decision) => ({ ...decision })),
-    },
+    strategyState,
     portfolio,
     collateral: {
       totalBalance: portfolio.equity,

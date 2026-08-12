@@ -19,11 +19,16 @@ import {
   type ReinforcementPolicy,
 } from "./linear-q-policy.ts"
 import {
-  evaluatePortfolioSessions,
-  replayPortfolioSession,
+  evaluatePreparedPortfolioSessions,
+  replayPreparedPortfolioSession,
   summarizeEvaluation,
   type PortfolioReplayResult,
 } from "./portfolio-replay.ts"
+import {
+  filterPreparedReplayDates,
+  prepareReplayDataset,
+  type PreparedReplaySession,
+} from "./prepared-replay.ts"
 import type { ReinforcementReplayEpisode } from "./replay.ts"
 import {
   REINFORCEMENT_FEATURE_VERSION,
@@ -100,6 +105,11 @@ export interface ExperimentRunOptions {
   now: number
   signal?: AbortSignal
   onProgress?: (progress: { phase: "VALIDATING" | "TESTING" | "PERSISTING"; completed: number; total: number }) => void
+}
+
+export interface ReinforcementExperimentResult {
+  experiment: ReinforcementExperimentArtifact
+  policy: ReinforcementPolicyArtifact | null
 }
 
 export function buildWalkForwardWindows(
@@ -191,12 +201,10 @@ export function experimentId(manifest: ReinforcementExperimentManifest): string 
   return hasher.digest("hex")
 }
 
-export async function runWalkForwardExperiment(options: ExperimentRunOptions): Promise<{
-  experiment: ReinforcementExperimentArtifact
-  policy: ReinforcementPolicyArtifact | null
-}> {
+export async function runWalkForwardExperiment(options: ExperimentRunOptions): Promise<ReinforcementExperimentResult> {
   const { manifest } = options
-  const dates = uniqueDates(options.episodes)
+  const prepared = prepareReplayDataset(options.episodes)
+  const dates = prepared.dates
   const split = buildWalkForwardWindows(dates, manifest.protocol, manifest.unseenAfterDate ?? null)
   const validationTotal = manifest.candidates.length * manifest.seeds.length * split.windows.length
   let validationCompleted = 0
@@ -209,7 +217,7 @@ export async function runWalkForwardExperiment(options: ExperimentRunOptions): P
       for (const seed of manifest.seeds) {
         throwIfAborted(options.signal)
         const policy = await trainPolicy(
-          filterDates(options.episodes, window.train),
+          filterPreparedReplayDates(prepared, window.train),
           candidate.configuration,
           candidate.trainingTurnoverPenaltyBps ?? 0,
           candidate.trainingCostPenaltyMultiplier ?? 0,
@@ -217,7 +225,7 @@ export async function runWalkForwardExperiment(options: ExperimentRunOptions): P
           manifest.epochs,
           options.signal,
         )
-        const results = evaluatePortfolioSessions(policy, filterDates(options.episodes, window.validation))
+        const results = evaluatePreparedPortfolioSessions(policy, filterPreparedReplayDates(prepared, window.validation))
         evaluations.push(summarizeEvaluation(results))
         diagnostics.push(summarizeDiagnostics(results))
         validationCompleted++
@@ -238,7 +246,7 @@ export async function runWalkForwardExperiment(options: ExperimentRunOptions): P
     id,
     label,
     evaluation: aggregateEvaluations(split.windows.map((window) => summarizeEvaluation(
-      evaluatePortfolioSessions(policy, filterDates(options.episodes, window.validation)),
+      evaluatePreparedPortfolioSessions(policy, filterPreparedReplayDates(prepared, window.validation)),
     ))),
   }))
   const rejectionReasons = assessValidation(selectedResult.validation, validationBaselines)
@@ -247,8 +255,8 @@ export async function runWalkForwardExperiment(options: ExperimentRunOptions): P
     ? "VALIDATION_REJECTED"
     : split.holdoutReady ? "EVALUATED" : "AWAITING_UNSEEN_SESSIONS"
   const evaluateHoldout = holdoutStatus === "EVALUATED"
-  const development = filterDates(options.episodes, split.developmentDates)
-  const holdout = filterDates(options.episodes, split.holdoutDates)
+  const development = filterPreparedReplayDates(prepared, split.developmentDates)
+  const holdout = filterPreparedReplayDates(prepared, split.holdoutDates)
   const testRuns: ReinforcementExperimentArtifact["testRuns"] = []
   let savedPolicy: LinearQPolicy | null = null
   if (evaluateHoldout) {
@@ -266,14 +274,14 @@ export async function runWalkForwardExperiment(options: ExperimentRunOptions): P
         options.signal,
       )
       if (index === 0) savedPolicy = policy
-      const results = evaluatePortfolioSessions(policy, holdout)
+      const results = evaluatePreparedPortfolioSessions(policy, holdout)
       testRuns.push({ seed, evaluation: summarizeEvaluation(results), diagnostics: summarizeDiagnostics(results) })
       options.onProgress?.({ phase: "TESTING", completed: index + 1, total: manifest.seeds.length + 5 })
       await Bun.sleep(0)
     }
   }
   const baselines = evaluateHoldout ? baselinePolicies().map(({ id, label, policy }, index) => {
-    const evaluation = summarizeEvaluation(evaluatePortfolioSessions(policy, holdout))
+    const evaluation = summarizeEvaluation(evaluatePreparedPortfolioSessions(policy, holdout))
     options.onProgress?.({ phase: "TESTING", completed: manifest.seeds.length + index + 1, total: manifest.seeds.length + 5 })
     return { id, label, evaluation }
   }) : []
@@ -295,8 +303,10 @@ export async function runWalkForwardExperiment(options: ExperimentRunOptions): P
     training: {
       epochs: manifest.epochs,
       sessions: split.developmentDates.length,
-      instruments: development.length,
-      decisions: development.reduce((total, episode) => total + episode.decisionIndexes.length, 0) * manifest.epochs,
+      instruments: development.reduce((total, session) => total + session.episodes.length, 0),
+      decisions: development.reduce((total, session) => total
+        + session.episodes.reduce((sessionTotal, episode) => sessionTotal + episode.events.length, 0), 0)
+        * manifest.epochs,
     },
     validation: evaluationFromAggregate(selectedResult.validation),
     test: testRuns[0]!.evaluation,
@@ -415,7 +425,7 @@ export function aggregateDiagnostics(runs: readonly ReinforcementRunDiagnostics[
 }
 
 async function trainPolicy(
-  episodes: ReinforcementReplayEpisode[],
+  sessions: PreparedReplaySession[],
   configuration: Omit<LinearQConfiguration, "seed">,
   trainingTurnoverPenaltyBps: number,
   trainingCostPenaltyMultiplier: number,
@@ -424,11 +434,10 @@ async function trainPolicy(
   signal?: AbortSignal,
 ): Promise<LinearQPolicy> {
   const policy = new LinearQPolicy(REINFORCEMENT_FEATURE_NAMES.length, { ...configuration, seed })
-  const sessions = groupBySession(episodes)
   for (let epoch = 0; epoch < epochs; epoch++) {
     for (const session of sessions) {
       throwIfAborted(signal)
-      replayPortfolioSession(policy, session, {
+      replayPreparedPortfolioSession(policy, session, {
         training: true,
         trainingTurnoverPenaltyBps,
         trainingCostPenaltyMultiplier,
@@ -466,21 +475,6 @@ function thresholdAction(value: number): TradeAction {
   if (value > 0.05) return "LONG"
   if (value < -0.05) return "SHORT"
   return "FLAT"
-}
-
-function filterDates(episodes: ReinforcementReplayEpisode[], dates: readonly string[]): ReinforcementReplayEpisode[] {
-  const included = new Set(dates)
-  return episodes.filter((episode) => included.has(episode.sessionDate))
-}
-
-function uniqueDates(episodes: readonly ReinforcementReplayEpisode[]): string[] {
-  return [...new Set(episodes.map((episode) => episode.sessionDate))].sort()
-}
-
-function groupBySession(episodes: readonly ReinforcementReplayEpisode[]): ReinforcementReplayEpisode[][] {
-  const groups = new Map<string, ReinforcementReplayEpisode[]>()
-  for (const episode of episodes) groups.set(episode.sessionDate, [...(groups.get(episode.sessionDate) ?? []), episode])
-  return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, group]) => group)
 }
 
 function evenlySpaced<T>(values: T[], count: number): T[] {

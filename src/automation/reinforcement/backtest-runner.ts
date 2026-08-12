@@ -18,10 +18,12 @@ import {
   DEFAULT_EXPERIMENT_SEEDS,
   DEFAULT_WALK_FORWARD_PROTOCOL,
   experimentId,
-  runWalkForwardExperiment,
   type ExperimentCandidate,
+  type ExperimentRunOptions,
+  type ReinforcementExperimentResult,
   type WalkForwardProtocol,
 } from "./experiment.ts"
+import { runWalkForwardExperimentInWorker } from "./experiment-worker-client.ts"
 import {
   NullReinforcementExperimentStore,
   type ReinforcementExperimentArtifact,
@@ -92,6 +94,7 @@ interface ReinforcementBacktestRunnerOptions {
   protocol?: WalkForwardProtocol
   now?: () => number
   createId?: () => string
+  runExperiment?: (options: ExperimentRunOptions) => Promise<ReinforcementExperimentResult>
 }
 
 interface LoadedInstrument {
@@ -105,12 +108,14 @@ export class HistoricalReinforcementBacktestRunner implements ReinforcementBackt
   private readonly now: () => number
   private readonly policies: ReinforcementPolicyStore
   private readonly experiments: ReinforcementExperimentStore
+  private readonly runExperiment: (options: ExperimentRunOptions) => Promise<ReinforcementExperimentResult>
 
   constructor(private readonly options: ReinforcementBacktestRunnerOptions) {
     this.costs = options.costs ?? DEFAULT_BACKTEST_COSTS
     this.now = options.now ?? Date.now
     this.policies = options.policies ?? new NullReinforcementPolicyStore()
     this.experiments = options.experiments ?? new NullReinforcementExperimentStore()
+    this.runExperiment = options.runExperiment ?? runWalkForwardExperimentInWorker
   }
 
   async run(
@@ -208,7 +213,7 @@ export class HistoricalReinforcementBacktestRunner implements ReinforcementBackt
     const sessionDates = uniqueDates(episodes)
     if (episodes.length === 0) throw new Error("No contracts have enough point-in-time history in the selected date range")
 
-    const trained = await runWalkForwardExperiment({
+    const trained = await this.runExperiment({
       episodes: dataset.episodes,
       skippedInstruments,
       manifest,
