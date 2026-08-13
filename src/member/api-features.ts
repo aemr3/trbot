@@ -9,6 +9,7 @@ type MemberApiClient = Pick<ApiClient, "call" | "authenticate">
 // boundary knows those names; the rest of the app uses the neutral ones.
 const FEATURE_BY_PROVIDER_NAME: Record<string, MemberFeature> = {
   TR_DEPTH: "MARKET_DEPTH",
+  INSTANT_BROKERAGE_DISTRIBUTION: "BROKERAGE_DISTRIBUTION",
   MIDAS_PRO: "SUBSCRIPTION",
 }
 

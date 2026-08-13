@@ -2,12 +2,20 @@ import {
   BoxRenderable,
   StyledText,
   TextRenderable,
-  bg,
   fg,
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
 import type { DepthBook, DepthLevel, DepthStatus, DepthTrade } from "../market/depth.ts"
+import {
+  barWidth,
+  padSegments,
+  plain,
+  segment,
+  shade,
+  truncate,
+  type Segment,
+} from "./shaded-row.ts"
 
 const PANEL_BG = "#161616"
 const HEADING_COLOR = "#eeeeee"
@@ -30,15 +38,14 @@ const LADDER_LEVELS = 10
 // Header, blank, ratio block, blank, column header, ladder, blank, trade header.
 const FIXED_ROWS = 1 + 1 + 3 + 1 + 1 + LADDER_LEVELS + 1 + 1
 
-interface Segment {
-  text: string
-  color: string
-}
-
 export interface DepthPanelInstrument {
   displayName: string
   // The underlying stock symbol; VIOP contracts have no book of their own.
   underlyingSymbol: string | null
+}
+
+export interface DepthPanelOptions {
+  onFocusRequest?: () => void
 }
 
 // Renders one symbol's order book: the resting buy/sell balance, the price
@@ -54,13 +61,19 @@ export class DepthPanel {
   private entitled: boolean | null = null
   private focused = false
 
-  constructor(renderer: RenderContext) {
+  constructor(
+    renderer: RenderContext,
+    private readonly options: DepthPanelOptions = {},
+  ) {
     this.root = new BoxRenderable(renderer, {
       flexDirection: "column",
       paddingLeft: PANEL_PADDING,
       paddingRight: PANEL_PADDING,
       backgroundColor: PANEL_BG,
       onSizeChange: () => this.render(),
+      onMouseDown: (event) => {
+        if (event.button === 0) this.options.onFocusRequest?.()
+      },
     })
     this.header = new TextRenderable(renderer, {
       content: "Depth",
@@ -321,77 +334,15 @@ function tradeChunks(trades: DepthTrade[], width: number, capacity: number): Tex
 
 // "buyer ← seller": the arrow points at where the shares came from.
 function counterparties(trade: DepthTrade, width: number): string {
-  if (width <= 0) return ""
-  const text = `${shortBroker(trade.buyer)} ← ${shortBroker(trade.seller)}`
-  return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`
+  return truncate(`${shortBroker(trade.buyer)} ← ${shortBroker(trade.seller)}`, width)
 }
 
 // Broker names are long and mostly boilerplate ("Garanti Yatırım Menkul
 // Kıymetler"); the distinguishing part is the leading house name.
-function shortBroker(name: string | null): string {
+export function shortBroker(name: string | null): string {
   if (!name) return "—"
   const trimmed = name.split(/\s+(?:Yatırım|Menkul)\b/)[0] ?? name
   return trimmed.trim() || name.trim()
-}
-
-function barWidth(lots: number, maxLots: number, width: number): number {
-  if (lots <= 0 || maxLots <= 0) return 0
-  return Math.max(1, Math.min(width, Math.round((lots / maxLots) * width)))
-}
-
-// Applies the size-bar background across a run of columns, splitting whichever
-// coloured segments straddle its edges so each column keeps its own foreground.
-function shade(segments: Segment[], from: number, to: number, background: string): TextChunk[] {
-  if (to <= from) return plain(segments)
-  const chunks: TextChunk[] = []
-  let column = 0
-  for (const part of segments) {
-    for (const [text, shaded] of splitSegment(part.text, column, from, to)) {
-      if (text.length === 0) continue
-      chunks.push(shaded ? fg(part.color)(bg(background)(text)) : fg(part.color)(text))
-    }
-    column += part.text.length
-  }
-  return chunks
-}
-
-function splitSegment(text: string, column: number, from: number, to: number): [string, boolean][] {
-  const start = Math.max(0, Math.min(text.length, from - column))
-  const end = Math.max(0, Math.min(text.length, to - column))
-  return [
-    [text.slice(0, start), false],
-    [text.slice(start, end), true],
-    [text.slice(end), false],
-  ]
-}
-
-function padSegments(segments: Segment[], width: number, align: "start" | "end"): Segment[] {
-  const length = segments.reduce((total, part) => total + part.text.length, 0)
-  if (length === width) return segments
-  if (length > width) return trimSegments(segments, width, align)
-  const filler = segment(" ".repeat(width - length), MUTED_COLOR)
-  return align === "start" ? [filler, ...segments] : [...segments, filler]
-}
-
-function trimSegments(segments: Segment[], width: number, align: "start" | "end"): Segment[] {
-  const ordered = align === "start" ? [...segments].reverse() : segments
-  const kept: Segment[] = []
-  let remaining = width
-  for (const part of ordered) {
-    if (remaining <= 0) break
-    const text = align === "start" ? part.text.slice(-remaining) : part.text.slice(0, remaining)
-    remaining -= text.length
-    kept.push(segment(text, part.color))
-  }
-  return align === "start" ? kept.reverse() : kept
-}
-
-function plain(segments: Segment[]): TextChunk[] {
-  return segments.filter((part) => part.text.length > 0).map((part) => fg(part.color)(part.text))
-}
-
-function segment(text: string, color: string): Segment {
-  return { text, color }
 }
 
 function gap(width: number, left: number, right: number): number {

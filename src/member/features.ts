@@ -3,6 +3,7 @@
 // the app can only read them.
 export type MemberFeature =
   | "MARKET_DEPTH"
+  | "BROKERAGE_DISTRIBUTION"
   | "SUBSCRIPTION"
 
 export interface MemberFeatureSet {

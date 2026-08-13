@@ -2,6 +2,11 @@ import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
 import { AuthenticationError } from "../api/index.ts"
+import type {
+  BrokerageDistribution,
+  BrokerageDistributionRequest,
+  BrokerageDistributionSource,
+} from "../market/brokerage.ts"
 import { DEFAULT_INTERVALS_BY_RANGE, type CandleSource } from "../market/candle.ts"
 import { ApplicationLog } from "../logging/application-log.ts"
 import type {
@@ -35,6 +40,14 @@ import { LogsScreen } from "./logs.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 import { WatchlistScreen } from "./watchlist.ts"
 import type { WatchlistPreferences } from "./watchlist-preferences.ts"
+
+// Tab cycles the panels in this order from a freshly mounted screen. Naming the
+// destination keeps the tests readable, and adding a panel only moves this list.
+const FOCUS_ORDER = ["instruments", "chart", "depth", "brokers", "account", "news"] as const
+
+function focusPanel(mockInput: { pressTab(): void }, panel: (typeof FOCUS_ORDER)[number]): void {
+  for (let step = 0; step < FOCUS_ORDER.indexOf(panel); step++) mockInput.pressTab()
+}
 
 class FakeQuoteStream implements QuoteStream {
   private listener: QuoteUpdateListener | null = null
@@ -287,10 +300,7 @@ test("switches between selected-stock and index news feeds", async () => {
   expect(stockFrame).toContain("Index")
   expect(requests.at(-1)).toBe("u1")
 
-  mockInput.pressTab()
-  mockInput.pressTab()
-  mockInput.pressTab()
-  mockInput.pressTab()
+  focusPanel(mockInput, "news")
   mockInput.pressArrow("right")
   await waitForFrame((frame) => frame.includes("BIST 100 closes higher"))
   expect(requests.at(-1)).toBeNull()
@@ -383,9 +393,7 @@ test("shows portfolio, orders, and positions in tabs below the chart", async () 
   expect(portfolioFrame).toContain("Positions")
   expect(portfolioFrame).toContain("  Portfolio    Orders    Positions ")
 
-  mockInput.pressTab()
-  mockInput.pressTab()
-  mockInput.pressTab()
+  focusPanel(mockInput, "account")
   mockInput.pressArrow("right")
   const ordersFrame = await waitForFrame((frame) => frame.includes("THYAO alış"))
   expect(ordersFrame).toContain("PENDING")
@@ -422,9 +430,7 @@ test("applies live account, order, and futures price updates", async () => {
   const livePortfolio = await waitForFrame((frame) => frame.includes("₺48.000,00") && frame.includes("● live"))
   expect(livePortfolio).toContain("Available")
 
-  mockInput.pressTab()
-  mockInput.pressTab()
-  mockInput.pressTab()
+  focusPanel(mockInput, "account")
   mockInput.pressArrow("right")
   accountStream.emit({
     type: "order",
@@ -1055,10 +1061,7 @@ test("opens a news article with its full body on Enter and returns on Backspace"
 
   await waitForFrame((f) => f.includes("BIST 30 güne"))
 
-  mockInput.pressTab() // move focus to the chart panel
-  mockInput.pressTab() // move focus to the depth panel
-  mockInput.pressTab() // move focus to the account panel
-  mockInput.pressTab() // move focus to the news panel
+  focusPanel(mockInput, "news")
   mockInput.pressEnter() // open the selected article
   await waitForFrame((f) => f.includes("Full body text."))
 
@@ -1158,10 +1161,7 @@ test("keeps the chart usable in an 80-column terminal", async () => {
   expect(frame).not.toContain("Chart needs more room")
   expect(frame).toMatch(/[┃╻╹╽╿│]/)
 
-  mockInput.pressTab()
-  mockInput.pressTab()
-  mockInput.pressTab()
-  mockInput.pressTab()
+  focusPanel(mockInput, "news")
   const newsFrame = await waitForFrame((value) => value.includes("BIST 30 güne"))
   expect(newsFrame).toContain("News")
 
@@ -1282,7 +1282,7 @@ function depthBook(symbol: string): DepthBook {
 
 const entitledFeatures: MemberFeatureSource = {
   async loadFeatures() {
-    return memberFeatureSet(["MARKET_DEPTH", "SUBSCRIPTION"])
+    return memberFeatureSet(["MARKET_DEPTH", "BROKERAGE_DISTRIBUTION", "SUBSCRIPTION"])
   },
 }
 
@@ -1333,6 +1333,112 @@ test("keeps the book closed when the subscription does not include market depth"
   expect(frame).not.toContain("● live")
   // Without the entitlement the stream is never opened, so it cannot 403.
   expect(depth.startedSymbols).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+class FakeBrokerageSource implements BrokerageDistributionSource {
+  requests: BrokerageDistributionRequest[] = []
+
+  constructor(private readonly shares = 8) {}
+
+  async loadDistribution(request: BrokerageDistributionRequest): Promise<BrokerageDistribution> {
+    this.requests.push(request)
+    return {
+      side: request.side,
+      shares: Array.from({ length: this.shares }, (_, index) => ({
+        brokerage: `${request.side === "BUYER" ? "Buyer" : "Seller"} ${index + 1} Yatırım`,
+        netLots: 900_000 - index * 100_000,
+        averagePrice: 386 + index,
+        percentage: 30 - index * 2,
+      })),
+      topCount: 5,
+      topPercentage: 88.5,
+      topLots: 2_100_000,
+      otherLots: 300_000,
+      lastUpdate: "Son Güncelleme: 13 Ağustos 15:37",
+      live: true,
+      presets: [
+        { range: { start: null, end: null }, isDefault: true },
+        { range: { start: "2026-08-07", end: "2026-08-13" }, isDefault: false },
+      ],
+      availableDates: ["2026-08-13", "2026-08-12"],
+    }
+  }
+}
+
+test("ranks broker buyers and sellers under the order book", async () => {
+  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const brokerage = new FakeBrokerageSource()
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    brokerage,
+    memberFeatures: entitledFeatures,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const frame = await waitForFrame((value) => value.includes("Buyer 1"))
+  expect(frame).toContain("Top 5 88,5%")
+  expect(frame).toContain("Today")
+  // The distribution belongs to the contract's own uid; the source resolves the underlying.
+  expect(brokerage.requests[0]).toMatchObject({ instrumentUid: "u1", side: "BUYER", range: { start: null, end: null } })
+
+  focusPanel(mockInput, "brokers")
+  mockInput.pressArrow("right")
+  await waitFor(() => brokerage.requests.some((request) => request.side === "SELLER"))
+  await waitForFrame((value) => value.includes("Seller 1"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("changes the broker date range through the popup", async () => {
+  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const brokerage = new FakeBrokerageSource()
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    brokerage,
+    memberFeatures: entitledFeatures,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((value) => value.includes("Buyer 1"))
+
+  focusPanel(mockInput, "brokers")
+  await mockInput.typeText("d")
+  await waitForFrame((value) => value.includes("Broker distribution range"))
+
+  mockInput.pressArrow("down")
+  mockInput.pressEnter()
+  await waitFor(() => brokerage.requests.some((request) => request.range.start === "2026-08-07"))
+  const frame = await waitForFrame((value) => value.includes("Last 7 days") && !value.includes("Broker distribution range"))
+  expect(frame).toContain("Buyer 1")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("keeps the broker table closed without the entitlement", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const brokerage = new FakeBrokerageSource()
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    brokerage,
+    memberFeatures: { async loadFeatures() { return memberFeatureSet(["MARKET_DEPTH"]) } },
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitForFrame((value) => value.includes("Broker distribution is a paid feature"))
+  expect(brokerage.requests).toEqual([])
 
   screen.destroy()
   renderer.destroy()

@@ -117,6 +117,51 @@ export interface FutureDetailVariables {
   [key: string]: unknown
 }
 
+export interface BrokerageDistributionEntry {
+  brokerage: string
+  netShares: number
+  // Volume-weighted average price the brokerage traded at over the range.
+  cost: number
+  percentage: number
+}
+
+export interface BrokerageCalendarPreset {
+  title: string
+  subtitle: string | null
+  start: string | null
+  end: string | null
+  isDefault: boolean
+  action: string
+}
+
+export interface BrokerageDistributionData {
+  brokerageDistribution?: {
+    calendar: {
+      // Every trading day the provider will report on, newest first.
+      dateSet: string[]
+      presets: BrokerageCalendarPreset[]
+    }
+    distribution: BrokerageDistributionEntry[]
+    position: string
+    topNSize: number
+    topNPercentage: number
+    // True while the range includes the current session and the figures keep moving.
+    dynamic: boolean
+    topNShares: number
+    otherShares: number
+    lastUpdate: string | null
+    sessionStatusEnabled: boolean
+  } | null
+}
+
+export interface BrokerageDistributionVariables {
+  uid: string
+  brokeragePosition: string
+  start: string | null
+  end: string | null
+  [key: string]: unknown
+}
+
 export interface AdvancedChartEntry {
   o: number
   h: number
@@ -348,6 +393,11 @@ export const marketOperations = {
     "searchByAdvancedTools",
     "query",
     "query searchByAdvancedTools($query: String!, $tool: DiscoveryAdvancedTool!, $page: Int!, $size: Int!) { searchByAdvancedTools(query: $query, tool: $tool, page: $page, size: $size) { results { __typename uid type ... on InstrumentSearchResultItem { symbol } } page hasNext } }",
+  ),
+  brokerageDistribution: defineOperation<BrokerageDistributionData, BrokerageDistributionVariables>(
+    "brokerageDistribution",
+    "query",
+    "query brokerageDistribution($uid: String!, $brokeragePosition: BrokeragePosition, $start: Date, $end: Date) { brokerageDistribution(uid: $uid, brokeragePosition: $brokeragePosition, start: $start, end: $end) { calendar { dateSet presets { title subtitle start end isDefault action } } distribution { brokerage netShares cost percentage } position topNSize topNPercentage dynamic topNShares otherShares lastUpdate sessionStatusEnabled } }",
   ),
   futureDetail: defineOperation<FutureDetailData, FutureDetailVariables>(
     "futureDetail",

@@ -13,6 +13,7 @@ import { openDatabase, type DatabaseConnection } from "./db/client.ts"
 import { DrizzleProviderStateStore } from "./db/provider-state-store.ts"
 import { DrizzleWatchlistPreferencesStore } from "./db/watchlist-preferences-store.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
+import { ApiBrokerageDistributionSource } from "./market/api-brokerage.ts"
 import { ApiCandleSource } from "./market/api-candles.ts"
 import { ApiDepthStream } from "./market/api-depth-stream.ts"
 import { ApiNewsSource } from "./market/api-news.ts"
@@ -225,6 +226,7 @@ export class App {
       depth: new ApiDepthStream(api.client, {
         onError: (error) => this.handleStreamError("Depth stream", error),
       }),
+      brokerage: new ApiBrokerageDistributionSource(api.client),
       memberFeatures: new ApiMemberFeatureSource(api.client),
       preferences: this.preferences,
       onPreferencesChange: (preferences) => {

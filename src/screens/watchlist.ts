@@ -12,6 +12,8 @@ import {
 import { requiresAuthentication } from "../api/index.ts"
 import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
 import { AccountPanel } from "../components/account-panel.ts"
+import { BrokerageDateModal } from "../components/brokerage-date-modal.ts"
+import { BrokeragePanel } from "../components/brokerage-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
 import { ContractDetailsPanel } from "../components/contract-details-panel.ts"
 import { DepthPanel } from "../components/depth-panel.ts"
@@ -24,6 +26,12 @@ import {
   WORKSPACE_CHROME_TEXT,
 } from "../components/workspace-chrome.ts"
 import type { ApplicationLog } from "../logging/application-log.ts"
+import {
+  DEFAULT_BROKERAGE_RANGE,
+  type BrokerageDatePreset,
+  type BrokerageDateRange,
+  type BrokerageDistributionSource,
+} from "../market/brokerage.ts"
 import type { CandleSource } from "../market/candle.ts"
 import type { DepthStream } from "../market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
@@ -64,6 +72,11 @@ const INSTRUMENT_POLL_INTERVAL_MS = 60_000
 const DESTRUCTIVE_CONFIRMATION_TIMEOUT_MS = 3_000
 const COMPACT_LAYOUT_WIDTH = 104
 const DEPTH_PANEL_WIDTH = 48
+const BROKERAGE_POLL_INTERVAL_MS = 60_000
+// Each panel is guaranteed the rows its fixed content needs, then both grow at
+// the same rate so whatever the terminal has left over is split evenly.
+const DEPTH_PANEL_BASIS = 19
+const BROKERAGE_PANEL_BASIS = 8
 // The instrument list, depth ladder and news feed together claim 130 fixed
 // columns, so the depth panel only joins them permanently once the chart and
 // account column can still keep about 60. Below that it takes the news slot
@@ -126,6 +139,15 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
     ],
   },
   {
+    title: "Brokers",
+    bindings: [
+      { keys: "←/→ or h/l", description: "Switch between buyers and sellers" },
+      { keys: "↑/↓ or j/k", description: "Scroll beyond the leading houses" },
+      { keys: "Home", description: "Back to the top of the list" },
+      { keys: "d", description: "Change the date range" },
+    ],
+  },
+  {
     title: "Account",
     bindings: [
       { keys: "←/→ or h/l", description: "Change account tab" },
@@ -173,11 +195,13 @@ export interface WatchlistScreenOptions {
   equityQuotes?: EquityQuoteStream
   quotes?: QuoteStream
   depth?: DepthStream
+  brokerage?: BrokerageDistributionSource
   memberFeatures?: MemberFeatureSource
   onSessionExpired?: () => void
   newsIntervalMs?: number
   instrumentIntervalMs?: number
   accountIntervalMs?: number
+  brokerageIntervalMs?: number
   destructiveConfirmationTimeoutMs?: number
   preferences?: WatchlistPreferences
   onPreferencesChange?: (preferences: WatchlistPreferences) => void
@@ -187,7 +211,7 @@ export interface WatchlistScreenOptions {
   onOpenLogs?: () => void
 }
 
-type Focus = "instruments" | "chart" | "depth" | "account" | "news"
+type Focus = "instruments" | "chart" | "depth" | "brokers" | "account" | "news"
 
 export class WatchlistScreen {
   readonly root: BoxRenderable
@@ -201,7 +225,9 @@ export class WatchlistScreen {
   private readonly chart: CandlestickChart
   private readonly chartHeader: TextRenderable
   private readonly accountPanel: AccountPanel
+  private readonly depthColumn: BoxRenderable
   private readonly depthPanel: DepthPanel
+  private readonly brokeragePanel: BrokeragePanel
   private readonly rightPanel: BoxRenderable
   private readonly viopHeader: TextRenderable
   private readonly newsHeader: TextRenderable
@@ -238,6 +264,14 @@ export class WatchlistScreen {
   private instrumentRefreshRequest: AbortController | null = null
   private memberFeatureRequest: AbortController | null = null
   private depthEntitled: boolean | null = null
+  private brokerageEntitled: boolean | null = null
+  private brokerageRequest: AbortController | null = null
+  private brokerageTimer: ReturnType<typeof setInterval> | null = null
+  private brokerageRange: BrokerageDateRange = DEFAULT_BROKERAGE_RANGE
+  private brokeragePresets: BrokerageDatePreset[] = []
+  private brokerageDates: string[] = []
+  private brokerageLive = false
+  private brokerageDateModal: BrokerageDateModal | null = null
   private hintTimer: ReturnType<typeof setTimeout> | null = null
   private destructiveConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private connected = false
@@ -260,6 +294,10 @@ export class WatchlistScreen {
     }
     if (this.providerAccountModal) {
       this.providerAccountModal.handleKey(key)
+      return
+    }
+    if (this.brokerageDateModal) {
+      this.brokerageDateModal.handleKey(key)
       return
     }
     if (isShortcutHelpKey(key)) {
@@ -306,6 +344,10 @@ export class WatchlistScreen {
     // The depth panel is read-only; it swallows keys rather than letting them
     // reach the instrument list behind it.
     if (this.focus === "depth") return
+    if (this.focus === "brokers") {
+      this.brokeragePanel.handleKey(key)
+      return
+    }
     if (this.focus === "news") {
       if (!key.ctrl && !key.shift && !key.meta && !key.option && (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l")) {
         const direction = key.name === "left" || key.name === "h" ? -1 : 1
@@ -424,8 +466,23 @@ export class WatchlistScreen {
     })
     this.centerPanel.add(this.accountPanel.root)
 
-    this.depthPanel = new DepthPanel(renderer)
+    // The order book and the broker distribution share one column: each keeps
+    // the rows its fixed content needs and they split the remainder evenly.
+    this.depthColumn = new BoxRenderable(renderer, { flexDirection: "column" })
+    this.depthPanel = new DepthPanel(renderer, { onFocusRequest: () => this.setFocus("depth") })
     this.depthPanel.setEntitled(options.memberFeatures ? null : false)
+    this.depthPanel.root.flexBasis = DEPTH_PANEL_BASIS
+    this.depthPanel.root.flexGrow = 1
+    this.brokeragePanel = new BrokeragePanel(renderer, {
+      onSideChange: () => void this.loadBrokerage(),
+      onOpenDateRange: () => this.openBrokerageDateModal(),
+      onFocusRequest: () => this.setFocus("brokers"),
+    })
+    this.brokeragePanel.setEntitled(options.memberFeatures ? null : false)
+    this.brokeragePanel.root.flexBasis = BROKERAGE_PANEL_BASIS
+    this.brokeragePanel.root.flexGrow = 1
+    this.depthColumn.add(this.depthPanel.root)
+    this.depthColumn.add(this.brokeragePanel.root)
 
     this.rightPanel = new BoxRenderable(renderer, {
       width: 46,
@@ -491,7 +548,7 @@ export class WatchlistScreen {
 
     columns.add(this.leftPanel)
     columns.add(this.centerPanel)
-    columns.add(this.depthPanel.root)
+    columns.add(this.depthColumn)
     columns.add(this.rightPanel)
 
     this.hint = new TextRenderable(renderer, {
@@ -529,6 +586,11 @@ export class WatchlistScreen {
       () => void this.refreshInstruments(),
       this.options.instrumentIntervalMs ?? INSTRUMENT_POLL_INTERVAL_MS,
     )
+    // A historical range is settled, so only a range covering the open session
+    // is worth re-reading.
+    this.brokerageTimer = setInterval(() => {
+      if (this.brokerageLive) void this.loadBrokerage(true)
+    }, this.options.brokerageIntervalMs ?? BROKERAGE_POLL_INTERVAL_MS)
   }
 
   destroy(): void {
@@ -551,6 +613,13 @@ export class WatchlistScreen {
     this.options.depth?.stop()
     this.memberFeatureRequest?.abort()
     this.memberFeatureRequest = null
+    this.brokerageRequest?.abort()
+    this.brokerageRequest = null
+    this.closeBrokerageDateModal()
+    if (this.brokerageTimer) {
+      clearInterval(this.brokerageTimer)
+      this.brokerageTimer = null
+    }
     if (this.newsTimer) {
       clearInterval(this.newsTimer)
       this.newsTimer = null
@@ -612,13 +681,92 @@ export class WatchlistScreen {
       const features = await source.loadFeatures({ signal: request.signal })
       if (this.destroyed || request.signal.aborted) return
       this.setDepthEntitled(features.has("MARKET_DEPTH"))
+      this.setBrokerageEntitled(features.has("BROKERAGE_DISTRIBUTION"))
     } catch (error) {
       if (this.destroyed || request.signal.aborted || isAbortError(error)) return
       this.reportError("Member features", error)
       this.setDepthEntitled(false)
+      this.setBrokerageEntitled(false)
     } finally {
       if (this.memberFeatureRequest === request) this.memberFeatureRequest = null
     }
+  }
+
+  // Reads the ranked broker houses for the selected contract's underlying. The
+  // figures keep moving while the range covers the open session, so a poll
+  // refreshes them in the background and leaves the last good table on screen
+  // when a refresh fails.
+  private async loadBrokerage(background = false): Promise<void> {
+    const source = this.options.brokerage
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    if (!source || !instrument || !this.brokerageEntitled || this.destroyed) return
+    this.brokerageRequest?.abort()
+    const request = new AbortController()
+    this.brokerageRequest = request
+    const side = this.brokeragePanel.activeSide
+    try {
+      const distribution = await source.loadDistribution({
+        instrumentUid: instrument.uid,
+        side,
+        range: this.brokerageRange,
+        signal: request.signal,
+      })
+      if (this.destroyed || request.signal.aborted || this.brokerageRequest !== request) return
+      this.brokeragePresets = distribution.presets
+      this.brokerageDates = distribution.availableDates
+      this.brokerageLive = distribution.live
+      this.brokeragePanel.showDistribution(distribution)
+    } catch (error) {
+      if (this.destroyed || request.signal.aborted || this.brokerageRequest !== request || isAbortError(error)) return
+      if (this.reportError("Broker distribution", error)) return
+      if (!background) this.brokeragePanel.showMessage(`Failed to load: ${errorMessage(error)}`, "#ff6b6b")
+    } finally {
+      if (this.brokerageRequest === request) this.brokerageRequest = null
+    }
+  }
+
+  private openBrokerageDateModal(): void {
+    if (this.destroyed || this.brokerageDateModal) return
+    if (this.brokerageDates.length === 0 && this.brokeragePresets.length === 0) {
+      this.showHintStatus("Broker distribution has not loaded yet.", "#e5c07b", 3_000)
+      return
+    }
+    const modal = new BrokerageDateModal(this.renderer, {
+      presets: this.brokeragePresets,
+      availableDates: this.brokerageDates,
+      range: this.brokerageRange,
+      onSelect: (range) => {
+        this.closeBrokerageDateModal()
+        this.selectBrokerageRange(range)
+      },
+      onClose: () => this.closeBrokerageDateModal(),
+    })
+    this.brokerageDateModal = modal
+    this.root.add(modal.root)
+    this.renderer.requestRender()
+  }
+
+  private closeBrokerageDateModal(): void {
+    const modal = this.brokerageDateModal
+    if (!modal) return
+    this.brokerageDateModal = null
+    if (!this.root.isDestroyed && !modal.root.isDestroyed) this.root.remove(modal.root)
+    modal.destroy()
+    this.renderer.requestRender()
+  }
+
+  private selectBrokerageRange(range: BrokerageDateRange): void {
+    this.brokerageRange = range
+    this.brokeragePanel.setRange(range)
+    this.brokeragePanel.reset()
+    void this.loadBrokerage()
+  }
+
+  private setBrokerageEntitled(entitled: boolean): void {
+    if (this.brokerageEntitled === entitled) return
+    this.brokerageEntitled = entitled
+    this.brokeragePanel.setEntitled(entitled)
+    if (entitled) void this.loadBrokerage()
   }
 
   private setDepthEntitled(entitled: boolean): void {
@@ -787,6 +935,8 @@ export class WatchlistScreen {
       underlyingSymbol: instrument.underlyingSymbol,
     })
     this.syncDepthSubscription()
+    this.brokeragePanel.reset()
+    void this.loadBrokerage()
     this.renderChartHeader()
     void this.loadNews(instrument)
   }
@@ -1212,7 +1362,7 @@ export class WatchlistScreen {
   }
 
   private toggleFocus(): void {
-    const order: Focus[] = ["instruments", "chart", "depth", "account", "news"]
+    const order: Focus[] = ["instruments", "chart", "depth", "brokers", "account", "news"]
     const index = order.indexOf(this.focus)
     this.setFocus(order[(index + 1) % order.length] ?? "instruments")
   }
@@ -1236,6 +1386,7 @@ export class WatchlistScreen {
     this.renderChartHeader()
     this.chart.setFocused(this.focus === "chart")
     this.depthPanel.setFocused(this.focus === "depth")
+    this.brokeragePanel.setFocused(this.focus === "brokers")
     this.accountPanel.setFocused(this.focus === "account")
     this.newsHeader.fg = this.focus === "news" ? FOCUSED_HEADER : UNFOCUSED_HEADER
     this.paintNewsFeedToolbar()
@@ -1287,13 +1438,13 @@ export class WatchlistScreen {
   private updateResponsiveLayout(): void {
     const compact = this.root.width < COMPACT_LAYOUT_WIDTH
     const wide = this.root.width >= DEPTH_LAYOUT_WIDTH
-    const depthFocused = this.focus === "depth"
+    const depthFocused = this.focus === "depth" || this.focus === "brokers"
     this.leftPanel.width = compact ? 30 : 36
     this.centerPanel.visible = !compact || (this.focus !== "news" && !depthFocused)
-    this.depthPanel.root.visible = compact ? depthFocused : wide || depthFocused
+    this.depthColumn.visible = compact ? depthFocused : wide || depthFocused
     this.rightPanel.visible = compact ? this.focus === "news" : wide || !depthFocused
-    this.depthPanel.root.width = compact ? "auto" : DEPTH_PANEL_WIDTH
-    this.depthPanel.root.flexGrow = compact ? 1 : 0
+    this.depthColumn.width = compact ? "auto" : DEPTH_PANEL_WIDTH
+    this.depthColumn.flexGrow = compact ? 1 : 0
     this.rightPanel.width = compact ? "auto" : 46
     this.rightPanel.flexGrow = compact ? 1 : 0
   }
