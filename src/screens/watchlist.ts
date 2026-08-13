@@ -14,6 +14,7 @@ import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
 import { AccountPanel } from "../components/account-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
 import { ContractDetailsPanel } from "../components/contract-details-panel.ts"
+import { DepthPanel } from "../components/depth-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
 import { isShortcutHelpKey, ShortcutHelp, type ShortcutHelpSection } from "../components/shortcut-help.ts"
 import { ProviderAccountModal } from "../components/provider-account-modal.ts"
@@ -24,10 +25,12 @@ import {
 } from "../components/workspace-chrome.ts"
 import type { ApplicationLog } from "../logging/application-log.ts"
 import type { CandleSource } from "../market/candle.ts"
+import type { DepthStream } from "../market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsArticle, NewsSource } from "../market/news.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
+import type { MemberFeatureSource } from "../member/features.ts"
 import type { AccountSource, AccountStream } from "../trading/account.ts"
 import type {
   ViopOrderCancellationSource,
@@ -60,6 +63,12 @@ const NEWS_POLL_INTERVAL_MS = 60_000
 const INSTRUMENT_POLL_INTERVAL_MS = 60_000
 const DESTRUCTIVE_CONFIRMATION_TIMEOUT_MS = 3_000
 const COMPACT_LAYOUT_WIDTH = 104
+const DEPTH_PANEL_WIDTH = 48
+// The instrument list, depth ladder and news feed together claim 130 fixed
+// columns, so the depth panel only joins them permanently once the chart and
+// account column can still keep about 60. Below that it takes the news slot
+// while it holds focus instead.
+const DEPTH_LAYOUT_WIDTH = 190
 const SORT_LABELS = { change: "Change", volume: "Volume" } as const
 const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
@@ -111,6 +120,12 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
     ],
   },
   {
+    title: "Depth",
+    bindings: [
+      { keys: "Tab", description: "Focus the order book of the underlying stock" },
+    ],
+  },
+  {
     title: "Account",
     bindings: [
       { keys: "←/→ or h/l", description: "Change account tab" },
@@ -157,6 +172,8 @@ export interface WatchlistScreenOptions {
   positionExit?: ViopPositionExitSource
   equityQuotes?: EquityQuoteStream
   quotes?: QuoteStream
+  depth?: DepthStream
+  memberFeatures?: MemberFeatureSource
   onSessionExpired?: () => void
   newsIntervalMs?: number
   instrumentIntervalMs?: number
@@ -170,7 +187,7 @@ export interface WatchlistScreenOptions {
   onOpenLogs?: () => void
 }
 
-type Focus = "instruments" | "chart" | "account" | "news"
+type Focus = "instruments" | "chart" | "depth" | "account" | "news"
 
 export class WatchlistScreen {
   readonly root: BoxRenderable
@@ -184,6 +201,7 @@ export class WatchlistScreen {
   private readonly chart: CandlestickChart
   private readonly chartHeader: TextRenderable
   private readonly accountPanel: AccountPanel
+  private readonly depthPanel: DepthPanel
   private readonly rightPanel: BoxRenderable
   private readonly viopHeader: TextRenderable
   private readonly newsHeader: TextRenderable
@@ -218,6 +236,8 @@ export class WatchlistScreen {
   private newsTimer: ReturnType<typeof setInterval> | null = null
   private instrumentTimer: ReturnType<typeof setInterval> | null = null
   private instrumentRefreshRequest: AbortController | null = null
+  private memberFeatureRequest: AbortController | null = null
+  private depthEntitled: boolean | null = null
   private hintTimer: ReturnType<typeof setTimeout> | null = null
   private destructiveConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private connected = false
@@ -283,6 +303,9 @@ export class WatchlistScreen {
       this.toggleFocus()
       return
     }
+    // The depth panel is read-only; it swallows keys rather than letting them
+    // reach the instrument list behind it.
+    if (this.focus === "depth") return
     if (this.focus === "news") {
       if (!key.ctrl && !key.shift && !key.meta && !key.option && (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l")) {
         const direction = key.name === "left" || key.name === "h" ? -1 : 1
@@ -401,6 +424,9 @@ export class WatchlistScreen {
     })
     this.centerPanel.add(this.accountPanel.root)
 
+    this.depthPanel = new DepthPanel(renderer)
+    this.depthPanel.setEntitled(options.memberFeatures ? null : false)
+
     this.rightPanel = new BoxRenderable(renderer, {
       width: 46,
       flexDirection: "column",
@@ -465,6 +491,7 @@ export class WatchlistScreen {
 
     columns.add(this.leftPanel)
     columns.add(this.centerPanel)
+    columns.add(this.depthPanel.root)
     columns.add(this.rightPanel)
 
     this.hint = new TextRenderable(renderer, {
@@ -487,6 +514,8 @@ export class WatchlistScreen {
     this.options.quotes?.onConnectionChange((connected) => this.setConnected(connected))
     this.options.equityQuotes?.subscribe((update) => this.onEquityQuote(update))
     this.options.equityQuotes?.onConnectionChange((connected) => this.setEquityConnected(connected))
+    this.options.depth?.subscribe((book) => this.depthPanel.showBook(book))
+    this.options.depth?.onStatusChange((status) => this.depthPanel.setStatus(status))
   }
 
   mount(): void {
@@ -494,6 +523,7 @@ export class WatchlistScreen {
     this.updateFocusIndicator()
     this.accountPanel.mount()
     void this.load()
+    void this.loadMemberFeatures()
     this.newsTimer = setInterval(() => void this.refreshNews(), this.options.newsIntervalMs ?? NEWS_POLL_INTERVAL_MS)
     this.instrumentTimer = setInterval(
       () => void this.refreshInstruments(),
@@ -518,6 +548,9 @@ export class WatchlistScreen {
     this.instrumentRefreshRequest = null
     this.options.quotes?.stop()
     this.options.equityQuotes?.stop()
+    this.options.depth?.stop()
+    this.memberFeatureRequest?.abort()
+    this.memberFeatureRequest = null
     if (this.newsTimer) {
       clearInterval(this.newsTimer)
       this.newsTimer = null
@@ -565,6 +598,44 @@ export class WatchlistScreen {
       this.chartHeader.content = "Chart  ·  Failed to load instruments · See Logs"
       this.chartHeader.fg = "#ff6b6b"
     }
+  }
+
+  // Market depth is a paid feature, so the panel stays locked until the member's
+  // entitlements come back. A failed check is treated as "not entitled" rather
+  // than retried: opening the stream without it only earns an HTTP 403.
+  private async loadMemberFeatures(): Promise<void> {
+    const source = this.options.memberFeatures
+    if (!source) return
+    const request = new AbortController()
+    this.memberFeatureRequest = request
+    try {
+      const features = await source.loadFeatures({ signal: request.signal })
+      if (this.destroyed || request.signal.aborted) return
+      this.setDepthEntitled(features.has("MARKET_DEPTH"))
+    } catch (error) {
+      if (this.destroyed || request.signal.aborted || isAbortError(error)) return
+      this.reportError("Member features", error)
+      this.setDepthEntitled(false)
+    } finally {
+      if (this.memberFeatureRequest === request) this.memberFeatureRequest = null
+    }
+  }
+
+  private setDepthEntitled(entitled: boolean): void {
+    if (this.depthEntitled === entitled) return
+    this.depthEntitled = entitled
+    this.depthPanel.setEntitled(entitled)
+    this.syncDepthSubscription()
+  }
+
+  // The depth book belongs to the underlying stock; VIOP contract symbols have
+  // none of their own, so the panel always follows the underlying.
+  private syncDepthSubscription(): void {
+    const depth = this.options.depth
+    if (!depth) return
+    const symbol = this.depthEntitled ? this.selectedEquitySymbol : null
+    if (symbol) depth.start(symbol)
+    else depth.stop()
   }
 
   // Applies a live price tick in place. The stream carries only the traded
@@ -711,6 +782,11 @@ export class WatchlistScreen {
     this.chart.setInstrument(instrument)
     this.selectedEquitySymbol = instrument.underlyingSymbol
     this.syncChartQuoteSubscription()
+    this.depthPanel.selectInstrument({
+      displayName: instrument.displayName,
+      underlyingSymbol: instrument.underlyingSymbol,
+    })
+    this.syncDepthSubscription()
     this.renderChartHeader()
     void this.loadNews(instrument)
   }
@@ -1136,7 +1212,7 @@ export class WatchlistScreen {
   }
 
   private toggleFocus(): void {
-    const order: Focus[] = ["instruments", "chart", "account", "news"]
+    const order: Focus[] = ["instruments", "chart", "depth", "account", "news"]
     const index = order.indexOf(this.focus)
     this.setFocus(order[(index + 1) % order.length] ?? "instruments")
   }
@@ -1159,6 +1235,7 @@ export class WatchlistScreen {
     this.paintSortToolbar()
     this.renderChartHeader()
     this.chart.setFocused(this.focus === "chart")
+    this.depthPanel.setFocused(this.focus === "depth")
     this.accountPanel.setFocused(this.focus === "account")
     this.newsHeader.fg = this.focus === "news" ? FOCUSED_HEADER : UNFOCUSED_HEADER
     this.paintNewsFeedToolbar()
@@ -1204,11 +1281,19 @@ export class WatchlistScreen {
     this.chartHeader.content = t`${fg(titleColor)("Chart")}  ${fg(HEADER_COLOR)(`${this.selectedEquitySymbol} ${asset}`)}  ${fg(statusColor)(status)}`
   }
 
+  // Three widths: wide terminals carry every column at once; medium ones drop
+  // the depth ladder unless it holds focus; narrow ones show the instrument list
+  // beside whichever single panel is focused.
   private updateResponsiveLayout(): void {
     const compact = this.root.width < COMPACT_LAYOUT_WIDTH
+    const wide = this.root.width >= DEPTH_LAYOUT_WIDTH
+    const depthFocused = this.focus === "depth"
     this.leftPanel.width = compact ? 30 : 36
-    this.centerPanel.visible = !compact || this.focus !== "news"
-    this.rightPanel.visible = !compact || this.focus === "news"
+    this.centerPanel.visible = !compact || (this.focus !== "news" && !depthFocused)
+    this.depthPanel.root.visible = compact ? depthFocused : wide || depthFocused
+    this.rightPanel.visible = compact ? this.focus === "news" : wide || !depthFocused
+    this.depthPanel.root.width = compact ? "auto" : DEPTH_PANEL_WIDTH
+    this.depthPanel.root.flexGrow = compact ? 1 : 0
     this.rightPanel.width = compact ? "auto" : 46
     this.rightPanel.flexGrow = compact ? 1 : 0
   }

@@ -14,10 +14,12 @@ import { DrizzleProviderStateStore } from "./db/provider-state-store.ts"
 import { DrizzleWatchlistPreferencesStore } from "./db/watchlist-preferences-store.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
 import { ApiCandleSource } from "./market/api-candles.ts"
+import { ApiDepthStream } from "./market/api-depth-stream.ts"
 import { ApiNewsSource } from "./market/api-news.ts"
 import { ApiEquityQuoteStream } from "./market/equity-quote-stream.ts"
 import { ApiQuoteStream } from "./market/quote-stream.ts"
 import { ApiViopInstrumentSource } from "./market/api-source.ts"
+import { ApiMemberFeatureSource } from "./member/api-features.ts"
 import { LoginScreen } from "./screens/login.ts"
 import { LogsScreen } from "./screens/logs.ts"
 import { TradingWorkspaceScreen } from "./screens/trading-workspace.ts"
@@ -220,6 +222,10 @@ export class App {
       quotes: new ApiQuoteStream(api.client, {
         onError: (error) => this.handleStreamError("VIOP quote stream", error),
       }),
+      depth: new ApiDepthStream(api.client, {
+        onError: (error) => this.handleStreamError("Depth stream", error),
+      }),
+      memberFeatures: new ApiMemberFeatureSource(api.client),
       preferences: this.preferences,
       onPreferencesChange: (preferences) => {
         this.preferences = preferences

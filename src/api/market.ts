@@ -221,6 +221,113 @@ function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null
 }
 
+// Order book depth arrives over SSE on the streaming host, unnamed events with
+// single-letter keys. Only cash-equity symbols have a book; VIOP contract
+// symbols answer 404. `DETAIL` carries the ladder and the trade tape, where
+// `SUMMARY` would carry only the side totals.
+export const DEPTH_STREAM_PATH = "/reactive-market-depth-api/v2/depth/stream"
+export const DEPTH_STREAM_TYPE = "DETAIL"
+
+export interface DepthUpdateLevel {
+  index: number
+  level: { price: number; lots: number; orderCount: number }
+}
+
+export interface DepthUpdateTrade {
+  id: string
+  price: number
+  lots: number
+  side: "BUY" | "SELL"
+  buyer: string | null
+  seller: string | null
+}
+
+export interface DepthUpdate {
+  symbol: string
+  // Absent when the frame carries only trades. Levels are partial: each one
+  // names the ladder slot it replaces.
+  depth: {
+    buyLots: number | null
+    sellLots: number | null
+    bids: DepthUpdateLevel[]
+    asks: DepthUpdateLevel[]
+  } | null
+  // `replace` marks a full tape; otherwise the items are new prints to merge.
+  trades: { replace: boolean; maxLength: number | null; items: DepthUpdateTrade[] } | null
+  marketClosed: boolean | null
+  maintenance: boolean | null
+  infoMessage: string | null
+}
+
+export function parseDepthUpdate(data: string): DepthUpdate | null {
+  let raw: { s?: unknown; dpt?: unknown; trd?: unknown; c?: unknown; m?: unknown; t?: unknown }
+  try {
+    raw = JSON.parse(data)
+  } catch {
+    return null
+  }
+  if (typeof raw.s !== "string" || raw.s.length === 0) return null
+  return {
+    symbol: raw.s,
+    depth: parseDepthLadder(raw.dpt),
+    trades: parseDepthTrades(raw.trd),
+    marketClosed: booleanOrNull(raw.c),
+    maintenance: booleanOrNull(raw.m),
+    infoMessage: typeof raw.t === "string" ? raw.t : null,
+  }
+}
+
+function parseDepthLadder(value: unknown): DepthUpdate["depth"] {
+  if (!value || typeof value !== "object") return null
+  const raw = value as { bc?: unknown; sc?: unknown; b?: unknown; s?: unknown }
+  return {
+    buyLots: numberOrNull(raw.bc),
+    sellLots: numberOrNull(raw.sc),
+    bids: parseDepthLevels(raw.b),
+    asks: parseDepthLevels(raw.s),
+  }
+}
+
+function parseDepthLevels(value: unknown): DepthUpdateLevel[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry): DepthUpdateLevel[] => {
+    if (!entry || typeof entry !== "object") return []
+    const raw = entry as { i?: unknown; p?: unknown; l?: unknown; o?: unknown }
+    const index = numberOrNull(raw.i)
+    const price = numberOrNull(raw.p)
+    if (index === null || index < 0 || price === null) return []
+    return [{
+      index,
+      level: { price, lots: numberOrNull(raw.l) ?? 0, orderCount: numberOrNull(raw.o) ?? 0 },
+    }]
+  })
+}
+
+function parseDepthTrades(value: unknown): DepthUpdate["trades"] {
+  if (!value || typeof value !== "object") return null
+  const raw = value as { mt?: unknown; l?: unknown; t?: unknown }
+  if (!Array.isArray(raw.t)) return null
+  const items = raw.t.flatMap((entry): DepthUpdateTrade[] => {
+    if (!entry || typeof entry !== "object") return []
+    const trade = entry as { id?: unknown; p?: unknown; l?: unknown; d?: unknown; b?: unknown; s?: unknown }
+    const price = numberOrNull(trade.p)
+    if (typeof trade.id !== "string" || price === null) return []
+    return [{
+      id: trade.id,
+      price,
+      lots: numberOrNull(trade.l) ?? 0,
+      side: trade.d === "s" ? "SELL" : "BUY",
+      buyer: typeof trade.b === "string" ? trade.b : null,
+      seller: typeof trade.s === "string" ? trade.s : null,
+    }]
+  })
+  return { replace: raw.mt === "f", maxLength: numberOrNull(raw.l), items }
+}
+
+function booleanOrNull(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null
+}
+
 export const marketOperations = {
   screenerRetrieveV2: defineOperation<ScreenerRetrieveV2Data, ScreenerRetrieveV2Variables>(
     "screenerRetrieveV2",

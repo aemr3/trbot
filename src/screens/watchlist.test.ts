@@ -5,6 +5,14 @@ import { AuthenticationError } from "../api/index.ts"
 import { DEFAULT_INTERVALS_BY_RANGE, type CandleSource } from "../market/candle.ts"
 import { ApplicationLog } from "../logging/application-log.ts"
 import type {
+  DepthBook,
+  DepthBookListener,
+  DepthStatus,
+  DepthStatusListener,
+  DepthStream,
+} from "../market/depth.ts"
+import { memberFeatureSet, type MemberFeatureSource } from "../member/features.ts"
+import type {
   EquityQuoteListener,
   EquityQuoteStream,
 } from "../market/equity-quote-stream.ts"
@@ -282,6 +290,7 @@ test("switches between selected-stock and index news feeds", async () => {
   mockInput.pressTab()
   mockInput.pressTab()
   mockInput.pressTab()
+  mockInput.pressTab()
   mockInput.pressArrow("right")
   await waitForFrame((frame) => frame.includes("BIST 100 closes higher"))
   expect(requests.at(-1)).toBeNull()
@@ -376,6 +385,7 @@ test("shows portfolio, orders, and positions in tabs below the chart", async () 
 
   mockInput.pressTab()
   mockInput.pressTab()
+  mockInput.pressTab()
   mockInput.pressArrow("right")
   const ordersFrame = await waitForFrame((frame) => frame.includes("THYAO alış"))
   expect(ordersFrame).toContain("PENDING")
@@ -412,6 +422,7 @@ test("applies live account, order, and futures price updates", async () => {
   const livePortfolio = await waitForFrame((frame) => frame.includes("₺48.000,00") && frame.includes("● live"))
   expect(livePortfolio).toContain("Available")
 
+  mockInput.pressTab()
   mockInput.pressTab()
   mockInput.pressTab()
   mockInput.pressArrow("right")
@@ -809,7 +820,7 @@ test("opens the complete shortcut help with question mark and closes it again", 
   const contractPage = await waitForFrame((frame) => frame.includes("Sort by price change"))
   expect(contractPage).toContain("Sort by volume")
 
-  await mockInput.typeText("jjjjjjjjjj")
+  await mockInput.typeText("jjjjjjjjjjjjj")
   const lastPage = await waitForFrame((frame) => frame.includes("Order ticket"))
   expect(lastPage).toContain("Next field, review, or submit")
   expect(lastPage).toContain("Review or submit the matching side")
@@ -1045,6 +1056,7 @@ test("opens a news article with its full body on Enter and returns on Backspace"
   await waitForFrame((f) => f.includes("BIST 30 güne"))
 
   mockInput.pressTab() // move focus to the chart panel
+  mockInput.pressTab() // move focus to the depth panel
   mockInput.pressTab() // move focus to the account panel
   mockInput.pressTab() // move focus to the news panel
   mockInput.pressEnter() // open the selected article
@@ -1149,6 +1161,7 @@ test("keeps the chart usable in an 80-column terminal", async () => {
   mockInput.pressTab()
   mockInput.pressTab()
   mockInput.pressTab()
+  mockInput.pressTab()
   const newsFrame = await waitForFrame((value) => value.includes("BIST 30 güne"))
   expect(newsFrame).toContain("News")
 
@@ -1224,5 +1237,103 @@ test("routes stock, futures, and index streams to the selected chart asset", asy
   screen.destroy()
   expect(quotes.stopped).toBeTrue()
   expect(equityQuotes.stopped).toBeTrue()
+  renderer.destroy()
+})
+
+class FakeDepthStream implements DepthStream {
+  private listener: DepthBookListener | null = null
+  private statusListener: DepthStatusListener | null = null
+  startedSymbols: string[] = []
+  stopped = false
+
+  subscribe(listener: DepthBookListener): void {
+    this.listener = listener
+  }
+  onStatusChange(listener: DepthStatusListener): void {
+    this.statusListener = listener
+  }
+  start(symbol: string): void {
+    this.startedSymbols.push(symbol)
+  }
+  stop(): void {
+    this.stopped = true
+  }
+  emitStatus(status: DepthStatus): void {
+    this.statusListener?.(status)
+  }
+  emit(book: DepthBook): void {
+    this.listener?.(book)
+  }
+}
+
+function depthBook(symbol: string): DepthBook {
+  return {
+    symbol,
+    bids: [{ price: 389.75, lots: 38_384, orderCount: 26 }],
+    asks: [{ price: 390, lots: 28_352, orderCount: 51 }],
+    buyLots: 1_425_521,
+    sellLots: 2_166_667,
+    trades: [{ id: "1", price: 390, lots: 111, side: "BUY", buyer: "Gedik Yatırım", seller: "Ak Yatırım" }],
+    marketClosed: false,
+    maintenance: false,
+    infoMessage: null,
+  }
+}
+
+const entitledFeatures: MemberFeatureSource = {
+  async loadFeatures() {
+    return memberFeatureSet(["MARKET_DEPTH", "SUBSCRIPTION"])
+  },
+}
+
+test("streams the underlying stock's order book beside the chart", async () => {
+  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 32 })
+  const depth = new FakeDepthStream()
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    depth,
+    memberFeatures: entitledFeatures,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  // The watchlist holds VIOP contracts, which have no book of their own, so the
+  // panel follows the underlying stock.
+  await waitFor(() => depth.startedSymbols.includes("XU030"))
+  depth.emitStatus("live")
+  depth.emit(depthBook("XU030"))
+  const frame = await waitForFrame((value) => value.includes("Depth  XU030  ● live"))
+  expect(frame).toContain("38.384  389,75│390,00")
+  expect(frame).toContain("Gedik ← Ak")
+
+  mockInput.pressArrow("down")
+  await waitFor(() => depth.startedSymbols.includes("THYAO"))
+
+  screen.destroy()
+  expect(depth.stopped).toBeTrue()
+  renderer.destroy()
+})
+
+test("keeps the book closed when the subscription does not include market depth", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 200, height: 32 })
+  const depth = new FakeDepthStream()
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    depth,
+    memberFeatures: { async loadFeatures() { return memberFeatureSet(["SUBSCRIPTION"]) } },
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const frame = await waitForFrame((value) => value.includes("paid feature"))
+  expect(frame).not.toContain("● live")
+  // Without the entitlement the stream is never opened, so it cannot 403.
+  expect(depth.startedSymbols).toEqual([])
+
+  screen.destroy()
   renderer.destroy()
 })
