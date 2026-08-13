@@ -575,6 +575,104 @@ test("refreshes snapshot volumes and re-sorts without replacing live prices", as
   renderer.destroy()
 })
 
+// A session left running past a settlement keeps its live prices but must pick
+// up the new daily-change reference, or every row reports the previous day's
+// change against a stale previous close.
+test("re-derives the daily change reference when the snapshot rolls into a new session", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+  const quotes = new FakeQuoteStream()
+  let rolledOver = false
+  const rollingOver: ViopInstrumentSource = {
+    async listInstruments() {
+      // Yesterday closed 10% up at 110 (reference 100); today the same price is
+      // only 2% above the new previous close.
+      const changePercent = rolledOver ? 2 : 10
+      return [
+        { uid: "a", symbol: "F_AAA0826", displayName: "AAA", underlyingSymbol: "AAA", lastPrice: 110, changePercent, volume: 3_000, currency: "TRY" },
+      ]
+    },
+  }
+  const screen = new WatchlistScreen(renderer, {
+    instruments: rollingOver,
+    candles,
+    news,
+    quotes,
+    instrumentIntervalMs: 10,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  expect(await waitForFrame((frame) => frame.includes("+10.00%"))).toContain("110,00")
+
+  rolledOver = true
+  const rolledFrame = await waitForFrame((frame) => frame.includes("+2.00%"))
+  expect(rolledFrame).not.toContain("+10.00%")
+
+  // Later ticks are measured against the new reference, not the stale one.
+  quotes.emit({ symbol: "F_AAA0826", lastPrice: 113.4, sessionStatus: "OPEN", timestamp: 1 })
+  expect(await waitForFrame((frame) => frame.includes("+5.15%"))).toContain("113,40")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+// Session stats, volume, open interest and the settlement prices only arrive
+// with the contract detail call, which used to run on selection alone.
+test("keeps the selected contract stats fresh while the selection stays put", async () => {
+  const { renderer, waitFor, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({ width: 120, height: 24 })
+  let openInterest = 1_000
+  let failing = false
+  let detailCalls = 0
+  const refreshingDetails: ViopInstrumentSource = {
+    async listInstruments() {
+      return [
+        { uid: "a", symbol: "F_AAA0826", displayName: "AAA", underlyingSymbol: "AAA", lastPrice: 110, changePercent: 2, volume: 3_000, currency: "TRY" },
+      ]
+    },
+    async loadContractDetails() {
+      detailCalls++
+      if (failing) throw new Error("contract details are down")
+      return {
+        initialCollateral: 1_000,
+        leverage: 3,
+        contractSize: 100,
+        expiryDate: "31/08/2026",
+        sessionHigh: 112,
+        sessionLow: 108,
+        settlementPrice: null,
+        previousSettlementPrice: 107.84,
+        volume: 5_000,
+        openInterest,
+      }
+    },
+  }
+  const screen = new WatchlistScreen(renderer, {
+    instruments: refreshingDetails,
+    candles,
+    news,
+    instrumentIntervalMs: 10,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitForFrame((frame) => frame.includes("OI 1.000"))
+
+  openInterest = 2_000
+  await waitForFrame((frame) => frame.includes("OI 2.000"))
+
+  // A failed background refresh keeps the last good stats on screen.
+  failing = true
+  const callsBeforeFailure = detailCalls
+  await waitFor(() => detailCalls > callsBeforeFailure + 1)
+  await renderOnce()
+  const frame = captureCharFrame()
+  expect(frame).toContain("OI 2.000")
+  expect(frame).not.toContain("Contract details unavailable")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("requires lowercase c twice before cancelling every pending VIOP order", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
   const cancelled: string[][] = []

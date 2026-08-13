@@ -492,7 +492,7 @@ export class WatchlistScreen {
     void this.load()
     this.newsTimer = setInterval(() => void this.refreshNews(), this.options.newsIntervalMs ?? NEWS_POLL_INTERVAL_MS)
     this.instrumentTimer = setInterval(
-      () => void this.refreshInstrumentVolumes(),
+      () => void this.refreshInstruments(),
       this.options.instrumentIntervalMs ?? INSTRUMENT_POLL_INTERVAL_MS,
     )
   }
@@ -565,7 +565,7 @@ export class WatchlistScreen {
 
   // Applies a live price tick in place. The stream carries only the traded
   // price, so the daily change is re-derived against the session's reference
-  // close seeded from the opening screener snapshot.
+  // close, which the snapshot poll keeps current across trading days.
   private onQuote(update: QuoteUpdate): void {
     if (this.destroyed) return
     this.accountPanel.applyQuote(update)
@@ -586,10 +586,65 @@ export class WatchlistScreen {
     if (this.orderTicket && this.instruments[this.instrumentList.selectedIndex]?.symbol === update.symbol) {
       this.orderTicket.applyQuote({ lastPrice: update.lastPrice, ask: update.ask, bid: update.bid })
     }
-    const reference = this.referenceClose.get(update.symbol)
-    if (reference && reference > 0 && instrument.lastPrice !== null) {
-      instrument.changePercent = (instrument.lastPrice / reference - 1) * 100
+    this.applyReferenceClose(instrument, this.referenceClose.get(update.symbol) ?? null)
+    this.renderInstrumentRow(instrument, index)
+  }
+
+  // Re-reads the screener snapshot for fresh volumes and, just as importantly, a
+  // fresh daily-change reference. The provider rolls that reference over at each
+  // settlement, so a session left running across trading days keeps reporting
+  // the previous day's change unless the reference is re-derived here.
+  private async refreshInstruments(): Promise<void> {
+    if (this.destroyed || this.instruments.length === 0 || this.instrumentRefreshRequest) return
+    const request = new AbortController()
+    this.instrumentRefreshRequest = request
+    try {
+      const refreshed = await this.options.instruments.listInstruments({ signal: request.signal })
+      if (this.destroyed || request.signal.aborted || this.instrumentRefreshRequest !== request) return
+      const snapshots = new Map(refreshed.map((instrument) => [instrument.symbol, instrument]))
+      let changed = false
+      for (const instrument of this.instruments) {
+        const snapshot = snapshots.get(instrument.symbol)
+        if (!snapshot) continue
+        if (instrument.volume !== snapshot.volume) {
+          instrument.volume = snapshot.volume
+          changed = true
+        }
+        // Live ticks own the price; the snapshot only fills symbols yet to tick.
+        if (instrument.lastPrice === null && snapshot.lastPrice !== null) {
+          instrument.lastPrice = snapshot.lastPrice
+          changed = true
+        }
+        if (this.applyReferenceClose(instrument, referenceClose(snapshot))) changed = true
+      }
+      if (changed) {
+        const selectedUid = this.instruments[this.instrumentList.selectedIndex]?.uid
+        this.sortAndRenderInstrumentList(selectedUid, true)
+      }
+      const selected = this.instruments[this.instrumentList.selectedIndex]
+      if (selected) void this.loadContractDetails(selected, true)
+    } catch (error) {
+      if (!this.destroyed && !request.signal.aborted && !isAbortError(error)) this.reportError("Watchlist refresh", error)
+    } finally {
+      if (this.instrumentRefreshRequest === request) this.instrumentRefreshRequest = null
     }
+  }
+
+  // Stores the session reference for a symbol and re-derives its daily change
+  // from the current price. Returns whether the displayed change moved.
+  private applyReferenceClose(instrument: ViopInstrument, reference: number | null): boolean {
+    if (reference === null || reference <= 0) return false
+    this.referenceClose.set(instrument.symbol, reference)
+    if (instrument.lastPrice === null) return false
+    const changePercent = (instrument.lastPrice / reference - 1) * 100
+    if (instrument.changePercent === changePercent) return false
+    instrument.changePercent = changePercent
+    return true
+  }
+
+  // Repaints a single row, re-sorting instead when the list is ordered by change
+  // because the row's new value can move it.
+  private renderInstrumentRow(instrument: ViopInstrument, index: number): void {
     if (this.instrumentSort === "change") {
       const selectedUid = this.instruments[this.instrumentList.selectedIndex]?.uid
       this.sortAndRenderInstrumentList(selectedUid, true)
@@ -599,33 +654,6 @@ export class WatchlistScreen {
       content: formatInstrumentRow(instrument),
       color: changeColor(instrument.changePercent),
     })
-  }
-
-  private async refreshInstrumentVolumes(): Promise<void> {
-    if (this.destroyed || this.instruments.length === 0 || this.instrumentRefreshRequest) return
-    const request = new AbortController()
-    this.instrumentRefreshRequest = request
-    try {
-      const refreshed = await this.options.instruments.listInstruments({ signal: request.signal })
-      if (this.destroyed || request.signal.aborted || this.instrumentRefreshRequest !== request) return
-      const volumes = new Map(refreshed.map((instrument) => [instrument.symbol, instrument.volume]))
-      let changed = false
-      for (const instrument of this.instruments) {
-        if (!volumes.has(instrument.symbol)) continue
-        const volume = volumes.get(instrument.symbol) ?? null
-        if (instrument.volume === volume) continue
-        instrument.volume = volume
-        changed = true
-      }
-      if (changed && this.instrumentSort === "volume") {
-        const selectedUid = this.instruments[this.instrumentList.selectedIndex]?.uid
-        this.sortAndRenderInstrumentList(selectedUid, true)
-      }
-    } catch (error) {
-      if (!this.destroyed && !request.signal.aborted && !isAbortError(error)) this.reportError("Watchlist refresh", error)
-    } finally {
-      if (this.instrumentRefreshRequest === request) this.instrumentRefreshRequest = null
-    }
   }
 
   private onEquityQuote(update: EquityQuoteUpdate): void {
@@ -695,7 +723,11 @@ export class WatchlistScreen {
     this.instrumentList.selectIndex(index)
   }
 
-  private async loadContractDetails(instrument: ViopInstrument): Promise<void> {
+  // Loads the contract stats behind the details panel. Session high/low, volume,
+  // open interest and the settlement prices only arrive with this call, so a
+  // background reload keeps them current while the selection stays put; it also
+  // leaves the last good values on screen when a poll fails.
+  private async loadContractDetails(instrument: ViopInstrument, background = false): Promise<void> {
     const source = this.options.instruments
     if (!source.loadContractDetails) return
     this.contractDetailsRequest?.abort()
@@ -708,7 +740,7 @@ export class WatchlistScreen {
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.contractDetailsRequest !== request || isAbortError(error)) return
       if (this.reportError("Contract details", error)) return
-      this.contractDetailsPanel.showError(instrument.uid)
+      if (!background) this.contractDetailsPanel.showError(instrument.uid)
     }
   }
 
