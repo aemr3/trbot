@@ -9,7 +9,7 @@ import {
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
-import { WORKSPACE_CHROME_BACKGROUND } from "../components/workspace-chrome.ts"
+import { WORKSPACE_CHROME_BACKGROUND, WORKSPACE_CHROME_MUTED } from "../components/workspace-chrome.ts"
 import type { ApplicationLog, LogEntry, LogLevel } from "../logging/application-log.ts"
 
 const BACKGROUND = "#101010"
@@ -74,7 +74,7 @@ export class LogsScreen {
     })
     footer.add(new TextRenderable(renderer, {
       content: "W / Esc watchlist · ↑/↓ scroll · PgUp/PgDn · Home/End jump · c clear",
-      fg: MUTED_COLOR,
+      fg: WORKSPACE_CHROME_MUTED,
       width: "100%",
     }))
     this.root.add(footer)

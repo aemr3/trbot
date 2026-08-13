@@ -1,5 +1,10 @@
 import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
-import { WORKSPACE_ACTIVE_BACKGROUND, WORKSPACE_CHROME_BACKGROUND } from "../components/workspace-chrome.ts"
+import {
+  WORKSPACE_ACTIVE_BACKGROUND,
+  WORKSPACE_CHROME_BACKGROUND,
+  WORKSPACE_CHROME_MUTED,
+  WORKSPACE_CHROME_TEXT,
+} from "../components/workspace-chrome.ts"
 
 export type TradingWorkspaceTab = "watchlist" | "logs"
 
@@ -21,8 +26,8 @@ const TABS: { id: TradingWorkspaceTab; label: string }[] = [
 ]
 
 const BACKGROUND = "#101010"
-const ACTIVE_COLOR = "#ffffff"
-const INACTIVE_COLOR = "#777777"
+const ACTIVE_COLOR = WORKSPACE_CHROME_TEXT
+const INACTIVE_COLOR = WORKSPACE_CHROME_MUTED
 
 export class TradingWorkspaceScreen {
   readonly root: BoxRenderable

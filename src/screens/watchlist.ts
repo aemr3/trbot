@@ -17,7 +17,11 @@ import { ContractDetailsPanel } from "../components/contract-details-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
 import { isShortcutHelpKey, ShortcutHelp, type ShortcutHelpSection } from "../components/shortcut-help.ts"
 import { ProviderAccountModal } from "../components/provider-account-modal.ts"
-import { WORKSPACE_CHROME_BACKGROUND } from "../components/workspace-chrome.ts"
+import {
+  WORKSPACE_CHROME_BACKGROUND,
+  WORKSPACE_CHROME_MUTED,
+  WORKSPACE_CHROME_TEXT,
+} from "../components/workspace-chrome.ts"
 import type { ApplicationLog } from "../logging/application-log.ts"
 import type { CandleSource } from "../market/candle.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
@@ -465,7 +469,7 @@ export class WatchlistScreen {
 
     this.hint = new TextRenderable(renderer, {
       content: WATCHLIST_HINT,
-      fg: "#777777",
+      fg: WORKSPACE_CHROME_MUTED,
       width: "100%",
     })
     const footer = new BoxRenderable(renderer, {
@@ -840,7 +844,7 @@ export class WatchlistScreen {
     this.tickerSearchQuery = null
     this.tickerSearchMatchIndex = 0
     this.hint.content = WATCHLIST_HINT
-    this.hint.fg = "#777777"
+    this.hint.fg = WORKSPACE_CHROME_MUTED
   }
 
   private handleTickerSearchKey(key: KeyEvent): void {
@@ -908,8 +912,8 @@ export class WatchlistScreen {
       : match
         ? `${match.displayName} · ${match.symbol}  ${this.tickerSearchMatchIndex + 1}/${matches.length}`
         : "no matches"
-    this.hint.content = t`${fg("#7c83ff")(`/${query}`)}  ${fg(match ? "#dddddd" : "#888888")(result)}  ${fg("#666666")("Enter select · Esc cancel")}`
-    this.hint.fg = "#dddddd"
+    this.hint.content = t`${fg(WORKSPACE_CHROME_TEXT)(`/${query}`)}  ${fg(match ? WORKSPACE_CHROME_TEXT : WORKSPACE_CHROME_MUTED)(result)}  ${fg(WORKSPACE_CHROME_MUTED)("Enter select · Esc cancel")}`
+    this.hint.fg = WORKSPACE_CHROME_TEXT
   }
 
   private closeShortcutHelp(): void {
@@ -957,7 +961,7 @@ export class WatchlistScreen {
     if (this.hintTimer) clearTimeout(this.hintTimer)
     this.hintTimer = null
     this.hint.content = WATCHLIST_HINT
-    this.hint.fg = "#777777"
+    this.hint.fg = WORKSPACE_CHROME_MUTED
     this.renderer.requestRender()
   }
 
@@ -1043,7 +1047,7 @@ export class WatchlistScreen {
       this.hintTimer = null
       if (this.destroyed) return
       this.hint.content = WATCHLIST_HINT
-      this.hint.fg = "#777777"
+      this.hint.fg = WORKSPACE_CHROME_MUTED
     }, resetAfterMs)
   }
 
