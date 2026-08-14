@@ -18,6 +18,7 @@ import type {
   PortfolioSummary,
 } from "../trading/account.ts"
 import type { QuoteUpdate } from "../market/quote-stream.ts"
+import { RenderCoalescer } from "./render-coalescer.ts"
 
 const PANEL_BG = "#161616"
 const ACTIVE_BUTTON_BG = "#333333"
@@ -62,6 +63,13 @@ export class AccountPanel {
   private destroyed = false
   private liveSequence = 0
   private readonly liveUpdates: Array<{ sequence: number; update: AccountLiveUpdate }> = []
+  // Position rows are reused across renders; see renderPositionRows.
+  private positionRows: Array<{ row: BoxRenderable; text: TextRenderable; position: AccountPosition }> = []
+  // Quote and account events arrive in bursts; they mutate the snapshot and
+  // the visible tab is re-rendered once per burst.
+  private readonly liveRender = new RenderCoalescer(() => {
+    if (!this.destroyed) this.renderContent()
+  })
 
   constructor(
     private readonly renderer: RenderContext,
@@ -145,6 +153,7 @@ export class AccountPanel {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.liveRender.cancel()
     this.options.stream?.stop()
     this.request?.abort()
     this.request = null
@@ -193,7 +202,7 @@ export class AccountPanel {
     if (!position) return
     position.currentPrice = update.lastPrice
     position.unrealizedProfitLoss = positionProfitLoss(position)
-    if (this.tab === "positions") this.renderContent()
+    if (this.tab === "positions") this.liveRender.schedule()
   }
 
   async refresh(): Promise<void> {
@@ -234,7 +243,7 @@ export class AccountPanel {
     if (!this.snapshot) return
     this.mergeLiveUpdate(update)
     if (update.type === "order") this.syncPendingOrders()
-    this.renderContent()
+    this.liveRender.schedule()
   }
 
   private mergeLiveUpdate(update: AccountLiveUpdate): void {
@@ -310,25 +319,46 @@ export class AccountPanel {
     this.showTextContent(content, "#cccccc")
   }
 
+  // Rows are reused between renders: live streams re-render this list on every
+  // burst flush, and destroying and rebuilding a renderable per position at
+  // that rate churns layout nodes. Each entry's `position` is kept current so
+  // the row's click handler always selects what the row displays.
   private renderPositionRows(positions: AccountPosition[]): void {
-    this.clearBody()
-    positions.forEach((position) => {
-      const row = new BoxRenderable(this.renderer, {
-        width: "100%",
-        height: 1,
-        flexShrink: 0,
-        onMouseDown: (event) => {
-          if (event.button !== 0) return
-          this.options.onFocusRequest?.()
-          this.options.onPositionSelect?.(position)
-        },
-      })
-      row.add(new TextRenderable(this.renderer, {
-        content: new StyledText(positionChunks(position)),
-        width: "100%",
-        wrapMode: "none",
-      }))
-      this.body.add(row)
+    if (this.positionRows.length === 0) this.clearBody()
+    while (this.positionRows.length > positions.length) {
+      const extra = this.positionRows.pop()
+      if (!extra) break
+      this.body.remove(extra.row)
+      if (!extra.row.isDestroyed) extra.row.destroyRecursively()
+    }
+    positions.forEach((position, index) => {
+      const existing = this.positionRows[index]
+      if (existing) {
+        existing.position = position
+        existing.text.content = new StyledText(positionChunks(position))
+        return
+      }
+      const entry = {
+        position,
+        row: new BoxRenderable(this.renderer, {
+          width: "100%",
+          height: 1,
+          flexShrink: 0,
+          onMouseDown: (event) => {
+            if (event.button !== 0) return
+            this.options.onFocusRequest?.()
+            this.options.onPositionSelect?.(entry.position)
+          },
+        }),
+        text: new TextRenderable(this.renderer, {
+          content: new StyledText(positionChunks(position)),
+          width: "100%",
+          wrapMode: "none",
+        }),
+      }
+      entry.row.add(entry.text)
+      this.body.add(entry.row)
+      this.positionRows.push(entry)
     })
   }
 
@@ -340,6 +370,7 @@ export class AccountPanel {
   }
 
   private clearBody(): void {
+    this.positionRows = []
     for (const child of this.body.getChildren()) {
       this.body.remove(child)
       if (child !== this.content && !child.isDestroyed) child.destroyRecursively()

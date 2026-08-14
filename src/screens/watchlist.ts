@@ -20,6 +20,7 @@ import { DepthPanel } from "../components/depth-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
 import { isShortcutHelpKey, ShortcutHelp, type ShortcutHelpSection } from "../components/shortcut-help.ts"
 import { ProviderAccountModal } from "../components/provider-account-modal.ts"
+import { RenderCoalescer } from "../components/render-coalescer.ts"
 import {
   WORKSPACE_CHROME_BACKGROUND,
   WORKSPACE_CHROME_MUTED,
@@ -253,6 +254,13 @@ export class WatchlistScreen {
   private focus: Focus = "instruments"
   private articleOpen = false
   private destroyed = false
+  // With the list sorted by change, every tick can reorder it; ticks mutate
+  // the instruments and the resort runs once per burst.
+  private readonly listResort = new RenderCoalescer(() => {
+    if (this.destroyed) return
+    const selectedUid = this.instruments[this.instrumentList.selectedIndex]?.uid
+    this.sortAndRenderInstrumentList(selectedUid, true)
+  })
   private sessionExpiredNotified = false
   private newsRequestUid: string | null = null
   private articleRequestUid: string | null = null
@@ -596,6 +604,7 @@ export class WatchlistScreen {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.listResort.cancel()
     this.chart.destroy()
     this.accountPanel.destroy()
     this.tickerSearchQuery = null
@@ -869,8 +878,7 @@ export class WatchlistScreen {
   // because the row's new value can move it.
   private renderInstrumentRow(instrument: ViopInstrument, index: number): void {
     if (this.instrumentSort === "change") {
-      const selectedUid = this.instruments[this.instrumentList.selectedIndex]?.uid
-      this.sortAndRenderInstrumentList(selectedUid, true)
+      this.listResort.schedule()
       return
     }
     this.instrumentList.updateRow(index, {

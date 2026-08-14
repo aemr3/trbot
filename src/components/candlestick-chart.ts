@@ -24,6 +24,7 @@ import {
   type CandleSeries,
   type CandleSource,
 } from "../market/candle.ts"
+import { RenderCoalescer } from "./render-coalescer.ts"
 
 const UP_COLOR = "#70d7a1"
 const DOWN_COLOR = "#ff6b6b"
@@ -87,6 +88,11 @@ export class CandlestickChart {
   private focused = false
   private destroyed = false
   private bodyRenderScheduled = false
+  // Live ticks arrive in bursts at market open; rebuilding the whole plot per
+  // tick freezes the app, so ticks mutate the series and renders are coalesced.
+  private readonly liveRender = new RenderCoalescer(() => {
+    if (!this.destroyed) this.renderSeries()
+  })
 
   constructor(
     private readonly renderer: RenderContext,
@@ -284,13 +290,14 @@ export class CandlestickChart {
     const previousLength = this.series.candles.length
     if (applyLivePrice(this.series, price, timestamp)) {
       if (this.scrollOffset > 0) this.scrollOffset += this.series.candles.length - previousLength
-      this.renderSeries()
+      this.liveRender.schedule()
     }
   }
 
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.liveRender.cancel()
     this.request?.abort()
     this.request = null
     if (!this.root.isDestroyed) this.root.destroyRecursively()

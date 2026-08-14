@@ -7,6 +7,7 @@ import {
   type TextChunk,
 } from "@opentui/core"
 import type { ViopContractDetails, ViopInstrument } from "../market/instrument.ts"
+import { RenderCoalescer } from "./render-coalescer.ts"
 
 const PANEL_BG = "#161616"
 const HEADING_COLOR = "#eeeeee"
@@ -24,6 +25,10 @@ export class ContractDetailsPanel {
   private instrument: ViopInstrument | null = null
   private details: ViopContractDetails | null = null
   private status: PanelStatus = "unavailable"
+  // Price ticks arrive in bursts; the latest one is re-rendered once per burst.
+  private readonly liveRender = new RenderCoalescer(() => {
+    if (!this.root.isDestroyed) this.render()
+  })
 
   constructor(renderer: RenderContext) {
     this.root = new BoxRenderable(renderer, {
@@ -68,7 +73,7 @@ export class ContractDetailsPanel {
   applyPrice(symbol: string, lastPrice: number): void {
     if (this.instrument?.symbol !== symbol) return
     this.instrument.lastPrice = lastPrice
-    if (this.status === "ready") this.render()
+    if (this.status === "ready") this.liveRender.schedule()
   }
 
   private render(): void {

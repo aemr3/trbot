@@ -16,6 +16,7 @@ import {
   truncate,
   type Segment,
 } from "./shaded-row.ts"
+import { RenderCoalescer } from "./render-coalescer.ts"
 
 const PANEL_BG = "#161616"
 const HEADING_COLOR = "#eeeeee"
@@ -60,6 +61,11 @@ export class DepthPanel {
   private status: DepthStatus = "idle"
   private entitled: boolean | null = null
   private focused = false
+  // Depth is the busiest stream at market open; book events overwrite state
+  // and the full-panel rebuild is coalesced per burst.
+  private readonly liveRender = new RenderCoalescer(() => {
+    if (!this.root.isDestroyed) this.render()
+  })
 
   constructor(
     renderer: RenderContext,
@@ -116,7 +122,7 @@ export class DepthPanel {
   showBook(book: DepthBook): void {
     if (book.symbol.toUpperCase() !== this.instrument?.underlyingSymbol?.toUpperCase()) return
     this.book = book
-    this.render()
+    this.liveRender.schedule()
   }
 
   setFocused(focused: boolean): void {

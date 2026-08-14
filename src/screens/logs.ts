@@ -10,6 +10,7 @@ import {
   type TextChunk,
 } from "@opentui/core"
 import { WORKSPACE_CHROME_BACKGROUND, WORKSPACE_CHROME_MUTED } from "../components/workspace-chrome.ts"
+import { RenderCoalescer } from "../components/render-coalescer.ts"
 import type { ApplicationLog, LogEntry, LogLevel } from "../logging/application-log.ts"
 
 const BACKGROUND = "#101010"
@@ -34,6 +35,9 @@ export class LogsScreen {
   private readonly scroll: ScrollBoxRenderable
   private readonly unsubscribe: () => void
   private destroyed = false
+  // An error storm logs many entries at once; the full list is rebuilt once
+  // per burst.
+  private readonly liveRender = new RenderCoalescer(() => this.render())
 
   constructor(
     private readonly renderer: RenderContext,
@@ -78,7 +82,7 @@ export class LogsScreen {
       width: "100%",
     }))
     this.root.add(footer)
-    this.unsubscribe = options.logs.subscribe(() => this.render())
+    this.unsubscribe = options.logs.subscribe(() => this.liveRender.schedule())
     this.render()
   }
 
@@ -99,6 +103,7 @@ export class LogsScreen {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.liveRender.cancel()
     this.unsubscribe()
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }

@@ -11,6 +11,7 @@ import {
   type ViopOrderSide,
   type ViopOrderSource,
 } from "../trading/order.ts"
+import { RenderCoalescer } from "../components/render-coalescer.ts"
 
 const PANEL_BG = "#101010"
 const FIELD_BG = "#2b2b2b"
@@ -59,6 +60,10 @@ export class ViopOrderTicket {
   private request: AbortController | null = null
   private placedOrder: PlacedViopOrder | null = null
   private destroyed = false
+  // Quote ticks arrive in bursts; the ticket re-renders once per burst.
+  private readonly liveRender = new RenderCoalescer(() => {
+    if (!this.destroyed) this.render()
+  })
 
   constructor(
     renderer: RenderContext,
@@ -107,6 +112,7 @@ export class ViopOrderTicket {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.liveRender.cancel()
     this.request?.abort()
     this.request = null
     if (!this.root.isDestroyed) this.root.destroyRecursively()
@@ -118,7 +124,7 @@ export class ViopOrderTicket {
     if (update.lastPrice !== undefined) preparation.lastPrice = update.lastPrice
     if (update.ask !== undefined) preparation.ask = update.ask
     if (update.bid !== undefined) preparation.bid = update.bid
-    this.render()
+    this.liveRender.schedule()
   }
 
   handleKey(key: KeyEvent): boolean {
