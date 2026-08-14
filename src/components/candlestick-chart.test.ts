@@ -45,6 +45,115 @@ test("fills the complete body between open and close", () => {
   expect(Math.max(...bodyRows) - Math.min(...bodyRows) + 1).toBe(bodyRows.length)
 })
 
+// The guide line and the candles used to be placed with two different
+// price-to-row mappings, which drew the current price a row or two away from the
+// close it labels. Both now share the mapping `candleGlyph` renders in.
+test("draws the current-price guide touching the last candle", () => {
+  for (const height of [12, 18, 24, 30]) {
+    for (const close of [37.6, 38.24, 38.5, 38.93, 39.1]) {
+      const chart = renderCandleChart([
+        { timestamp: 1000, open: 38.0, high: 39.0, low: 37.5, close: 38.5, volume: null },
+        { timestamp: 2000, open: 38.5, high: 39.2, low: 37.2, close: 38.1, volume: null },
+        { timestamp: 3000, open: 38.1, high: Math.max(38.1, close) + 0.08, low: Math.min(38.1, close) - 0.08, close, volume: null },
+      ], 44, height, "INTRADAY") as StyledText
+      const lines = chart.chunks.map((chunk) => chunk.text).join("").split("\n")
+      const guideRow = lines.findIndex((line) => line.includes("┫"))
+      expect(guideRow).toBeGreaterThanOrEqual(0)
+
+      const axisColumn = lines[guideRow]?.indexOf("┫") ?? -1
+      const lastCandleColumn = Math.max(
+        ...lines.flatMap((line) => {
+          const plot = Array.from(line.slice(0, axisColumn))
+          const columns = plot.flatMap((glyph, index) => /[┃╻╹╽╿│╷╵]/.test(glyph) ? [index] : [])
+          return columns.length > 0 ? [Math.max(...columns)] : []
+        }),
+      )
+      const candleRows = lines.flatMap((line, row) =>
+        /[┃╻╹╽╿│╷╵]/.test(line.slice(0, axisColumn)[lastCandleColumn] ?? "") ? [row] : [])
+
+      expect(candleRows).toContain(guideRow)
+      // The label beside the guide is the close it sits on.
+      expect(lines[guideRow]).toContain(close.toLocaleString("tr-TR", { minimumFractionDigits: 2 }))
+    }
+  }
+})
+
+// `candleGlyph` suppresses a close-edge sliver shorter than a quarter row, so
+// the drawn close edge can sit one row past the row that mathematically holds
+// the close. The guide mirrors that decision: it must share a row with the
+// drawn edge (body top when rising, body bottom when falling), because a line
+// that is exact in price but sits in the empty cell beside the candle reads
+// as misaligned.
+test("draws the guide on the row where the close edge is drawn", () => {
+  const bodyGlyphs = /[┃╻╹╽╿]/
+  let checked = 0
+  for (const height of [12, 18, 24, 30]) {
+    for (const direction of ["up", "down"] as const) {
+      for (let step = 0; step < 12; step++) {
+        const close = 19.42 + (step / 12) * 0.1
+        const last: Candle = direction === "up"
+          ? { timestamp: 3000, open: close - 0.08, high: close + 0.02, low: close - 0.085, close, volume: null }
+          : { timestamp: 3000, open: close + 0.02, high: close + 0.025, low: close - 0.02, close, volume: null }
+        const chart = renderCandleChart([
+          { timestamp: 1000, open: 19.3, high: 19.62, low: 19.2, close: 19.4, volume: null },
+          { timestamp: 2000, open: 19.4, high: 19.5, low: 19.3, close: 19.42, volume: null },
+          last,
+        ], 44, height, "INTRADAY") as StyledText
+        const lines = chart.chunks.map((chunk) => chunk.text).join("").split("\n")
+
+        const guideRow = lines.findIndex((line) => line.includes("┫"))
+        const axisColumn = lines[guideRow]?.indexOf("┫") ?? -1
+        expect(Array.from(lines[guideRow]!.slice(0, axisColumn))).toContain("─")
+
+        const lastCandleColumn = Math.max(...lines.flatMap((line) => {
+          const columns = Array.from(line.slice(0, axisColumn))
+            .flatMap((glyph, index) => bodyGlyphs.test(glyph) ? [index] : [])
+          return columns.length > 0 ? [Math.max(...columns)] : []
+        }))
+        const bodyRows = lines.flatMap((line, row) =>
+          bodyGlyphs.test(line.slice(0, axisColumn)[lastCandleColumn] ?? "") ? [row] : [])
+        const edgeRow = direction === "up" ? Math.min(...bodyRows) : Math.max(...bodyRows)
+
+        expect(guideRow).toBe(edgeRow)
+        checked++
+      }
+    }
+  }
+  expect(checked).toBe(96)
+})
+
+// The axis ticks are the inverse of the mapping the candles are drawn with, so
+// a candle closing at a tick's price belongs on that tick's row. A wide first
+// candle pins the scale, letting the last close move without rescaling it.
+test("labels each grid tick with the price that lands on its row", () => {
+  const series = (close: number): Candle[] => [
+    { timestamp: 1000, open: 37.0, high: 40.0, low: 36.0, close: 38.0, volume: null },
+    { timestamp: 2000, open: 38.0, high: 39.0, low: 37.0, close: 38.1, volume: null },
+    { timestamp: 3000, open: 38.1, high: 39.5, low: 36.5, close, volume: null },
+  ]
+  const rows = (chart: StyledText) => chart.chunks.map((chunk) => chunk.text).join("").split("\n")
+  let checked = 0
+
+  for (const height of [12, 18, 24, 30]) {
+    rows(renderCandleChart(series(38.24), 44, height, "INTRADAY") as StyledText).forEach((line, row) => {
+      const tick = line.match(/┤\s+([\d.]+,\d+)\s*$/)
+      if (!tick) return
+      // Half a row above the label: the guide follows the drawn close edge,
+      // and an edge in a row's middle is always drawn on that same row.
+      // (36.0–40.0 plus the renderer's 2% padding is the pinned price span.)
+      const rowPrice = (40.08 - 35.92) / (height - 1)
+      const price = Number(tick[1]!.replace(/\./g, "").replace(",", ".")) + rowPrice / 2
+      if (price >= 39.5 || price <= 36.5) return
+      const guideRow = rows(renderCandleChart(series(price), 44, height, "INTRADAY") as StyledText)
+        .findIndex((probe) => probe.includes("┫"))
+
+      expect(guideRow).toBe(row)
+      checked++
+    })
+  }
+  expect(checked).toBeGreaterThan(8)
+})
+
 test("spaces and right-aligns candles with a current-price guide", () => {
   const chart = renderCandleChart(candles, 40, 10, "INTRADAY") as StyledText
   const lines = chart.chunks.map((chunk) => chunk.text).join("").split("\n")

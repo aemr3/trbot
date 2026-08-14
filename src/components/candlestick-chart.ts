@@ -541,15 +541,23 @@ export function renderCandleChart(
   const ceiling = high + padding
   const floor = low - padding
   const span = ceiling - floor
-  const verticalLevels = plotHeight * 2
-  const priceLevel = (price: number) =>
-    Math.max(0, Math.min(verticalLevels - 1, Math.round(((ceiling - price) / span) * (verticalLevels - 1))))
   const priceHeight = (price: number) => Math.max(0, Math.min(plotHeight, ((price - floor) / span) * plotHeight))
   const firstCandleColumn = Math.max(0, plotWidth - visible.length * candleSlotWidth)
   const latest = visible.at(-1)!
   const latestColor = latest.close >= latest.open ? UP_COLOR : DOWN_COLOR
   const guideColor = latest.close >= latest.open ? UP_GUIDE_COLOR : DOWN_GUIDE_COLOR
-  const currentPriceRow = Math.floor(priceLevel(latest.close) / 2)
+  // The guide follows the *drawn* candle rather than the abstract price:
+  // `candleGlyph` suppresses close-edge slivers shorter than BODY_EDGE_MIN, so
+  // the close edge can be rendered one row past the row that mathematically
+  // holds the close. Mirroring that decision keeps the line, its ┫ tick, and
+  // the label on a row the candle body touches — a line that is exact in price
+  // but sits in the empty cell beside the candle reads as misaligned.
+  const closeHeight = priceHeight(latest.close)
+  const closeOffset = closeHeight - Math.floor(closeHeight)
+  const closeEdgeCell = latest.close >= latest.open
+    ? Math.floor(closeHeight) - (closeOffset > BODY_EDGE_MIN ? 0 : 1)
+    : Math.floor(closeHeight) + (closeOffset < BODY_EDGE_MAX ? 0 : 1)
+  const currentPriceRow = Math.max(0, Math.min(plotHeight - 1, plotHeight - closeEdgeCell))
   const horizontalGuideCount = plotHeight >= 28 ? 7 : plotHeight >= 20 ? 6 : plotHeight >= 12 ? 5 : 4
   const gridRows = new Set(
     Array.from({ length: horizontalGuideCount }, (_, index) =>
@@ -583,7 +591,9 @@ export function renderCandleChart(
     const isCurrentPrice = row === currentPriceRow
     const axisColor = isCurrentPrice ? latestColor : AXIS_COLOR
     const axisGlyph = isCurrentPrice ? "┫" : gridLine ? "┤" : "│"
-    const rowPrice = ceiling - ((row * 2 + 0.5) / Math.max(1, verticalLevels - 1)) * span
+    // Inverse of `priceHeight` at this row's own level, so a tick names the
+    // price a candle touching that row would be trading at.
+    const rowPrice = ceiling - (row / plotHeight) * span
     const label = isCurrentPrice
       ? formatPrice(latest.close).padStart(priceLabelWidth)
       : gridLine
