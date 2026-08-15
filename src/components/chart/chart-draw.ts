@@ -1,0 +1,85 @@
+// Candle and volume drawing onto the braille pixel buffer.
+import type { Candle } from "../../market/candle.ts"
+import type { ChartPalette } from "./palette.ts"
+import { bodySpan, getBarBodyWidth, getCandleBodyWidth, getCandleX, getScaledY } from "./geometry.ts"
+import { drawLine, fillRect, LAYER_DATA, LAYER_FILL, type PixelBuffer } from "./pixel-buffer.ts"
+
+function drawWickOutsideBody(
+  buf: PixelBuffer,
+  x: number,
+  highY: number,
+  lowY: number,
+  bodyTop: number,
+  bodyBottom: number,
+  color: string,
+): void {
+  if (highY < bodyTop) {
+    drawLine(buf, x, highY, x, bodyTop, color, LAYER_DATA)
+  }
+  if (bodyBottom < lowY) {
+    drawLine(buf, x, bodyBottom, x, lowY, color, LAYER_DATA)
+  }
+}
+
+/** Draws filled candle bodies and wicks between the given pixel rows. */
+export function drawCandlesticks(
+  buf: PixelBuffer,
+  candles: Candle[],
+  chartTop: number,
+  chartBottom: number,
+  palette: ChartPalette,
+  min: number,
+  max: number,
+): void {
+  const bodyWidth = getCandleBodyWidth(candles.length, buf.width)
+
+  for (let i = 0; i < candles.length; i++) {
+    const candle = candles[i]!
+    const x = getCandleX(i, candles.length, buf.width)
+    const [bodyLeft, bodyRight] = bodySpan(x, bodyWidth)
+    const highY = getScaledY(candle.high, min, max, chartTop, chartBottom)
+    const lowY = getScaledY(candle.low, min, max, chartTop, chartBottom)
+    const openY = getScaledY(candle.open, min, max, chartTop, chartBottom)
+    const closeY = getScaledY(candle.close, min, max, chartTop, chartBottom)
+    const isUp = candle.close >= candle.open
+    const wickColor = isUp ? palette.wickUp : palette.wickDown
+    const bodyColor = isUp ? palette.candleUp : palette.candleDown
+
+    const bodyTop = Math.min(openY, closeY)
+    const bodyBottom = Math.max(openY, closeY)
+    if (bodyTop === bodyBottom) {
+      // Doji: full wick plus a two-pixel body sliver so the candle stays visible.
+      drawLine(buf, x, highY, x, lowY, wickColor, LAYER_DATA)
+      const dojiBottom = Math.min(bodyBottom + 1, chartBottom)
+      const dojiTop = Math.max(chartTop, dojiBottom - 1)
+      fillRect(buf, bodyLeft, dojiTop, bodyRight, dojiBottom, bodyColor, LAYER_DATA)
+    } else {
+      drawWickOutsideBody(buf, x, highY, lowY, bodyTop, bodyBottom, wickColor)
+      fillRect(buf, bodyLeft, bodyTop, bodyRight, bodyBottom, bodyColor, LAYER_DATA)
+    }
+  }
+}
+
+/** Draws volume bars between the given pixel rows, colored by candle direction. */
+export function drawVolumeBars(
+  buf: PixelBuffer,
+  candles: Candle[],
+  yTop: number,
+  yBottom: number,
+  palette: ChartPalette,
+): void {
+  const maxVolume = Math.max(...candles.map((candle) => candle.volume ?? 0), 1)
+  const volumeHeight = yBottom - yTop
+  const barWidth = getBarBodyWidth(candles.length, buf.width)
+
+  for (let i = 0; i < candles.length; i++) {
+    const candle = candles[i]!
+    const x = getCandleX(i, candles.length, buf.width)
+    const barHeight = Math.round(((candle.volume ?? 0) / maxVolume) * volumeHeight)
+    if (barHeight === 0) continue
+
+    const [barLeft, barRight] = bodySpan(x, barWidth)
+    const color = candle.close >= candle.open ? palette.volumeUp : palette.volumeDown
+    fillRect(buf, barLeft, yBottom - barHeight, barRight, yBottom, color, LAYER_FILL)
+  }
+}

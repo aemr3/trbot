@@ -1156,10 +1156,10 @@ test("keeps the chart usable in an 80-column terminal", async () => {
   screen.mount()
 
   const frame = await waitForFrame(
-    (value) => value.includes("102,00") && value.includes("5Y") && value.includes("5m") && /[┃╻╹╽╿│]/.test(value),
+    (value) => value.includes("102,00") && value.includes("5Y") && value.includes("5m") && /[⠁-⣿]/.test(value),
   )
   expect(frame).not.toContain("Chart needs more room")
-  expect(frame).toMatch(/[┃╻╹╽╿│]/)
+  expect(frame).toMatch(/[⠁-⣿]/)
 
   focusPanel(mockInput, "news")
   const newsFrame = await waitForFrame((value) => value.includes("BIST 30 güne"))

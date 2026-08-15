@@ -1,8 +1,15 @@
 import { expect, test } from "bun:test"
-import { StyledText, type KeyEvent } from "@opentui/core"
+import { RGBA, StyledText, type KeyEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { DEFAULT_INTERVALS_BY_RANGE, type Candle, type CandleSeries, type CandleSource } from "../market/candle.ts"
-import { CandlestickChart, renderCandleChart, selectVisibleCandles } from "./candlestick-chart.ts"
+import { DEFAULT_INTERVALS_BY_RANGE, type Candle, type CandleRange, type CandleSeries, type CandleSource } from "../market/candle.ts"
+import {
+  CandlestickChart,
+  renderCandleChart,
+  renderCandleChartBitmapView,
+  selectVisibleCandles,
+  type BitmapChartView,
+  type BrailleChartView,
+} from "./candlestick-chart.ts"
 
 const candles: Candle[] = [
   { timestamp: 1000, open: 10, high: 13, low: 9, close: 12, volume: 10 },
@@ -11,6 +18,46 @@ const candles: Candle[] = [
   { timestamp: 4000, open: 11, high: 12, low: 8, close: 9, volume: 40 },
 ]
 
+const braille = /[⠁-⣿]/
+const UP = RGBA.fromHex("#70d7a1")
+const DOWN = RGBA.fromHex("#ff6b6b")
+
+function view(
+  input: Candle[],
+  width: number,
+  height: number,
+  range: CandleRange = "INTRADAY",
+  scrollOffset = 0,
+  reserveScrollbarRow = false,
+): BrailleChartView {
+  const result = renderCandleChart(input, width, height, range, scrollOffset, reserveScrollbarRow)
+  expect(typeof result).not.toBe("string")
+  return result as BrailleChartView
+}
+
+function toText(styled: StyledText): string {
+  return styled.chunks.map((chunk) => chunk.text).join("")
+}
+
+/** Plot cells whose chunk carries the given color, as {row, column} pairs. */
+function cellsWithColor(plot: StyledText, color: RGBA): Array<{ row: number; column: number }> {
+  const cells: Array<{ row: number; column: number }> = []
+  let row = 0
+  let column = 0
+  for (const chunk of plot.chunks) {
+    for (const character of chunk.text) {
+      if (character === "\n") {
+        row++
+        column = 0
+        continue
+      }
+      if (braille.test(character) && chunk.fg?.equals(color)) cells.push({ row, column })
+      column++
+    }
+  }
+  return cells
+}
+
 test("selects newest raw candles and scrolls backward without aggregating them", () => {
   expect(selectVisibleCandles(candles, 2)).toEqual(candles.slice(2))
   expect(selectVisibleCandles(candles, 2, 1)).toEqual(candles.slice(1, 3))
@@ -18,156 +65,75 @@ test("selects newest raw candles and scrolls backward without aggregating them",
   expect(selectVisibleCandles(candles, 2)[0]).toBe(candles[2])
 })
 
-test("renders narrow candle bodies, wicks, axes, and timestamps", () => {
-  const chart = renderCandleChart(candles, 40, 10, "INTRADAY")
-  expect(chart).toBeInstanceOf(StyledText)
+test("renders braille candles with axis columns and a time axis", () => {
+  const chart = view(candles, 40, 10)
+  expect(chart.kind).toBe("braille")
+  expect(chart.plotWidth).toBe(30)
+  expect(chart.axisWidth).toBe(10)
 
-  const text = (chart as StyledText).chunks.map((chunk) => chunk.text).join("")
-  expect(text).toMatch(/[┃╻╹╽╿]/)
-  expect(text).not.toContain("█")
-  expect(text).toContain("│")
-  expect(text.split("\n")).toHaveLength(10)
+  const plotLines = toText(chart.plot).split("\n")
+  expect(plotLines).toHaveLength(9) // height minus the time-axis row
+  expect(toText(chart.plot)).toMatch(braille)
+
+  const axisLines = toText(chart.axis).split("\n")
+  expect(axisLines).toHaveLength(9)
+  expect(toText(chart.axis)).toContain("┫")
+  expect(toText(chart.axis)).toContain("┤")
+  expect(chart.timeAxis).toContain(":") // intraday hour labels
+})
+
+test("colors rising and falling candle bodies with the palette", () => {
+  const chart = view(candles, 40, 10)
+  expect(cellsWithColor(chart.plot, UP).length).toBeGreaterThan(0)
+  expect(cellsWithColor(chart.plot, DOWN).length).toBeGreaterThan(0)
 })
 
 test("fills the complete body between open and close", () => {
-  const chart = renderCandleChart([
+  const chart = view([
     { timestamp: 1000, open: 100, high: 110, low: 100, close: 110, volume: null },
-  ], 30, 20, "INTRADAY") as StyledText
-  const plotColumn = 18
-  const bodyRows = chart.chunks
-    .map((chunk) => chunk.text)
-    .join("")
-    .split("\n")
-    .slice(0, -1)
-    .flatMap((line, row) => /[┃╻╹╽╿]/.test(line[plotColumn] ?? "") ? [row] : [])
+  ], 30, 20)
+  // A single candle centers on the plot; its body spans the full price range.
+  const bodyCells = cellsWithColor(chart.plot, UP)
+  const centerColumn = 10
+  const rows = bodyCells.filter((cell) => cell.column === centerColumn).map((cell) => cell.row)
 
-  expect(bodyRows.length).toBeGreaterThan(10)
-  expect(Math.max(...bodyRows) - Math.min(...bodyRows) + 1).toBe(bodyRows.length)
+  expect(rows).toHaveLength(19) // every plot row
+  expect(Math.max(...rows) - Math.min(...rows) + 1).toBe(rows.length)
 })
 
-// The guide line and the candles used to be placed with two different
-// price-to-row mappings, which drew the current price a row or two away from the
-// close it labels. Both now share the mapping `candleGlyph` renders in.
-test("draws the current-price guide touching the last candle", () => {
+test("aligns the current-price guide row with the drawn close edge", () => {
   for (const height of [12, 18, 24, 30]) {
     for (const close of [37.6, 38.24, 38.5, 38.93, 39.1]) {
-      const chart = renderCandleChart([
+      const chart = view([
         { timestamp: 1000, open: 38.0, high: 39.0, low: 37.5, close: 38.5, volume: null },
         { timestamp: 2000, open: 38.5, high: 39.2, low: 37.2, close: 38.1, volume: null },
         { timestamp: 3000, open: 38.1, high: Math.max(38.1, close) + 0.08, low: Math.min(38.1, close) - 0.08, close, volume: null },
-      ], 44, height, "INTRADAY") as StyledText
-      const lines = chart.chunks.map((chunk) => chunk.text).join("").split("\n")
-      const guideRow = lines.findIndex((line) => line.includes("┫"))
+      ], 44, height)
+      const axisLines = toText(chart.axis).split("\n")
+      const guideRow = axisLines.findIndex((line) => line.includes("┫"))
       expect(guideRow).toBeGreaterThanOrEqual(0)
-
-      const axisColumn = lines[guideRow]?.indexOf("┫") ?? -1
-      const lastCandleColumn = Math.max(
-        ...lines.flatMap((line) => {
-          const plot = Array.from(line.slice(0, axisColumn))
-          const columns = plot.flatMap((glyph, index) => /[┃╻╹╽╿│╷╵]/.test(glyph) ? [index] : [])
-          return columns.length > 0 ? [Math.max(...columns)] : []
-        }),
-      )
-      const candleRows = lines.flatMap((line, row) =>
-        /[┃╻╹╽╿│╷╵]/.test(line.slice(0, axisColumn)[lastCandleColumn] ?? "") ? [row] : [])
-
-      expect(candleRows).toContain(guideRow)
       // The label beside the guide is the close it sits on.
-      expect(lines[guideRow]).toContain(close.toLocaleString("tr-TR", { minimumFractionDigits: 2 }))
+      expect(axisLines[guideRow]).toContain(close.toLocaleString("tr-TR", { minimumFractionDigits: 2 }))
+
+      // The last candle's body must touch the guide row.
+      const bodyCells = [...cellsWithColor(chart.plot, UP), ...cellsWithColor(chart.plot, DOWN)]
+      const lastColumn = Math.max(...bodyCells.map((cell) => cell.column))
+      const rowsAtLastColumn = bodyCells.filter((cell) => cell.column === lastColumn).map((cell) => cell.row)
+      expect(rowsAtLastColumn).toContain(guideRow)
     }
   }
 })
 
-// `candleGlyph` suppresses a close-edge sliver shorter than a quarter row, so
-// the drawn close edge can sit one row past the row that mathematically holds
-// the close. The guide mirrors that decision: it must share a row with the
-// drawn edge (body top when rising, body bottom when falling), because a line
-// that is exact in price but sits in the empty cell beside the candle reads
-// as misaligned.
-test("draws the guide on the row where the close edge is drawn", () => {
-  const bodyGlyphs = /[┃╻╹╽╿]/
-  let checked = 0
-  for (const height of [12, 18, 24, 30]) {
-    for (const direction of ["up", "down"] as const) {
-      for (let step = 0; step < 12; step++) {
-        const close = 19.42 + (step / 12) * 0.1
-        const last: Candle = direction === "up"
-          ? { timestamp: 3000, open: close - 0.08, high: close + 0.02, low: close - 0.085, close, volume: null }
-          : { timestamp: 3000, open: close + 0.02, high: close + 0.025, low: close - 0.02, close, volume: null }
-        const chart = renderCandleChart([
-          { timestamp: 1000, open: 19.3, high: 19.62, low: 19.2, close: 19.4, volume: null },
-          { timestamp: 2000, open: 19.4, high: 19.5, low: 19.3, close: 19.42, volume: null },
-          last,
-        ], 44, height, "INTRADAY") as StyledText
-        const lines = chart.chunks.map((chunk) => chunk.text).join("").split("\n")
+test("spreads sparse candles across the plot width", () => {
+  const chart = view(candles, 40, 10)
+  const bodyCells = [...cellsWithColor(chart.plot, UP), ...cellsWithColor(chart.plot, DOWN)]
+  const columns = bodyCells.map((cell) => cell.column)
 
-        const guideRow = lines.findIndex((line) => line.includes("┫"))
-        const axisColumn = lines[guideRow]?.indexOf("┫") ?? -1
-        expect(Array.from(lines[guideRow]!.slice(0, axisColumn))).toContain("─")
-
-        const lastCandleColumn = Math.max(...lines.flatMap((line) => {
-          const columns = Array.from(line.slice(0, axisColumn))
-            .flatMap((glyph, index) => bodyGlyphs.test(glyph) ? [index] : [])
-          return columns.length > 0 ? [Math.max(...columns)] : []
-        }))
-        const bodyRows = lines.flatMap((line, row) =>
-          bodyGlyphs.test(line.slice(0, axisColumn)[lastCandleColumn] ?? "") ? [row] : [])
-        const edgeRow = direction === "up" ? Math.min(...bodyRows) : Math.max(...bodyRows)
-
-        expect(guideRow).toBe(edgeRow)
-        checked++
-      }
-    }
-  }
-  expect(checked).toBe(96)
+  expect(Math.min(...columns)).toBeLessThan(5)
+  expect(Math.max(...columns)).toBeGreaterThan(25)
 })
 
-// The axis ticks are the inverse of the mapping the candles are drawn with, so
-// a candle closing at a tick's price belongs on that tick's row. A wide first
-// candle pins the scale, letting the last close move without rescaling it.
-test("labels each grid tick with the price that lands on its row", () => {
-  const series = (close: number): Candle[] => [
-    { timestamp: 1000, open: 37.0, high: 40.0, low: 36.0, close: 38.0, volume: null },
-    { timestamp: 2000, open: 38.0, high: 39.0, low: 37.0, close: 38.1, volume: null },
-    { timestamp: 3000, open: 38.1, high: 39.5, low: 36.5, close, volume: null },
-  ]
-  const rows = (chart: StyledText) => chart.chunks.map((chunk) => chunk.text).join("").split("\n")
-  let checked = 0
-
-  for (const height of [12, 18, 24, 30]) {
-    rows(renderCandleChart(series(38.24), 44, height, "INTRADAY") as StyledText).forEach((line, row) => {
-      const tick = line.match(/┤\s+([\d.]+,\d+)\s*$/)
-      if (!tick) return
-      // Half a row above the label: the guide follows the drawn close edge,
-      // and an edge in a row's middle is always drawn on that same row.
-      // (36.0–40.0 plus the renderer's 2% padding is the pinned price span.)
-      const rowPrice = (40.08 - 35.92) / (height - 1)
-      const price = Number(tick[1]!.replace(/\./g, "").replace(",", ".")) + rowPrice / 2
-      if (price >= 39.5 || price <= 36.5) return
-      const guideRow = rows(renderCandleChart(series(price), 44, height, "INTRADAY") as StyledText)
-        .findIndex((probe) => probe.includes("┫"))
-
-      expect(guideRow).toBe(row)
-      checked++
-    })
-  }
-  expect(checked).toBeGreaterThan(8)
-})
-
-test("spaces and right-aligns candles with a current-price guide", () => {
-  const chart = renderCandleChart(candles, 40, 10, "INTRADAY") as StyledText
-  const lines = chart.chunks.map((chunk) => chunk.text).join("").split("\n")
-  const plotWidth = 30
-  const candlePositions = lines
-    .slice(0, -1)
-    .flatMap((line) => Array.from(line.slice(0, plotWidth)).flatMap((glyph, index) => /[┃╻╹╽╿│╷╵]/.test(glyph) ? [index] : []))
-
-  expect(Math.min(...candlePositions)).toBeGreaterThanOrEqual(22)
-  expect(candlePositions.every((position) => position % 2 === 0)).toBe(true)
-  expect(lines.some((line) => line.includes("┫") && line.includes("9,0000"))).toBe(true)
-})
-
-test("uses every plot column for a dense candle history", () => {
+test("caps dense histories at the braille candle capacity", () => {
   const denseCandles: Candle[] = Array.from({ length: 24 }, (_, index) => ({
     timestamp: index * 1000,
     open: 10,
@@ -176,17 +142,18 @@ test("uses every plot column for a dense candle history", () => {
     close: 10.5,
     volume: 1,
   }))
-  const chart = renderCandleChart(denseCandles, 40, 10, "YEAR") as StyledText
-  const plotLines = chart.chunks.map((chunk) => chunk.text).join("").split("\n").slice(0, -1)
+  const chart = view(denseCandles, 40, 10, "YEAR")
+  const bodyCells = cellsWithColor(chart.plot, UP)
+  const columns = new Set(bodyCells.map((cell) => cell.column))
 
-  const bodyGlyphs = /[┃╻╹╽╿]/
-  expect(Math.max(...plotLines.map((line) => Array.from(line.slice(0, 30)).filter((glyph) => bodyGlyphs.test(glyph)).length))).toBe(24)
-  expect(plotLines.join("\n")).not.toContain("█")
+  // plotWidth 30 holds 15 candles at max density; bodies cover most columns.
+  expect(columns.size).toBeGreaterThanOrEqual(20)
+  expect(Math.max(...columns)).toBeGreaterThanOrEqual(28)
 })
 
-test("adds volume, chart grid, and intermediate intraday timestamps when space allows", () => {
+test("adds volume bars and intraday timestamps when space allows", () => {
   const sessionStart = new Date("2026-08-07T06:55:00Z").getTime()
-  const sessionCandles: Candle[] = Array.from({ length: 50 }, (_, index) => ({
+  const sessionCandles: Candle[] = Array.from({ length: 40 }, (_, index) => ({
     timestamp: sessionStart + index * 10 * 60 * 1000,
     open: 200 + index,
     high: 202 + index,
@@ -195,23 +162,22 @@ test("adds volume, chart grid, and intermediate intraday timestamps when space a
     volume: (index + 1) * 100,
   }))
 
-  const chart = renderCandleChart(sessionCandles, 100, 20, "INTRADAY") as StyledText
-  const lines = chart.chunks.map((chunk) => chunk.text).join("").split("\n")
-  const timeAxis = lines.at(-1) ?? ""
-
-  expect(lines).toHaveLength(20)
-  expect(timeAxis).toContain("09:55")
-  expect(timeAxis).toContain("14:05")
-  expect(timeAxis).toContain("18:05")
-  expect(lines.slice(-4, -1).join("")).toContain("┃")
-  expect(lines.slice(0, -4).join("")).toContain("┊")
-  expect(lines.slice(0, -4).join("")).toContain("┼")
+  const chart = view(sessionCandles, 100, 20)
+  const plotLines = toText(chart.plot).split("\n")
+  expect(plotLines).toHaveLength(19)
+  // Bottom three rows hold the volume pane, closed by ┴ on the axis.
+  expect(plotLines.slice(-3).join("")).toMatch(braille)
+  const volumeCells = cellsWithColor(chart.plot, RGBA.fromHex("#365747"))
+  expect(volumeCells.some((cell) => cell.row >= 16)).toBe(true)
+  expect(toText(chart.axis)).toContain("┴")
+  expect(chart.timeAxis).toContain("09:55")
+  expect(chart.timeAxis).toContain("16:25")
 })
 
 test("uses calendar labels for multi-day ranges", () => {
   const firstDay = new Date("2026-07-31T07:00:00Z").getTime()
-  const weekCandles: Candle[] = Array.from({ length: 50 }, (_, index) => ({
-    timestamp: firstDay + Math.round((index * 7 * 24 * 60 * 60 * 1000) / 49),
+  const weekCandles: Candle[] = Array.from({ length: 40 }, (_, index) => ({
+    timestamp: firstDay + Math.round((index * 7 * 24 * 60 * 60 * 1000) / 39),
     open: 150 + index,
     high: 152 + index,
     low: 149 + index,
@@ -219,18 +185,16 @@ test("uses calendar labels for multi-day ranges", () => {
     volume: 100 + index,
   }))
 
-  const chart = renderCandleChart(weekCandles, 100, 20, "WEEK") as StyledText
-  const timeAxis = chart.chunks.map((chunk) => chunk.text).join("").split("\n").at(-1) ?? ""
-
-  expect(timeAxis).toContain("31 Tem")
-  expect(timeAxis).toContain("07 Ağu")
-  expect(timeAxis).not.toContain(":")
+  const chart = view(weekCandles, 100, 20, "WEEK")
+  expect(chart.timeAxis).toContain("31 Tem")
+  expect(chart.timeAxis).toContain("07 Ağu")
+  expect(chart.timeAxis).not.toContain(":")
 })
 
 test("adds years to calendar labels only when the visible window crosses a year", () => {
   const firstDay = new Date("2025-06-17T07:00:00Z").getTime()
-  const multiYearCandles: Candle[] = Array.from({ length: 50 }, (_, index) => ({
-    timestamp: firstDay + Math.round((index * 18 * 30 * 24 * 60 * 60 * 1000) / 49),
+  const multiYearCandles: Candle[] = Array.from({ length: 40 }, (_, index) => ({
+    timestamp: firstDay + Math.round((index * 18 * 30 * 24 * 60 * 60 * 1000) / 39),
     open: 150 + index,
     high: 152 + index,
     low: 149 + index,
@@ -238,14 +202,12 @@ test("adds years to calendar labels only when the visible window crosses a year"
     volume: 100 + index,
   }))
 
-  const chart = renderCandleChart(multiYearCandles, 100, 20, "FIVE_YEAR") as StyledText
-  const timeAxis = chart.chunks.map((chunk) => chunk.text).join("").split("\n").at(-1) ?? ""
-
-  expect(timeAxis).toContain("17 Haz 25")
-  expect(timeAxis).toMatch(/\d{2} [A-ZÇĞİÖŞÜa-zçğıöşü]{3} 26/u)
+  const chart = view(multiYearCandles, 100, 20, "FIVE_YEAR")
+  expect(chart.timeAxis).toContain("17 Haz 25")
+  expect(chart.timeAxis).toMatch(/\d{2} [A-ZÇĞİÖŞÜa-zçğıöşü]{3} 26/u)
 })
 
-test("keeps the calendar axis above the native scrollbar row", () => {
+test("keeps a blank row above the native scrollbar when history scrolls", () => {
   const firstDay = new Date("2026-07-31T07:00:00Z").getTime()
   const history: Candle[] = Array.from({ length: 100 }, (_, index) => ({
     timestamp: firstDay + index * 24 * 60 * 60 * 1000,
@@ -256,12 +218,31 @@ test("keeps the calendar axis above the native scrollbar row", () => {
     volume: 100 + index,
   }))
 
-  const chart = renderCandleChart(history, 80, 20, "FIVE_YEAR", 0, true) as StyledText
-  const lines = chart.chunks.map((chunk) => chunk.text).join("").split("\n")
+  const chart = view(history, 80, 20, "FIVE_YEAR", 0, true)
+  const plotLines = toText(chart.plot).split("\n")
+  expect(plotLines).toHaveLength(18) // one row ceded to the reserved scrollbar row
+  expect(chart.timeAxis).toMatch(/\d{2} [A-ZÇĞİÖŞÜa-zçğıöşü]{3}/u)
+})
 
-  expect(lines).toHaveLength(20)
-  expect(lines.at(-2)).toMatch(/\d{2} [A-ZÇĞİÖŞÜa-zçğıöşü]{3}/u)
-  expect(lines.at(-1)?.trim()).toBe("")
+test("rasterizes a true-pixel bitmap for kitty terminals", () => {
+  const result = renderCandleChartBitmapView(candles, 40, 10, "INTRADAY", 0, false, { width: 8, height: 16 })
+  expect(typeof result).not.toBe("string")
+  const chart = result as BitmapChartView
+  expect(chart.kind).toBe("bitmap")
+  expect(chart.bitmap.width).toBe(30 * 8)
+  expect(chart.bitmap.height).toBe(9 * 16)
+
+  let hasUp = false
+  let hasDown = false
+  const pixels = chart.bitmap.pixels
+  for (let index = 0; index < pixels.length; index += 4) {
+    if (pixels[index] === 0x70 && pixels[index + 1] === 0xd7 && pixels[index + 2] === 0xa1) hasUp = true
+    if (pixels[index] === 0xff && pixels[index + 1] === 0x6b && pixels[index + 2] === 0x6b) hasDown = true
+  }
+  expect(hasUp).toBe(true)
+  expect(hasDown).toBe(true)
+  expect(toText(chart.axis)).toContain("┫")
+  expect(chart.timeAxis).toContain(":")
 })
 
 test("applies a live tick that arrives while candle history is loading", async () => {
@@ -451,19 +432,21 @@ test("scrolls through raw candle windows and jumps back to the newest candles", 
   setup.renderer.root.add(chart.root)
   chart.setInstrument({ uid: "future-1", symbol: "F_TKFN0826", displayName: "TKFEN" })
 
+  // Width 80 leaves a 70-column plot: 46 candles per window, newest last.
   const newestFrame = await setup.waitForFrame(
-    (frame) => frame.includes("12:25") && frame.includes("◀") && frame.includes("▶") && !frame.includes("history"),
+    (frame) => frame.includes("14:25") && frame.includes("◀") && frame.includes("▶") && !frame.includes("history"),
   )
   expect(newestFrame).toContain("█")
+  expect(newestFrame).toMatch(braille)
   await setup.mockMouse.click(0, 17)
   await setup.waitForFrame((frame) => frame.includes("history"))
   expect(requestCount).toBe(1)
 
   chart.handleKey({ name: "home", shift: true } as KeyEvent)
-  await setup.waitForFrame((frame) => frame.includes("09:55") && frame.includes("history · 5m · O 206,90"))
+  await setup.waitForFrame((frame) => frame.includes("09:55") && frame.includes("history · 5m · O 204,50"))
 
   chart.handleKey({ name: "end", shift: true } as KeyEvent)
-  await setup.waitForFrame((frame) => frame.includes("12:25") && frame.includes("5m · O 209,90") && !frame.includes("history"))
+  await setup.waitForFrame((frame) => frame.includes("14:25") && frame.includes("5m · O 209,90") && !frame.includes("history"))
   expect(requestCount).toBe(1)
 
   chart.destroy()

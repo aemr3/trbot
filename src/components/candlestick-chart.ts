@@ -24,22 +24,32 @@ import {
   type CandleSeries,
   type CandleSource,
 } from "../market/candle.ts"
+import { ChartBitmapRenderable, chartBitmapSupport } from "./chart/bitmap-renderable.ts"
+import { drawCandlesticks, drawVolumeBars } from "./chart/chart-draw.ts"
+import { getCandleColumn, getScaledY } from "./chart/geometry.ts"
+import { CHART_PALETTE, DOWN_COLOR, UP_COLOR } from "./chart/palette.ts"
+import {
+  bufferToBrailleLines,
+  createPixelBuffer,
+  drawGridLines,
+  drawGuideLine,
+} from "./chart/pixel-buffer.ts"
+import { KittyPlaceholderImages } from "./chart/kitty-placeholder.ts"
+import { getCandlePixelX, renderCandleBitmap, type CandleChartBitmap } from "./chart/raster.ts"
 import { RenderCoalescer } from "./render-coalescer.ts"
 
-const UP_COLOR = "#70d7a1"
-const DOWN_COLOR = "#ff6b6b"
 const MUTED_COLOR = "#777777"
-const GRID_COLOR = "#303030"
 const AXIS_COLOR = "#777777"
 const ACTIVE_BUTTON_BG = "#333333"
-const UP_GUIDE_COLOR = "#365747"
-const DOWN_GUIDE_COLOR = "#59383a"
-const SPACED_CANDLE_SLOT_WIDTH = 2
-const BODY_EDGE_MIN = 0.25
-const BODY_EDGE_MAX = 0.75
 const PRICE_PADDING_RATIO = 0.02
 const MIN_HEIGHT_WITH_VOLUME = 14
 const MAX_VOLUME_HEIGHT = 8
+// Braille cells hold a 2x4 dot grid; three dots per candle keeps a two-dot
+// body plus a one-dot gap at maximum density. The kitty renderer reuses the
+// same capacity so scrolling behaves identically in both modes.
+const BRAILLE_X = 2
+const BRAILLE_Y = 4
+const CANDLE_SPACING_DOTS = 3
 const CHART_TARGET_LABELS: Record<CandleChartTarget, string> = {
   UNDERLYING: "Stock",
   INSTRUMENT: "Futures",
@@ -68,7 +78,11 @@ export class CandlestickChart {
   readonly root: BoxRenderable
 
   private readonly summary: TextRenderable
-  private readonly body: TextRenderable
+  private readonly chartArea: BoxRenderable
+  private readonly plotText: TextRenderable
+  private readonly plotBitmap: ChartBitmapRenderable
+  private readonly timeAxis: TextRenderable
+  private readonly axis: TextRenderable
   private readonly horizontalScrollBar: ScrollBarRenderable
   private readonly rangeButtons = new Map<CandleRange, BoxRenderable>()
   private readonly rangeButtonLabels = new Map<CandleRange, TextRenderable>()
@@ -93,6 +107,11 @@ export class CandlestickChart {
   private readonly liveRender = new RenderCoalescer(() => {
     if (!this.destroyed) this.renderSeries()
   })
+  // Kitty graphics support is discovered asynchronously; re-render when the
+  // terminal answers so the chart upgrades from braille to true pixels.
+  private readonly handleCapabilities = () => this.renderBodyAfterNextFrame()
+  // Created lazily when running inside tmux with kitty graphics passthrough.
+  private placeholderImages: KittyPlaceholderImages | null = null
 
   constructor(
     private readonly renderer: RenderContext,
@@ -194,13 +213,45 @@ export class CandlestickChart {
       this.intervalButtonLabels.set(interval, label)
     }
 
-    this.body = new TextRenderable(renderer, {
+    this.chartArea = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      flexGrow: 1,
+      width: "100%",
+    })
+    const plotColumn = new BoxRenderable(renderer, {
+      flexDirection: "column",
+      flexGrow: 1,
+    })
+    this.plotText = new TextRenderable(renderer, {
       content: "",
       flexGrow: 1,
       width: "100%",
       wrapMode: "none",
       onSizeChange: () => this.renderBodyAfterNextFrame(),
     })
+    this.plotBitmap = new ChartBitmapRenderable(renderer, {
+      flexGrow: 1,
+      width: "100%",
+      visible: false,
+    })
+    this.timeAxis = new TextRenderable(renderer, {
+      content: "",
+      height: 1,
+      width: "100%",
+      fg: AXIS_COLOR,
+      wrapMode: "none",
+    })
+    this.axis = new TextRenderable(renderer, {
+      content: "",
+      width: 10,
+      wrapMode: "none",
+    })
+    plotColumn.add(this.plotText)
+    plotColumn.add(this.plotBitmap)
+    plotColumn.add(this.timeAxis)
+    this.chartArea.add(plotColumn)
+    this.chartArea.add(this.axis)
+
     this.horizontalScrollBar = new ScrollBarRenderable(renderer, {
       orientation: "horizontal",
       width: "100%",
@@ -224,9 +275,10 @@ export class CandlestickChart {
     this.root.add(targetToolbar)
     this.root.add(rangeToolbar)
     this.root.add(intervalToolbar)
-    this.root.add(this.body)
+    this.root.add(this.chartArea)
     this.root.add(this.horizontalScrollBar)
     this.paintToolbar()
+    this.renderer.on("capabilities", this.handleCapabilities)
   }
 
   setInstrument(instrument: ChartInstrument): void {
@@ -297,6 +349,8 @@ export class CandlestickChart {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.renderer.off("capabilities", this.handleCapabilities)
+    this.placeholderImages?.clear()
     this.liveRender.cancel()
     this.request?.abort()
     this.request = null
@@ -343,8 +397,7 @@ export class CandlestickChart {
     this.series = null
     this.summary.content = `${CANDLE_INTERVAL_LABELS[this.interval]} · Loading OHLC…`
     this.summary.fg = "#aaaaaa"
-    this.body.content = "Loading candles…"
-    this.body.fg = MUTED_COLOR
+    this.showPlotMessage("Loading candles…", MUTED_COLOR)
 
     void this.options.source
       .loadCandles(instrument.uid, this.range, this.interval, { signal: request.signal, target: this.target })
@@ -365,8 +418,7 @@ export class CandlestickChart {
       .catch((error) => {
         if (this.destroyed || request.signal.aborted || this.request !== request) return
         this.summary.content = `${instrument.symbol} — ${instrument.displayName}`
-        this.body.content = `Failed to load candles: ${errorMessage(error)}`
-        this.body.fg = DOWN_COLOR
+        this.showPlotMessage(`Failed to load candles: ${errorMessage(error)}`, DOWN_COLOR)
         this.options.onError?.(error)
       })
   }
@@ -378,8 +430,7 @@ export class CandlestickChart {
     if (candles.length === 0) {
       this.summary.content = `${instrument.symbol} — ${instrument.displayName}`
       this.summary.fg = "#aaaaaa"
-      this.body.content = "No candles available for this range and timeframe."
-      this.body.fg = MUTED_COLOR
+      this.showPlotMessage("No candles available for this range and timeframe.", MUTED_COLOR)
       return
     }
 
@@ -392,7 +443,7 @@ export class CandlestickChart {
     if (!series || series.candles.length === 0) return
     const visible = selectVisibleCandles(
       series.candles,
-      candleCapacity(series.candles, this.body.width),
+      candleCapacity(series.candles, this.chartArea.width),
       this.scrollOffset,
     )
     const last = visible.at(-1) ?? series.candles.at(-1)!
@@ -422,7 +473,9 @@ export class CandlestickChart {
   private renderBody(): void {
     const candles = this.series?.candles
     if (!candles || candles.length === 0) return
-    if (this.body.width <= 0 || this.body.height <= 0) {
+    const width = this.chartArea.width
+    const height = this.chartArea.height
+    if (width <= 0 || height <= 0) {
       this.renderBodyAfterNextFrame()
       return
     }
@@ -431,16 +484,53 @@ export class CandlestickChart {
       this.scrollOffset = clampedOffset
       this.renderSummary()
     }
-    this.body.content = renderCandleChart(
-      candles,
-      this.body.width,
-      this.body.height,
-      this.range,
-      this.scrollOffset,
-      this.maxScrollOffset() > 0,
-    )
-    this.body.fg = "#cccccc"
+    const reserveScrollbarRow = this.maxScrollOffset() > 0
+    const bitmapSupport = chartBitmapSupport(this.renderer)
+    const view = bitmapSupport
+      ? renderCandleChartBitmapView(
+          candles, width, height, this.range, this.scrollOffset, reserveScrollbarRow, bitmapSupport.cellPixel)
+      : renderCandleChart(candles, width, height, this.range, this.scrollOffset, reserveScrollbarRow)
+    if (typeof view === "string") {
+      this.showPlotMessage(view, MUTED_COLOR)
+      this.syncScrollbar()
+      return
+    }
+
+    if (this.axis.width !== view.axisWidth) this.axis.width = view.axisWidth
+    this.axis.content = view.axis
+    this.timeAxis.content = view.timeAxis
+    if (view.kind === "bitmap" && bitmapSupport?.mode === "placeholder") {
+      this.placeholderImages ??= new KittyPlaceholderImages()
+      this.plotText.content = this.placeholderImages.render(view.bitmap, view.plotWidth, view.rows)
+      this.plotText.visible = true
+      if (this.plotBitmap.visible) {
+        this.plotBitmap.visible = false
+        this.plotBitmap.setBitmap(null)
+      }
+    } else if (view.kind === "bitmap") {
+      this.plotBitmap.setBitmap(view.bitmap)
+      this.plotBitmap.visible = true
+      this.plotText.visible = false
+    } else {
+      this.plotText.content = view.plot
+      this.plotText.fg = "#cccccc"
+      this.plotText.visible = true
+      if (this.plotBitmap.visible) {
+        this.plotBitmap.visible = false
+        this.plotBitmap.setBitmap(null)
+      }
+    }
     this.syncScrollbar()
+  }
+
+  private showPlotMessage(message: string, color: string): void {
+    this.plotText.content = message
+    this.plotText.fg = color
+    this.plotText.visible = true
+    this.plotBitmap.visible = false
+    this.plotBitmap.setBitmap(null)
+    this.axis.content = ""
+    this.timeAxis.content = ""
   }
 
   private scrollBy(delta: number): void {
@@ -458,7 +548,7 @@ export class CandlestickChart {
   private maxScrollOffset(): number {
     const candles = this.series?.candles
     if (!candles || candles.length === 0) return 0
-    return Math.max(0, candles.length - candleCapacity(candles, this.body.width))
+    return Math.max(0, candles.length - candleCapacity(candles, this.chartArea.width))
   }
 
   private syncScrollbar(): void {
@@ -468,7 +558,7 @@ export class CandlestickChart {
       this.horizontalScrollBar.viewportSize = 0
       return
     }
-    const { plotWidth, capacity } = chartWidthLayout(candles, this.body.width)
+    const { plotWidth, capacity } = chartWidthLayout(candles, this.chartArea.width)
     const maxOffset = Math.max(0, candles.length - capacity)
     this.horizontalScrollBar.width = plotWidth
     this.horizontalScrollBar.scrollSize = candles.length
@@ -518,6 +608,114 @@ export class CandlestickChart {
   }
 }
 
+interface ChartLayout {
+  priceLabelWidth: number
+  axisWidth: number
+  plotWidth: number
+  capacity: number
+}
+
+interface ChartFrame {
+  layout: ChartLayout
+  visible: Candle[]
+  plotRows: number
+  volumeRows: number
+  totalRows: number
+  floor: number
+  ceiling: number
+  latest: Candle
+  gridRows: number[]
+}
+
+interface ChartViewBase {
+  axis: StyledText
+  timeAxis: string
+  axisWidth: number
+  plotWidth: number
+}
+
+export interface BrailleChartView extends ChartViewBase {
+  kind: "braille"
+  plot: StyledText
+}
+
+export interface BitmapChartView extends ChartViewBase {
+  kind: "bitmap"
+  bitmap: CandleChartBitmap
+  /** Terminal rows the bitmap covers (price pane plus volume pane). */
+  rows: number
+}
+
+function computeChartFrame(
+  candles: Candle[],
+  width: number,
+  height: number,
+  scrollOffset: number,
+  reserveScrollbarRow: boolean,
+): ChartFrame | string {
+  const safeWidth = Math.floor(width)
+  const safeHeight = Math.floor(height)
+  if (safeWidth < 18 || safeHeight < 4) return "Chart needs more room."
+
+  const layout = chartWidthLayout(candles, safeWidth)
+  const maxScrollOffset = Math.max(0, candles.length - layout.capacity)
+  const safeScrollOffset = Math.max(0, Math.min(Math.floor(scrollOffset), maxScrollOffset))
+  const totalRows = safeHeight - 1 - (reserveScrollbarRow ? 1 : 0)
+  if (layout.plotWidth < 4 || totalRows < 3) return "Chart needs more room."
+
+  const visible = selectVisibleCandles(candles, layout.capacity, safeScrollOffset)
+  const hasVolume = visible.some((candle) => candle.volume !== null && candle.volume > 0)
+  const volumeRows = hasVolume && totalRows >= MIN_HEIGHT_WITH_VOLUME
+    ? Math.min(MAX_VOLUME_HEIGHT, Math.max(3, Math.floor(totalRows * 0.12)))
+    : 0
+  const plotRows = totalRows - volumeRows
+  const high = Math.max(...visible.map((candle) => candle.high))
+  const low = Math.min(...visible.map((candle) => candle.low))
+  const padding = Math.max((high - low) * PRICE_PADDING_RATIO, Math.abs(high) * 0.0005, 0.01)
+  const guideCount = plotRows >= 28 ? 7 : plotRows >= 20 ? 6 : plotRows >= 12 ? 5 : 4
+  const gridRows = Array.from(
+    { length: guideCount },
+    (_, index) => Math.round((index * (plotRows - 1)) / (guideCount - 1)),
+  )
+
+  return {
+    layout,
+    visible,
+    plotRows,
+    volumeRows,
+    totalRows,
+    floor: low - padding,
+    ceiling: high + padding,
+    latest: visible.at(-1)!,
+    gridRows,
+  }
+}
+
+/** Price axis column: `┫`+close on the guide row, `┤`+price on grid rows. */
+function renderPriceAxis(frame: ChartFrame, guideRow: number): StyledText {
+  const { layout, plotRows, volumeRows, latest, floor, ceiling, gridRows } = frame
+  const span = ceiling - floor
+  const grid = new Set(gridRows)
+  const latestColor = latest.close >= latest.open ? UP_COLOR : DOWN_COLOR
+  const chunks: TextChunk[] = []
+
+  for (let row = 0; row < plotRows; row++) {
+    if (row > 0) chunks.push(fg(AXIS_COLOR)("\n"))
+    const isGuide = row === guideRow
+    const glyph = isGuide ? "┫" : grid.has(row) ? "┤" : "│"
+    // Inverse of the price mapping at this row's center, so a tick names the
+    // price a candle touching that row would be trading at.
+    const rowPrice = ceiling - ((row + 0.5) / plotRows) * span
+    const label = isGuide ? formatPrice(latest.close) : grid.has(row) ? formatPrice(rowPrice) : ""
+    chunks.push(fg(isGuide ? latestColor : AXIS_COLOR)(`${glyph} ${label.padStart(layout.priceLabelWidth)}`))
+  }
+  for (let row = 0; row < volumeRows; row++) {
+    chunks.push(fg(AXIS_COLOR)(`\n${row === volumeRows - 1 ? "┴" : "│"}`))
+  }
+  return new StyledText(chunks)
+}
+
+/** Renders the scrolled candle window as braille cells plus axis columns. */
 export function renderCandleChart(
   candles: Candle[],
   width: number,
@@ -525,134 +723,87 @@ export function renderCandleChart(
   range: CandleRange,
   scrollOffset = 0,
   reserveScrollbarRow = false,
-): StyledText | string {
-  const safeWidth = Math.floor(width)
-  const safeHeight = Math.floor(height)
-  if (safeWidth < 18 || safeHeight < 4) return "Chart needs more room."
+): BrailleChartView | string {
+  const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow)
+  if (typeof frame === "string") return frame
+  const { layout, visible, plotRows, volumeRows, totalRows, floor, ceiling, latest, gridRows } = frame
 
-  const { priceLabelWidth, axisWidth, plotWidth, candleSlotWidth, capacity } = chartWidthLayout(candles, safeWidth)
-  const maxScrollOffset = Math.max(0, candles.length - capacity)
-  const safeScrollOffset = Math.max(0, Math.min(Math.floor(scrollOffset), maxScrollOffset))
-  const totalPlotHeight = safeHeight - 1 - (reserveScrollbarRow ? 1 : 0)
-  if (plotWidth < 4 || totalPlotHeight < 3) return "Chart needs more room."
-
-  const visible = selectVisibleCandles(candles, capacity, safeScrollOffset)
-  const hasVolume = visible.some((candle) => candle.volume !== null && candle.volume > 0)
-  const volumeHeight = hasVolume && totalPlotHeight >= MIN_HEIGHT_WITH_VOLUME
-    ? Math.min(MAX_VOLUME_HEIGHT, Math.max(3, Math.floor(totalPlotHeight * 0.12)))
-    : 0
-  const plotHeight = totalPlotHeight - volumeHeight
-  const high = Math.max(...visible.map((candle) => candle.high))
-  const low = Math.min(...visible.map((candle) => candle.low))
-  const padding = Math.max((high - low) * PRICE_PADDING_RATIO, Math.abs(high) * 0.0005, 0.01)
-  const ceiling = high + padding
-  const floor = low - padding
-  const span = ceiling - floor
-  const priceHeight = (price: number) => Math.max(0, Math.min(plotHeight, ((price - floor) / span) * plotHeight))
-  const firstCandleColumn = Math.max(0, plotWidth - visible.length * candleSlotWidth)
-  const latest = visible.at(-1)!
-  const latestColor = latest.close >= latest.open ? UP_COLOR : DOWN_COLOR
-  const guideColor = latest.close >= latest.open ? UP_GUIDE_COLOR : DOWN_GUIDE_COLOR
-  // The guide follows the *drawn* candle rather than the abstract price:
-  // `candleGlyph` suppresses close-edge slivers shorter than BODY_EDGE_MIN, so
-  // the close edge can be rendered one row past the row that mathematically
-  // holds the close. Mirroring that decision keeps the line, its ┫ tick, and
-  // the label on a row the candle body touches — a line that is exact in price
-  // but sits in the empty cell beside the candle reads as misaligned.
-  const closeHeight = priceHeight(latest.close)
-  const closeOffset = closeHeight - Math.floor(closeHeight)
-  const closeEdgeCell = latest.close >= latest.open
-    ? Math.floor(closeHeight) - (closeOffset > BODY_EDGE_MIN ? 0 : 1)
-    : Math.floor(closeHeight) + (closeOffset < BODY_EDGE_MAX ? 0 : 1)
-  const currentPriceRow = Math.max(0, Math.min(plotHeight - 1, plotHeight - closeEdgeCell))
-  const horizontalGuideCount = plotHeight >= 28 ? 7 : plotHeight >= 20 ? 6 : plotHeight >= 12 ? 5 : 4
-  const gridRows = new Set(
-    Array.from({ length: horizontalGuideCount }, (_, index) =>
-      Math.round((index * (plotHeight - 1)) / (horizontalGuideCount - 1))),
-  )
-  const timeTicks = buildTimeTicks(visible, range, firstCandleColumn, candleSlotWidth, plotWidth)
-  const gridColumns = new Set(timeTicks.map((tick) => tick.column))
-  const chunks: TextChunk[] = []
-
-  for (let row = 0; row < plotHeight; row++) {
-    const gridLine = gridRows.has(row)
-    for (let column = 0; column < plotWidth; column++) {
-      let candle: Candle | undefined
-      if (column >= firstCandleColumn && (column - firstCandleColumn) % candleSlotWidth === 0) {
-        candle = visible[(column - firstCandleColumn) / candleSlotWidth]
-      }
-
-      if (candle) {
-        const glyph = candleGlyph(candle, row, plotHeight, priceHeight)
-        if (glyph) {
-          chunks.push(fg(candle.close >= candle.open ? UP_COLOR : DOWN_COLOR)(glyph))
-          continue
-        }
-      }
-
-      if (row === currentPriceRow) chunks.push(fg(guideColor)("─"))
-      else if (gridLine) chunks.push(fg(GRID_COLOR)(gridColumns.has(column) ? "┼" : "┄"))
-      else chunks.push(fg(GRID_COLOR)(gridColumns.has(column) ? "┊" : " "))
-    }
-
-    const isCurrentPrice = row === currentPriceRow
-    const axisColor = isCurrentPrice ? latestColor : AXIS_COLOR
-    const axisGlyph = isCurrentPrice ? "┫" : gridLine ? "┤" : "│"
-    // Inverse of `priceHeight` at this row's own level, so a tick names the
-    // price a candle touching that row would be trading at.
-    const rowPrice = ceiling - (row / plotHeight) * span
-    const label = isCurrentPrice
-      ? formatPrice(latest.close).padStart(priceLabelWidth)
-      : gridLine
-        ? formatPrice(rowPrice).padStart(priceLabelWidth)
-        : " ".repeat(priceLabelWidth)
-    chunks.push(fg(axisColor)(`${axisGlyph} ${label}`))
-    chunks.push(fg(AXIS_COLOR)("\n"))
+  const buf = createPixelBuffer(layout.plotWidth * BRAILLE_X, totalRows * BRAILLE_Y)
+  const priceBottom = plotRows * BRAILLE_Y - 1
+  drawGridLines(buf, gridRows.map((row) => row * BRAILLE_Y + 2), CHART_PALETTE.gridColor)
+  const guideY = getScaledY(latest.close, floor, ceiling, 0, priceBottom)
+  const rising = latest.close >= latest.open
+  drawGuideLine(buf, guideY, rising ? CHART_PALETTE.guideUp : CHART_PALETTE.guideDown)
+  drawCandlesticks(buf, visible, 0, priceBottom, CHART_PALETTE, floor, ceiling)
+  if (volumeRows > 0) {
+    drawVolumeBars(buf, visible, plotRows * BRAILLE_Y, totalRows * BRAILLE_Y - 1, CHART_PALETTE)
   }
 
-  if (volumeHeight > 0) {
-    renderVolumePane(chunks, visible, volumeHeight, plotWidth, axisWidth, firstCandleColumn, candleSlotWidth, gridColumns)
-  }
+  const plotChunks: TextChunk[] = []
+  bufferToBrailleLines(buf).forEach((line, row) => {
+    if (row > 0) plotChunks.push(fg(AXIS_COLOR)("\n"))
+    plotChunks.push(...line)
+  })
 
-  chunks.push(fg(AXIS_COLOR)(renderTimeAxis(timeTicks, plotWidth)))
-  if (reserveScrollbarRow) chunks.push(fg(AXIS_COLOR)(`\n${" ".repeat(safeWidth)}`))
-  return new StyledText(chunks)
+  const guideRow = Math.max(0, Math.min(plotRows - 1, Math.floor(guideY / BRAILLE_Y)))
+  const timeTicks = buildTimeTicks(visible, range, layout.plotWidth, (index) =>
+    getCandleColumn(index, visible.length, layout.plotWidth))
+  return {
+    kind: "braille",
+    plot: new StyledText(plotChunks),
+    axis: renderPriceAxis(frame, guideRow),
+    timeAxis: renderTimeAxis(timeTicks, layout.plotWidth),
+    axisWidth: layout.axisWidth,
+    plotWidth: layout.plotWidth,
+  }
 }
 
-function candleGlyph(
-  candle: Candle,
-  row: number,
-  plotHeight: number,
-  priceHeight: (price: number) => number,
-): string | null {
-  const y = plotHeight - row
-  const high = priceHeight(candle.high)
-  const low = priceHeight(candle.low)
-  const bodyHigh = priceHeight(Math.max(candle.open, candle.close))
-  const bodyLow = priceHeight(Math.min(candle.open, candle.close))
+/** Renders the scrolled candle window as a true-pixel bitmap for kitty terminals. */
+export function renderCandleChartBitmapView(
+  candles: Candle[],
+  width: number,
+  height: number,
+  range: CandleRange,
+  scrollOffset: number,
+  reserveScrollbarRow: boolean,
+  cellPixel: { width: number; height: number },
+): BitmapChartView | string {
+  const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow)
+  if (typeof frame === "string") return frame
+  const { layout, visible, plotRows, volumeRows, totalRows, floor, ceiling, latest, gridRows } = frame
 
-  if (Math.ceil(high) >= y && y >= Math.floor(bodyHigh)) {
-    const bodyDistance = bodyHigh - y
-    const wickDistance = high - y
-    if (bodyDistance > BODY_EDGE_MAX) return "┃"
-    if (bodyDistance > BODY_EDGE_MIN) return wickDistance > BODY_EDGE_MAX ? "╽" : "╻"
-    if (wickDistance > BODY_EDGE_MAX) return "│"
-    if (wickDistance > BODY_EDGE_MIN) return "╷"
-    return null
+  const pixelWidth = Math.max(1, Math.round(layout.plotWidth * cellPixel.width))
+  const pricePixels = Math.max(1, Math.round(plotRows * cellPixel.height))
+  const volumePixels = volumeRows > 0 ? Math.round(volumeRows * cellPixel.height) : 0
+  const guideY = getScaledY(latest.close, floor, ceiling, 0, pricePixels - 1)
+  const rising = latest.close >= latest.open
+
+  const bitmap = renderCandleBitmap({
+    candles: visible,
+    pixelWidth,
+    pixelHeight: pricePixels + volumePixels,
+    volumePixelHeight: volumePixels,
+    min: floor,
+    max: ceiling,
+    gridYs: gridRows.map((row) => (row + 0.5) * cellPixel.height),
+    guideY,
+    guideColor: rising ? CHART_PALETTE.guideUp : CHART_PALETTE.guideDown,
+    palette: CHART_PALETTE,
+  })
+
+  const guideRow = Math.max(0, Math.min(plotRows - 1, Math.floor(guideY / cellPixel.height)))
+  const timeTicks = buildTimeTicks(visible, range, layout.plotWidth, (index) =>
+    Math.max(0, Math.min(layout.plotWidth - 1,
+      Math.floor(getCandlePixelX(index, visible.length, pixelWidth) / cellPixel.width))))
+  return {
+    kind: "bitmap",
+    bitmap,
+    rows: totalRows,
+    axis: renderPriceAxis(frame, guideRow),
+    timeAxis: renderTimeAxis(timeTicks, layout.plotWidth),
+    axisWidth: layout.axisWidth,
+    plotWidth: layout.plotWidth,
   }
-
-  if (Math.ceil(bodyLow) >= y && y >= Math.floor(low)) {
-    const bodyDistance = bodyLow - y
-    const wickDistance = low - y
-    if (bodyDistance < BODY_EDGE_MIN) return "┃"
-    if (bodyDistance < BODY_EDGE_MAX) return wickDistance < BODY_EDGE_MIN ? "╿" : "╹"
-    if (wickDistance < BODY_EDGE_MIN) return "│"
-    if (wickDistance < BODY_EDGE_MAX) return "╵"
-  }
-
-  if (bodyHigh >= y && y >= Math.ceil(bodyLow)) return "┃"
-
-  return null
 }
 
 interface TimeTick {
@@ -663,9 +814,8 @@ interface TimeTick {
 function buildTimeTicks(
   candles: Candle[],
   range: CandleRange,
-  firstCandleColumn: number,
-  candleSlotWidth: number,
   plotWidth: number,
+  columnOf: (index: number) => number,
 ): TimeTick[] {
   const desiredCount = plotWidth >= 60 ? 5 : plotWidth >= 30 ? 3 : 2
   const count = Math.min(desiredCount, candles.length)
@@ -685,7 +835,7 @@ function buildTimeTicks(
     const candle = candles[candleIndex]
     if (!candle) continue
     ticks.push({
-      column: Math.min(plotWidth - 1, firstCandleColumn + candleIndex * candleSlotWidth),
+      column: columnOf(candleIndex),
       label: formatTimestamp(candle.timestamp, range, includeYear),
     })
   }
@@ -713,35 +863,6 @@ function renderTimeAxis(ticks: TimeTick[], plotWidth: number): string {
   return cells.join("")
 }
 
-function renderVolumePane(
-  chunks: TextChunk[],
-  candles: Candle[],
-  height: number,
-  plotWidth: number,
-  axisWidth: number,
-  firstCandleColumn: number,
-  candleSlotWidth: number,
-  gridColumns: Set<number>,
-): void {
-  const maxVolume = Math.max(...candles.map((candle) => candle.volume ?? 0))
-  for (let row = 0; row < height; row++) {
-    const threshold = height - row - 1
-    for (let column = 0; column < plotWidth; column++) {
-      let candle: Candle | undefined
-      if (column >= firstCandleColumn && (column - firstCandleColumn) % candleSlotWidth === 0) {
-        candle = candles[(column - firstCandleColumn) / candleSlotWidth]
-      }
-      const scaledVolume = candle && maxVolume > 0 ? ((candle.volume ?? 0) / maxVolume) * height : 0
-      if (candle && scaledVolume > threshold) {
-        chunks.push(fg(candle.close >= candle.open ? UP_GUIDE_COLOR : DOWN_GUIDE_COLOR)("┃"))
-      } else {
-        chunks.push(fg(GRID_COLOR)(gridColumns.has(column) ? "┊" : " "))
-      }
-    }
-    chunks.push(fg(AXIS_COLOR)(`${row === height - 1 ? "┴" : "│"}${" ".repeat(axisWidth - 1)}\n`))
-  }
-}
-
 export function selectVisibleCandles(candles: Candle[], capacity: number, scrollOffset = 0): Candle[] {
   const safeCapacity = Math.max(1, Math.floor(capacity))
   const maxOffset = Math.max(0, candles.length - safeCapacity)
@@ -750,15 +871,7 @@ export function selectVisibleCandles(candles: Candle[], capacity: number, scroll
   return candles.slice(Math.max(0, end - safeCapacity), end)
 }
 
-interface ChartWidthLayout {
-  priceLabelWidth: number
-  axisWidth: number
-  plotWidth: number
-  candleSlotWidth: number
-  capacity: number
-}
-
-function chartWidthLayout(candles: Candle[], width: number): ChartWidthLayout {
+function chartWidthLayout(candles: Candle[], width: number): ChartLayout {
   const priceLabelWidth = Math.max(
     8,
     formatPrice(Math.max(...candles.map((candle) => candle.high))).length,
@@ -766,13 +879,11 @@ function chartWidthLayout(candles: Candle[], width: number): ChartWidthLayout {
   )
   const axisWidth = priceLabelWidth + 2
   const plotWidth = Math.max(1, Math.floor(width) - axisWidth)
-  const candleSlotWidth = candles.length <= Math.floor(plotWidth / 3) ? SPACED_CANDLE_SLOT_WIDTH : 1
   return {
     priceLabelWidth,
     axisWidth,
     plotWidth,
-    candleSlotWidth,
-    capacity: Math.max(1, Math.floor(plotWidth / candleSlotWidth)),
+    capacity: Math.max(1, Math.floor((plotWidth * BRAILLE_X) / CANDLE_SPACING_DOTS)),
   }
 }
 
