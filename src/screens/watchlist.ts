@@ -11,12 +11,14 @@ import {
 } from "@opentui/core"
 import { requiresAuthentication } from "../api/index.ts"
 import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
+import type { OverviewGenerator } from "../ai/overview.ts"
 import { AccountPanel } from "../components/account-panel.ts"
 import { BrokerageDateModal } from "../components/brokerage-date-modal.ts"
 import { BrokeragePanel, brokerageSideOf, settlementModeOf } from "../components/brokerage-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
 import { ContractDetailsPanel } from "../components/contract-details-panel.ts"
 import { DepthPanel } from "../components/depth-panel.ts"
+import { OverviewPanel } from "../components/overview-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
 import { isShortcutHelpKey, ShortcutHelp, type ShortcutHelpSection } from "../components/shortcut-help.ts"
 import { ProviderAccountModal } from "../components/provider-account-modal.ts"
@@ -33,11 +35,13 @@ import {
   type BrokerageDateRange,
 } from "../market/broker-calendar.ts"
 import type { BrokerageDistributionSource, BrokerageSide } from "../market/brokerage.ts"
-import type { CandleSource } from "../market/candle.ts"
-import type { DepthStream } from "../market/depth.ts"
+import type { CandleInterval, CandleRange, CandleSource } from "../market/candle.ts"
+import type { DepthBook, DepthStream } from "../market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsArticle, NewsSource } from "../market/news.ts"
+import { buildOverviewDigest, isSameDigest, type OverviewMode, type OverviewSnapshot } from "../market/overview.ts"
+import { TradeFlowAccumulator } from "../market/trade-flow.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
 import type { SettlementMode, SettlementSource } from "../market/settlement.ts"
 import type { MemberFeatureSource } from "../member/features.ts"
@@ -79,6 +83,16 @@ const BROKERAGE_POLL_INTERVAL_MS = 60_000
 // the same rate so whatever the terminal has left over is split evenly.
 const DEPTH_PANEL_BASIS = 19
 const BROKERAGE_PANEL_BASIS = 9
+// The news list and the AI overview share the right column the same way.
+const NEWS_SECTION_BASIS = 16
+const OVERVIEW_PANEL_BASIS = 12
+const OVERVIEW_POLL_INTERVAL_MS = 300_000
+// Flipping through tickers should not spend an AI call per keystroke.
+const OVERVIEW_DEBOUNCE_MS = 5_000
+// The two price-history reads behind the overview digest: the session at a
+// quarter-hour grain and a year of dailies for the standing trend.
+const OVERVIEW_INTRADAY: [CandleRange, CandleInterval] = ["INTRADAY", "MIN_15"]
+const OVERVIEW_DAILY: [CandleRange, CandleInterval] = ["YEAR", "DAY_1"]
 // The instrument list, depth ladder and news feed together claim 130 fixed
 // columns, so the depth panel only joins them permanently once the chart and
 // account column can still keep about 60. Below that it takes the news slot
@@ -96,6 +110,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
     bindings: [
       { keys: "?", description: "Toggle this help" },
       { keys: "A", description: "Open AI provider account" },
+      { keys: "O", description: "Focus the AI overview and regenerate" },
       { keys: "G", description: "Open application logs" },
       { keys: "/", description: "Search and switch ticker" },
       { keys: "B / S", description: "Open buy / sell ticket" },
@@ -169,6 +184,14 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
     ],
   },
   {
+    title: "AI overview",
+    bindings: [
+      { keys: "←/→ or h/l", description: "Switch intraday / daily view" },
+      { keys: "r / Enter", description: "Regenerate the overview" },
+      { keys: "↑/↓ or j/k", description: "Scroll the commentary" },
+    ],
+  },
+  {
     title: "Order ticket",
     bindings: [
       { keys: "Tab / Shift+Tab", description: "Move between fields" },
@@ -200,11 +223,14 @@ export interface WatchlistScreenOptions {
   brokerage?: BrokerageDistributionSource
   settlement?: SettlementSource
   memberFeatures?: MemberFeatureSource
+  overview?: OverviewGenerator
   onSessionExpired?: () => void
   newsIntervalMs?: number
   instrumentIntervalMs?: number
   accountIntervalMs?: number
   brokerageIntervalMs?: number
+  overviewIntervalMs?: number
+  overviewDebounceMs?: number
   destructiveConfirmationTimeoutMs?: number
   preferences?: WatchlistPreferences
   onPreferencesChange?: (preferences: WatchlistPreferences) => void
@@ -214,7 +240,7 @@ export interface WatchlistScreenOptions {
   onOpenLogs?: () => void
 }
 
-type Focus = "instruments" | "chart" | "depth" | "brokers" | "account" | "news"
+type Focus = "instruments" | "chart" | "depth" | "brokers" | "account" | "news" | "overview"
 
 export class WatchlistScreen {
   readonly root: BoxRenderable
@@ -232,6 +258,8 @@ export class WatchlistScreen {
   private readonly depthPanel: DepthPanel
   private readonly brokeragePanel: BrokeragePanel
   private readonly rightPanel: BoxRenderable
+  private readonly newsSection: BoxRenderable
+  private readonly overviewPanel: OverviewPanel
   private readonly viopHeader: TextRenderable
   private readonly newsHeader: TextRenderable
   private readonly newsFeedButtons = new Map<NewsFeed, BoxRenderable>()
@@ -285,6 +313,15 @@ export class WatchlistScreen {
   private brokerageDates: string[] = []
   private brokerageLive = false
   private brokerageDateModal: BrokerageDateModal | null = null
+  // The AI overview joins the live book and tape with the broker feeds; every
+  // finished run is cached per instrument so revisiting a ticker is free.
+  private readonly tradeFlow = new TradeFlowAccumulator()
+  private latestDepthBook: DepthBook | null = null
+  private readonly overviewCache = new Map<string, OverviewSnapshot>()
+  private overviewEntitled: boolean | null = null
+  private overviewRequest: AbortController | null = null
+  private overviewTimer: ReturnType<typeof setInterval> | null = null
+  private overviewDebounce: ReturnType<typeof setTimeout> | null = null
   private hintTimer: ReturnType<typeof setTimeout> | null = null
   private destructiveConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private connected = false
@@ -339,6 +376,11 @@ export class WatchlistScreen {
       this.openLogs()
       return
     }
+    if (isCapitalShortcut(key, "o")) {
+      this.setFocus("overview")
+      void this.generateOverview({ force: true })
+      return
+    }
     if (!key.ctrl && (key.name === "b" || key.name === "s")) {
       this.openOrderTicket(key.name === "b" ? "BUY" : "SELL")
       return
@@ -359,6 +401,10 @@ export class WatchlistScreen {
     if (this.focus === "depth") return
     if (this.focus === "brokers") {
       this.brokeragePanel.handleKey(key)
+      return
+    }
+    if (this.focus === "overview") {
+      this.overviewPanel.handleKey(key)
       return
     }
     if (this.focus === "news") {
@@ -505,15 +551,30 @@ export class WatchlistScreen {
       paddingRight: 1,
       backgroundColor: SIDE_PANEL_BG,
     })
-    this.newsHeader = panelHeader(renderer, "News")
-    this.rightPanel.add(this.newsHeader)
+    // News and the AI overview share the column: each keeps the rows its fixed
+    // content needs and they split the remainder, like the depth column does.
+    this.newsSection = new BoxRenderable(renderer, {
+      width: "100%",
+      flexDirection: "column",
+      flexBasis: NEWS_SECTION_BASIS,
+      flexGrow: 1,
+    })
+    // Like the AI overview beneath it, one row carries the title and the feed
+    // tabs so the list keeps the remaining lines.
     const newsFeedToolbar = new BoxRenderable(renderer, {
       flexDirection: "row",
       height: 1,
+      flexShrink: 0,
       gap: 1,
       marginBottom: 1,
     })
-    newsFeedToolbar.add(new TextRenderable(renderer, { content: "Feed", fg: NEUTRAL_COLOR, width: 5 }))
+    this.newsHeader = new TextRenderable(renderer, {
+      content: "News",
+      fg: HEADER_COLOR,
+      marginRight: 1,
+      wrapMode: "none",
+    })
+    newsFeedToolbar.add(this.newsHeader)
     for (const feed of NEWS_FEEDS) {
       const button = new BoxRenderable(renderer, {
         height: 1,
@@ -531,7 +592,7 @@ export class WatchlistScreen {
       this.newsFeedButtons.set(feed, button)
       this.newsFeedButtonLabels.set(feed, label)
     }
-    this.rightPanel.add(newsFeedToolbar)
+    this.newsSection.add(newsFeedToolbar)
     this.newsList = new SelectableList(renderer, {
       selectedBackgroundColor: SELECTED_ROW_BG,
       backgroundColor: SIDE_PANEL_BG,
@@ -559,6 +620,16 @@ export class WatchlistScreen {
     })
     this.newsMessage = new TextRenderable(renderer, { content: "Loading news…", fg: "#777777" })
     this.setNewsContent(this.newsMessage)
+    this.rightPanel.add(this.newsSection)
+    this.overviewPanel = new OverviewPanel(renderer, {
+      onGenerate: () => void this.generateOverview({ force: true }),
+      onModeChange: () => this.selectOverviewMode(),
+      onFocusRequest: () => this.setFocus("overview"),
+    })
+    this.overviewPanel.setEntitled(options.memberFeatures ? null : false)
+    this.overviewPanel.root.flexBasis = OVERVIEW_PANEL_BASIS
+    this.overviewPanel.root.flexGrow = 1
+    this.rightPanel.add(this.overviewPanel.root)
 
     columns.add(this.leftPanel)
     columns.add(this.centerPanel)
@@ -585,7 +656,10 @@ export class WatchlistScreen {
     this.options.quotes?.onConnectionChange((connected) => this.setConnected(connected))
     this.options.equityQuotes?.subscribe((update) => this.onEquityQuote(update))
     this.options.equityQuotes?.onConnectionChange((connected) => this.setEquityConnected(connected))
-    this.options.depth?.subscribe((book) => this.depthPanel.showBook(book))
+    this.options.depth?.subscribe((book) => {
+      this.depthPanel.showBook(book)
+      this.ingestOverviewBook(book)
+    })
     this.options.depth?.onStatusChange((status) => this.depthPanel.setStatus(status))
   }
 
@@ -605,6 +679,12 @@ export class WatchlistScreen {
     this.brokerageTimer = setInterval(() => {
       if (this.brokerageLive) this.loadBrokerView(true)
     }, this.options.brokerageIntervalMs ?? BROKERAGE_POLL_INTERVAL_MS)
+    // The AI overview refreshes itself while the market moves; a closed session
+    // keeps whatever run is cached.
+    this.overviewTimer = setInterval(() => {
+      if (this.isMarketOpenForOverview()) void this.generateOverview()
+    }, this.options.overviewIntervalMs ?? OVERVIEW_POLL_INTERVAL_MS)
+    void this.refreshOverviewConnection()
   }
 
   destroy(): void {
@@ -630,10 +710,21 @@ export class WatchlistScreen {
     this.memberFeatureRequest = null
     this.brokerageRequest?.abort()
     this.brokerageRequest = null
+    this.overviewRequest?.abort()
+    this.overviewRequest = null
+    this.overviewPanel.destroy()
     this.closeBrokerageDateModal()
     if (this.brokerageTimer) {
       clearInterval(this.brokerageTimer)
       this.brokerageTimer = null
+    }
+    if (this.overviewTimer) {
+      clearInterval(this.overviewTimer)
+      this.overviewTimer = null
+    }
+    if (this.overviewDebounce) {
+      clearTimeout(this.overviewDebounce)
+      this.overviewDebounce = null
     }
     if (this.newsTimer) {
       clearInterval(this.newsTimer)
@@ -698,12 +789,16 @@ export class WatchlistScreen {
       this.setDepthEntitled(features.has("MARKET_DEPTH"))
       this.setBrokerageEntitled(features.has("BROKERAGE_DISTRIBUTION"))
       this.setSettlementEntitled(features.has("SETTLEMENT_ANALYSIS"))
+      this.setOverviewEntitled(
+        features.has("MARKET_DEPTH") || features.has("BROKERAGE_DISTRIBUTION") || features.has("SETTLEMENT_ANALYSIS"),
+      )
     } catch (error) {
       if (this.destroyed || request.signal.aborted || isAbortError(error)) return
       this.reportError("Member features", error)
       this.setDepthEntitled(false)
       this.setBrokerageEntitled(false)
       this.setSettlementEntitled(false)
+      this.setOverviewEntitled(false)
     } finally {
       if (this.memberFeatureRequest === request) this.memberFeatureRequest = null
     }
@@ -844,6 +939,15 @@ export class WatchlistScreen {
     this.depthEntitled = entitled
     this.depthPanel.setEntitled(entitled)
     this.syncDepthSubscription()
+  }
+
+  // The overview reads whichever of the three broker feeds the member has; it
+  // only locks when none of them is available.
+  private setOverviewEntitled(entitled: boolean): void {
+    if (this.overviewEntitled === entitled) return
+    this.overviewEntitled = entitled
+    this.overviewPanel.setEntitled(entitled)
+    if (entitled) this.scheduleOverviewGeneration()
   }
 
   // The depth book belongs to the underlying stock; VIOP contract symbols have
@@ -1006,8 +1110,148 @@ export class WatchlistScreen {
     this.syncDepthSubscription()
     this.brokeragePanel.reset()
     this.loadBrokerView()
+    this.selectOverviewInstrument(instrument)
     this.renderChartHeader()
     void this.loadNews(instrument)
+  }
+
+  // The tape starts over with the new instrument; a cached run shows instantly,
+  // an uncached one generates after a pause — even with the market closed, so
+  // every instrument gets at least one reading from the last available data.
+  private selectOverviewInstrument(instrument: ViopInstrument): void {
+    this.tradeFlow.reset()
+    this.latestDepthBook = null
+    this.overviewRequest?.abort()
+    this.overviewRequest = null
+    const cached = this.overviewCache.get(overviewCacheKey(instrument.uid, this.overviewPanel.activeMode))
+    if (cached) this.overviewPanel.showSnapshot(cached)
+    else this.overviewPanel.reset()
+    if (!cached) this.scheduleOverviewGeneration()
+  }
+
+  // Switching between the intraday and daily views: each keeps its own cached
+  // run, and an uncached view generates right away — the switch asked for it.
+  private selectOverviewMode(): void {
+    if (this.destroyed) return
+    this.overviewRequest?.abort()
+    this.overviewRequest = null
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    const cached = instrument
+      ? this.overviewCache.get(overviewCacheKey(instrument.uid, this.overviewPanel.activeMode))
+      : undefined
+    if (cached) {
+      this.overviewPanel.showSnapshot(cached)
+      return
+    }
+    this.overviewPanel.reset()
+    void this.generateOverview()
+  }
+
+  private scheduleOverviewGeneration(): void {
+    if (!this.options.overview || this.destroyed) return
+    if (this.overviewDebounce) clearTimeout(this.overviewDebounce)
+    this.overviewDebounce = setTimeout(() => {
+      this.overviewDebounce = null
+      void this.generateOverview()
+    }, this.options.overviewDebounceMs ?? OVERVIEW_DEBOUNCE_MS)
+  }
+
+  // The periodic refresh only spends a call while the figures still move. The
+  // depth stream knows best; without it the flow distribution's own live flag
+  // is the closest signal.
+  private isMarketOpenForOverview(): boolean {
+    if (this.latestDepthBook) return !this.latestDepthBook.marketClosed
+    return this.brokerageLive
+  }
+
+  private ingestOverviewBook(book: DepthBook): void {
+    if (book.symbol.toUpperCase() !== this.selectedEquitySymbol?.toUpperCase()) return
+    this.latestDepthBook = book
+    this.tradeFlow.ingest(book)
+  }
+
+  private async refreshOverviewConnection(): Promise<void> {
+    const account = this.options.chatGptAccount
+    if (!account || !this.options.overview) return
+    try {
+      const state = await account.getState()
+      if (!this.destroyed) this.overviewPanel.setConnected(state !== null)
+    } catch {
+      // Unknown connection state renders as idle; the first run will surface it.
+    }
+  }
+
+  // One overview run: read both flow sides and both custody readings for the
+  // current range, digest them with the live book and tape, and only then let
+  // the model phrase it. A rerun for an unchanged digest is skipped unless the
+  // user forces it.
+  private async generateOverview(options: { force?: boolean } = {}): Promise<void> {
+    const generator = this.options.overview
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    if (!generator || !instrument || !this.overviewEntitled || this.destroyed) return
+    const mode = this.overviewPanel.activeMode
+    this.overviewRequest?.abort()
+    const request = new AbortController()
+    this.overviewRequest = request
+    const cached = this.overviewCache.get(overviewCacheKey(instrument.uid, mode))
+    if (!cached) this.overviewPanel.setCollecting()
+    try {
+      const intraday = mode === "INTRADAY"
+      const brokerage = this.brokerageEntitled ? this.options.brokerage : undefined
+      // The custody register and the session candles each belong to one view;
+      // the other view's run does not pay for them.
+      const settlement = !intraday && this.settlementEntitled ? this.options.settlement : undefined
+      const range = this.brokerageRange
+      const signal = request.signal
+      const [buyerFlow, sellerFlow, custodyGained, custodyLost, intradayCandles, dailyCandles] = await Promise.all([
+        brokerage?.loadDistribution({ instrumentUid: instrument.uid, side: "BUYER", range, signal }) ?? null,
+        brokerage?.loadDistribution({ instrumentUid: instrument.uid, side: "SELLER", range, signal }) ?? null,
+        settlement?.loadSettlement({ instrumentUid: instrument.uid, mode: "GAINED", range, signal }) ?? null,
+        settlement?.loadSettlement({ instrumentUid: instrument.uid, mode: "LOST", range, signal }) ?? null,
+        intraday ? this.options.candles.loadCandles(instrument.uid, ...OVERVIEW_INTRADAY, { signal }) : null,
+        this.options.candles.loadCandles(instrument.uid, ...OVERVIEW_DAILY, { signal }),
+      ])
+      if (this.destroyed || signal.aborted || this.overviewRequest !== request) return
+      const digest = buildOverviewDigest({
+        mode,
+        instrument: {
+          symbol: instrument.symbol,
+          displayName: instrument.displayName,
+          lastPrice: instrument.lastPrice,
+        },
+        book: this.latestDepthBook,
+        tape: this.tradeFlow.snapshot(),
+        buyerFlow,
+        sellerFlow,
+        custodyGained,
+        custodyLost,
+        intradayCandles,
+        dailyCandles,
+        range,
+        presets: this.brokeragePresets,
+      })
+      if (!options.force && cached && isSameDigest(digest, cached.digest)) return
+      this.overviewPanel.startStreaming()
+      let commentary = ""
+      await generator.generate(digest, {
+        signal,
+        onDelta: (text) => {
+          commentary += text
+          if (!this.destroyed && !signal.aborted && this.overviewRequest === request) {
+            this.overviewPanel.appendCommentary(text)
+          }
+        },
+      })
+      if (this.destroyed || signal.aborted || this.overviewRequest !== request) return
+      this.overviewCache.set(overviewCacheKey(instrument.uid, mode), { digest, commentary, generatedAt: Date.now() })
+      this.overviewPanel.finishCommentary()
+    } catch (error) {
+      if (this.destroyed || request.signal.aborted || this.overviewRequest !== request || isAbortError(error)) return
+      if (this.reportError("AI overview", error)) return
+      this.overviewPanel.showError(errorMessage(error))
+    } finally {
+      if (this.overviewRequest === request) this.overviewRequest = null
+    }
   }
 
   private selectPositionInstrument(instrumentUid: string, symbol: string): void {
@@ -1117,6 +1361,8 @@ export class WatchlistScreen {
     this.providerAccountModal = null
     if (!this.root.isDestroyed && !modal.root.isDestroyed) this.root.remove(modal.root)
     modal.destroy()
+    // The account may have been connected or disconnected in the modal.
+    void this.refreshOverviewConnection()
     this.renderer.requestRender()
   }
 
@@ -1425,13 +1671,13 @@ export class WatchlistScreen {
 
   private setNewsContent(node: Renderable): void {
     if (this.newsContent === node) return
-    if (this.newsContent && !this.newsContent.isDestroyed) this.rightPanel.remove(this.newsContent)
+    if (this.newsContent && !this.newsContent.isDestroyed) this.newsSection.remove(this.newsContent)
     this.newsContent = node
-    this.rightPanel.add(node)
+    this.newsSection.add(node)
   }
 
   private toggleFocus(): void {
-    const order: Focus[] = ["instruments", "chart", "depth", "brokers", "account", "news"]
+    const order: Focus[] = ["instruments", "chart", "depth", "brokers", "account", "news", "overview"]
     const index = order.indexOf(this.focus)
     this.setFocus(order[(index + 1) % order.length] ?? "instruments")
   }
@@ -1457,6 +1703,7 @@ export class WatchlistScreen {
     this.depthPanel.setFocused(this.focus === "depth")
     this.brokeragePanel.setFocused(this.focus === "brokers")
     this.accountPanel.setFocused(this.focus === "account")
+    this.overviewPanel.setFocused(this.focus === "overview")
     this.newsHeader.fg = this.focus === "news" ? FOCUSED_HEADER : UNFOCUSED_HEADER
     this.paintNewsFeedToolbar()
     this.updateResponsiveLayout()
@@ -1508,10 +1755,11 @@ export class WatchlistScreen {
     const compact = this.root.width < COMPACT_LAYOUT_WIDTH
     const wide = this.root.width >= DEPTH_LAYOUT_WIDTH
     const depthFocused = this.focus === "depth" || this.focus === "brokers"
+    const rightFocused = this.focus === "news" || this.focus === "overview"
     this.leftPanel.width = compact ? 30 : 36
-    this.centerPanel.visible = !compact || (this.focus !== "news" && !depthFocused)
+    this.centerPanel.visible = !compact || (!rightFocused && !depthFocused)
     this.depthColumn.visible = compact ? depthFocused : wide || depthFocused
-    this.rightPanel.visible = compact ? this.focus === "news" : wide || !depthFocused
+    this.rightPanel.visible = compact ? rightFocused : wide || !depthFocused
     this.depthColumn.width = compact ? "auto" : DEPTH_PANEL_WIDTH
     this.depthColumn.flexGrow = compact ? 1 : 0
     this.rightPanel.width = compact ? "auto" : 46
@@ -1630,7 +1878,11 @@ function instrumentComparator(sort: InstrumentSort, direction: SortDirection): (
   }
 }
 
-function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "g" | "t" | "v"): boolean {
+function overviewCacheKey(instrumentUid: string, mode: OverviewMode): string {
+  return `${instrumentUid}:${mode}`
+}
+
+function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "g" | "o" | "t" | "v"): boolean {
   if (key.ctrl || key.meta || key.option) return false
   return key.sequence === letter.toUpperCase() || (key.shift && key.name === letter)
 }

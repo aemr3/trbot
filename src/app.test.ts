@@ -13,7 +13,7 @@ test("restores the terminal synchronously on Ctrl+C", async () => {
   let preferencesClosed = false
   const app = new App(
     renderer,
-    { databaseUrl: ":memory:", credentials: null },
+    { databaseUrl: ":memory:", credentials: null, aiModel: "gpt-5.6-sol", aiReasoningEffort: "high" },
     { api: null, sessionExpired: false },
     {
       exit: () => {
@@ -53,7 +53,7 @@ test("returns to login when background device relogin fails", async () => {
   }
   const app = new App(
     renderer,
-    { databaseUrl: ":memory:", credentials: null },
+    { databaseUrl: ":memory:", credentials: null, aiModel: "gpt-5.6-sol", aiReasoningEffort: "high" },
     { api: api as never, sessionExpired: false },
   )
   app.mount()
@@ -83,7 +83,7 @@ test("keeps the workspace visible during automatic session recovery", async () =
   }
   const app = new App(
     renderer,
-    { databaseUrl: ":memory:", credentials: { username: "+905551234567", password: "password" } },
+    { databaseUrl: ":memory:", credentials: { username: "+905551234567", password: "password" }, aiModel: "gpt-5.6-sol", aiReasoningEffort: "high" },
     { api: api as never, sessionExpired: false },
     {
       recoverSession: async () => {
@@ -119,7 +119,7 @@ test("keeps the workspace visible when session recovery is rate limited", async 
   }
   const app = new App(
     renderer,
-    { databaseUrl: ":memory:", credentials: { username: "+905551234567", password: "password" } },
+    { databaseUrl: ":memory:", credentials: { username: "+905551234567", password: "password" }, aiModel: "gpt-5.6-sol", aiReasoningEffort: "high" },
     { api: api as never, sessionExpired: false },
     {
       recoverSession: async () => {

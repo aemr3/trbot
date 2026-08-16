@@ -7,6 +7,8 @@ The application reads configuration from environment variables through Bun. A lo
 | `DATABASE_URL` | no | `./data/db.sqlite` | SQLite database path used for application state |
 | `TRBOT_USERNAME` | no | none | Provider phone number/username for unattended session recovery |
 | `TRBOT_PASSWORD` | no | none | Provider password for unattended session recovery |
+| `TRBOT_AI_MODEL` | no | `gpt-5.6-sol` | Model id behind the AI market overview |
+| `TRBOT_AI_REASONING` | no | `high` | Reasoning effort hint sent with overview requests |
 
 ## `DATABASE_URL`
 
@@ -33,3 +35,7 @@ TRBOT_PASSWORD=
 `TRBOT_USERNAME` and `TRBOT_PASSWORD` are considered configured only when both are non-empty. They enable unattended token refresh and bound-device password login. If either is absent, the application retains the stored session but returns to interactive login when credentials are required.
 
 The password remains environment-only. Authentication state such as device keys and rotated tokens is stored in the application database. Protect both the `.env` file and database as sensitive local state.
+
+## AI overview
+
+`TRBOT_AI_MODEL` and `TRBOT_AI_REASONING` select the model and reasoning effort used by the AI market overview panel. Requests go through the connected ChatGPT account (opened with `A` in the watchlist), so no API key is configured here.

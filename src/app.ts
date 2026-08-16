@@ -1,5 +1,7 @@
 import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core"
 import { ChatGptAccountService, type ChatGptAccount } from "./ai/chatgpt-account.ts"
+import { createChatGptModel } from "./ai/chatgpt-provider.ts"
+import { ModelOverviewGenerator, type OverviewGenerator } from "./ai/overview.ts"
 import {
   ApiHttpError,
   createApiClient,
@@ -48,6 +50,7 @@ interface AppOptions {
   closePreferences?: () => void
   exit?: () => void
   chatGptAccount?: ChatGptAccount
+  overview?: OverviewGenerator
   logs?: ApplicationLog
   recoverSession?: (credentials: AppCredentials) => Promise<ApiClientHandle>
 }
@@ -83,6 +86,11 @@ export async function startApp(): Promise<void> {
       savePreferences: (preferences) => preferencesStore.put(preferences),
       closePreferences: preferencesConnection.close,
       chatGptAccount,
+      // The overview model rides the ChatGPT account; auth is resolved lazily
+      // per request, so building it before login is safe.
+      overview: new ModelOverviewGenerator(createChatGptModel(chatGptAccount, config.aiModel), {
+        reasoningEffort: config.aiReasoningEffort,
+      }),
     })
     app.mount()
   } catch (error) {
@@ -122,6 +130,7 @@ export class App {
   private readonly closePreferences: (() => void) | undefined
   private readonly exit: () => void
   private readonly chatGptAccount: ChatGptAccount | undefined
+  private readonly overview: OverviewGenerator | undefined
   private readonly logs: ApplicationLog
   private readonly recoverSession: (credentials: AppCredentials) => Promise<ApiClientHandle>
 
@@ -146,6 +155,7 @@ export class App {
     this.closePreferences = options.closePreferences
     this.exit = options.exit ?? exitWithSigint
     this.chatGptAccount = options.chatGptAccount
+    this.overview = options.overview
     this.logs = options.logs ?? new ApplicationLog()
     this.recoverSession = options.recoverSession ?? ((credentials) => authenticateApiClient(config, credentials))
     this.root = new BoxRenderable(renderer, {
@@ -237,6 +247,7 @@ export class App {
       },
       onSessionExpired: () => this.showLogin(),
       chatGptAccount: this.chatGptAccount,
+      overview: this.overview,
       logs: this.logs,
       manageInput: false,
       onOpenLogs: () => workspace?.selectTab("logs"),

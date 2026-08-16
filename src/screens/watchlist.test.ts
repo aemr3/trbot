@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
+import type { OverviewGenerateOptions, OverviewGenerator } from "../ai/overview.ts"
+import type { MarketOverviewDigest } from "../market/overview.ts"
 import { AuthenticationError } from "../api/index.ts"
 import type {
   BrokerageDistribution,
@@ -44,7 +46,7 @@ import type { WatchlistPreferences } from "./watchlist-preferences.ts"
 
 // Tab cycles the panels in this order from a freshly mounted screen. Naming the
 // destination keeps the tests readable, and adding a panel only moves this list.
-const FOCUS_ORDER = ["instruments", "chart", "depth", "brokers", "account", "news"] as const
+const FOCUS_ORDER = ["instruments", "chart", "depth", "brokers", "account", "news", "overview"] as const
 
 function focusPanel(mockInput: { pressTab(): void }, panel: (typeof FOCUS_ORDER)[number]): void {
   for (let step = 0; step < FOCUS_ORDER.indexOf(panel); step++) mockInput.pressTab()
@@ -296,9 +298,8 @@ test("switches between selected-stock and index news feeds", async () => {
   screen.mount()
 
   const stockFrame = await waitForFrame((frame) => frame.includes("Selected stock announces results"))
-  expect(stockFrame).toContain("Feed")
-  expect(stockFrame).toContain("Stock")
-  expect(stockFrame).toContain("Index")
+  // The title and the feed tabs share one header row.
+  expect(stockFrame).toContain("News   Stock   Index")
   expect(requests.at(-1)).toBe("u1")
 
   focusPanel(mockInput, "news")
@@ -827,7 +828,7 @@ test("opens the complete shortcut help with question mark and closes it again", 
   const contractPage = await waitForFrame((frame) => frame.includes("Sort by price change"))
   expect(contractPage).toContain("Sort by volume")
 
-  await mockInput.typeText("jjjjjjjjjjjjj")
+  await mockInput.typeText("jjjjjjjjjjjjjjjjjj")
   const lastPage = await waitForFrame((frame) => frame.includes("Order ticket"))
   expect(lastPage).toContain("Next field, review, or submit")
   expect(lastPage).toContain("Review or submit the matching side")
@@ -1537,6 +1538,171 @@ test("locks the settlement tabs on their own entitlement", async () => {
   mockInput.pressArrow("right")
   await waitForFrame((value) => value.includes("Settlement analysis is a paid feature"))
   expect(settlement.requests).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+// Records every digest it is asked to phrase and streams a canned line, so the
+// tests can assert both what the screen computed and what reached the panel.
+class FakeOverviewGenerator implements OverviewGenerator {
+  digests: MarketOverviewDigest[] = []
+  failWith: Error | null = null
+
+  async generate(digest: MarketOverviewDigest, options: OverviewGenerateOptions): Promise<void> {
+    this.digests.push(digest)
+    if (this.failWith) throw this.failWith
+    options.onDelta(`Overview ${this.digests.length} for ${digest.instrument.symbol}.`)
+  }
+}
+
+function overviewScreenOptions(overview: FakeOverviewGenerator) {
+  return {
+    instruments,
+    candles,
+    news,
+    brokerage: new FakeBrokerageSource(),
+    settlement: new FakeSettlementSource(),
+    overview,
+    memberFeatures: entitledFeatures,
+    overviewDebounceMs: 10,
+    overviewIntervalMs: 40,
+  }
+}
+
+test("generates the intraday overview by default and streams the commentary", async () => {
+  const { renderer, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const overview = new FakeOverviewGenerator()
+  const options = overviewScreenOptions(overview)
+  const screen = new WatchlistScreen(renderer, options)
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitFor(() => overview.digests.length === 1)
+  const frame = await waitForFrame((value) => value.includes("Overview 1 for F_XU0300826."))
+  expect(frame).toContain("AI Overview")
+
+  // The live reading takes both flow sides and the session candles, but never
+  // pays for the lagged custody register.
+  expect(options.brokerage.requests.filter((request) => request.side === "SELLER")).toHaveLength(1)
+  expect(options.settlement.requests).toEqual([])
+
+  const digest = overview.digests[0]
+  expect(digest?.mode).toBe("INTRADAY")
+  expect(digest?.flow?.buyers[0]?.brokerage).toBe("Buyer 1 Yatırım")
+  expect(digest?.custody).toBeNull()
+  expect(digest?.houses.length).toBeGreaterThan(0)
+  expect(digest?.history?.intraday?.candles).toHaveLength(2)
+  expect(digest?.history?.daily?.interval).toBe("DAY_1")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("switching to the daily view reads the custody register", async () => {
+  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const overview = new FakeOverviewGenerator()
+  const options = overviewScreenOptions(overview)
+  const screen = new WatchlistScreen(renderer, options)
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitFor(() => overview.digests.length === 1)
+
+  focusPanel(mockInput, "overview")
+  mockInput.pressArrow("right")
+  await waitFor(() => overview.digests.length === 2)
+  await waitForFrame((value) => value.includes("Overview 2 for F_XU0300826."))
+
+  expect(options.settlement.requests.map((request) => request.mode).sort()).toEqual(["GAINED", "LOST"])
+  const digest = overview.digests[1]
+  expect(digest?.mode).toBe("DAILY")
+  expect(digest?.custody?.gainers[0]?.lotChange).toBe(900_000)
+  expect(digest?.custody?.losers[0]?.lotChange).toBe(-900_000)
+  expect(digest?.book).toBeNull()
+  expect(digest?.history?.intraday).toBeNull()
+
+  // Each view keeps its own cache: switching back is free.
+  mockInput.pressArrow("left")
+  await waitForFrame((value) => value.includes("Overview 1 for F_XU0300826."))
+  await Bun.sleep(60)
+  expect(overview.digests).toHaveLength(2)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("serves a cached overview when revisiting an instrument", async () => {
+  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const overview = new FakeOverviewGenerator()
+  const screen = new WatchlistScreen(renderer, overviewScreenOptions(overview))
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitFor(() => overview.digests.length === 1)
+
+  // The second instrument has no cache, so it generates its own run.
+  mockInput.pressArrow("down")
+  await waitFor(() => overview.digests.length === 2)
+  expect(overview.digests[1]?.instrument.symbol).toBe("F_THYAO0826")
+  await waitForFrame((value) => value.includes("Overview 2 for F_THYAO0826."))
+
+  // Back to the first: the cached run shows without another generation.
+  mockInput.pressArrow("up")
+  await waitForFrame((value) => value.includes("Overview 1 for F_XU0300826."))
+  await Bun.sleep(120)
+  expect(overview.digests).toHaveLength(2)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("skips the periodic refresh while the digest stands still", async () => {
+  const { renderer, mockInput, waitFor } = await createTestRenderer({ width: 200, height: 44 })
+  const overview = new FakeOverviewGenerator()
+  const screen = new WatchlistScreen(renderer, overviewScreenOptions(overview))
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitFor(() => overview.digests.length === 1)
+
+  // The fake feeds never move, so ticks keep building the same digest.
+  await Bun.sleep(150)
+  expect(overview.digests).toHaveLength(1)
+
+  // A forced regeneration ignores the unchanged digest.
+  await mockInput.typeText("O")
+  await waitFor(() => overview.digests.length === 2)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("locks the overview when no broker feed is entitled", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const overview = new FakeOverviewGenerator()
+  const screen = new WatchlistScreen(renderer, {
+    ...overviewScreenOptions(overview),
+    memberFeatures: { async loadFeatures() { return memberFeatureSet(["SUBSCRIPTION"]) } },
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitForFrame((value) => value.includes("Broker data requires a subscription."))
+  await Bun.sleep(60)
+  expect(overview.digests).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("asks for the ChatGPT account when the overview cannot authenticate", async () => {
+  const { renderer, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const overview = new FakeOverviewGenerator()
+  overview.failWith = new Error("ChatGPT is not connected")
+  const screen = new WatchlistScreen(renderer, overviewScreenOptions(overview))
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitFor(() => overview.digests.length === 1)
+  await waitForFrame((value) => value.includes("Connect ChatGPT with A"))
 
   screen.destroy()
   renderer.destroy()
