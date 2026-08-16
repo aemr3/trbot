@@ -9,11 +9,11 @@ import {
 } from "@opentui/core"
 import {
   describeRange,
+  type BrokerageDatePreset,
   type BrokerageDateRange,
-  type BrokerageDistribution,
-  type BrokerageShare,
-  type BrokerageSide,
-} from "../market/brokerage.ts"
+} from "../market/broker-calendar.ts"
+import type { BrokerageDistribution, BrokerageSide } from "../market/brokerage.ts"
+import type { SettlementAnalysis, SettlementMode } from "../market/settlement.ts"
 import { shortBroker } from "./depth-panel.ts"
 import {
   barWidth,
@@ -32,45 +32,111 @@ const FAINT_COLOR = "#666666"
 const VALUE_COLOR = "#dddddd"
 const BUY_COLOR = "#70d7a1"
 const SELL_COLOR = "#ff6b6b"
+const HOLD_COLOR = "#8f95ff"
 const BUY_BAR_BG = "#16311f"
 const SELL_BAR_BG = "#3a1f1f"
+const HOLD_BAR_BG = "#232445"
 const OTHER_COLOR = "#777777"
 const SELECTED_TAB_BG = "#282828"
 const WARNING_COLOR = "#e5c07b"
 
 const PANEL_PADDING = 1
-const LOTS_WIDTH = 9
-const PERCENT_WIDTH = 5
-const PRICE_WIDTH = 7
 const MIN_BROKER_WIDTH = 8
-// Top border, tab row, blank, the three summary lines, blank, column header.
-const FIXED_ROWS = 1 + 1 + 1 + 3 + 1 + 1
+// Top border, the two toolbar rows, blank, the three summary lines, blank,
+// column header.
+const FIXED_ROWS = 1 + 2 + 1 + 3 + 1 + 1
 
-const SIDES: BrokerageSide[] = ["BUYER", "SELLER"]
-const SIDE_LABELS: Record<BrokerageSide, string> = { BUYER: "Buyers", SELLER: "Sellers" }
+// The trade flow either side of the range, then the settlement register behind
+// it: what each house was left holding, and who added to or shed a position.
+const VIEWS = ["BUYER", "SELLER", "HELD", "GAINED", "LOST"] as const
+export type BrokerView = (typeof VIEWS)[number]
+
+const VIEW_LABELS: Record<BrokerView, string> = {
+  BUYER: "Buyers",
+  SELLER: "Sellers",
+  HELD: "Held",
+  GAINED: "Gained",
+  LOST: "Lost",
+}
+
+const VIEW_COLORS: Record<BrokerView, string> = {
+  BUYER: BUY_COLOR,
+  SELLER: SELL_COLOR,
+  HELD: HOLD_COLOR,
+  GAINED: BUY_COLOR,
+  LOST: SELL_COLOR,
+}
+
+const VIEW_BAR_BACKGROUNDS: Record<BrokerView, string> = {
+  BUYER: BUY_BAR_BG,
+  SELLER: SELL_BAR_BG,
+  HELD: HOLD_BAR_BG,
+  GAINED: BUY_BAR_BG,
+  LOST: SELL_BAR_BG,
+}
+
+// Which feed backs a view. Exactly one of the two answers a view, so a caller
+// can route a load by asking both.
+export function brokerageSideOf(view: BrokerView): BrokerageSide | null {
+  return view === "BUYER" || view === "SELLER" ? view : null
+}
+
+export function settlementModeOf(view: BrokerView): SettlementMode | null {
+  return view === "HELD" || view === "GAINED" || view === "LOST" ? view : null
+}
 
 export interface BrokeragePanelOptions {
-  onSideChange?: (side: BrokerageSide) => void
+  onViewChange?: (view: BrokerView) => void
   onOpenDateRange?: () => void
   onFocusRequest?: () => void
 }
 
-// Shows which brokerage houses accumulated or distributed the underlying stock
-// over a date range: the leading houses' combined share, then every house ranked
-// by net lots with its average price.
+// A ranked house as the table draws it: the name, the figures beside it, and
+// the share that scales the bar behind it. Both feeds are reduced to this so
+// the summary, the layout and the scrolling stay single-path.
+interface TableRow {
+  brokerage: string
+  percentage: number
+  values: string[]
+}
+
+interface TableColumn {
+  title: string
+  width: number
+}
+
+interface TableModel {
+  color: string
+  barBackground: string
+  // How many leading houses the provider groups into its headline share.
+  topCount: number
+  topPercentage: number
+  topLots: number
+  otherLots: number
+  columns: TableColumn[]
+  rows: TableRow[]
+}
+
+// Shows which brokerage houses moved the underlying stock over a date range and
+// what they were left holding afterwards: the leading houses' combined share,
+// then every house ranked beneath it.
 export class BrokeragePanel {
   readonly root: BoxRenderable
 
   private readonly title: TextRenderable
-  private readonly sideButtons = new Map<BrokerageSide, BoxRenderable>()
-  private readonly sideButtonLabels = new Map<BrokerageSide, TextRenderable>()
+  private readonly viewButtons = new Map<BrokerView, BoxRenderable>()
+  private readonly viewButtonLabels = new Map<BrokerView, TextRenderable>()
   private readonly rangeLabel: TextRenderable
   private readonly content: TextRenderable
-  private side: BrokerageSide = "BUYER"
-  private distribution: BrokerageDistribution | null = null
+  private view: BrokerView = "BUYER"
+  private table: TableModel | null = null
   private range: BrokerageDateRange = { start: null, end: null }
+  // Kept across contract switches: the calendar names the range, not the stock.
+  private presets: BrokerageDatePreset[] = []
   private message: { text: string; color: string } | null = null
-  private entitled: boolean | null = null
+  private emptyMessage: string | null = null
+  private distributionEntitled: boolean | null = null
+  private settlementEntitled: boolean | null = null
   private focused = false
   private scrollOffset = 0
 
@@ -90,34 +156,12 @@ export class BrokeragePanel {
         if (event.button === 0) this.options.onFocusRequest?.()
       },
     })
-    // The tabs are real boxes rather than styled text so they can be clicked as
-    // well as cycled with the arrow keys.
-    const toolbar = new BoxRenderable(renderer, {
-      flexDirection: "row",
-      height: 1,
-      flexShrink: 0,
-      marginBottom: 1,
-    })
-    this.title = new TextRenderable(renderer, { content: "Brokers", fg: FAINT_COLOR, marginRight: 1 })
-    toolbar.add(this.title)
-    for (const side of SIDES) {
-      const button = new BoxRenderable(renderer, {
-        height: 1,
-        paddingLeft: 1,
-        paddingRight: 1,
-        onMouseDown: (event) => {
-          if (event.button !== 0) return
-          this.options.onFocusRequest?.()
-          this.selectSide(side)
-        },
-      })
-      const label = new TextRenderable(renderer, { content: SIDE_LABELS[side] })
-      button.add(label)
-      toolbar.add(button)
-      this.sideButtons.set(side, button)
-      this.sideButtonLabels.set(side, label)
-    }
-    toolbar.add(new BoxRenderable(renderer, { flexGrow: 1, height: 1 }))
+    // Five tabs and the range label together outgrow the panel's width, so the
+    // range keeps the header row and the tabs take one of their own.
+    const header = new BoxRenderable(renderer, { flexDirection: "row", height: 1, flexShrink: 0 })
+    this.title = new TextRenderable(renderer, { content: "Brokers", fg: FAINT_COLOR })
+    header.add(this.title)
+    header.add(new BoxRenderable(renderer, { flexGrow: 1, height: 1 }))
     this.rangeLabel = new TextRenderable(renderer, {
       content: "",
       fg: MUTED_COLOR,
@@ -127,7 +171,32 @@ export class BrokeragePanel {
         this.options.onOpenDateRange?.()
       },
     })
-    toolbar.add(this.rangeLabel)
+    header.add(this.rangeLabel)
+    // The tabs are real boxes rather than styled text so they can be clicked as
+    // well as cycled with the arrow keys.
+    const tabs = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      height: 1,
+      flexShrink: 0,
+      marginBottom: 1,
+    })
+    for (const view of VIEWS) {
+      const button = new BoxRenderable(renderer, {
+        height: 1,
+        paddingLeft: 1,
+        paddingRight: 1,
+        onMouseDown: (event) => {
+          if (event.button !== 0) return
+          this.options.onFocusRequest?.()
+          this.selectView(view)
+        },
+      })
+      const label = new TextRenderable(renderer, { content: VIEW_LABELS[view] })
+      button.add(label)
+      tabs.add(button)
+      this.viewButtons.set(view, button)
+      this.viewButtonLabels.set(view, label)
+    }
     this.content = new TextRenderable(renderer, {
       content: "",
       fg: MUTED_COLOR,
@@ -135,26 +204,34 @@ export class BrokeragePanel {
       flexGrow: 1,
       wrapMode: "none",
     })
-    this.root.add(toolbar)
+    this.root.add(header)
+    this.root.add(tabs)
     this.root.add(this.content)
     this.render()
   }
 
-  get activeSide(): BrokerageSide {
-    return this.side
+  get activeView(): BrokerView {
+    return this.view
   }
 
-  setEntitled(entitled: boolean | null): void {
-    if (this.entitled === entitled) return
-    this.entitled = entitled
+  setDistributionEntitled(entitled: boolean | null): void {
+    if (this.distributionEntitled === entitled) return
+    this.distributionEntitled = entitled
+    this.render()
+  }
+
+  setSettlementEntitled(entitled: boolean | null): void {
+    if (this.settlementEntitled === entitled) return
+    this.settlementEntitled = entitled
     this.render()
   }
 
   // Clears the table for a new contract while the first load is in flight.
   reset(): void {
-    this.distribution = null
+    this.table = null
     this.scrollOffset = 0
     this.message = null
+    this.emptyMessage = null
     this.render()
   }
 
@@ -164,11 +241,17 @@ export class BrokeragePanel {
   }
 
   showDistribution(distribution: BrokerageDistribution): void {
-    if (distribution.side !== this.side) return
-    this.distribution = distribution
-    this.message = null
-    this.clampScroll()
-    this.render()
+    if (distribution.side !== this.view) return
+    this.presets = distribution.presets
+    this.emptyMessage = null
+    this.showTable(distributionTable(distribution))
+  }
+
+  showSettlement(analysis: SettlementAnalysis): void {
+    if (analysis.mode !== this.view) return
+    this.presets = analysis.presets
+    this.emptyMessage = analysis.unavailableMessage
+    this.showTable(settlementTable(analysis))
   }
 
   showMessage(text: string, color = MUTED_COLOR): void {
@@ -186,7 +269,8 @@ export class BrokeragePanel {
     if (key.ctrl || key.meta || key.option) return
     if (key.name === "left" || key.name === "h" || key.name === "right" || key.name === "l") {
       const direction = key.name === "left" || key.name === "h" ? -1 : 1
-      this.selectSide(SIDES[(SIDES.indexOf(this.side) + direction + SIDES.length) % SIDES.length] ?? "BUYER")
+      const next = (VIEWS.indexOf(this.view) + direction + VIEWS.length) % VIEWS.length
+      this.selectView(VIEWS[next] ?? "BUYER")
       return
     }
     if (key.name === "d") {
@@ -202,13 +286,21 @@ export class BrokeragePanel {
     else if (key.name === "down" || key.name === "j") this.scrollBy(1)
   }
 
-  private selectSide(side: BrokerageSide): void {
-    if (this.side === side) return
-    this.side = side
-    this.distribution = null
+  private showTable(table: TableModel): void {
+    this.table = table
+    this.message = null
+    this.clampScroll()
+    this.render()
+  }
+
+  private selectView(view: BrokerView): void {
+    if (this.view === view) return
+    this.view = view
+    this.table = null
+    this.emptyMessage = null
     this.scrollOffset = 0
     this.render()
-    this.options.onSideChange?.(side)
+    this.options.onViewChange?.(view)
   }
 
   private scrollBy(delta: number): void {
@@ -226,9 +318,9 @@ export class BrokeragePanel {
   }
 
   private maxScroll(): number {
-    const distribution = this.distribution
-    if (!distribution) return 0
-    const layout = this.tableLayout(distribution)
+    const table = this.table
+    if (!table) return 0
+    const layout = this.tableLayout(table)
     return Math.max(0, layout.tail.length - layout.visibleTail)
   }
 
@@ -239,40 +331,51 @@ export class BrokeragePanel {
       this.content.content = new StyledText([fg(message.color)(message.text)])
       return
     }
-    const distribution = this.distribution
-    if (!distribution) return
+    const table = this.table
+    if (!table) return
 
     const width = this.contentWidth()
     this.content.content = new StyledText([
-      ...summaryChunks(distribution, width),
+      ...summaryChunks(table, width),
       newline(),
       newline(),
-      ...this.tableChunks(distribution, width),
+      ...this.tableChunks(table, width),
     ])
   }
 
   private renderTabs(): void {
     this.title.fg = this.focused ? "#ffffff" : FAINT_COLOR
-    for (const side of SIDES) {
-      const active = this.side === side
-      const button = this.sideButtons.get(side)
-      const label = this.sideButtonLabels.get(side)
+    for (const view of VIEWS) {
+      const active = this.view === view
+      const button = this.viewButtons.get(view)
+      const label = this.viewButtonLabels.get(view)
       if (!button || !label) continue
       button.backgroundColor = active ? SELECTED_TAB_BG : undefined
-      label.fg = active ? sideColor(side) : this.focused ? "#aaaaaa" : FAINT_COLOR
+      label.fg = active ? VIEW_COLORS[view] : this.focused ? "#aaaaaa" : FAINT_COLOR
     }
-    this.rangeLabel.content = describeRange(this.range, this.distribution?.presets ?? [])
+    this.rangeLabel.content = describeRange(this.range, this.presets)
     this.rangeLabel.fg = this.focused ? HEADING_COLOR : MUTED_COLOR
   }
 
   private messageState(): { text: string; color: string } | null {
-    if (this.entitled === null) return { text: "Checking broker distribution access…", color: MUTED_COLOR }
-    if (!this.entitled) {
-      return { text: "Broker distribution is a paid feature and is\nnot enabled on this account.", color: WARNING_COLOR }
+    const settlement = settlementModeOf(this.view) !== null
+    const entitled = settlement ? this.settlementEntitled : this.distributionEntitled
+    const subject = settlement ? "settlement analysis" : "broker distribution"
+    if (entitled === null) return { text: `Checking ${subject} access…`, color: MUTED_COLOR }
+    if (!entitled) {
+      return {
+        text: `${settlement ? "Settlement analysis" : "Broker distribution"} is a paid feature\nand is not enabled on this account.`,
+        color: WARNING_COLOR,
+      }
     }
     if (this.message) return this.message
-    if (!this.distribution) return { text: "Loading broker distribution…", color: MUTED_COLOR }
-    if (this.distribution.shares.length === 0) return { text: "No broker activity in this range.", color: MUTED_COLOR }
+    if (!this.table) return { text: `Loading ${subject}…`, color: MUTED_COLOR }
+    if (this.table.rows.length === 0) {
+      // The register is only published once a session has cleared, so an empty
+      // range is usually the provider saying it has nothing for that day yet.
+      if (this.emptyMessage) return { text: this.emptyMessage, color: WARNING_COLOR }
+      return { text: `No ${settlement ? "settled holdings" : "broker activity"} in this range.`, color: MUTED_COLOR }
+    }
     return null
   }
 
@@ -282,11 +385,11 @@ export class BrokeragePanel {
 
   // Splits the ranked houses into the leading group, which stays pinned, and the
   // scrollable tail beneath it.
-  private tableLayout(distribution: BrokerageDistribution) {
+  private tableLayout(table: TableModel) {
     const capacity = Math.max(0, this.root.height - FIXED_ROWS)
-    const topCount = Math.min(distribution.topCount, distribution.shares.length)
-    const top = distribution.shares.slice(0, Math.min(topCount, capacity))
-    const tail = distribution.shares.slice(topCount)
+    const topCount = Math.min(table.topCount, table.rows.length)
+    const top = table.rows.slice(0, Math.min(topCount, capacity))
+    const tail = table.rows.slice(topCount)
     // The divider only earns its row when there is a tail to separate.
     const afterTop = Math.max(0, capacity - top.length - (tail.length > 0 ? 1 : 0))
     const needsIndicator = tail.length > afterTop
@@ -294,20 +397,20 @@ export class BrokeragePanel {
     return { top, tail, visibleTail, showDivider: tail.length > 0 && capacity > top.length }
   }
 
-  private tableChunks(distribution: BrokerageDistribution, width: number): TextChunk[] {
-    const brokerWidth = Math.max(MIN_BROKER_WIDTH, width - LOTS_WIDTH - PERCENT_WIDTH - PRICE_WIDTH - 3)
-    const maxPercentage = Math.max(1, ...distribution.shares.map((share) => share.percentage))
-    const layout = this.tableLayout(distribution)
-    const chunks: TextChunk[] = [...headerRow(brokerWidth, width)]
+  private tableChunks(table: TableModel, width: number): TextChunk[] {
+    const brokerWidth = brokerColumnWidth(table.columns, width)
+    const maxPercentage = Math.max(1, ...table.rows.map((row) => row.percentage))
+    const layout = this.tableLayout(table)
+    const chunks: TextChunk[] = [...headerRow(table.columns, brokerWidth, width)]
 
-    for (const share of layout.top) {
-      chunks.push(newline(), ...shareRow(share, this.side, brokerWidth, width, maxPercentage))
+    for (const row of layout.top) {
+      chunks.push(newline(), ...valueRow(row, table, brokerWidth, width, maxPercentage))
     }
     if (layout.showDivider) chunks.push(newline(), fg(FAINT_COLOR)("─".repeat(width)))
 
     const visible = layout.tail.slice(this.scrollOffset, this.scrollOffset + layout.visibleTail)
-    for (const share of visible) {
-      chunks.push(newline(), ...shareRow(share, this.side, brokerWidth, width, maxPercentage))
+    for (const row of visible) {
+      chunks.push(newline(), ...valueRow(row, table, brokerWidth, width, maxPercentage))
     }
 
     const remaining = layout.tail.length - this.scrollOffset - visible.length
@@ -320,23 +423,72 @@ export class BrokeragePanel {
   }
 }
 
+// What each house traded over the range, and the price it traded at.
+function distributionTable(distribution: BrokerageDistribution): TableModel {
+  return {
+    color: VIEW_COLORS[distribution.side],
+    barBackground: VIEW_BAR_BACKGROUNDS[distribution.side],
+    topCount: distribution.topCount,
+    topPercentage: distribution.topPercentage,
+    topLots: distribution.topLots,
+    otherLots: distribution.otherLots,
+    columns: [
+      { title: "Net lot", width: 9 },
+      { title: "%", width: 5 },
+      { title: "Avg", width: 7 },
+    ],
+    rows: distribution.shares.map((share) => ({
+      brokerage: share.brokerage,
+      percentage: share.percentage,
+      values: [formatLots(share.netLots), formatPercent(share.percentage), formatPrice(share.averagePrice)],
+    })),
+  }
+}
+
+// What each house held once the range settled. A standing position is reported
+// as lots alone; a move is reported as the change, in lots and against the
+// house's own previous holding.
+function settlementTable(analysis: SettlementAnalysis): TableModel {
+  const sign = analysis.mode === "LOST" ? "-" : "+"
+  const columns: TableColumn[] = analysis.mode === "HELD"
+    ? [{ title: "Total lot", width: 11 }, { title: "%", width: 6 }]
+    : [{ title: "Δ lot", width: 10 }, { title: "Δ%", width: 8 }, { title: "%", width: 6 }]
+  return {
+    color: VIEW_COLORS[analysis.mode],
+    barBackground: VIEW_BAR_BACKGROUNDS[analysis.mode],
+    topCount: analysis.topCount,
+    topPercentage: analysis.topPercentage,
+    topLots: analysis.topLots,
+    otherLots: analysis.otherLots,
+    columns,
+    rows: analysis.holdings.map((holding) => ({
+      brokerage: holding.brokerage,
+      percentage: holding.percentage,
+      values: analysis.mode === "HELD"
+        ? [formatOptionalLots(holding.totalLot), formatPercent(holding.percentage)]
+        : [
+          formatSigned(holding.lotChange, sign, formatLots),
+          formatSigned(holding.percentageChange, sign, formatPercent),
+          formatPercent(holding.percentage),
+        ],
+    })),
+  }
+}
+
 // The leading houses' combined share against everyone else.
-function summaryChunks(distribution: BrokerageDistribution, width: number): TextChunk[] {
-  const total = distribution.topLots + distribution.otherLots
-  const side = distribution.side
-  const label = `Top ${distribution.topCount} ${formatPercent(distribution.topPercentage)}`
-  const otherLabel = `${formatPercent(100 - distribution.topPercentage)} Other`
-  const fill = total > 0
-    ? Math.max(0, Math.min(width, Math.round((distribution.topLots / total) * width)))
-    : 0
-  const topLots = formatLots(distribution.topLots)
-  const otherLots = formatLots(distribution.otherLots)
+function summaryChunks(table: TableModel, width: number): TextChunk[] {
+  const total = table.topLots + table.otherLots
+  const label = `Top ${table.topCount} ${formatPercent(table.topPercentage)}`
+  const otherLabel = `${formatPercent(100 - table.topPercentage)} Other`
+  const fill = total > 0 ? Math.max(0, Math.min(width, Math.round((table.topLots / total) * width))) : 0
+  const topLots = formatLots(table.topLots)
+  const otherLots = formatLots(table.otherLots)
   return [
-    fg(sideColor(side))(label),
+    fg(table.color)(label),
     fg(MUTED_COLOR)(" ".repeat(gap(width, label.length, otherLabel.length))),
     fg(OTHER_COLOR)(otherLabel),
     newline(),
-    fg(sideColor(side))("█".repeat(fill)),
+    fg(table.color)("█".repeat(fill)),
     fg(OTHER_COLOR)("█".repeat(Math.max(0, width - fill))),
     newline(),
     fg(MUTED_COLOR)(topLots),
@@ -345,46 +497,42 @@ function summaryChunks(distribution: BrokerageDistribution, width: number): Text
   ]
 }
 
-function headerRow(brokerWidth: number, width: number): TextChunk[] {
-  return plain(padSegments([
-    segment("Broker".padEnd(brokerWidth), FAINT_COLOR),
-    segment(" ", FAINT_COLOR),
-    segment("Net lot".padStart(LOTS_WIDTH), FAINT_COLOR),
-    segment(" ", FAINT_COLOR),
-    segment("%".padStart(PERCENT_WIDTH), FAINT_COLOR),
-    segment(" ", FAINT_COLOR),
-    segment("Avg".padStart(PRICE_WIDTH), FAINT_COLOR),
-  ], width, "end"))
+// Whatever the figure columns do not claim goes to the house's name, which is
+// truncated rather than allowed to push the numbers out of line.
+function brokerColumnWidth(columns: TableColumn[], width: number): number {
+  const figures = columns.reduce((total, column) => total + column.width + 1, 0)
+  return Math.max(MIN_BROKER_WIDTH, width - figures)
+}
+
+function headerRow(columns: TableColumn[], brokerWidth: number, width: number): TextChunk[] {
+  const segments: Segment[] = [segment("Broker".padEnd(brokerWidth), FAINT_COLOR)]
+  for (const column of columns) {
+    segments.push(segment(" ", FAINT_COLOR), segment(column.title.padStart(column.width), FAINT_COLOR))
+  }
+  return plain(padSegments(segments, width, "end"))
 }
 
 // Each house's row carries a bar behind its name, scaled against the largest
 // share, so the concentration is readable without comparing the numbers.
-function shareRow(
-  share: BrokerageShare,
-  side: BrokerageSide,
+function valueRow(
+  row: TableRow,
+  table: TableModel,
   brokerWidth: number,
   width: number,
   maxPercentage: number,
 ): TextChunk[] {
   const segments: Segment[] = [
-    segment(truncate(shortBroker(share.brokerage), brokerWidth).padEnd(brokerWidth), sideColor(side)),
-    segment(" ", VALUE_COLOR),
-    segment(formatLots(share.netLots).padStart(LOTS_WIDTH), VALUE_COLOR),
-    segment(" ", VALUE_COLOR),
-    segment(formatPercent(share.percentage).padStart(PERCENT_WIDTH), MUTED_COLOR),
-    segment(" ", VALUE_COLOR),
-    segment(formatPrice(share.averagePrice).padStart(PRICE_WIDTH), MUTED_COLOR),
+    segment(truncate(shortBroker(row.brokerage), brokerWidth).padEnd(brokerWidth), table.color),
   ]
+  table.columns.forEach((column, index) => {
+    // The first figure is the row's headline, so it keeps the brighter colour.
+    segments.push(
+      segment(" ", VALUE_COLOR),
+      segment((row.values[index] ?? "").padStart(column.width), index === 0 ? VALUE_COLOR : MUTED_COLOR),
+    )
+  })
   const padded = padSegments(segments, width, "end")
-  return shade(padded, 0, barWidth(share.percentage, maxPercentage, brokerWidth), sideBarBackground(side))
-}
-
-function sideColor(side: BrokerageSide): string {
-  return side === "BUYER" ? BUY_COLOR : SELL_COLOR
-}
-
-function sideBarBackground(side: BrokerageSide): string {
-  return side === "BUYER" ? BUY_BAR_BG : SELL_BAR_BG
+  return shade(padded, 0, barWidth(row.percentage, maxPercentage, brokerWidth), table.barBackground)
 }
 
 function gap(width: number, left: number, right: number): number {
@@ -403,6 +551,16 @@ function formatLots(lots: number): string {
   return Math.round(lots).toLocaleString("tr-TR")
 }
 
+function formatOptionalLots(lots: number | null): string {
+  return lots === null ? "—" : formatLots(lots)
+}
+
 function formatPrice(price: number): string {
   return price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// The direction belongs to the tab, so a move is shown as a magnitude carrying
+// that tab's sign rather than however the provider happened to sign it.
+function formatSigned(value: number | null, sign: string, format: (value: number) => string): string {
+  return value === null ? "—" : `${sign}${format(Math.abs(value))}`
 }

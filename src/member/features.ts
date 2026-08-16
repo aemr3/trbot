@@ -4,6 +4,7 @@
 export type MemberFeature =
   | "MARKET_DEPTH"
   | "BROKERAGE_DISTRIBUTION"
+  | "SETTLEMENT_ANALYSIS"
   | "SUBSCRIPTION"
 
 export interface MemberFeatureSet {

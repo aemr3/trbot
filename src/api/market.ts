@@ -162,6 +162,48 @@ export interface BrokerageDistributionVariables {
   [key: string]: unknown
 }
 
+// The provider's own name for each reading of the settlement register: the
+// standing positions, and the houses that grew or shrank theirs.
+export type SettlementAnalysisType = "TOTAL" | "UP" | "DOWN"
+
+export interface SettlementAnalysisEntry {
+  brokerage: string
+  percentage: number | null
+  percentageChange: number | null
+  lotChange: number | null
+  totalLot: number | null
+}
+
+export interface SettlementAnalysisData {
+  settlementAnalysis?: {
+    calendar: {
+      // Every trading day the provider will report on, newest first.
+      dateSet: string[]
+      presets: BrokerageCalendarPreset[]
+    }
+    settlements: SettlementAnalysisEntry[]
+    type: SettlementAnalysisType
+    topNSize: number
+    topNPercentage: number
+    // Lots held on a TOTAL reading, lots moved on an UP or DOWN one.
+    topNLotChange: number
+    otherLotChange: number
+    // True while the range includes the current session and the figures keep moving.
+    dynamic: boolean
+    lastUpdate: string | null
+    // Set when the range runs past the last day the register was published for.
+    lastDateErrorMessage: string | null
+  } | null
+}
+
+export interface SettlementAnalysisVariables {
+  uid: string
+  settlementType: SettlementAnalysisType
+  start: string | null
+  end: string | null
+  [key: string]: unknown
+}
+
 export interface AdvancedChartEntry {
   o: number
   h: number
@@ -398,6 +440,13 @@ export const marketOperations = {
     "brokerageDistribution",
     "query",
     "query brokerageDistribution($uid: String!, $brokeragePosition: BrokeragePosition, $start: Date, $end: Date) { brokerageDistribution(uid: $uid, brokeragePosition: $brokeragePosition, start: $start, end: $end) { calendar { dateSet presets { title subtitle start end isDefault action } } distribution { brokerage netShares cost percentage } position topNSize topNPercentage dynamic topNShares otherShares lastUpdate sessionStatusEnabled } }",
+  ),
+  // The provider checksums the document it registered, so the selection set is
+  // sent as published even where the app maps only part of it.
+  settlementAnalysis: defineOperation<SettlementAnalysisData, SettlementAnalysisVariables>(
+    "settlementAnalysis",
+    "query",
+    "query settlementAnalysis($uid: String!, $settlementType: SettlementType, $start: Date, $end: Date) { settlementAnalysis(uid: $uid, settlementType: $settlementType, start: $start, end: $end) { calendar { dateSet presets { title subtitle start end isDefault action } } settlements { brokerage percentage percentageChange lotChange totalLot info { title url } } type availableColumns topNTitle topNSize topNPercentage topNLotChange otherLotChange totalLotInfo dynamic lastUpdate lastDateErrorMessage } }",
   ),
   futureDetail: defineOperation<FutureDetailData, FutureDetailVariables>(
     "futureDetail",

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KeyEvent } from "@opentui/core"
-import type { BrokerageDatePreset, BrokerageDateRange } from "../market/brokerage.ts"
+import type { BrokerageDatePreset, BrokerageDateRange } from "../market/broker-calendar.ts"
 import { BrokerageDateModal } from "./brokerage-date-modal.ts"
 
 const presets: BrokerageDatePreset[] = [
@@ -41,7 +41,7 @@ test("offers the provider presets alongside the day and range pickers", async ()
   await renderOnce()
   const frame = captureCharFrame()
 
-  expect(frame).toContain("Broker distribution range")
+  expect(frame).toContain("Broker date range")
   expect(frame).toContain("Today")
   expect(frame).toContain("Last 2 days")
   expect(frame).toContain("12 – 13 Aug")
@@ -106,7 +106,7 @@ test("escape steps back to the presets before it closes the modal", async () => 
   modal.handleKey(key("escape"))
   await renderOnce()
 
-  expect(captureCharFrame()).toContain("Broker distribution range")
+  expect(captureCharFrame()).toContain("Broker date range")
   expect(closed()).toBe(0)
 
   modal.handleKey(key("escape"))

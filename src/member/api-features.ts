@@ -10,6 +10,7 @@ type MemberApiClient = Pick<ApiClient, "call" | "authenticate">
 const FEATURE_BY_PROVIDER_NAME: Record<string, MemberFeature> = {
   TR_DEPTH: "MARKET_DEPTH",
   INSTANT_BROKERAGE_DISTRIBUTION: "BROKERAGE_DISTRIBUTION",
+  SETTLEMENT: "SETTLEMENT_ANALYSIS",
   MIDAS_PRO: "SUBSCRIPTION",
 }
 

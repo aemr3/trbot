@@ -1,7 +1,7 @@
 import type { ApiClient } from "../api/index.ts"
-import { marketOperations, type BrokerageCalendarPreset } from "../api/market.ts"
+import { marketOperations } from "../api/market.ts"
+import { toDatePresets, UnderlyingUidResolver } from "./api-broker.ts"
 import type {
-  BrokerageDatePreset,
   BrokerageDistribution,
   BrokerageDistributionRequest,
   BrokerageDistributionSource,
@@ -9,21 +9,17 @@ import type {
 
 type BrokerageApiClient = Pick<ApiClient, "call">
 
-// Presets the provider marks as needing its own calendar UI carry no dates of
-// their own; the panel offers the day list instead, so they are dropped here.
-const SELECTABLE_PRESET_ACTION = "SELECT"
-
-// Reads the brokerage distribution for the stock behind a VIOP contract. The
-// provider only reports on cash equities, so the contract's uid is resolved to
-// its underlying first and the mapping cached for the session.
+// Reads the brokerage distribution for the stock behind a VIOP contract.
 export class ApiBrokerageDistributionSource implements BrokerageDistributionSource {
-  private readonly underlyingUids = new Map<string, string>()
+  private readonly underlying: UnderlyingUidResolver
 
-  constructor(private readonly client: BrokerageApiClient) {}
+  constructor(private readonly client: BrokerageApiClient) {
+    this.underlying = new UnderlyingUidResolver(client)
+  }
 
   async loadDistribution(request: BrokerageDistributionRequest): Promise<BrokerageDistribution> {
     const { instrumentUid, side, range, signal } = request
-    const uid = await this.resolveUnderlyingUid(instrumentUid, signal)
+    const uid = await this.underlying.resolve(instrumentUid, signal)
     const data = await this.client.call(
       marketOperations.brokerageDistribution,
       { uid, brokeragePosition: side, start: range.start, end: range.end },
@@ -59,30 +55,8 @@ export class ApiBrokerageDistributionSource implements BrokerageDistributionSour
       otherLots: distribution.otherShares,
       lastUpdate: distribution.lastUpdate,
       live: distribution.dynamic,
-      presets: distribution.calendar.presets.filter(isSelectable).map(toPreset),
+      presets: toDatePresets(distribution.calendar.presets),
       availableDates: distribution.calendar.dateSet,
     }
-  }
-
-  private async resolveUnderlyingUid(instrumentUid: string, signal?: AbortSignal): Promise<string> {
-    const cached = this.underlyingUids.get(instrumentUid)
-    if (cached) return cached
-    const data = await this.client.call(marketOperations.getInstrument, { instrumentId: instrumentUid }, { signal })
-    const underlyingUid = data.instrument?.underlyingInstrumentUid ?? instrumentUid
-    this.underlyingUids.set(instrumentUid, underlyingUid)
-    return underlyingUid
-  }
-}
-
-function isSelectable(preset: BrokerageCalendarPreset): boolean {
-  return preset.action === SELECTABLE_PRESET_ACTION
-}
-
-function toPreset(preset: BrokerageCalendarPreset): BrokerageDatePreset {
-  return {
-    // The default preset is the live session, which the provider also serves
-    // for a null range; keeping it null avoids re-querying at each rollover.
-    range: preset.isDefault ? { start: null, end: null } : { start: preset.start, end: preset.end },
-    isDefault: preset.isDefault,
   }
 }

@@ -7,6 +7,7 @@ import type {
   BrokerageDistributionRequest,
   BrokerageDistributionSource,
 } from "../market/brokerage.ts"
+import type { SettlementAnalysis, SettlementRequest, SettlementSource } from "../market/settlement.ts"
 import { DEFAULT_INTERVALS_BY_RANGE, type CandleSource } from "../market/candle.ts"
 import { ApplicationLog } from "../logging/application-log.ts"
 import type {
@@ -1282,7 +1283,7 @@ function depthBook(symbol: string): DepthBook {
 
 const entitledFeatures: MemberFeatureSource = {
   async loadFeatures() {
-    return memberFeatureSet(["MARKET_DEPTH", "BROKERAGE_DISTRIBUTION", "SUBSCRIPTION"])
+    return memberFeatureSet(["MARKET_DEPTH", "BROKERAGE_DISTRIBUTION", "SETTLEMENT_ANALYSIS", "SUBSCRIPTION"])
   },
 }
 
@@ -1412,12 +1413,12 @@ test("changes the broker date range through the popup", async () => {
 
   focusPanel(mockInput, "brokers")
   await mockInput.typeText("d")
-  await waitForFrame((value) => value.includes("Broker distribution range"))
+  await waitForFrame((value) => value.includes("Broker date range"))
 
   mockInput.pressArrow("down")
   mockInput.pressEnter()
   await waitFor(() => brokerage.requests.some((request) => request.range.start === "2026-08-07"))
-  const frame = await waitForFrame((value) => value.includes("Last 7 days") && !value.includes("Broker distribution range"))
+  const frame = await waitForFrame((value) => value.includes("Last 7 days") && !value.includes("Broker date range"))
   expect(frame).toContain("Buyer 1")
 
   screen.destroy()
@@ -1439,6 +1440,103 @@ test("keeps the broker table closed without the entitlement", async () => {
 
   await waitForFrame((value) => value.includes("Broker distribution is a paid feature"))
   expect(brokerage.requests).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+class FakeSettlementSource implements SettlementSource {
+  requests: SettlementRequest[] = []
+
+  async loadSettlement(request: SettlementRequest): Promise<SettlementAnalysis> {
+    this.requests.push(request)
+    return {
+      mode: request.mode,
+      holdings: Array.from({ length: 6 }, (_, index) => ({
+        brokerage: `Holder ${index + 1} Yatırım`,
+        percentage: 30 - index * 2,
+        percentageChange: request.mode === "HELD" ? null : 1.5 + index,
+        lotChange: request.mode === "HELD" ? null : 900_000 - index * 50_000,
+        totalLot: request.mode === "HELD" ? 496_359_440 - index * 1_000_000 : null,
+      })),
+      topCount: 5,
+      topPercentage: 70.1,
+      topLots: 826_142_663,
+      otherLots: 352_458_757,
+      lastUpdate: "Son Güncelleme: 13 Ağustos 18:00",
+      live: false,
+      presets: [
+        { range: { start: null, end: null }, isDefault: true },
+        { range: { start: "2026-08-07", end: "2026-08-13" }, isDefault: false },
+      ],
+      availableDates: ["2026-08-13", "2026-08-12"],
+      unavailableMessage: null,
+    }
+  }
+}
+
+test("reads the settlement register from the broker panel's own tabs", async () => {
+  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const brokerage = new FakeBrokerageSource()
+  const settlement = new FakeSettlementSource()
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    brokerage,
+    settlement,
+    memberFeatures: entitledFeatures,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((value) => value.includes("Buyer 1"))
+
+  // Buyers, sellers, then the register: three tabs along from the first.
+  focusPanel(mockInput, "brokers")
+  mockInput.pressArrow("right")
+  mockInput.pressArrow("right")
+  await waitFor(() => settlement.requests.length > 0)
+  const frame = await waitForFrame((value) => value.includes("Holder 1"))
+
+  expect(settlement.requests[0]).toMatchObject({
+    instrumentUid: "u1",
+    mode: "HELD",
+    range: { start: null, end: null },
+  })
+  expect(frame).toContain("496.359.440")
+  expect(frame).toContain("Total lot")
+
+  mockInput.pressArrow("right")
+  await waitFor(() => settlement.requests.some((request) => request.mode === "GAINED"))
+  expect(await waitForFrame((value) => value.includes("+900.000"))).toContain("Δ lot")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("locks the settlement tabs on their own entitlement", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const brokerage = new FakeBrokerageSource()
+  const settlement = new FakeSettlementSource()
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    brokerage,
+    settlement,
+    memberFeatures: {
+      async loadFeatures() { return memberFeatureSet(["MARKET_DEPTH", "BROKERAGE_DISTRIBUTION"]) },
+    },
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((value) => value.includes("Buyer 1"))
+
+  focusPanel(mockInput, "brokers")
+  mockInput.pressArrow("right")
+  mockInput.pressArrow("right")
+  await waitForFrame((value) => value.includes("Settlement analysis is a paid feature"))
+  expect(settlement.requests).toEqual([])
 
   screen.destroy()
   renderer.destroy()

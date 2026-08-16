@@ -13,7 +13,7 @@ import {
   isSameRange,
   type BrokerageDatePreset,
   type BrokerageDateRange,
-} from "../market/brokerage.ts"
+} from "../market/broker-calendar.ts"
 import { SelectableList } from "./selectable-list.ts"
 
 const PANEL_BG = "#101010"
@@ -45,9 +45,9 @@ export interface BrokerageDateModalOptions {
   onClose: () => void
 }
 
-// Picks the date range behind the broker distribution. The provider offers a
-// few named presets plus the full set of trading days it will report on, so the
-// modal exposes both rather than only the presets.
+// Picks the date range every broker reading is taken over. The provider offers
+// a few named presets plus the full set of trading days it will report on, so
+// the modal exposes both rather than only the presets.
 export class BrokerageDateModal {
   readonly root: BoxRenderable
 
@@ -121,7 +121,7 @@ export class BrokerageDateModal {
   private showPresets(): void {
     this.step = "presets"
     this.rangeFrom = null
-    this.title.content = "Broker distribution range"
+    this.title.content = "Broker date range"
     this.hint.content = "Enter select · Esc close"
     const rows = this.options.presets.map((preset, index) => ({
       id: `preset:${index}`,

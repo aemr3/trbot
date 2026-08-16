@@ -17,6 +17,7 @@ import { ApiBrokerageDistributionSource } from "./market/api-brokerage.ts"
 import { ApiCandleSource } from "./market/api-candles.ts"
 import { ApiDepthStream } from "./market/api-depth-stream.ts"
 import { ApiNewsSource } from "./market/api-news.ts"
+import { ApiSettlementSource } from "./market/api-settlement.ts"
 import { ApiEquityQuoteStream } from "./market/equity-quote-stream.ts"
 import { ApiQuoteStream } from "./market/quote-stream.ts"
 import { ApiViopInstrumentSource } from "./market/api-source.ts"
@@ -227,6 +228,7 @@ export class App {
         onError: (error) => this.handleStreamError("Depth stream", error),
       }),
       brokerage: new ApiBrokerageDistributionSource(api.client),
+      settlement: new ApiSettlementSource(api.client),
       memberFeatures: new ApiMemberFeatureSource(api.client),
       preferences: this.preferences,
       onPreferencesChange: (preferences) => {

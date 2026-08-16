@@ -2,7 +2,13 @@ import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KeyEvent } from "@opentui/core"
 import type { BrokerageDistribution, BrokerageSide } from "../market/brokerage.ts"
-import { BrokeragePanel, type BrokeragePanelOptions } from "./brokerage-panel.ts"
+import type { SettlementAnalysis, SettlementMode } from "../market/settlement.ts"
+import { BrokeragePanel, type BrokerView, type BrokeragePanelOptions } from "./brokerage-panel.ts"
+
+const presets = [
+  { range: { start: null, end: null }, isDefault: true },
+  { range: { start: "2026-08-07", end: "2026-08-13" }, isDefault: false },
+]
 
 function distribution(side: BrokerageSide, count = 12): BrokerageDistribution {
   return {
@@ -19,11 +25,33 @@ function distribution(side: BrokerageSide, count = 12): BrokerageDistribution {
     otherLots: 215_732,
     lastUpdate: "Son Güncelleme: 13 Ağustos 15:37",
     live: true,
-    presets: [
-      { range: { start: null, end: null }, isDefault: true },
-      { range: { start: "2026-08-07", end: "2026-08-13" }, isDefault: false },
-    ],
+    presets,
     availableDates: ["2026-08-13", "2026-08-12"],
+  }
+}
+
+// The provider signs a shed position; the panel is expected to sign rows from
+// the active view instead, so the fixture keeps the provider's convention.
+function analysis(mode: SettlementMode, count = 12): SettlementAnalysis {
+  const direction = mode === "LOST" ? -1 : 1
+  return {
+    mode,
+    holdings: Array.from({ length: count }, (_, index) => ({
+      brokerage: `House ${index + 1} Yatırım`,
+      percentage: 40 - index * 3,
+      percentageChange: mode === "HELD" ? null : direction * (1.5 + index),
+      lotChange: mode === "HELD" ? null : direction * (900_000 - index * 50_000),
+      totalLot: mode === "HELD" ? 496_359_440 - index * 1_000_000 : null,
+    })),
+    topCount: 5,
+    topPercentage: 70.1,
+    topLots: 826_142_663,
+    otherLots: 352_458_757,
+    lastUpdate: "Son Güncelleme: 13 Ağustos 15:37",
+    live: false,
+    presets,
+    availableDates: ["2026-08-13", "2026-08-12"],
+    unavailableMessage: null,
   }
 }
 
@@ -32,18 +60,24 @@ function key(name: string): KeyEvent {
 }
 
 // The watchlist owns the panel's box, so the test sizes it the same way.
-async function mountPanel(options: BrokeragePanelOptions = {}, height = 20) {
+async function mountPanel(options: BrokeragePanelOptions = {}, height = 21) {
   const harness = await createTestRenderer({ width: 48, height })
   const panel = new BrokeragePanel(harness.renderer, options)
   panel.root.width = 48
   panel.root.height = height
   harness.renderer.root.add(panel.root)
+  panel.setDistributionEntitled(true)
+  panel.setSettlementEntitled(true)
   return { ...harness, panel }
+}
+
+// Walks the tabs to the requested view, which is how the panel is driven.
+function selectView(panel: BrokeragePanel, view: BrokerView): void {
+  while (panel.activeView !== view) panel.handleKey(key("right"))
 }
 
 test("ranks the houses under the leading-share summary", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
-  panel.setEntitled(true)
 
   panel.showDistribution(distribution("BUYER"))
   await renderOnce()
@@ -66,19 +100,18 @@ test("ranks the houses under the leading-share summary", async () => {
   renderer.destroy()
 })
 
-test("switches sides and asks for the new one to be loaded", async () => {
-  const sides: BrokerageSide[] = []
+test("switches views and asks for the new one to be loaded", async () => {
+  const views: BrokerView[] = []
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel({
-    onSideChange: (side) => sides.push(side),
+    onViewChange: (view) => views.push(view),
   })
-  panel.setEntitled(true)
   panel.showDistribution(distribution("BUYER"))
 
   panel.handleKey(key("right"))
   await renderOnce()
 
-  expect(sides).toEqual(["SELLER"])
-  expect(panel.activeSide).toBe("SELLER")
+  expect(views).toEqual(["SELLER"])
+  expect(panel.activeView).toBe("SELLER")
   // The buyers' table is cleared rather than shown under the sellers' tab.
   expect(captureCharFrame()).toContain("Loading broker distribution…")
 
@@ -86,42 +119,52 @@ test("switches sides and asks for the new one to be loaded", async () => {
   await renderOnce()
   expect(captureCharFrame()).toContain("House 1")
 
+  // The settlement views sit beyond the two flow tabs and wrap back round.
+  panel.handleKey(key("right"))
+  expect(panel.activeView).toBe("HELD")
+  await renderOnce()
+  expect(captureCharFrame()).toContain("Loading settlement analysis…")
+
+  panel.handleKey(key("left"))
+  expect(panel.activeView).toBe("SELLER")
+  expect(views).toEqual(["SELLER", "HELD", "SELLER"])
+
   renderer.destroy()
 })
 
-test("switches sides on a click and opens the popup from the range label", async () => {
-  const sides: BrokerageSide[] = []
+test("switches views on a click and opens the popup from the range label", async () => {
+  const views: BrokerView[] = []
   let opened = 0
   let focusRequests = 0
   const { renderer, renderOnce, captureCharFrame, mockMouse, panel } = await mountPanel({
-    onSideChange: (side) => sides.push(side),
+    onViewChange: (view) => views.push(view),
     onOpenDateRange: () => { opened++ },
     onFocusRequest: () => { focusRequests++ },
   })
-  panel.setEntitled(true)
   panel.showDistribution(distribution("BUYER"))
   await renderOnce()
 
   const lines = captureCharFrame().split("\n")
-  const toolbarY = lines.findIndex((line) => line.includes("Sellers"))
-  const toolbar = lines[toolbarY] ?? ""
-  await mockMouse.click(toolbar.indexOf("Sellers"), toolbarY)
+  const tabsY = lines.findIndex((line) => line.includes("Sellers"))
+  await mockMouse.click((lines[tabsY] ?? "").indexOf("Gained"), tabsY)
 
-  expect(sides).toEqual(["SELLER"])
-  expect(panel.activeSide).toBe("SELLER")
+  expect(views).toEqual(["GAINED"])
+  expect(panel.activeView).toBe("GAINED")
   expect(focusRequests).toBeGreaterThan(0)
 
-  await mockMouse.click(toolbar.indexOf("Today"), toolbarY)
+  // The range keeps its own row above the tabs.
+  const rangeY = lines.findIndex((line) => line.includes("Today"))
+  await mockMouse.click((lines[rangeY] ?? "").indexOf("Today"), rangeY)
   expect(opened).toBe(1)
 
   renderer.destroy()
 })
 
-test("ignores a distribution that arrives for the other side", async () => {
+test("ignores a reading that arrives for another view", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
-  panel.setEntitled(true)
 
   panel.showDistribution(distribution("SELLER"))
+  panel.showSettlement(analysis("HELD"))
   await renderOnce()
 
   expect(captureCharFrame()).toContain("Loading broker distribution…")
@@ -129,8 +172,7 @@ test("ignores a distribution that arrives for the other side", async () => {
 })
 
 test("scrolls the tail while the leading houses stay pinned", async () => {
-  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel({}, 20)
-  panel.setEntitled(true)
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel({}, 21)
   panel.showDistribution(distribution("BUYER"))
   await renderOnce()
   expect(captureCharFrame()).toContain("↓ 2 more")
@@ -156,7 +198,6 @@ test("asks for the date popup on d and names the active range", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel({
     onOpenDateRange: () => { opened++ },
   })
-  panel.setEntitled(true)
   panel.showDistribution(distribution("BUYER"))
 
   panel.handleKey(key("d"))
@@ -173,18 +214,95 @@ test("asks for the date popup on d and names the active range", async () => {
   renderer.destroy()
 })
 
-test("reports a locked panel when the subscription does not include it", async () => {
+test("shows the standing position behind the held view", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+  selectView(panel, "HELD")
 
-  await renderOnce()
-  expect(captureCharFrame()).toContain("Checking broker distribution access")
-
-  panel.setEntitled(false)
+  panel.showSettlement(analysis("HELD"))
   await renderOnce()
   const frame = captureCharFrame()
 
-  expect(frame).toContain("paid feature")
+  expect(frame).toContain("Top 5 70,1%")
+  expect(frame).toContain("826.142.663")
+  expect(frame).toContain("Total lot")
+  expect(frame).toContain("496.359.440")
+  // A standing position has no traded price and no move of its own.
+  expect(frame).not.toContain("Avg")
+  expect(frame).not.toContain("Δ lot")
+
+  renderer.destroy()
+})
+
+test("signs a settled move from its own view rather than the provider", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+
+  selectView(panel, "GAINED")
+  panel.showSettlement(analysis("GAINED"))
+  await renderOnce()
+  const gained = captureCharFrame()
+  expect(gained).toContain("Δ lot")
+  expect(gained).toContain("+900.000")
+  expect(gained).toContain("+1,5%")
+
+  selectView(panel, "LOST")
+  panel.showSettlement(analysis("LOST"))
+  await renderOnce()
+  const lost = captureCharFrame()
+  // The provider already signs these; the row must not read "--900.000".
+  expect(lost).toContain("-900.000")
+  expect(lost).toContain("-1,5%")
+  expect(lost).not.toContain("--")
+
+  renderer.destroy()
+})
+
+test("passes on the provider's note when a range has not settled yet", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+  selectView(panel, "HELD")
+
+  panel.showSettlement({
+    ...analysis("HELD", 0),
+    unavailableMessage: "13 Ağustos takas verisi henüz yayınlanmadı.",
+  })
+  await renderOnce()
+
+  expect(captureCharFrame()).toContain("13 Ağustos takas verisi")
+  renderer.destroy()
+})
+
+test("locks each view against its own entitlement", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+  panel.setSettlementEntitled(false)
+
+  panel.showDistribution(distribution("BUYER"))
+  await renderOnce()
+  expect(captureCharFrame()).toContain("House 1")
+
+  selectView(panel, "HELD")
+  await renderOnce()
+  const frame = captureCharFrame()
+  expect(frame).toContain("Settlement analysis is a paid feature")
   expect(frame).not.toContain("House 1")
 
   renderer.destroy()
+})
+
+test("reports a locked panel while the entitlement is unknown", async () => {
+  const harness = await createTestRenderer({ width: 48, height: 21 })
+  const panel = new BrokeragePanel(harness.renderer)
+  panel.root.width = 48
+  panel.root.height = 21
+  harness.renderer.root.add(panel.root)
+
+  await harness.renderOnce()
+  expect(harness.captureCharFrame()).toContain("Checking broker distribution access")
+
+  panel.setDistributionEntitled(false)
+  await harness.renderOnce()
+  const frame = harness.captureCharFrame()
+
+  expect(frame).toContain("Broker distribution is a paid feature")
+  expect(frame).not.toContain("House 1")
+
+  harness.renderer.destroy()
 })

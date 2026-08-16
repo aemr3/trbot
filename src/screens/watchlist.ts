@@ -13,7 +13,7 @@ import { requiresAuthentication } from "../api/index.ts"
 import type { ChatGptAccount } from "../ai/chatgpt-account.ts"
 import { AccountPanel } from "../components/account-panel.ts"
 import { BrokerageDateModal } from "../components/brokerage-date-modal.ts"
-import { BrokeragePanel } from "../components/brokerage-panel.ts"
+import { BrokeragePanel, brokerageSideOf, settlementModeOf } from "../components/brokerage-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
 import { ContractDetailsPanel } from "../components/contract-details-panel.ts"
 import { DepthPanel } from "../components/depth-panel.ts"
@@ -31,14 +31,15 @@ import {
   DEFAULT_BROKERAGE_RANGE,
   type BrokerageDatePreset,
   type BrokerageDateRange,
-  type BrokerageDistributionSource,
-} from "../market/brokerage.ts"
+} from "../market/broker-calendar.ts"
+import type { BrokerageDistributionSource, BrokerageSide } from "../market/brokerage.ts"
 import type { CandleSource } from "../market/candle.ts"
 import type { DepthStream } from "../market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsArticle, NewsSource } from "../market/news.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
+import type { SettlementMode, SettlementSource } from "../market/settlement.ts"
 import type { MemberFeatureSource } from "../member/features.ts"
 import type { AccountSource, AccountStream } from "../trading/account.ts"
 import type {
@@ -77,7 +78,7 @@ const BROKERAGE_POLL_INTERVAL_MS = 60_000
 // Each panel is guaranteed the rows its fixed content needs, then both grow at
 // the same rate so whatever the terminal has left over is split evenly.
 const DEPTH_PANEL_BASIS = 19
-const BROKERAGE_PANEL_BASIS = 8
+const BROKERAGE_PANEL_BASIS = 9
 // The instrument list, depth ladder and news feed together claim 130 fixed
 // columns, so the depth panel only joins them permanently once the chart and
 // account column can still keep about 60. Below that it takes the news slot
@@ -142,7 +143,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
   {
     title: "Brokers",
     bindings: [
-      { keys: "←/→ or h/l", description: "Switch between buyers and sellers" },
+      { keys: "←/→ or h/l", description: "Switch view: buyers, sellers, held, gained, lost" },
       { keys: "↑/↓ or j/k", description: "Scroll beyond the leading houses" },
       { keys: "Home", description: "Back to the top of the list" },
       { keys: "d", description: "Change the date range" },
@@ -197,6 +198,7 @@ export interface WatchlistScreenOptions {
   quotes?: QuoteStream
   depth?: DepthStream
   brokerage?: BrokerageDistributionSource
+  settlement?: SettlementSource
   memberFeatures?: MemberFeatureSource
   onSessionExpired?: () => void
   newsIntervalMs?: number
@@ -273,6 +275,9 @@ export class WatchlistScreen {
   private memberFeatureRequest: AbortController | null = null
   private depthEntitled: boolean | null = null
   private brokerageEntitled: boolean | null = null
+  private settlementEntitled: boolean | null = null
+  // The panel shows one broker view at a time, so a single in-flight request,
+  // date range and calendar are shared by both feeds behind it.
   private brokerageRequest: AbortController | null = null
   private brokerageTimer: ReturnType<typeof setInterval> | null = null
   private brokerageRange: BrokerageDateRange = DEFAULT_BROKERAGE_RANGE
@@ -482,11 +487,12 @@ export class WatchlistScreen {
     this.depthPanel.root.flexBasis = DEPTH_PANEL_BASIS
     this.depthPanel.root.flexGrow = 1
     this.brokeragePanel = new BrokeragePanel(renderer, {
-      onSideChange: () => void this.loadBrokerage(),
+      onViewChange: () => this.loadBrokerView(),
       onOpenDateRange: () => this.openBrokerageDateModal(),
       onFocusRequest: () => this.setFocus("brokers"),
     })
-    this.brokeragePanel.setEntitled(options.memberFeatures ? null : false)
+    this.brokeragePanel.setDistributionEntitled(options.memberFeatures ? null : false)
+    this.brokeragePanel.setSettlementEntitled(options.memberFeatures ? null : false)
     this.brokeragePanel.root.flexBasis = BROKERAGE_PANEL_BASIS
     this.brokeragePanel.root.flexGrow = 1
     this.depthColumn.add(this.depthPanel.root)
@@ -597,7 +603,7 @@ export class WatchlistScreen {
     // A historical range is settled, so only a range covering the open session
     // is worth re-reading.
     this.brokerageTimer = setInterval(() => {
-      if (this.brokerageLive) void this.loadBrokerage(true)
+      if (this.brokerageLive) this.loadBrokerView(true)
     }, this.options.brokerageIntervalMs ?? BROKERAGE_POLL_INTERVAL_MS)
   }
 
@@ -691,28 +697,37 @@ export class WatchlistScreen {
       if (this.destroyed || request.signal.aborted) return
       this.setDepthEntitled(features.has("MARKET_DEPTH"))
       this.setBrokerageEntitled(features.has("BROKERAGE_DISTRIBUTION"))
+      this.setSettlementEntitled(features.has("SETTLEMENT_ANALYSIS"))
     } catch (error) {
       if (this.destroyed || request.signal.aborted || isAbortError(error)) return
       this.reportError("Member features", error)
       this.setDepthEntitled(false)
       this.setBrokerageEntitled(false)
+      this.setSettlementEntitled(false)
     } finally {
       if (this.memberFeatureRequest === request) this.memberFeatureRequest = null
     }
+  }
+
+  // Reads whichever broker view the panel is showing. Only one is on screen at
+  // a time, so a new read cancels the one in flight whichever feed it came from.
+  private loadBrokerView(background = false): void {
+    const view = this.brokeragePanel.activeView
+    const side = brokerageSideOf(view)
+    if (side) void this.loadBrokerage(side, background)
+    const mode = settlementModeOf(view)
+    if (mode) void this.loadSettlement(mode, background)
   }
 
   // Reads the ranked broker houses for the selected contract's underlying. The
   // figures keep moving while the range covers the open session, so a poll
   // refreshes them in the background and leaves the last good table on screen
   // when a refresh fails.
-  private async loadBrokerage(background = false): Promise<void> {
+  private async loadBrokerage(side: BrokerageSide, background: boolean): Promise<void> {
     const source = this.options.brokerage
     const instrument = this.instruments[this.instrumentList.selectedIndex]
     if (!source || !instrument || !this.brokerageEntitled || this.destroyed) return
-    this.brokerageRequest?.abort()
-    const request = new AbortController()
-    this.brokerageRequest = request
-    const side = this.brokeragePanel.activeSide
+    const request = this.startBrokerRequest()
     try {
       const distribution = await source.loadDistribution({
         instrumentUid: instrument.uid,
@@ -734,10 +749,45 @@ export class WatchlistScreen {
     }
   }
 
+  // Reads the settlement register behind the same stock: what the houses were
+  // left holding once the range cleared, and who added to or shed a position.
+  private async loadSettlement(mode: SettlementMode, background: boolean): Promise<void> {
+    const source = this.options.settlement
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    if (!source || !instrument || !this.settlementEntitled || this.destroyed) return
+    const request = this.startBrokerRequest()
+    try {
+      const analysis = await source.loadSettlement({
+        instrumentUid: instrument.uid,
+        mode,
+        range: this.brokerageRange,
+        signal: request.signal,
+      })
+      if (this.destroyed || request.signal.aborted || this.brokerageRequest !== request) return
+      this.brokeragePresets = analysis.presets
+      this.brokerageDates = analysis.availableDates
+      this.brokerageLive = analysis.live
+      this.brokeragePanel.showSettlement(analysis)
+    } catch (error) {
+      if (this.destroyed || request.signal.aborted || this.brokerageRequest !== request || isAbortError(error)) return
+      if (this.reportError("Settlement analysis", error)) return
+      if (!background) this.brokeragePanel.showMessage(`Failed to load: ${errorMessage(error)}`, "#ff6b6b")
+    } finally {
+      if (this.brokerageRequest === request) this.brokerageRequest = null
+    }
+  }
+
+  private startBrokerRequest(): AbortController {
+    this.brokerageRequest?.abort()
+    const request = new AbortController()
+    this.brokerageRequest = request
+    return request
+  }
+
   private openBrokerageDateModal(): void {
     if (this.destroyed || this.brokerageDateModal) return
     if (this.brokerageDates.length === 0 && this.brokeragePresets.length === 0) {
-      this.showHintStatus("Broker distribution has not loaded yet.", "#e5c07b", 3_000)
+      this.showHintStatus("The broker calendar has not loaded yet.", "#e5c07b", 3_000)
       return
     }
     const modal = new BrokerageDateModal(this.renderer, {
@@ -768,14 +818,25 @@ export class WatchlistScreen {
     this.brokerageRange = range
     this.brokeragePanel.setRange(range)
     this.brokeragePanel.reset()
-    void this.loadBrokerage()
+    this.loadBrokerView()
   }
 
   private setBrokerageEntitled(entitled: boolean): void {
     if (this.brokerageEntitled === entitled) return
     this.brokerageEntitled = entitled
-    this.brokeragePanel.setEntitled(entitled)
-    if (entitled) void this.loadBrokerage()
+    this.brokeragePanel.setDistributionEntitled(entitled)
+    // Only the feed behind the view on screen is worth reading; the other one
+    // loads when its tab is opened.
+    const side = brokerageSideOf(this.brokeragePanel.activeView)
+    if (entitled && side) void this.loadBrokerage(side, false)
+  }
+
+  private setSettlementEntitled(entitled: boolean): void {
+    if (this.settlementEntitled === entitled) return
+    this.settlementEntitled = entitled
+    this.brokeragePanel.setSettlementEntitled(entitled)
+    const mode = settlementModeOf(this.brokeragePanel.activeView)
+    if (entitled && mode) void this.loadSettlement(mode, false)
   }
 
   private setDepthEntitled(entitled: boolean): void {
@@ -944,7 +1005,7 @@ export class WatchlistScreen {
     })
     this.syncDepthSubscription()
     this.brokeragePanel.reset()
-    void this.loadBrokerage()
+    this.loadBrokerView()
     this.renderChartHeader()
     void this.loadNews(instrument)
   }
