@@ -5,6 +5,7 @@ import {
   TextRenderable,
   fg,
   type KeyEvent,
+  type MouseEvent,
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
@@ -217,6 +218,7 @@ export class CandlestickChart {
       flexDirection: "row",
       flexGrow: 1,
       width: "100%",
+      onMouseScroll: (event) => this.handleWheel(event),
     })
     const plotColumn = new BoxRenderable(renderer, {
       flexDirection: "column",
@@ -268,6 +270,7 @@ export class CandlestickChart {
       onChange: (position) => {
         this.scrollTo(this.maxScrollOffset() - position)
       },
+      onMouseScroll: (event) => this.handleWheel(event),
     })
     this.horizontalScrollBar.scrollStep = 1
 
@@ -541,6 +544,15 @@ export class CandlestickChart {
 
   private scrollBy(delta: number): void {
     this.scrollTo(this.scrollOffset + delta)
+  }
+
+  /** Wheel/trackpad panning: up or left goes back in time, down or right toward now. */
+  private handleWheel(event: MouseEvent): void {
+    const scroll = event.scroll
+    if (!scroll) return
+    const back = scroll.direction === "up" || scroll.direction === "left"
+    this.scrollBy(back ? scroll.delta : -scroll.delta)
+    event.stopPropagation()
   }
 
   private scrollTo(offset: number): void {

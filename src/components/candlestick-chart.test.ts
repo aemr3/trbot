@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { RGBA, StyledText, type KeyEvent } from "@opentui/core"
-import { createTestRenderer } from "@opentui/core/testing"
+import { createMockMouse, createTestRenderer } from "@opentui/core/testing"
 import { DEFAULT_INTERVALS_BY_RANGE, type Candle, type CandleRange, type CandleSeries, type CandleSource } from "../market/candle.ts"
 import {
   CandlestickChart,
@@ -309,6 +309,57 @@ test("updates OHLC from the current candle for the selected timeframe", async ()
   expect(frame).toContain("L 20,00")
   expect(frame).toContain("C 24,00")
   expect(frame).toContain("+9.09%")
+
+  chart.destroy()
+  setup.renderer.destroy()
+})
+
+test("pans the chart with the mouse wheel over the plot and the scrollbar", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 20 })
+  const manyCandles: Candle[] = Array.from({ length: 200 }, (_, index) => ({
+    timestamp: 1000 + index * 1000,
+    open: 10,
+    high: 13,
+    low: 9,
+    close: 12,
+    volume: 10,
+  }))
+  const source: CandleSource = {
+    async loadCandles(instrumentUid, range, interval) {
+      return {
+        instrumentUid,
+        range,
+        interval,
+        availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+        intervalMs: 300_000,
+        currency: "TRY",
+        candles: manyCandles,
+      }
+    },
+  }
+  const chart = new CandlestickChart(setup.renderer, { source })
+  setup.renderer.root.add(chart.root)
+  chart.setInstrument({ uid: "stock-1", symbol: "TUPRS", displayName: "TUPRS" })
+  await setup.waitForFrame((value) => value.includes("O 10,00"))
+  await setup.renderOnce()
+
+  const internals = chart as unknown as {
+    scrollOffset: number
+    horizontalScrollBar: { x: number; y: number }
+  }
+  const mouse = createMockMouse(setup.renderer)
+
+  // Wheel up over the plot pans back in time; wheel down returns toward now.
+  await mouse.scroll(30, 10, "up")
+  const afterUp = internals.scrollOffset
+  expect(afterUp).toBeGreaterThan(0)
+  await mouse.scroll(30, 10, "down")
+  expect(internals.scrollOffset).toBeLessThan(afterUp)
+
+  // Trackpad-style horizontal scroll over the scrollbar row pans as well.
+  const bar = internals.horizontalScrollBar
+  await mouse.scroll(bar.x + 10, bar.y, "left")
+  expect(internals.scrollOffset).toBeGreaterThan(0)
 
   chart.destroy()
   setup.renderer.destroy()
