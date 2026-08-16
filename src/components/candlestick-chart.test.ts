@@ -39,6 +39,11 @@ function toText(styled: StyledText): string {
   return styled.chunks.map((chunk) => chunk.text).join("")
 }
 
+/** Waits out the wheel-gesture axis lock so the next scroll starts a new gesture. */
+function settleWheelAxis(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 220))
+}
+
 /** Plot cells whose chunk carries the given color, as {row, column} pairs. */
 function cellsWithColor(plot: StyledText, color: RGBA): Array<{ row: number; column: number }> {
   const cells: Array<{ row: number; column: number }> = []
@@ -314,7 +319,7 @@ test("updates OHLC from the current candle for the selected timeframe", async ()
   setup.renderer.destroy()
 })
 
-test("pans the chart with the mouse wheel over the plot and the scrollbar", async () => {
+test("wheel zooms around the cursor and horizontal scroll pans", async () => {
   const setup = await createTestRenderer({ width: 80, height: 20 })
   const manyCandles: Candle[] = Array.from({ length: 200 }, (_, index) => ({
     timestamp: 1000 + index * 1000,
@@ -345,21 +350,58 @@ test("pans the chart with the mouse wheel over the plot and the scrollbar", asyn
 
   const internals = chart as unknown as {
     scrollOffset: number
-    horizontalScrollBar: { x: number; y: number }
+    horizontalScrollBar: { x: number; y: number; viewportSize: number; slider: { viewPortSize: number } }
   }
   const mouse = createMockMouse(setup.renderer)
-
-  // Wheel up over the plot pans back in time; wheel down returns toward now.
-  await mouse.scroll(30, 10, "up")
-  const afterUp = internals.scrollOffset
-  expect(afterUp).toBeGreaterThan(0)
-  await mouse.scroll(30, 10, "down")
-  expect(internals.scrollOffset).toBeLessThan(afterUp)
-
-  // Trackpad-style horizontal scroll over the scrollbar row pans as well.
   const bar = internals.horizontalScrollBar
-  await mouse.scroll(bar.x + 10, bar.y, "left")
+  const initialViewport = bar.viewportSize
+  expect(initialViewport).toBeGreaterThan(0)
+
+  // Wheel up at the right edge of the plot zooms in while the newest candle
+  // stays anchored; wheel down zooms back out.
+  await mouse.scroll(69, 10, "up")
+  const zoomedViewport = bar.viewportSize
+  expect(zoomedViewport).toBeLessThan(initialViewport)
+  expect(internals.scrollOffset).toBe(0)
+  await mouse.scroll(69, 10, "down")
+  expect(bar.viewportSize).toBeGreaterThan(zoomedViewport)
+
+  // Wheel up at the left edge anchors the oldest visible candle instead, so
+  // the window slides back in history.
+  await mouse.scroll(0, 10, "up")
   expect(internals.scrollOffset).toBeGreaterThan(0)
+
+  // Trackpad-style horizontal scroll pans, over the plot and scrollbar alike.
+  await settleWheelAxis()
+  const beforePan = internals.scrollOffset
+  await mouse.scroll(30, 10, "left")
+  const panned = internals.scrollOffset
+  expect(panned).toBeGreaterThan(beforePan)
+  await mouse.scroll(bar.x + 10, bar.y, "right")
+  expect(internals.scrollOffset).toBeLessThan(panned)
+
+  // Vertical drift right after a horizontal swipe must not zoom.
+  const viewportBeforeDrift = bar.viewportSize
+  await mouse.scroll(30, 10, "up")
+  expect(bar.viewportSize).toBe(viewportBeforeDrift)
+
+  // Zooming out stops once the whole history fits in the viewport.
+  await settleWheelAxis()
+  for (let i = 0; i < 40; i++) await mouse.scroll(30, 10, "down")
+  expect(bar.viewportSize).toBe(200)
+  expect(internals.scrollOffset).toBe(0)
+
+  // Zooming back in from the fully-out state must not leave the slider thumb
+  // clamped to a stale sliver (OpenTUI clamps against the pre-update range).
+  await mouse.scroll(30, 10, "up")
+  expect(internals.horizontalScrollBar.slider.viewPortSize).toBe(bar.viewportSize)
+
+  // Double-clicking the plot resets the zoom to the default candle width.
+  for (let i = 0; i < 10; i++) await mouse.scroll(30, 10, "up")
+  expect(bar.viewportSize).toBeLessThan(initialViewport)
+  await mouse.doubleClick(30, 10)
+  expect(bar.viewportSize).toBe(initialViewport)
+  expect(internals.horizontalScrollBar.slider.viewPortSize).toBe(initialViewport)
 
   chart.destroy()
   setup.renderer.destroy()

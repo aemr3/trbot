@@ -22,18 +22,19 @@ export function getScaledY(value: number, min: number, max: number, chartTop: nu
   return chartTop + Math.round((1 - (value - min) / range) * chartH)
 }
 
-/** Candle body width in pixels (~half the spacing, 2..8 px). */
+/** Candle body width in pixels: ~half the spacing, at least 2 px. Uncapped so
+ *  zoomed-in candles keep their body/gap proportion. */
 export function getCandleBodyWidth(pointCount: number, bufWidth: number): number {
   if (pointCount <= 1) return 4
   const spacing = bufWidth / pointCount
-  return Math.min(Math.max(Math.round(spacing * 0.5), 2), 8)
+  return Math.max(Math.round(spacing * 0.5), 2)
 }
 
-/** Volume bar width in pixels (~45% of the spacing). */
+/** Volume bar width in pixels: ~45% of the spacing, at least 1 px. */
 export function getBarBodyWidth(pointCount: number, bufWidth: number): number {
   if (pointCount <= 1) return 4
   const spacing = bufWidth / pointCount
-  return Math.min(Math.max(Math.round(spacing * 0.45), 1), 8)
+  return Math.max(Math.round(spacing * 0.45), 1)
 }
 
 /** Left/right pixel columns of a `width`-wide body centered on `x` (left-biased when even). */

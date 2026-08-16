@@ -51,6 +51,14 @@ const MAX_VOLUME_HEIGHT = 8
 const BRAILLE_X = 2
 const BRAILLE_Y = 4
 const CANDLE_SPACING_DOTS = 3
+// Wheel zoom: dots-per-candle multiplier per wheel notch, and how few candles
+// may remain visible at maximum zoom-in.
+const ZOOM_STEP = 1.25
+const MIN_VISIBLE_ZOOM_CANDLES = 3
+const DOUBLE_CLICK_MS = 400
+// Trackpad swipes drift across axes, so a wheel gesture stays locked to the
+// axis it started on while events keep arriving within this window.
+const WHEEL_AXIS_LOCK_MS = 200
 const CHART_TARGET_LABELS: Record<CandleChartTarget, string> = {
   UNDERLYING: "Stock",
   INSTRUMENT: "Futures",
@@ -98,6 +106,12 @@ export class CandlestickChart {
   private target: CandleChartTarget
   private availableIntervalsByRange: Record<CandleRange, CandleInterval[]> = { ...DEFAULT_INTERVALS_BY_RANGE }
   private scrollOffset = 0
+  // Braille dots one candle occupies; wheel zoom shrinks/grows it.
+  private zoomDots: number = CANDLE_SPACING_DOTS
+  // Previous left-click on the plot, for double-click detection.
+  private lastPlotClick: { time: number; x: number; y: number } | null = null
+  // Axis of the wheel gesture in progress; cross-axis events are drift.
+  private wheelGesture: { horizontal: boolean; time: number } | null = null
   private pendingLivePrice: { instrumentUid: string; price: number; timestamp: number } | null = null
   private request: AbortController | null = null
   private focused = false
@@ -219,6 +233,21 @@ export class CandlestickChart {
       flexGrow: 1,
       width: "100%",
       onMouseScroll: (event) => this.handleWheel(event),
+      // Double-click resets the zoom, anchored at the cursor.
+      onMouseDown: (event) => {
+        if (event.button !== 0) return
+        const previous = this.lastPlotClick
+        const now = Date.now()
+        this.lastPlotClick = { time: now, x: event.x, y: event.y }
+        const isDoubleClick = previous !== null
+          && now - previous.time <= DOUBLE_CLICK_MS
+          && Math.abs(event.x - previous.x) <= 1
+          && Math.abs(event.y - previous.y) <= 1
+        if (isDoubleClick) {
+          this.lastPlotClick = null
+          this.zoomTo(CANDLE_SPACING_DOTS, event.x)
+        }
+      },
     })
     const plotColumn = new BoxRenderable(renderer, {
       flexDirection: "column",
@@ -446,7 +475,7 @@ export class CandlestickChart {
     if (!series || series.candles.length === 0) return
     const visible = selectVisibleCandles(
       series.candles,
-      candleCapacity(series.candles, this.chartArea.width),
+      candleCapacity(series.candles, this.chartArea.width, this.zoomDots),
       this.scrollOffset,
     )
     const last = visible.at(-1) ?? series.candles.at(-1)!
@@ -491,8 +520,9 @@ export class CandlestickChart {
     const bitmapSupport = chartBitmapSupport(this.renderer)
     const view = bitmapSupport
       ? renderCandleChartBitmapView(
-          candles, width, height, this.range, this.scrollOffset, reserveScrollbarRow, bitmapSupport.cellPixel)
-      : renderCandleChart(candles, width, height, this.range, this.scrollOffset, reserveScrollbarRow)
+          candles, width, height, this.range, this.scrollOffset, reserveScrollbarRow, bitmapSupport.cellPixel,
+          this.zoomDots)
+      : renderCandleChart(candles, width, height, this.range, this.scrollOffset, reserveScrollbarRow, this.zoomDots)
     if (typeof view === "string") {
       this.showPlotMessage(view, MUTED_COLOR)
       this.syncScrollbar()
@@ -546,13 +576,51 @@ export class CandlestickChart {
     this.scrollTo(this.scrollOffset + delta)
   }
 
-  /** Wheel/trackpad panning: up or left goes back in time, down or right toward now. */
+  /** TradingView-style wheel: vertical zooms around the cursor, horizontal pans. */
   private handleWheel(event: MouseEvent): void {
     const scroll = event.scroll
     if (!scroll) return
-    const back = scroll.direction === "up" || scroll.direction === "left"
-    this.scrollBy(back ? scroll.delta : -scroll.delta)
     event.stopPropagation()
+    const horizontal = scroll.direction === "left" || scroll.direction === "right"
+    const now = Date.now()
+    const gesture = this.wheelGesture
+    if (gesture && gesture.horizontal !== horizontal && now - gesture.time <= WHEEL_AXIS_LOCK_MS) return
+    this.wheelGesture = { horizontal, time: now }
+    if (horizontal) {
+      this.scrollBy(scroll.direction === "left" ? scroll.delta : -scroll.delta)
+    } else {
+      this.zoomBy(scroll.direction === "up", scroll.delta, event.x)
+    }
+  }
+
+  private zoomBy(zoomIn: boolean, steps: number, anchorX: number): void {
+    this.zoomTo(this.zoomDots * ZOOM_STEP ** (zoomIn ? steps : -steps), anchorX)
+  }
+
+  /**
+   * Sets how many braille dots one candle occupies, keeping the candle under
+   * the cursor at the same screen position. Zooming in stops at a handful of
+   * candles; zooming out stops once the whole history fits.
+   */
+  private zoomTo(dots: number, anchorX: number): void {
+    const candles = this.series?.candles
+    if (!candles || candles.length === 0 || this.chartArea.width <= 0) return
+    const layout = chartWidthLayout(candles, this.chartArea.width, this.zoomDots)
+    const plotDots = layout.plotWidth * BRAILLE_X
+    const maxDots = plotDots / MIN_VISIBLE_ZOOM_CANDLES
+    const minDots = Math.min(CANDLE_SPACING_DOTS, plotDots / candles.length)
+    const next = Math.max(minDots, Math.min(dots, maxDots))
+    if (next === this.zoomDots) return
+
+    const newCapacity = Math.max(1, Math.floor(plotDots / next))
+    const fraction = Math.max(0, Math.min((anchorX - this.chartArea.x) / layout.plotWidth, 1))
+    const end = candles.length - Math.min(this.scrollOffset, this.maxScrollOffset())
+    const anchorIndex = end - layout.capacity * (1 - fraction)
+    this.zoomDots = next
+    const newEnd = anchorIndex + newCapacity * (1 - fraction)
+    this.scrollOffset = Math.max(0, Math.min(Math.round(candles.length - newEnd), candles.length - Math.min(candles.length, newCapacity)))
+    this.renderSummary()
+    this.renderBody()
   }
 
   private scrollTo(offset: number): void {
@@ -566,7 +634,7 @@ export class CandlestickChart {
   private maxScrollOffset(): number {
     const candles = this.series?.candles
     if (!candles || candles.length === 0) return 0
-    return Math.max(0, candles.length - candleCapacity(candles, this.chartArea.width))
+    return Math.max(0, candles.length - candleCapacity(candles, this.chartArea.width, this.zoomDots))
   }
 
   private syncScrollbar(): void {
@@ -576,12 +644,21 @@ export class CandlestickChart {
       this.horizontalScrollBar.viewportSize = 0
       return
     }
-    const { plotWidth, capacity } = chartWidthLayout(candles, this.chartArea.width)
+    const { plotWidth, capacity } = chartWidthLayout(candles, this.chartArea.width, this.zoomDots)
     const maxOffset = Math.max(0, candles.length - capacity)
-    this.horizontalScrollBar.width = plotWidth
-    this.horizontalScrollBar.scrollSize = candles.length
-    this.horizontalScrollBar.viewportSize = Math.min(candles.length, capacity)
-    this.horizontalScrollBar.scrollPosition = maxOffset - Math.min(this.scrollOffset, maxOffset)
+    const viewport = Math.min(candles.length, capacity)
+    const scrollbar = this.horizontalScrollBar
+    scrollbar.width = plotWidth
+    scrollbar.scrollSize = candles.length
+    // OpenTUI's slider clamps an incoming thumb size against the scroll range
+    // from before the update, so growing the viewport (zooming out) leaves a
+    // stale sliver of a thumb. Dropping to a minimal viewport first maximizes
+    // that range, letting the real viewport apply unclamped.
+    if (scrollbar.slider.viewPortSize !== viewport) {
+      scrollbar.viewportSize = viewport === 1 ? 2 : 1
+      scrollbar.viewportSize = viewport
+    }
+    scrollbar.scrollPosition = maxOffset - Math.min(this.scrollOffset, maxOffset)
   }
 
   private renderBodyAfterNextFrame(): void {
@@ -670,12 +747,13 @@ function computeChartFrame(
   height: number,
   scrollOffset: number,
   reserveScrollbarRow: boolean,
+  dotsPerCandle: number,
 ): ChartFrame | string {
   const safeWidth = Math.floor(width)
   const safeHeight = Math.floor(height)
   if (safeWidth < 18 || safeHeight < 4) return "Chart needs more room."
 
-  const layout = chartWidthLayout(candles, safeWidth)
+  const layout = chartWidthLayout(candles, safeWidth, dotsPerCandle)
   const maxScrollOffset = Math.max(0, candles.length - layout.capacity)
   const safeScrollOffset = Math.max(0, Math.min(Math.floor(scrollOffset), maxScrollOffset))
   const totalRows = safeHeight - 1 - (reserveScrollbarRow ? 1 : 0)
@@ -741,8 +819,9 @@ export function renderCandleChart(
   range: CandleRange,
   scrollOffset = 0,
   reserveScrollbarRow = false,
+  dotsPerCandle = CANDLE_SPACING_DOTS,
 ): BrailleChartView | string {
-  const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow)
+  const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow, dotsPerCandle)
   if (typeof frame === "string") return frame
   const { layout, visible, plotRows, volumeRows, totalRows, floor, ceiling, latest, gridRows } = frame
 
@@ -785,8 +864,9 @@ export function renderCandleChartBitmapView(
   scrollOffset: number,
   reserveScrollbarRow: boolean,
   cellPixel: { width: number; height: number },
+  dotsPerCandle = CANDLE_SPACING_DOTS,
 ): BitmapChartView | string {
-  const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow)
+  const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow, dotsPerCandle)
   if (typeof frame === "string") return frame
   const { layout, visible, plotRows, volumeRows, totalRows, floor, ceiling, latest, gridRows } = frame
 
@@ -889,7 +969,7 @@ export function selectVisibleCandles(candles: Candle[], capacity: number, scroll
   return candles.slice(Math.max(0, end - safeCapacity), end)
 }
 
-function chartWidthLayout(candles: Candle[], width: number): ChartLayout {
+function chartWidthLayout(candles: Candle[], width: number, dotsPerCandle = CANDLE_SPACING_DOTS): ChartLayout {
   const priceLabelWidth = Math.max(
     8,
     formatPrice(Math.max(...candles.map((candle) => candle.high))).length,
@@ -901,12 +981,12 @@ function chartWidthLayout(candles: Candle[], width: number): ChartLayout {
     priceLabelWidth,
     axisWidth,
     plotWidth,
-    capacity: Math.max(1, Math.floor((plotWidth * BRAILLE_X) / CANDLE_SPACING_DOTS)),
+    capacity: Math.max(1, Math.floor((plotWidth * BRAILLE_X) / dotsPerCandle)),
   }
 }
 
-function candleCapacity(candles: Candle[], width: number): number {
-  return chartWidthLayout(candles, width).capacity
+function candleCapacity(candles: Candle[], width: number, dotsPerCandle = CANDLE_SPACING_DOTS): number {
+  return chartWidthLayout(candles, width, dotsPerCandle).capacity
 }
 
 function formatTimestamp(timestamp: number | undefined, range: CandleRange, includeYear = false): string {
