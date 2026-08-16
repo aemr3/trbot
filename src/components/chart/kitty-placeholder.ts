@@ -80,6 +80,8 @@ export class KittyPlaceholderImages {
   private readonly imageIds: readonly [number, number] = [nextImageId++, nextImageId++]
   private activeSlot: 0 | 1 | null = null
 
+  // Under an active OpenTUI renderer, pass the renderer's writeOut so payloads
+  // serialize with frame output; the raw-stdout default is for tests only.
   constructor(private readonly write: (data: string) => void = (data) => void process.stdout.write(data)) {}
 
   render(bitmap: CandleChartBitmap, cols: number, rows: number): StyledText {

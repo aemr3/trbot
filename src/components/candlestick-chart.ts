@@ -500,7 +500,13 @@ export class CandlestickChart {
     this.axis.content = view.axis
     this.timeAxis.content = view.timeAxis
     if (view.kind === "bitmap" && bitmapSupport?.mode === "placeholder") {
-      this.placeholderImages ??= new KittyPlaceholderImages()
+      // Kitty payloads must go through the renderer's serialized write queue:
+      // raw process.stdout writes race the render thread and corrupt escape
+      // sequences mid-frame. writeOut is private in the typings but is the
+      // channel OpenTUI uses for its own out-of-frame sequences.
+      this.placeholderImages ??= new KittyPlaceholderImages((data) =>
+        (this.renderer as unknown as { writeOut(data: string): void }).writeOut(data),
+      )
       this.plotText.content = this.placeholderImages.render(view.bitmap, view.plotWidth, view.rows)
       this.plotText.visible = true
       if (this.plotBitmap.visible) {
