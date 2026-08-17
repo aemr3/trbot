@@ -84,12 +84,12 @@ const ZOOM_STEP = 1.25
 const MIN_VISIBLE_ZOOM_CANDLES = 3
 const DOUBLE_CLICK_MS = 400
 // Chart rows below which the summary gives up its trailing blank row so the
-// plot keeps its own: four toolbar rows and a two-line summary already claim
+// plot keeps its own: three toolbar rows and a two-line summary already claim
 // most of a short pane.
-const MIN_HEIGHT_FOR_SUMMARY_GAP = 14
+const MIN_HEIGHT_FOR_SUMMARY_GAP = 12
 // And below which the indicator toggles are hidden altogether; their overlays
 // keep drawing, but a pane this short has no row to spend on the switches.
-const MIN_HEIGHT_FOR_INDICATOR_ROW = 16
+const MIN_HEIGHT_FOR_INDICATOR_ROW = 14
 // Trackpad swipes drift across axes, so a wheel gesture stays locked to the
 // axis it started on while events keep arriving within this window.
 const WHEEL_AXIS_LOCK_MS = 200
@@ -121,6 +121,9 @@ interface ChartInstrument {
 
 export class CandlestickChart {
   readonly root: BoxRenderable
+  // Asset switches live beside the panel title rather than in the chart body,
+  // so the owner mounts this row itself; everything else hangs off `root`.
+  readonly targetToolbar: BoxRenderable
 
   private readonly summary: TextRenderable
   private readonly chartArea: BoxRenderable
@@ -213,13 +216,12 @@ export class CandlestickChart {
       onSizeChange: () => this.renderSummary(),
     })
 
-    const targetToolbar = new BoxRenderable(renderer, {
+    this.targetToolbar = new BoxRenderable(renderer, {
       flexDirection: "row",
       height: 1,
       gap: 0,
-      marginBottom: 1,
+      flexShrink: 0,
     })
-    targetToolbar.add(new TextRenderable(renderer, { content: "Asset", fg: MUTED_COLOR, width: 6 }))
     for (const target of CANDLE_CHART_TARGETS) {
       const button = new BoxRenderable(renderer, {
         height: 1,
@@ -231,9 +233,11 @@ export class CandlestickChart {
           this.selectTarget(target)
         },
       })
-      const label = new TextRenderable(renderer, { content: CHART_TARGET_LABELS[target] })
+      // Text is selectable by default, so a left click on a label would both
+      // press the button and anchor a drag-selection that paints it inverted.
+      const label = new TextRenderable(renderer, { content: CHART_TARGET_LABELS[target], selectable: false })
       button.add(label)
-      targetToolbar.add(button)
+      this.targetToolbar.add(button)
       this.targetButtons.set(target, button)
       this.targetButtonLabels.set(target, label)
     }
@@ -256,7 +260,7 @@ export class CandlestickChart {
           this.selectRange(range)
         },
       })
-      const label = new TextRenderable(renderer, { content: CANDLE_RANGE_LABELS[range] })
+      const label = new TextRenderable(renderer, { content: CANDLE_RANGE_LABELS[range], selectable: false })
       button.add(label)
       rangeToolbar.add(button)
       this.rangeButtons.set(range, button)
@@ -281,7 +285,7 @@ export class CandlestickChart {
           this.selectInterval(interval)
         },
       })
-      const label = new TextRenderable(renderer, { content: CANDLE_INTERVAL_LABELS[interval] })
+      const label = new TextRenderable(renderer, { content: CANDLE_INTERVAL_LABELS[interval], selectable: false })
       button.add(label)
       intervalToolbar.add(button)
       this.intervalButtons.set(interval, button)
@@ -306,7 +310,7 @@ export class CandlestickChart {
           this.toggleIndicator(indicator)
         },
       })
-      const label = new TextRenderable(renderer, { content: CHART_INDICATOR_LABELS[indicator] })
+      const label = new TextRenderable(renderer, { content: CHART_INDICATOR_LABELS[indicator], selectable: false })
       button.add(label)
       this.indicatorToolbar.add(button)
       this.indicatorButtons.set(indicator, button)
@@ -391,7 +395,6 @@ export class CandlestickChart {
     this.horizontalScrollBar.scrollStep = 1
 
     this.root.add(this.summary)
-    this.root.add(targetToolbar)
     this.root.add(rangeToolbar)
     this.root.add(intervalToolbar)
     this.root.add(this.indicatorToolbar)

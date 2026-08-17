@@ -754,13 +754,14 @@ test("starts with saved chart choices and reports subsequent changes", async () 
     onSelectionChange: (range, interval) => selected.push({ range, interval }),
     onTargetChange: (target) => targets.push(target),
   })
+  // The asset row is mounted by the owner, next to the panel title.
+  setup.renderer.root.add(chart.targetToolbar)
   setup.renderer.root.add(chart.root)
   chart.setInstrument({ uid: "future-1", symbol: "F_TUPRS0826", displayName: "TUPRS" })
 
   await setup.waitForFrame((frame) => frame.includes("15m · O"))
   expect(requested[0]).toEqual({ range: "WEEK", interval: "MIN_15", target: "INSTRUMENT" })
   const targetFrame = setup.captureCharFrame()
-  expect(targetFrame).toContain("Asset")
   expect(targetFrame).toContain("Stock")
   expect(targetFrame).toContain("Futures")
   expect(targetFrame).toContain("XU100")

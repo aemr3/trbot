@@ -653,8 +653,7 @@ export class WatchlistScreen {
       paddingLeft: 2,
       paddingRight: 2,
     })
-    this.chartHeader = panelHeader(renderer, "Chart")
-    this.centerPanel.add(this.chartHeader)
+    this.chartHeader = panelHeader(renderer, "Chart", { inline: true })
     this.chart = new CandlestickChart(renderer, {
       source: options.candles,
       initialRange: this.preferences.candleRange,
@@ -673,6 +672,19 @@ export class WatchlistScreen {
       onFocusRequest: () => this.setFocus("chart"),
       onError: (error) => this.reportError("Chart", error),
     })
+    // Title and asset switches share one row; the switches keep their own
+    // padding, so the title only needs a column of air before them.
+    const chartHeaderRow = new BoxRenderable(renderer, {
+      height: 1,
+      flexDirection: "row",
+      flexShrink: 0,
+      marginBottom: 1,
+      overflow: "hidden",
+    })
+    this.chart.targetToolbar.marginLeft = 1
+    chartHeaderRow.add(this.chartHeader)
+    chartHeaderRow.add(this.chart.targetToolbar)
+    this.centerPanel.add(chartHeaderRow)
     this.centerPanel.add(this.chart.root)
     this.accountPanel = new AccountPanel(renderer, {
       source: options.account,
@@ -2463,12 +2475,19 @@ function newsRowContent(article: NewsArticle) {
   return t`${fg(NEWS_TIME_COLOR)(article.tag)}\n${fg(NEWS_HEADLINE_COLOR)(article.headline)}`
 }
 
-function panelHeader(renderer: RenderContext, title: string): TextRenderable {
-  return new TextRenderable(renderer, {
+function panelHeader(renderer: RenderContext, title: string, options: { inline?: boolean } = {}): TextRenderable {
+  const header = new TextRenderable(renderer, {
     content: title,
     fg: HEADER_COLOR,
     marginBottom: 1,
   })
+  // An inline header shares its row with controls: the row owns the trailing
+  // blank line, and the title never gives up columns to what sits beside it.
+  if (options.inline) {
+    header.marginBottom = 0
+    header.flexShrink = 0
+  }
+  return header
 }
 
 // Recovers the session reference (previous close) from the opening snapshot so
