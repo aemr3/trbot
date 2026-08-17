@@ -660,9 +660,11 @@ export class WatchlistScreen {
       initialRange: this.preferences.candleRange,
       initialInterval: this.preferences.candleInterval,
       initialTarget: this.preferences.chartTarget,
+      initialIndicators: this.preferences.chartIndicators,
       onSelectionChange: (candleRange, candleInterval) => {
         this.savePreferences({ candleRange, candleInterval })
       },
+      onIndicatorsChange: (chartIndicators) => this.savePreferences({ chartIndicators }),
       onTargetChange: (chartTarget) => {
         this.savePreferences({ chartTarget })
         this.syncChartQuoteSubscription()

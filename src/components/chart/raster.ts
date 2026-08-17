@@ -3,7 +3,7 @@
 // a raw RGBA bitmap.
 import type { Candle } from "../../market/candle.ts"
 import type { ChartPalette } from "./palette.ts"
-import { candleSlots, type CandleSlots } from "./geometry.ts"
+import { candleSlots, type CandleSlots, type IndicatorPolyline } from "./geometry.ts"
 
 export interface ChartBitmap {
   width: number
@@ -241,6 +241,35 @@ function drawVolume(
   }
 }
 
+/** One overlay across the price pane; a gap in the values breaks the line. */
+function drawPolyline(
+  data: Uint8Array,
+  width: number,
+  plotBottom: number,
+  line: IndicatorPolyline,
+  min: number,
+  max: number,
+  slots: CandleSlots,
+): void {
+  const color = parseHex(line.color, 0.95)
+  let previousX: number | null = null
+  let previousY = 0
+  for (let index = 0; index < line.values.length; index++) {
+    const value = line.values[index]
+    if (value === null || value === undefined) {
+      previousX = null
+      continue
+    }
+    const x = getCandlePixelX(slots.offset + index, slots.count, width)
+    const y = projectY(value, min, max, 0, plotBottom)
+    if (previousX !== null) {
+      drawLine(data, width, plotBottom + 1, previousX, previousY, x, y, color, 1.1)
+    }
+    previousX = x
+    previousY = y
+  }
+}
+
 export interface CandleBitmapOptions {
   candles: Candle[]
   pixelWidth: number
@@ -256,6 +285,8 @@ export interface CandleBitmapOptions {
   guideColor: string
   /** Pixel column of the picked candle's marker, or null when nothing is picked. */
   selectionX?: number | null
+  /** Indicator overlays, one value per candle; drawn under the candles. */
+  lines?: IndicatorPolyline[]
   palette: ChartPalette
   /** Horizontal slot layout; defaults to spreading the candles across the full width. */
   slots?: CandleSlots
@@ -286,6 +317,10 @@ export function renderCandleBitmap(options: CandleBitmapOptions): ChartBitmap {
   }
 
   const slots = options.slots ?? candleSlots(options.candles.length, options.candles.length)
+  // Overlays are context for the candles, so the candles draw over them.
+  for (const line of options.lines ?? []) {
+    drawPolyline(pixels, width, plotBottom, line, options.min, options.max, slots)
+  }
   drawCandles(pixels, width, height, options.candles, 0, plotBottom, options.palette, options.min, options.max, slots)
   if (volumeHeight > 0) {
     drawVolume(pixels, width, height, options.candles, plotBottom + 1, height - 1, options.palette, slots)

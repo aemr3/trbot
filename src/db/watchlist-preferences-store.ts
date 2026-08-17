@@ -6,6 +6,7 @@ import {
   isInstrumentSort,
   isSortDirection,
   normalizeWatchlistPreferences,
+  parseChartIndicators,
   type WatchlistPreferences,
 } from "../screens/watchlist-preferences.ts"
 import type { AppDatabase } from "./client.ts"
@@ -37,19 +38,20 @@ export class DrizzleWatchlistPreferencesStore {
       candleRange: row.candleRange,
       candleInterval: row.candleInterval,
       chartTarget: row.chartTarget,
+      chartIndicators: parseChartIndicators(row.chartIndicators),
       selectedInstrumentUid: row.selectedInstrumentUid,
       orderKind: row.orderKind,
     })
   }
 
   put(preferences: WatchlistPreferences): void {
+    // The indicator list is the one preference that is not a scalar; it is
+    // stored as a name list so a new indicator needs no migration.
+    const row = { ...preferences, chartIndicators: preferences.chartIndicators.join(","), updatedAt: Date.now() }
     this.db
       .insert(watchlistPreferences)
-      .values({ id: PREFERENCES_ID, ...preferences, updatedAt: Date.now() })
-      .onConflictDoUpdate({
-        target: watchlistPreferences.id,
-        set: { ...preferences, updatedAt: Date.now() },
-      })
+      .values({ id: PREFERENCES_ID, ...row })
+      .onConflictDoUpdate({ target: watchlistPreferences.id, set: row })
       .run()
   }
 }

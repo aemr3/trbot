@@ -25,10 +25,25 @@ import {
   type CandleSeries,
   type CandleSource,
 } from "../market/candle.ts"
+import {
+  CHART_INDICATORS,
+  CHART_INDICATOR_COLORS,
+  CHART_INDICATOR_LABELS,
+  indicatorLines,
+  type ChartIndicator,
+  type IndicatorLine,
+} from "../market/indicator.ts"
 import type { ContractOrderCost } from "../market/instrument.ts"
 import { ChartBitmapRenderable, chartBitmapSupport } from "./chart/bitmap-renderable.ts"
-import { drawCandlesticks, drawVolumeBars } from "./chart/chart-draw.ts"
-import { candleSlots, getCandleColumn, getCandleX, getScaledY, type CandleSlots } from "./chart/geometry.ts"
+import { drawCandlesticks, drawIndicatorLines, drawVolumeBars } from "./chart/chart-draw.ts"
+import {
+  candleSlots,
+  getCandleColumn,
+  getCandleX,
+  getScaledY,
+  type CandleSlots,
+  type IndicatorPolyline,
+} from "./chart/geometry.ts"
 import { CHART_PALETTE, DOWN_COLOR, SELECTION_COLOR, UP_COLOR } from "./chart/palette.ts"
 import {
   bufferToBrailleLines,
@@ -72,6 +87,9 @@ const DOUBLE_CLICK_MS = 400
 // plot keeps its own: four toolbar rows and a two-line summary already claim
 // most of a short pane.
 const MIN_HEIGHT_FOR_SUMMARY_GAP = 14
+// And below which the indicator toggles are hidden altogether; their overlays
+// keep drawing, but a pane this short has no row to spend on the switches.
+const MIN_HEIGHT_FOR_INDICATOR_ROW = 16
 // Trackpad swipes drift across axes, so a wheel gesture stays locked to the
 // axis it started on while events keep arriving within this window.
 const WHEEL_AXIS_LOCK_MS = 200
@@ -87,8 +105,10 @@ export interface CandlestickChartOptions {
   initialRange?: CandleRange
   initialInterval?: CandleInterval
   initialTarget?: CandleChartTarget
+  initialIndicators?: ChartIndicator[]
   onSelectionChange?: (range: CandleRange, interval: CandleInterval) => void
   onTargetChange?: (target: CandleChartTarget) => void
+  onIndicatorsChange?: (indicators: ChartIndicator[]) => void
   onError?: (error: unknown) => void
   onFocusRequest?: () => void
 }
@@ -115,6 +135,13 @@ export class CandlestickChart {
   private readonly intervalButtonLabels = new Map<CandleInterval, TextRenderable>()
   private readonly targetButtons = new Map<CandleChartTarget, BoxRenderable>()
   private readonly targetButtonLabels = new Map<CandleChartTarget, TextRenderable>()
+  private readonly indicatorToolbar: BoxRenderable
+  private readonly indicatorButtons = new Map<ChartIndicator, BoxRenderable>()
+  private readonly indicatorButtonLabels = new Map<ChartIndicator, TextRenderable>()
+  // Overlays the trader has switched on, in the order they are listed.
+  private activeIndicators: ChartIndicator[]
+  // Whether the indicator row is currently in the tree; see fitChrome.
+  private indicatorToolbarMounted = true
   private instrument: ChartInstrument | null = null
   private series: CandleSeries | null = null
   // What one contract of the selected instrument costs, shown beside the OHLC
@@ -156,6 +183,7 @@ export class CandlestickChart {
   ) {
     this.range = options.initialRange ?? "INTRADAY"
     this.target = options.initialTarget ?? "UNDERLYING"
+    this.activeIndicators = [...(options.initialIndicators ?? [])]
     const initialInterval = options.initialInterval ?? DEFAULT_INTERVAL_BY_RANGE[this.range]
     this.interval = DEFAULT_INTERVALS_BY_RANGE[this.range].includes(initialInterval)
       ? initialInterval
@@ -166,9 +194,12 @@ export class CandlestickChart {
       flexGrow: 1,
       width: "100%",
       minHeight: 5,
-      // A resize decides whether there is room for the blank row under the
-      // summary, so the summary is re-measured with the pane.
-      onSizeChange: () => this.renderSummary(),
+      // A resize decides how much chrome the pane can afford, so both the
+      // summary and the indicator row are re-measured with it.
+      onSizeChange: () => {
+        this.fitChrome()
+        this.renderSummary()
+      },
     })
     this.summary = new TextRenderable(renderer, {
       content: "Select an instrument to view its chart.",
@@ -257,6 +288,31 @@ export class CandlestickChart {
       this.intervalButtonLabels.set(interval, label)
     }
 
+    this.indicatorToolbar = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      height: 1,
+      gap: 1,
+      marginBottom: 1,
+    })
+    this.indicatorToolbar.add(new TextRenderable(renderer, { content: "Ind", fg: MUTED_COLOR, width: 6 }))
+    for (const indicator of CHART_INDICATORS) {
+      const button = new BoxRenderable(renderer, {
+        height: 1,
+        paddingLeft: 1,
+        paddingRight: 1,
+        onMouseDown: (event) => {
+          if (event.button !== 0) return
+          this.options.onFocusRequest?.()
+          this.toggleIndicator(indicator)
+        },
+      })
+      const label = new TextRenderable(renderer, { content: CHART_INDICATOR_LABELS[indicator] })
+      button.add(label)
+      this.indicatorToolbar.add(button)
+      this.indicatorButtons.set(indicator, button)
+      this.indicatorButtonLabels.set(indicator, label)
+    }
+
     this.chartArea = new BoxRenderable(renderer, {
       flexDirection: "row",
       flexGrow: 1,
@@ -338,8 +394,10 @@ export class CandlestickChart {
     this.root.add(targetToolbar)
     this.root.add(rangeToolbar)
     this.root.add(intervalToolbar)
+    this.root.add(this.indicatorToolbar)
     this.root.add(this.chartArea)
     this.root.add(this.horizontalScrollBar)
+    this.fitChrome()
     this.paintToolbar()
     this.renderer.on("capabilities", this.handleCapabilities)
   }
@@ -354,6 +412,40 @@ export class CandlestickChart {
       this.scrollOffset = 0
     }
     this.load()
+  }
+
+  /** The overlays currently drawn, in the order the toolbar lists them. */
+  get indicators(): ChartIndicator[] {
+    return [...this.activeIndicators]
+  }
+
+  /**
+   * Switches an overlay on or off. The set is reported rather than stored here,
+   * so it survives a restart through the screen's preferences.
+   */
+  toggleIndicator(indicator: ChartIndicator): void {
+    if (this.destroyed) return
+    this.activeIndicators = this.activeIndicators.includes(indicator)
+      ? this.activeIndicators.filter((active) => active !== indicator)
+      : [...this.activeIndicators, indicator]
+    this.paintToolbar()
+    this.renderBody()
+    this.options.onIndicatorsChange?.(this.indicators)
+  }
+
+  /**
+   * Drops the chrome a short pane cannot afford. The indicator row is the first
+   * to go: the overlays it switches keep drawing, and the plot needs the row
+   * more than the toggles do.
+   */
+  private fitChrome(): void {
+    const room = this.root.height >= MIN_HEIGHT_FOR_INDICATOR_ROW
+    if (room === this.indicatorToolbarMounted) return
+    this.indicatorToolbarMounted = room
+    // Taken out of the tree rather than hidden: a hidden row keeps no layout
+    // slot, and its labels end up painted over whatever now sits at its place.
+    if (room) this.root.insertBefore(this.indicatorToolbar, this.chartArea)
+    else this.root.remove(this.indicatorToolbar)
   }
 
   /** What one contract costs, for the OHLC line. Null while it is unknown. */
@@ -593,13 +685,16 @@ export class CandlestickChart {
     const reserveScrollbarRow = this.maxScrollOffset() > 0
     const bitmapSupport = chartBitmapSupport(this.renderer)
     const grainMs = this.series?.intervalMs ?? 0
+    // Computed over the whole history, not the window: an average is only
+    // right if it has seen the candles before the ones on screen.
+    const lines = indicatorLines(candles, this.activeIndicators, grainMs)
     const view = bitmapSupport
       ? renderCandleChartBitmapView(
           candles, width, height, grainMs, this.scrollOffset, reserveScrollbarRow, bitmapSupport.cellPixel,
-          this.zoomDots, this.selectedTimestamp)
+          this.zoomDots, this.selectedTimestamp, lines)
       : renderCandleChart(
           candles, width, height, grainMs, this.scrollOffset, reserveScrollbarRow, this.zoomDots,
-          this.selectedTimestamp)
+          this.selectedTimestamp, lines)
     if (typeof view === "string") {
       this.showPlotMessage(view, MUTED_COLOR)
       this.syncScrollbar()
@@ -826,6 +921,17 @@ export class CandlestickChart {
       button.backgroundColor = selected ? ACTIVE_BUTTON_BG : undefined
       label.fg = selected ? "#ffffff" : this.focused ? "#aaaaaa" : "#666666"
     }
+    for (const indicator of CHART_INDICATORS) {
+      const selected = this.activeIndicators.includes(indicator)
+      const button = this.indicatorButtons.get(indicator)
+      const label = this.indicatorButtonLabels.get(indicator)
+      if (!button || !label) continue
+      button.backgroundColor = selected ? ACTIVE_BUTTON_BG : undefined
+      // An active overlay wears its own color, so the row doubles as its legend.
+      label.fg = selected
+        ? CHART_INDICATOR_COLORS[indicator]
+        : this.focused ? "#aaaaaa" : "#666666"
+    }
     const availableIntervals = this.availableIntervalsByRange[this.range]
     for (const interval of CANDLE_INTERVALS) {
       const available = availableIntervals.includes(interval)
@@ -850,6 +956,8 @@ interface ChartLayout {
 interface ChartFrame {
   layout: ChartLayout
   visible: Candle[]
+  /** Index of the first visible candle, for slicing series aligned to the source. */
+  windowStart: number
   slots: CandleSlots
   plotRows: number
   volumeRows: number
@@ -918,6 +1026,7 @@ function computeChartFrame(
   return {
     layout,
     visible,
+    windowStart: candles.length - safeScrollOffset - visible.length,
     slots: candleSlots(visible.length, Math.min(layout.capacity, Math.floor(plotDots / MAX_CANDLE_SPACING_DOTS))),
     plotRows,
     volumeRows,
@@ -971,6 +1080,7 @@ export function renderCandleChart(
   reserveScrollbarRow = false,
   dotsPerCandle = CANDLE_SPACING_DOTS,
   selectedTimestamp: number | null = null,
+  indicators: IndicatorLine[] = [],
 ): BrailleChartView | string {
   const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow, dotsPerCandle)
   if (typeof frame === "string") return frame
@@ -990,6 +1100,7 @@ export function renderCandleChart(
       CHART_PALETTE.selectionColor,
     )
   }
+  drawIndicatorLines(buf, windowLines(indicators, frame), 0, priceBottom, floor, ceiling, slots)
   drawCandlesticks(buf, visible, 0, priceBottom, CHART_PALETTE, floor, ceiling, slots)
   if (volumeRows > 0) {
     drawVolumeBars(buf, visible, plotRows * BRAILLE_Y, totalRows * BRAILLE_Y - 1, CHART_PALETTE, slots)
@@ -1026,6 +1137,7 @@ export function renderCandleChartBitmapView(
   cellPixel: { width: number; height: number },
   dotsPerCandle = CANDLE_SPACING_DOTS,
   selectedTimestamp: number | null = null,
+  indicators: IndicatorLine[] = [],
 ): BitmapChartView | string {
   const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow, dotsPerCandle)
   if (typeof frame === "string") return frame
@@ -1051,6 +1163,7 @@ export function renderCandleChartBitmapView(
     selectionX: selectedIndex === null
       ? null
       : getCandlePixelX(slots.offset + selectedIndex, slots.count, pixelWidth),
+    lines: windowLines(indicators, frame),
     palette: CHART_PALETTE,
     slots,
   })
@@ -1068,6 +1181,16 @@ export function renderCandleChartBitmapView(
     axisWidth: layout.axisWidth,
     plotWidth: layout.plotWidth,
   }
+}
+
+/** Cuts indicator series, which run the whole history, down to the drawn window. */
+function windowLines(indicators: IndicatorLine[], frame: ChartFrame): IndicatorPolyline[] {
+  if (indicators.length === 0) return []
+  const end = frame.windowStart + frame.visible.length
+  return indicators.map((line) => ({
+    color: line.color,
+    values: line.values.slice(frame.windowStart, end),
+  }))
 }
 
 /** Where the marked candle sits in the visible window, or null when it is off screen. */

@@ -15,6 +15,16 @@ export function getSeriesPosition(
   return Math.round(start + (index / (pointCount - 1)) * (end - start))
 }
 
+/**
+ * An indicator overlay ready to draw: one value per candle of the window it is
+ * drawn into, null wherever the indicator has none. Both renderers take this,
+ * so the price pane draws the same lines whichever canvas it is using.
+ */
+export interface IndicatorPolyline {
+  color: string
+  values: (number | null)[]
+}
+
 /** Linear price-to-pixel-row mapping; `max` lands on `chartTop`, `min` on `chartBottom`. */
 export function getScaledY(value: number, min: number, max: number, chartTop: number, chartBottom: number): number {
   const range = max - min || 1

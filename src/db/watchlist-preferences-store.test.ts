@@ -31,6 +31,7 @@ describe("watchlist preferences store", () => {
       candleRange: "WEEK",
       candleInterval: "MIN_15",
       chartTarget: "INSTRUMENT",
+      chartIndicators: ["EMA_20", "VWAP"],
       selectedInstrumentUid: "future-2",
       orderKind: "MARKETABLE_LIMIT",
     })
@@ -44,6 +45,7 @@ describe("watchlist preferences store", () => {
       candleRange: "WEEK",
       candleInterval: "MIN_15",
       chartTarget: "INSTRUMENT",
+      chartIndicators: ["EMA_20", "VWAP"],
       selectedInstrumentUid: "future-2",
       orderKind: "MARKETABLE_LIMIT",
     })

@@ -5,6 +5,7 @@ import {
   type CandleInterval,
   type CandleRange,
 } from "../market/candle.ts"
+import { isChartIndicator, type ChartIndicator } from "../market/indicator.ts"
 import type { ViopOrderKind } from "../trading/order.ts"
 
 export const INSTRUMENT_SORTS = ["change", "volume", "name"] as const
@@ -35,8 +36,14 @@ export interface WatchlistPreferences {
   candleRange: CandleRange
   candleInterval: CandleInterval
   chartTarget: CandleChartTarget
+  chartIndicators: ChartIndicator[]
   selectedInstrumentUid: string | null
   orderKind: ViopOrderKind
+}
+
+/** Reads the stored indicator list, dropping any name the app no longer draws. */
+export function parseChartIndicators(value: string): ChartIndicator[] {
+  return value.split(",").map((name) => name.trim()).filter(isChartIndicator)
 }
 
 export const DEFAULT_WATCHLIST_PREFERENCES: WatchlistPreferences = {
@@ -45,6 +52,7 @@ export const DEFAULT_WATCHLIST_PREFERENCES: WatchlistPreferences = {
   candleRange: "INTRADAY",
   candleInterval: "MIN_5",
   chartTarget: "UNDERLYING",
+  chartIndicators: [],
   selectedInstrumentUid: null,
   orderKind: "LIMIT",
 }

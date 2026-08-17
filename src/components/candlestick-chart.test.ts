@@ -10,6 +10,7 @@ import {
   type BitmapChartView,
   type BrailleChartView,
 } from "./candlestick-chart.ts"
+import { CHART_INDICATOR_COLORS, indicatorLines } from "../market/indicator.ts"
 import { CHART_PALETTE, SELECTION_COLOR } from "./chart/palette.ts"
 
 const candles: Candle[] = [
@@ -229,6 +230,83 @@ test("marks the picked candle in both renderers", () => {
   // A candle outside the visible window takes its marker with it.
   const offWindow = renderCandleChart(candles.slice(2), 40, 20, MIN_5_MS, 0, false, 3, picked.timestamp)
   expect(cellsWithColor((offWindow as BrailleChartView).plot, RGBA.fromHex(SELECTION_COLOR))).toHaveLength(0)
+})
+
+test("draws indicator overlays in both renderers", () => {
+  // Enough candles for a 20-period average to have warmed up.
+  const trend: Candle[] = Array.from({ length: 60 }, (_, index) => ({
+    timestamp: 1_700_000_000_000 + index * 300_000,
+    open: 100 + index,
+    high: 101 + index,
+    low: 99 + index,
+    close: 100.5 + index,
+    volume: 10,
+  }))
+  const line = indicatorLines(trend, ["EMA_20"], MIN_5_MS)
+  expect(line).toHaveLength(1)
+
+  const braille = renderCandleChart(trend, 60, 20, MIN_5_MS, 0, false, 3, null, line)
+  expect(typeof braille).not.toBe("string")
+  const overlayCells = cellsWithColor(
+    (braille as BrailleChartView).plot,
+    RGBA.fromHex(CHART_INDICATOR_COLORS.EMA_20),
+  )
+  expect(overlayCells.length).toBeGreaterThan(0)
+
+  const bitmap = renderCandleChartBitmapView(
+    trend, 60, 20, MIN_5_MS, 0, false, { width: 8, height: 16 }, 3, null, line)
+  expect(typeof bitmap).not.toBe("string")
+  expect(bitmapColumns(bitmap as BitmapChartView, CHART_INDICATOR_COLORS.EMA_20).length).toBeGreaterThan(0)
+
+  // Nothing is drawn for an indicator nobody switched on.
+  const plain = renderCandleChart(trend, 60, 20, MIN_5_MS, 0, false, 3)
+  expect(cellsWithColor((plain as BrailleChartView).plot, RGBA.fromHex(CHART_INDICATOR_COLORS.EMA_20))).toHaveLength(0)
+
+  // Scrolled back, the overlay follows its candles rather than starting over:
+  // the window is a slice of a series measured across the whole history.
+  const scrolled = renderCandleChart(trend, 60, 20, MIN_5_MS, 20, false, 3, null, line)
+  expect(cellsWithColor((scrolled as BrailleChartView).plot, RGBA.fromHex(CHART_INDICATOR_COLORS.EMA_20)).length)
+    .toBeGreaterThan(0)
+})
+
+test("keeps the indicator toggles, and reports what they turn on", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24 })
+  const reported: string[][] = []
+  const source: CandleSource = {
+    async loadCandles(instrumentUid, range, interval) {
+      return {
+        instrumentUid,
+        range,
+        interval,
+        availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+        intervalMs: 300_000,
+        currency: "TRY",
+        candles: [{ timestamp: 1_000_000, open: 40, high: 44, low: 39, close: 43, volume: 10 }],
+      }
+    },
+  }
+  const chart = new CandlestickChart(setup.renderer, {
+    source,
+    initialIndicators: ["EMA_50"],
+    onIndicatorsChange: (indicators) => reported.push(indicators),
+  })
+  setup.renderer.root.add(chart.root)
+  chart.setInstrument({ uid: "stock-1", symbol: "TUPRS", displayName: "TUPRS" })
+
+  // The row starts from the saved set rather than from nothing.
+  const frame = await setup.waitForFrame((value) => value.includes("EMA50"))
+  expect(frame).toContain("VWAP")
+  expect(chart.indicators).toEqual(["EMA_50"])
+
+  chart.toggleIndicator("VWAP")
+  expect(chart.indicators).toEqual(["EMA_50", "VWAP"])
+  chart.toggleIndicator("EMA_50")
+  expect(chart.indicators).toEqual(["VWAP"])
+  // Every change is reported, so the screen can persist it.
+  expect(reported).toEqual([["EMA_50", "VWAP"], ["VWAP"]])
+
+  chart.destroy()
+  setup.renderer.destroy()
 })
 
 test("aligns the price guide with the close edge of the last bitmap candle", () => {

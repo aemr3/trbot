@@ -102,6 +102,8 @@ export const watchlistPreferences = sqliteTable("watchlist_preferences", {
   candleRange: text("candle_range").notNull(),
   candleInterval: text("candle_interval").notNull(),
   chartTarget: text("chart_target").notNull().default("UNDERLYING"),
+  // Comma-separated indicator names; empty means a bare price chart.
+  chartIndicators: text("chart_indicators").notNull().default(""),
   selectedInstrumentUid: text("selected_instrument_uid"),
   orderKind: text("order_kind").notNull().default("LIMIT"),
   updatedAt: integer("updated_at").notNull(),

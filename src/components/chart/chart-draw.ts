@@ -9,8 +9,9 @@ import {
   getCandleX,
   getScaledY,
   type CandleSlots,
+  type IndicatorPolyline,
 } from "./geometry.ts"
-import { drawLine, fillRect, LAYER_DATA, LAYER_FILL, type PixelBuffer } from "./pixel-buffer.ts"
+import { drawLine, fillRect, setPixel, LAYER_DATA, LAYER_FILL, type PixelBuffer } from "./pixel-buffer.ts"
 
 function drawWickOutsideBody(
   buf: PixelBuffer,
@@ -94,5 +95,39 @@ export function drawVolumeBars(
     const [barLeft, barRight] = bodySpan(x, barWidth)
     const color = candle.close >= candle.open ? palette.volumeUp : palette.volumeDown
     fillRect(buf, barLeft, yBottom - barHeight, barRight, yBottom, color, LAYER_FILL)
+  }
+}
+
+/**
+ * Draws indicator overlays as polylines across the price pane. They go under
+ * the candle layer: an overlay is context for the candles, and a braille cell
+ * can only show one layer's dots, so the candle keeps the cell it shares.
+ * A gap in the values breaks the line rather than bridging it.
+ */
+export function drawIndicatorLines(
+  buf: PixelBuffer,
+  lines: IndicatorPolyline[],
+  chartTop: number,
+  chartBottom: number,
+  min: number,
+  max: number,
+  slots: CandleSlots,
+): void {
+  for (const line of lines) {
+    let previousX: number | null = null
+    let previousY = 0
+    for (let index = 0; index < line.values.length; index++) {
+      const value = line.values[index]
+      if (value === null || value === undefined) {
+        previousX = null
+        continue
+      }
+      const x = getCandleX(slots.offset + index, slots.count, buf.width)
+      const y = getScaledY(value, min, max, chartTop, chartBottom)
+      if (previousX === null) setPixel(buf, x, y, line.color, LAYER_FILL)
+      else drawLine(buf, previousX, previousY, x, y, line.color, LAYER_FILL)
+      previousX = x
+      previousY = y
+    }
   }
 }
