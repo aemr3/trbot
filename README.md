@@ -41,7 +41,7 @@ TRBOT_USERNAME=
 TRBOT_PASSWORD=
 ```
 
-`DATABASE_URL` currently accepts a SQLite path. An unset or blank value defaults to `./data/db.sqlite`. Parent directories, database permissions, WAL mode, and Drizzle migrations are handled during startup. See [configuration.md](docs/configuration.md) for the complete behavior.
+`DATABASE_URL` currently accepts a SQLite path. An unset or blank value defaults to `./data/db.sqlite`. A relative path is resolved against the repository root rather than the working directory, so every program in the workspace opens the same database wherever it is started from. Parent directories, database permissions, WAL mode, and Drizzle migrations are handled during startup. See [configuration.md](docs/configuration.md) for the complete behavior.
 
 ## Run
 
@@ -75,7 +75,29 @@ Press `?` inside the application for the complete shortcut reference. Common con
 
 Trading actions affect the connected provider account. “Simulated market” is a limit-order pricing strategy based on exchange bounds; it is not paper trading. Review every order before submission.
 
+## Project layout
+
+`trbot` is a Bun workspace. Shared code lives in `packages/*` and runnable programs in `apps/*`, so a future headless service can reuse the domain, API, and persistence layers without the terminal UI.
+
+| Package | Contents |
+| --- | --- |
+| `@trbot/config` | Application configuration, workspace-root discovery, and `.env` loading |
+| `@trbot/auth` | Authentication state, store, and session contracts |
+| `@trbot/api` | Provider transport, GraphQL operations, and client behavior |
+| `@trbot/market` | Instruments, candles, quotes, depth, news, and alerts |
+| `@trbot/trading` | Accounts, orders, positions, and stop rules |
+| `@trbot/member` | Member entitlements and features |
+| `@trbot/ai` | ChatGPT account, provider, and market overview generation |
+| `@trbot/preferences` | Persisted watchlist and chart preferences |
+| `@trbot/db` | Drizzle schema, migrations, and store implementations |
+| `@trbot/tsconfig` | Shared TypeScript compiler settings |
+| `@trbot/tui` (`apps/tui`) | The terminal application, its screens, and its components |
+
+Packages import each other by name and file, as in `@trbot/market/candle.ts`. The dependency graph is acyclic, and the domain packages stay free of transport, storage, and terminal concerns.
+
 ## Development
+
+All commands run from the repository root.
 
 ```sh
 bun run lint

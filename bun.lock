@@ -4,18 +4,120 @@
   "workspaces": {
     "": {
       "name": "trbot",
-      "dependencies": {
-        "@ai-sdk/openai": "^4.0.36",
-        "@opentui/core": "^0.5.1",
-        "ai": "^7.0.58",
-        "drizzle-orm": "^0.45.2",
-      },
       "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
         "@types/bun": "^1.3.14",
-        "drizzle-kit": "^0.31.10",
         "oxlint": "^1.77.0",
         "typescript": "^7.0.2",
       },
+    },
+    "apps/tui": {
+      "name": "@trbot/tui",
+      "dependencies": {
+        "@opentui/core": "^0.5.1",
+        "@trbot/ai": "workspace:*",
+        "@trbot/api": "workspace:*",
+        "@trbot/auth": "workspace:*",
+        "@trbot/config": "workspace:*",
+        "@trbot/db": "workspace:*",
+        "@trbot/market": "workspace:*",
+        "@trbot/member": "workspace:*",
+        "@trbot/preferences": "workspace:*",
+        "@trbot/trading": "workspace:*",
+      },
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+      },
+    },
+    "packages/ai": {
+      "name": "@trbot/ai",
+      "dependencies": {
+        "@ai-sdk/openai": "^4.0.36",
+        "@ai-sdk/provider": "^4.0.7",
+        "@trbot/market": "workspace:*",
+        "ai": "^7.0.58",
+      },
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+      },
+    },
+    "packages/api": {
+      "name": "@trbot/api",
+      "dependencies": {
+        "@trbot/auth": "workspace:*",
+      },
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+      },
+    },
+    "packages/auth": {
+      "name": "@trbot/auth",
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+      },
+    },
+    "packages/config": {
+      "name": "@trbot/config",
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+      },
+    },
+    "packages/db": {
+      "name": "@trbot/db",
+      "dependencies": {
+        "@trbot/ai": "workspace:*",
+        "@trbot/auth": "workspace:*",
+        "@trbot/config": "workspace:*",
+        "@trbot/market": "workspace:*",
+        "@trbot/preferences": "workspace:*",
+        "@trbot/trading": "workspace:*",
+        "drizzle-orm": "^0.45.2",
+      },
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+        "drizzle-kit": "^0.31.10",
+      },
+    },
+    "packages/market": {
+      "name": "@trbot/market",
+      "dependencies": {
+        "@trbot/api": "workspace:*",
+      },
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+      },
+    },
+    "packages/member": {
+      "name": "@trbot/member",
+      "dependencies": {
+        "@trbot/api": "workspace:*",
+      },
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+      },
+    },
+    "packages/preferences": {
+      "name": "@trbot/preferences",
+      "dependencies": {
+        "@trbot/market": "workspace:*",
+        "@trbot/trading": "workspace:*",
+      },
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+      },
+    },
+    "packages/trading": {
+      "name": "@trbot/trading",
+      "dependencies": {
+        "@trbot/api": "workspace:*",
+        "@trbot/market": "workspace:*",
+      },
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+      },
+    },
+    "packages/tsconfig": {
+      "name": "@trbot/tsconfig",
     },
   },
   "packages": {
@@ -142,6 +244,28 @@
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.77.0", "", { "os": "win32", "cpu": "x64" }, "sha512-+teyvPDZ2RjUvo+SuCqS/UhaJl1QtdW5fWT5NJTV61V5MIuIS90Db9LixmtEGvXixyttiK62P96MSu3UlpviBw=="],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
+
+    "@trbot/ai": ["@trbot/ai@workspace:packages/ai"],
+
+    "@trbot/api": ["@trbot/api@workspace:packages/api"],
+
+    "@trbot/auth": ["@trbot/auth@workspace:packages/auth"],
+
+    "@trbot/config": ["@trbot/config@workspace:packages/config"],
+
+    "@trbot/db": ["@trbot/db@workspace:packages/db"],
+
+    "@trbot/market": ["@trbot/market@workspace:packages/market"],
+
+    "@trbot/member": ["@trbot/member@workspace:packages/member"],
+
+    "@trbot/preferences": ["@trbot/preferences@workspace:packages/preferences"],
+
+    "@trbot/trading": ["@trbot/trading@workspace:packages/trading"],
+
+    "@trbot/tsconfig": ["@trbot/tsconfig@workspace:packages/tsconfig"],
+
+    "@trbot/tui": ["@trbot/tui@workspace:apps/tui"],
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 

@@ -1,0 +1,24 @@
+{
+  "name": "@trbot/db",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@trbot/ai": "workspace:*",
+    "@trbot/auth": "workspace:*",
+    "@trbot/config": "workspace:*",
+    "@trbot/market": "workspace:*",
+    "@trbot/preferences": "workspace:*",
+    "@trbot/trading": "workspace:*",
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "@trbot/tsconfig": "workspace:*",
+    "drizzle-kit": "^0.31.10"
+  }
+}

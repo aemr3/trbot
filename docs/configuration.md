@@ -1,6 +1,6 @@
 # Configuration
 
-The application reads configuration from environment variables through Bun. A local `.env` file is automatically available during normal Bun execution and is ignored by Git.
+The application reads configuration through `@trbot/config`, which overlays the repository-root `.env` file with real environment variables. Environment variables win where both define a value. Because the file is located from the repository root rather than the working directory, settings resolve the same way regardless of where a program is started. The `.env` file is ignored by Git.
 
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
@@ -14,9 +14,9 @@ The application reads configuration from environment variables through Bun. A lo
 
 Despite the name, the current database implementation accepts SQLite locations, not PostgreSQL connection URLs.
 
-- A relative path is resolved from the process working directory.
+- A relative path is resolved from the repository root, not the process working directory, so every program in the workspace opens the same database wherever it is started from.
 - An absolute path is used as given.
-- A `file:` prefix is removed and the remaining path is resolved from the working directory.
+- A `file:` prefix is removed and the remaining path is resolved the same way.
 - `:memory:` creates an in-memory SQLite database.
 - An unset, empty, or whitespace-only value uses `./data/db.sqlite`.
 

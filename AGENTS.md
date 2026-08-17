@@ -8,12 +8,23 @@
 
 ## Project Structure
 
-- Organize domain contracts by feature, such as `src/auth`, `src/market`, and `src/trading`.
-- Keep external API transport, GraphQL operations, and client behavior in `src/api`.
-- Keep database connections, schemas, migrations, and store implementations in `src/db`.
-- Keep full-screen views in `src/screens` and reusable TUI controls in `src/components`.
-- Keep `src/index.ts` limited to application bootstrap.
+This is a Bun workspace. Shared code lives in `packages/*`, runnable programs in `apps/*`.
+
+- Organize domain contracts by feature package, such as `packages/auth`, `packages/market`, and `packages/trading`.
+- Keep external API transport, GraphQL operations, and client behavior in `packages/api`.
+- Keep database connections, schemas, migrations, and store implementations in `packages/db`.
+- Keep full-screen views in `apps/tui/src/screens` and reusable TUI controls in `apps/tui/src/components`.
+- Keep `apps/tui/src/index.ts` limited to application bootstrap.
 - Do not create a generic `models` or `utils` dumping ground. Put types and helpers with the feature that owns them.
+
+## Workspace Boundaries
+
+- Import across packages by name and file, as in `@trbot/market/candle.ts`. Use relative paths only within a package.
+- Keep the package graph acyclic. A new import that closes a cycle is a sign the contract belongs in a lower package.
+- Keep domain contract packages free of transport, storage, and terminal concerns so a server and a client can both depend on them.
+- Declare every package a package imports in its own `package.json`.
+- Extend `@trbot/tsconfig/base.json` from every workspace member rather than repeating compiler settings. Add a named config to that package when a member genuinely needs a different shape.
+- Define runnable scripts on the root `package.json`. Never launch the terminal application through `bun run --filter`: it pipes the child's output, which breaks terminal rendering. Filtering is fine for tools that need their own working directory, such as drizzle-kit.
 
 ## Naming
 
@@ -26,6 +37,7 @@
 - Keep persistence interfaces independent of SQLite so PostgreSQL can be introduced later.
 - Keep runtime state under `data/` and do not commit database files.
 - Give migration files descriptive names.
+- Read settings through `@trbot/config` rather than `process.env` directly. It overlays the workspace `.env` with real environment variables and anchors relative paths such as `DATABASE_URL` to the workspace root, so every process resolves the same files no matter which directory it started from.
 
 ## TUI Lifecycle
 

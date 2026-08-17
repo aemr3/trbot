@@ -2,25 +2,23 @@
   "name": "trbot",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "bun run src/db/migrate.ts",
-    "dev": "bun --watch run src/index.ts",
-    "lint": "oxlint src --deny-warnings",
-    "lint:fix": "oxlint src --fix",
-    "start": "bun run src/index.ts",
+    "db:generate": "bun run --filter @trbot/db db:generate",
+    "db:migrate": "bun run packages/db/src/migrate.ts",
+    "dev": "bun --watch run apps/tui/src/index.ts",
+    "lint": "oxlint apps packages --deny-warnings",
+    "lint:fix": "oxlint apps packages --fix",
+    "start": "bun run apps/tui/src/index.ts",
     "test": "bun test --path-ignore-patterns='tmp/**'",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@ai-sdk/openai": "^4.0.36",
-    "@opentui/core": "^0.5.1",
-    "ai": "^7.0.58",
-    "drizzle-orm": "^0.45.2"
-  },
   "devDependencies": {
+    "@trbot/tsconfig": "workspace:*",
     "@types/bun": "^1.3.14",
-    "drizzle-kit": "^0.31.10",
     "oxlint": "^1.77.0",
     "typescript": "^7.0.2"
   }

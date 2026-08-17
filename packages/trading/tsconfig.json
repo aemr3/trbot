@@ -1,8 +1,6 @@
 {
   "extends": "@trbot/tsconfig/base.json",
   "include": [
-    "apps/*/src",
-    "packages/*/src",
-    "packages/*/*.ts"
+    "src"
   ]
 }

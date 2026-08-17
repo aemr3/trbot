@@ -1,0 +1,14 @@
+{
+  "name": "@trbot/member",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@trbot/api": "workspace:*"
+  },
+  "devDependencies": {
+    "@trbot/tsconfig": "workspace:*"
+  }
+}
