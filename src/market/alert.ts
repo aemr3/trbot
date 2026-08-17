@@ -27,6 +27,13 @@ export type PriceAlertBasis = (typeof ALERT_BASES)[number]
 export const ALERT_STATUSES = ["ARMED", "PAUSED", "TRIGGERED"] as const
 export type PriceAlertStatus = (typeof ALERT_STATUSES)[number]
 
+// What happens after it fires. ONCE is spent and waits to be re-armed by hand.
+// ALWAYS stays armed and announces the next crossing too — but only after the
+// price has come back to the near side, so a market sitting beyond the level
+// does not ring on every tick.
+export const ALERT_REPEATS = ["ONCE", "ALWAYS"] as const
+export type PriceAlertRepeat = (typeof ALERT_REPEATS)[number]
+
 export interface PriceAlert {
   id: string
   instrumentUid: string
@@ -40,6 +47,7 @@ export interface PriceAlert {
   basis: PriceAlertBasis
   // Required by CLOSE (which candles to read) and by the ATR kinds.
   interval: CandleInterval | null
+  repeat: PriceAlertRepeat
   status: PriceAlertStatus
   // The working level. Fixed for PRICE/PERCENT/ATR, rewritten as a trail advances.
   triggerPrice: number | null
@@ -69,6 +77,7 @@ export interface PriceAlertDraft {
   value: number
   basis: PriceAlertBasis
   interval: CandleInterval | null
+  repeat: PriceAlertRepeat
   referencePrice: number | null
   atrValue: number | null
 }
@@ -91,6 +100,10 @@ export function isPriceAlertBasis(value: string): value is PriceAlertBasis {
 
 export function isPriceAlertStatus(value: string): value is PriceAlertStatus {
   return ALERT_STATUSES.some((status) => status === value)
+}
+
+export function isPriceAlertRepeat(value: string): value is PriceAlertRepeat {
+  return ALERT_REPEATS.some((repeat) => repeat === value)
 }
 
 /** True for the kinds whose level follows the extreme the price has reached. */
@@ -165,6 +178,7 @@ export function createPriceAlert(draft: PriceAlertDraft, now: number): PriceAler
     value: draft.value,
     basis: draft.basis,
     interval: draft.interval,
+    repeat: draft.repeat,
     status: "ARMED",
     triggerPrice: draftLevel(draft),
     extremePrice: isTrailingAlert(draft.kind) ? draft.referencePrice : null,

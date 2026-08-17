@@ -64,6 +64,13 @@
       "when": 1786965297211,
       "tag": "0008_add_price_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1786969661642,
+      "tag": "0009_add_alert_repeat",
+      "breakpoints": true
     }
   ]
 }

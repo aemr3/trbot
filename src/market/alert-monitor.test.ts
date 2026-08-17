@@ -61,6 +61,7 @@ function alert(overrides: Partial<PriceAlertDraft> = {}, patch: Partial<PriceAle
     value: 420,
     basis: "TOUCH",
     interval: null,
+    repeat: "ONCE",
     referencePrice: 400,
     atrValue: null,
     ...overrides,
@@ -239,6 +240,27 @@ test("re-arming clears the fired reading and waits for the near side again", asy
   monitor.applyQuote(quote(410))
   monitor.applyQuote(quote(422))
   expect(triggers).toHaveLength(2)
+})
+
+test("a repeating alert stays armed and announces the next crossing too", async () => {
+  const { monitor, store, triggers } = await monitorWith([alert({ repeat: "ALWAYS" })])
+
+  monitor.applyQuote(quote(410))
+  monitor.applyQuote(quote(421))
+  expect(triggers).toHaveLength(1)
+  // It records what it saw without going spent, so it needs no re-arming.
+  expect(store.alerts.get("alert-1")).toMatchObject({ status: "ARMED", triggeredPrice: 421 })
+
+  // A market sitting beyond the level rings once per crossing, not per tick:
+  // the price has to come back to the near side first.
+  monitor.applyQuote(quote(430))
+  monitor.applyQuote(quote(425))
+  expect(triggers).toHaveLength(1)
+
+  monitor.applyQuote(quote(410))
+  monitor.applyQuote(quote(422))
+  expect(triggers).toHaveLength(2)
+  expect(triggers[1]?.price).toBe(422)
 })
 
 test("a paused alert stops watching, and is not asked for ticks", async () => {

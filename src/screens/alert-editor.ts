@@ -5,12 +5,14 @@ import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type Rend
 import {
   ALERT_BASES,
   ALERT_KINDS,
+  ALERT_REPEATS,
   isAtrAlert,
   validatePriceAlert,
   type PriceAlert,
   type PriceAlertBasis,
   type PriceAlertDraft,
   type PriceAlertKind,
+  type PriceAlertRepeat,
 } from "../market/alert.ts"
 import { CANDLE_INTERVAL_LABELS, FUTURES_INTERVALS, type CandleInterval } from "../market/candle.ts"
 import { LEVEL_DIRECTIONS, type LevelDirection } from "../market/price-level.ts"
@@ -39,7 +41,7 @@ const KIND_LABELS: Record<PriceAlertKind, string> = {
   TRAILING_ATR: "Trailing ATR",
 }
 
-type EditorField = "instrument" | "direction" | "kind" | "value" | "basis" | "interval" | "action"
+type EditorField = "instrument" | "direction" | "kind" | "value" | "basis" | "interval" | "repeat" | "action"
 
 export interface AlertEditorOptions {
   instruments: ViopInstrument[]
@@ -66,6 +68,7 @@ export class AlertEditor {
   private kind: PriceAlertKind = "PRICE"
   private basis: PriceAlertBasis = "TOUCH"
   private interval: CandleInterval = DEFAULT_ALERT_INTERVAL
+  private repeat: PriceAlertRepeat = "ONCE"
   private valueText = ""
   private valueFresh = true
   private field: EditorField = "value"
@@ -88,6 +91,7 @@ export class AlertEditor {
       this.kind = alert.kind
       this.basis = alert.basis
       this.interval = alert.interval ?? DEFAULT_ALERT_INTERVAL
+      this.repeat = alert.repeat
       this.valueText = String(alert.value)
       this.atrValue = alert.atrValue
       this.valueFresh = false
@@ -110,7 +114,7 @@ export class AlertEditor {
     })
     this.modal = new BoxRenderable(renderer, {
       width: 76,
-      height: 22,
+      height: 24,
       paddingTop: 1,
       paddingBottom: 1,
       paddingLeft: 2,
@@ -193,6 +197,7 @@ export class AlertEditor {
       value: Number(this.valueText),
       basis: this.basis,
       interval: this.needsInterval() ? this.interval : null,
+      repeat: this.repeat,
       referencePrice: this.options.lastPrice(instrument.symbol) ?? instrument.lastPrice,
       atrValue: isAtrAlert(this.kind) ? this.atrValue : null,
     }
@@ -205,7 +210,7 @@ export class AlertEditor {
   private fields(): EditorField[] {
     const fields: EditorField[] = ["instrument", "direction", "kind", "value", "basis"]
     if (this.needsInterval()) fields.push("interval")
-    fields.push("action")
+    fields.push("repeat", "action")
     return fields
   }
 
@@ -237,6 +242,8 @@ export class AlertEditor {
     } else if (this.field === "interval") {
       this.interval = cycle(ALERT_INTERVALS, this.interval, step)
       void this.refreshAtr()
+    } else if (this.field === "repeat") {
+      this.repeat = cycle(ALERT_REPEATS, this.repeat, step)
     } else return
     this.status = null
     this.render()
@@ -293,7 +300,7 @@ export class AlertEditor {
 
   private resizeModal(): void {
     this.modal.width = Math.min(76, Math.max(40, this.root.width - 2))
-    this.modal.height = Math.min(22, Math.max(12, this.root.height - 2))
+    this.modal.height = Math.min(24, Math.max(12, this.root.height - 2))
   }
 
   private render(): void {
@@ -338,7 +345,12 @@ export class AlertEditor {
       )
     }
     chunks.push(
-      fg(VALUE_COLOR)("\n"),
+      ...fieldLine(
+        "Tell me",
+        this.repeat === "ONCE" ? "Once, then stop" : "Every time it crosses",
+        this.field === "repeat",
+      ),
+      fg(VALUE_COLOR)("\n\n"),
       ...metricLine("Market", formatNumber(lastPrice)),
       fg(VALUE_COLOR)("\n"),
       ...metricLine("Level", level === null ? "—" : `${formatNumber(level)}${distanceLabel(level, lastPrice)}`),

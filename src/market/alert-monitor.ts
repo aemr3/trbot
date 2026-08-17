@@ -303,13 +303,18 @@ export class AlertMonitor {
     const price = alert.basis === "CLOSE" ? sample.closedCandle?.close : sample.lastPrice
     if (price === undefined || price === null) return false
 
+    // A repeating alert stays armed, but gives up its latch: the price has to
+    // come back to the near side before it can ring again, so a market sitting
+    // beyond the level announces itself once per crossing rather than per tick.
+    const repeats = alert.repeat === "ALWAYS"
     const triggered: PriceAlert = {
       ...alert,
-      status: "TRIGGERED",
+      status: repeats ? "ARMED" : "TRIGGERED",
       triggeredAt: now,
       triggeredPrice: price,
       updatedAt: now,
     }
+    if (repeats) this.approaching.delete(alert.id)
     this.alerts.set(alert.id, triggered)
     void this.persist(triggered)
     this.options.onTrigger({

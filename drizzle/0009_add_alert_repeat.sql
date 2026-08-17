@@ -1,0 +1,1 @@
+ALTER TABLE `price_alerts` ADD `repeat` text DEFAULT 'ONCE' NOT NULL;

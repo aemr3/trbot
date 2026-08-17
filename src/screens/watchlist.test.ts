@@ -1838,6 +1838,7 @@ function priceAlertFixture(): PriceAlert {
       value: 305,
       basis: "TOUCH",
       interval: null,
+      repeat: "ONCE",
       referencePrice: 312,
       atrValue: null,
     },

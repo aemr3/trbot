@@ -81,6 +81,9 @@ export const priceAlerts = sqliteTable("price_alerts", {
   value: real("value").notNull(),
   basis: text("basis").notNull(),
   interval: text("interval"),
+  // Alerts written before repeating existed fired once, which is what the
+  // default preserves.
+  repeat: text("repeat").notNull().default("ONCE"),
   status: text("status").notNull(),
   triggerPrice: real("trigger_price"),
   extremePrice: real("extreme_price"),

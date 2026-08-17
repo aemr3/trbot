@@ -18,6 +18,7 @@ function alert(overrides: Partial<PriceAlert> = {}): PriceAlert {
         value: 420,
         basis: "TOUCH",
         interval: null,
+        repeat: "ONCE",
         referencePrice: 400,
         atrValue: null,
       },

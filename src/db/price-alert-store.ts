@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm"
 import {
   isPriceAlertBasis,
   isPriceAlertKind,
+  isPriceAlertRepeat,
   isPriceAlertStatus,
   type PriceAlert,
   type PriceAlertStore,
@@ -41,6 +42,7 @@ export class DrizzlePriceAlertStore implements PriceAlertStore {
           value: alert.value,
           basis: alert.basis,
           interval: alert.interval,
+          repeat: alert.repeat,
           status: alert.status,
           triggerPrice: alert.triggerPrice,
           extremePrice: alert.extremePrice,
@@ -62,6 +64,7 @@ function toPriceAlert(row: typeof priceAlerts.$inferSelect): PriceAlert | null {
   if (!isLevelDirection(row.direction) || !isPriceAlertKind(row.kind)) return null
   if (!isPriceAlertBasis(row.basis) || !isPriceAlertStatus(row.status)) return null
   if (row.interval !== null && !isCandleInterval(row.interval)) return null
+  if (!isPriceAlertRepeat(row.repeat)) return null
   return {
     id: row.id,
     instrumentUid: row.instrumentUid,
@@ -72,6 +75,7 @@ function toPriceAlert(row: typeof priceAlerts.$inferSelect): PriceAlert | null {
     value: row.value,
     basis: row.basis,
     interval: row.interval,
+    repeat: row.repeat,
     status: row.status,
     triggerPrice: row.triggerPrice,
     extremePrice: row.extremePrice,

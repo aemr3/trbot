@@ -53,7 +53,7 @@ test("saves a fixed-price alert on the selected contract", async () => {
   const { renderer, editor, saved } = await mountEditor()
 
   type(editor, "420")
-  save(editor, 2) // basis → action
+  save(editor, 3) // basis → repeat → action
 
   expect(saved).toHaveLength(1)
   expect(saved[0]).toMatchObject({
@@ -83,7 +83,7 @@ test("watches the other side once the direction is flipped", async () => {
   editor.handleKey(key("down"))
   editor.handleKey(key("down")) // back to value
   type(editor, "380")
-  save(editor, 2)
+  save(editor, 3)
   expect(saved[0]).toMatchObject({ direction: "BELOW", value: 380 })
 
   editor.destroy()
@@ -103,7 +103,7 @@ test("measures a percent alert from the market and previews the level", async ()
   // 5% over a 400 market, previewed before it is saved.
   expect(frame).toContain("420,00")
 
-  save(editor, 2)
+  save(editor, 3)
   expect(saved[0]).toMatchObject({ kind: "PERCENT", value: 5, referencePrice: 400 })
 
   editor.destroy()
@@ -119,8 +119,29 @@ test("asks for a timeframe once the alert needs candles", async () => {
   await renderOnce()
   expect(captureCharFrame()).toContain("Timeframe")
 
-  save(editor, 2) // interval → action
+  save(editor, 3) // interval → repeat → action
   expect(saved[0]).toMatchObject({ basis: "CLOSE", interval: "MIN_10" })
+
+  editor.destroy()
+  renderer.destroy()
+})
+
+test("offers firing once or on every crossing", async () => {
+  const { renderer, renderOnce, captureCharFrame, editor, saved } = await mountEditor()
+
+  type(editor, "420")
+  editor.handleKey(key("down")) // value → basis
+  editor.handleKey(key("down")) // basis → repeat
+  await renderOnce()
+  expect(captureCharFrame()).toContain("Once, then stop")
+
+  editor.handleKey(key("right"))
+  await renderOnce()
+  expect(captureCharFrame()).toContain("Every time it crosses")
+
+  editor.handleKey(key("down")) // repeat → action
+  editor.handleKey(key("return"))
+  expect(saved[0]).toMatchObject({ repeat: "ALWAYS", value: 420 })
 
   editor.destroy()
   renderer.destroy()
@@ -132,7 +153,7 @@ test("refuses a level the market has already passed", async () => {
   // An alert above a market already above it would fire on the next tick and
   // tell the trader nothing.
   type(editor, "380")
-  save(editor, 2)
+  save(editor, 3)
   await renderOnce()
 
   expect(saved).toHaveLength(0)

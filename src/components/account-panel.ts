@@ -685,6 +685,9 @@ function alertChunks(view: PriceAlertView): TextChunk[] {
   const state = alert.status === "ARMED" && view.feed !== "live"
     ? feedLabel(view.feed, alert.basis === "CLOSE")
     : ALERT_STATUS_LABELS[alert.status]
+  // A repeating alert never reads as spent, so the row says so outright rather
+  // than leaving the trader to open the editor to find out.
+  const repeat = alert.repeat === "ALWAYS" ? " ↻" : ""
   const distance = view.distancePercent === null
     ? "    —"
     : `${view.distancePercent >= 0 ? "+" : ""}${view.distancePercent.toFixed(1)}%`.padStart(6)
@@ -694,7 +697,7 @@ function alertChunks(view: PriceAlertView): TextChunk[] {
     fg("#bbbbbb")(formatNumber(view.level).padStart(9)),
     fg(MUTED_COLOR)(`${distance} ${alertKindLabel(view)} `),
     marker,
-    fg(MUTED_COLOR)(` ${state}`),
+    fg(MUTED_COLOR)(` ${state}${repeat}`),
   ]
 }
 

@@ -78,7 +78,9 @@ export class AlertPopup {
 
   handleKey(key: KeyEvent): boolean {
     if (this.destroyed) return true
-    if (!key.ctrl && key.name === "r") {
+    // A repeating alert re-armed itself the moment it fired, so there is
+    // nothing for r to do.
+    if (!key.ctrl && key.name === "r" && this.options.event.alert.repeat === "ONCE") {
       this.options.onRearm()
       return true
     }
@@ -107,7 +109,11 @@ export class AlertPopup {
       ...metricLine("Market now", `${formatNumber(this.lastPrice)}${priceAgeLabel(priceAgeMs)}`),
       fg(VALUE_COLOR)("\n\n"),
       fg(ALERT_COLOR)("Nothing was traded. This is only a notice."),
-      fg(MUTED_COLOR)("\n\nAny key dismisses · r re-arms the same level"),
+      fg(MUTED_COLOR)(
+        alert.repeat === "ALWAYS"
+          ? "\n\nStill armed for the next crossing · any key dismisses"
+          : "\n\nAny key dismisses · r re-arms the same level",
+      ),
     ]
     this.content.content = new StyledText(chunks)
     this.renderer.requestRender()
