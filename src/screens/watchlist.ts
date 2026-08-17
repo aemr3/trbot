@@ -190,7 +190,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
       { keys: "Shift+←/→ or H/L", description: "Scroll candle history" },
       { keys: "Shift+Home / End", description: "Jump to oldest / newest candles" },
       { keys: "Click", description: "Read a candle's OHLC; Esc releases it" },
-      { keys: "f", description: "Cycle chart asset" },
+      { keys: "f / F", description: "Cycle chart asset forwards / backwards" },
     ],
   },
   {

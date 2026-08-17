@@ -471,9 +471,13 @@ export class CandlestickChart {
       this.clearSelection()
       return true
     }
-    if (!key.ctrl && !key.shift && !key.meta && !key.option && key.name === "f") {
+    if (!key.ctrl && !key.meta && !key.option && key.name === "f") {
+      // Terminals report a shifted letter either way, so both are checked; F
+      // walks the assets backwards, which is the shorter way round from Stock.
+      const direction = key.shift || key.sequence === "F" ? -1 : 1
       const current = CANDLE_CHART_TARGETS.indexOf(this.target)
-      const target = CANDLE_CHART_TARGETS[(current + 1) % CANDLE_CHART_TARGETS.length]
+      const next = (current + direction + CANDLE_CHART_TARGETS.length) % CANDLE_CHART_TARGETS.length
+      const target = CANDLE_CHART_TARGETS[next]
       if (target) this.selectTarget(target)
       return true
     }

@@ -785,6 +785,16 @@ test("starts with saved chart choices and reports subsequent changes", async () 
   expect(requested.at(-1)?.target).toBe("UNDERLYING")
   expect(targets).toEqual(["BIST_100", "BIST_30", "UNDERLYING"])
 
+  // F walks the same ring the other way, whichever form the terminal reports.
+  chart.handleKey({ name: "f", shift: true } as KeyEvent)
+  await setup.waitForFrame(() => requested.length === 6)
+  expect(requested.at(-1)?.target).toBe("BIST_30")
+
+  chart.handleKey({ name: "f", sequence: "F" } as KeyEvent)
+  await setup.waitForFrame(() => requested.length === 7)
+  expect(requested.at(-1)?.target).toBe("BIST_100")
+  expect(targets).toEqual(["BIST_100", "BIST_30", "UNDERLYING", "BIST_30", "BIST_100"])
+
   chart.destroy()
   setup.renderer.destroy()
 })
