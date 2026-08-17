@@ -11,15 +11,26 @@ import {
 } from "@opentui/core"
 import type { CandleChartBitmap } from "./raster.ts"
 
-/** Pixel size of one terminal cell, when the terminal reports its resolution. */
+// A cell's pixel size is a property of the terminal font, not of the window, so
+// the last measurement stays valid across resizes. It has to be remembered:
+// OpenTUI clears its resolution on every resize and re-queries the terminal,
+// and that reply can go unanswered (switching tmux sessions is enough), leaving
+// the renderer without a resolution for the rest of the run. Without the cache
+// the chart would silently drop to braille and never recover.
+const lastCellPixel = new WeakMap<RenderContext, { width: number; height: number }>()
+
+/** Pixel size of one terminal cell, from the reported resolution or the last one seen. */
 function cellPixelSize(ctx: RenderContext): { width: number; height: number } | null {
   const resolution = ctx.resolution
   const columns = ctx.terminalWidth ?? ctx.width
   const rows = ctx.terminalHeight ?? ctx.height
-  if (!resolution || !columns || !rows) return null
+  if (!resolution || !columns || !rows) return lastCellPixel.get(ctx) ?? null
   const width = resolution.width / columns
   const height = resolution.height / rows
-  return width > 0 && height > 0 ? { width, height } : null
+  if (!(width > 0 && height > 0)) return lastCellPixel.get(ctx) ?? null
+  const cellPixel = { width, height }
+  lastCellPixel.set(ctx, cellPixel)
+  return cellPixel
 }
 
 export interface ChartBitmapSupport {

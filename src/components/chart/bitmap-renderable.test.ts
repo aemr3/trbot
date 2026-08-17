@@ -37,3 +37,16 @@ test("falls back to braille without kitty support or resolution", () => {
   } as unknown as RenderContext
   expect(chartBitmapSupport(noResolution)).toBeNull()
 })
+
+test("keeps the measured cell size when the terminal stops reporting a resolution", () => {
+  // A resize clears the renderer's resolution and the re-query may never be
+  // answered, e.g. after switching tmux sessions.
+  const context = fakeContext({ kitty_graphics: true, multiplexer: "tmux" })
+  expect(chartBitmapSupport(context)?.cellPixel).toEqual({ width: 8, height: 12 })
+
+  const resized = context as unknown as { resolution: unknown; terminalWidth: number }
+  resized.resolution = null
+  resized.terminalWidth = 80
+
+  expect(chartBitmapSupport(context)).toEqual({ mode: "placeholder", cellPixel: { width: 8, height: 12 } })
+})
