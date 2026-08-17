@@ -97,13 +97,24 @@ test("fills the complete body between open and close", () => {
   const chart = view([
     { timestamp: 1000, open: 100, high: 110, low: 100, close: 110, volume: null },
   ], 30, 20)
-  // A single candle centers on the plot; its body spans the full price range.
   const bodyCells = cellsWithColor(chart.plot, UP)
-  const centerColumn = 10
-  const rows = bodyCells.filter((cell) => cell.column === centerColumn).map((cell) => cell.row)
+  const bodyColumn = Math.max(...bodyCells.map((cell) => cell.column))
+  const rows = bodyCells.filter((cell) => cell.column === bodyColumn).map((cell) => cell.row)
 
-  expect(rows).toHaveLength(19) // every plot row
+  // No gaps between open and close.
   expect(Math.max(...rows) - Math.min(...rows) + 1).toBe(rows.length)
+})
+
+test("caps how much of the price pane a single candle may cover", () => {
+  const plotRows = 19 // height minus the time-axis row
+  const chart = view([
+    { timestamp: 1000, open: 100, high: 110, low: 100, close: 110, volume: null },
+  ], 30, plotRows + 1)
+  const rows = new Set(cellsWithColor(chart.plot, UP).map((cell) => cell.row))
+
+  // The lone candle would otherwise autoscale to the full pane height.
+  expect(rows.size).toBeLessThanOrEqual(Math.ceil(plotRows * 0.35) + 1)
+  expect(rows.size).toBeGreaterThan(2)
 })
 
 test("aligns the current-price guide row with the drawn close edge", () => {
@@ -129,13 +140,14 @@ test("aligns the current-price guide row with the drawn close edge", () => {
   }
 })
 
-test("spreads sparse candles across the plot width", () => {
+test("anchors an under-filled window to the right at a capped candle size", () => {
   const chart = view(candles, 40, 10)
   const bodyCells = [...cellsWithColor(chart.plot, UP), ...cellsWithColor(chart.plot, DOWN)]
   const columns = bodyCells.map((cell) => cell.column)
 
-  expect(Math.min(...columns)).toBeLessThan(5)
-  expect(Math.max(...columns)).toBeGreaterThan(25)
+  // Four candles keep their spacing instead of stretching over all 30 columns.
+  expect(Math.min(...columns)).toBeGreaterThan(8)
+  expect(Math.max(...columns)).toBeGreaterThan(chart.plotWidth - 4)
 })
 
 test("caps dense histories at the braille candle capacity", () => {

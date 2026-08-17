@@ -22,6 +22,26 @@ export function getScaledY(value: number, min: number, max: number, chartTop: nu
   return chartTop + Math.round((1 - (value - min) / range) * chartH)
 }
 
+/**
+ * Horizontal layout of a candle window: `count` evenly spaced slots with the
+ * visible candles right-aligned into the last of them. An under-filled window
+ * (a couple of candles at the open, or a long timeframe with little history)
+ * keeps its slots at the zoom spacing and leaves the left side empty instead of
+ * stretching a handful of candles across the whole plot.
+ */
+export interface CandleSlots {
+  /** Slots the plot is divided into; `>= visibleCount`. */
+  count: number
+  /** Slots skipped before the first visible candle. */
+  offset: number
+}
+
+/** Right-aligns `visibleCount` candles into at least `slotCount` layout slots. */
+export function candleSlots(visibleCount: number, slotCount: number): CandleSlots {
+  const count = Math.max(Math.floor(slotCount), visibleCount, 1)
+  return { count, offset: count - visibleCount }
+}
+
 /** Candle body width in pixels: ~half the spacing, at least 2 px. Uncapped so
  *  zoomed-in candles keep their body/gap proportion. */
 export function getCandleBodyWidth(pointCount: number, bufWidth: number): number {

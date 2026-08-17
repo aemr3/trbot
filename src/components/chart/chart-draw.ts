@@ -1,7 +1,15 @@
 // Candle and volume drawing onto the braille pixel buffer.
 import type { Candle } from "../../market/candle.ts"
 import type { ChartPalette } from "./palette.ts"
-import { bodySpan, getBarBodyWidth, getCandleBodyWidth, getCandleX, getScaledY } from "./geometry.ts"
+import {
+  bodySpan,
+  candleSlots,
+  getBarBodyWidth,
+  getCandleBodyWidth,
+  getCandleX,
+  getScaledY,
+  type CandleSlots,
+} from "./geometry.ts"
 import { drawLine, fillRect, LAYER_DATA, LAYER_FILL, type PixelBuffer } from "./pixel-buffer.ts"
 
 function drawWickOutsideBody(
@@ -21,7 +29,10 @@ function drawWickOutsideBody(
   }
 }
 
-/** Draws filled candle bodies and wicks between the given pixel rows. */
+/**
+ * Draws filled candle bodies and wicks between the given pixel rows. `slots`
+ * defaults to spreading the candles across the full buffer width.
+ */
 export function drawCandlesticks(
   buf: PixelBuffer,
   candles: Candle[],
@@ -30,12 +41,13 @@ export function drawCandlesticks(
   palette: ChartPalette,
   min: number,
   max: number,
+  slots: CandleSlots = candleSlots(candles.length, candles.length),
 ): void {
-  const bodyWidth = getCandleBodyWidth(candles.length, buf.width)
+  const bodyWidth = getCandleBodyWidth(slots.count, buf.width)
 
   for (let i = 0; i < candles.length; i++) {
     const candle = candles[i]!
-    const x = getCandleX(i, candles.length, buf.width)
+    const x = getCandleX(slots.offset + i, slots.count, buf.width)
     const [bodyLeft, bodyRight] = bodySpan(x, bodyWidth)
     const highY = getScaledY(candle.high, min, max, chartTop, chartBottom)
     const lowY = getScaledY(candle.low, min, max, chartTop, chartBottom)
@@ -67,14 +79,15 @@ export function drawVolumeBars(
   yTop: number,
   yBottom: number,
   palette: ChartPalette,
+  slots: CandleSlots = candleSlots(candles.length, candles.length),
 ): void {
   const maxVolume = Math.max(...candles.map((candle) => candle.volume ?? 0), 1)
   const volumeHeight = yBottom - yTop
-  const barWidth = getBarBodyWidth(candles.length, buf.width)
+  const barWidth = getBarBodyWidth(slots.count, buf.width)
 
   for (let i = 0; i < candles.length; i++) {
     const candle = candles[i]!
-    const x = getCandleX(i, candles.length, buf.width)
+    const x = getCandleX(slots.offset + i, slots.count, buf.width)
     const barHeight = Math.round(((candle.volume ?? 0) / maxVolume) * volumeHeight)
     if (barHeight === 0) continue
 

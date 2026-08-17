@@ -27,7 +27,7 @@ import {
 } from "../market/candle.ts"
 import { ChartBitmapRenderable, chartBitmapSupport } from "./chart/bitmap-renderable.ts"
 import { drawCandlesticks, drawVolumeBars } from "./chart/chart-draw.ts"
-import { getCandleColumn, getScaledY } from "./chart/geometry.ts"
+import { candleSlots, getCandleColumn, getScaledY, type CandleSlots } from "./chart/geometry.ts"
 import { CHART_PALETTE, DOWN_COLOR, UP_COLOR } from "./chart/palette.ts"
 import {
   bufferToBrailleLines,
@@ -51,6 +51,15 @@ const MAX_VOLUME_HEIGHT = 8
 const BRAILLE_X = 2
 const BRAILLE_Y = 4
 const CANDLE_SPACING_DOTS = 3
+// A window holding fewer candles than it can fit would otherwise stretch them
+// across the whole plot, turning a couple of candles into slabs. Slots are
+// capped at this many dots so sparse windows keep a sane candle size, with the
+// newest candle anchored to the right edge.
+const MAX_CANDLE_SPACING_DOTS = 8
+// Autoscaling a window whose candles barely move (or a single candle) blows one
+// body up to the full pane height, so the price span is widened until no candle
+// covers more than this share of it.
+const MAX_CANDLE_HEIGHT_RATIO = 0.35
 // Wheel zoom: dots-per-candle multiplier per wheel notch, and how few candles
 // may remain visible at maximum zoom-in.
 const ZOOM_STEP = 1.25
@@ -713,6 +722,7 @@ interface ChartLayout {
 interface ChartFrame {
   layout: ChartLayout
   visible: Candle[]
+  slots: CandleSlots
   plotRows: number
   volumeRows: number
   totalRows: number
@@ -754,6 +764,7 @@ function computeChartFrame(
   if (safeWidth < 18 || safeHeight < 4) return "Chart needs more room."
 
   const layout = chartWidthLayout(candles, safeWidth, dotsPerCandle)
+  const plotDots = layout.plotWidth * BRAILLE_X
   const maxScrollOffset = Math.max(0, candles.length - layout.capacity)
   const safeScrollOffset = Math.max(0, Math.min(Math.floor(scrollOffset), maxScrollOffset))
   const totalRows = safeHeight - 1 - (reserveScrollbarRow ? 1 : 0)
@@ -768,6 +779,8 @@ function computeChartFrame(
   const high = Math.max(...visible.map((candle) => candle.high))
   const low = Math.min(...visible.map((candle) => candle.low))
   const padding = Math.max((high - low) * PRICE_PADDING_RATIO, Math.abs(high) * 0.0005, 0.01)
+  const tallestCandle = Math.max(...visible.map((candle) => candle.high - candle.low))
+  const { floor, ceiling } = expandPriceSpan(low - padding, high + padding, tallestCandle / MAX_CANDLE_HEIGHT_RATIO)
   const guideCount = plotRows >= 28 ? 7 : plotRows >= 20 ? 6 : plotRows >= 12 ? 5 : 4
   const gridRows = Array.from(
     { length: guideCount },
@@ -777,14 +790,23 @@ function computeChartFrame(
   return {
     layout,
     visible,
+    slots: candleSlots(visible.length, Math.min(layout.capacity, Math.floor(plotDots / MAX_CANDLE_SPACING_DOTS))),
     plotRows,
     volumeRows,
     totalRows,
-    floor: low - padding,
-    ceiling: high + padding,
+    floor,
+    ceiling,
     latest: visible.at(-1)!,
     gridRows,
   }
+}
+
+/** Grows a price span around its midpoint until it is at least `minSpan` wide. */
+function expandPriceSpan(floor: number, ceiling: number, minSpan: number): { floor: number; ceiling: number } {
+  const span = ceiling - floor
+  if (!Number.isFinite(minSpan) || minSpan <= span) return { floor, ceiling }
+  const middle = (floor + ceiling) / 2
+  return { floor: middle - minSpan / 2, ceiling: middle + minSpan / 2 }
 }
 
 /** Price axis column: `┫`+close on the guide row, `┤`+price on grid rows. */
@@ -823,7 +845,7 @@ export function renderCandleChart(
 ): BrailleChartView | string {
   const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow, dotsPerCandle)
   if (typeof frame === "string") return frame
-  const { layout, visible, plotRows, volumeRows, totalRows, floor, ceiling, latest, gridRows } = frame
+  const { layout, visible, slots, plotRows, volumeRows, totalRows, floor, ceiling, latest, gridRows } = frame
 
   const buf = createPixelBuffer(layout.plotWidth * BRAILLE_X, totalRows * BRAILLE_Y)
   const priceBottom = plotRows * BRAILLE_Y - 1
@@ -831,9 +853,9 @@ export function renderCandleChart(
   const guideY = getScaledY(latest.close, floor, ceiling, 0, priceBottom)
   const rising = latest.close >= latest.open
   drawGuideLine(buf, guideY, rising ? CHART_PALETTE.guideUp : CHART_PALETTE.guideDown)
-  drawCandlesticks(buf, visible, 0, priceBottom, CHART_PALETTE, floor, ceiling)
+  drawCandlesticks(buf, visible, 0, priceBottom, CHART_PALETTE, floor, ceiling, slots)
   if (volumeRows > 0) {
-    drawVolumeBars(buf, visible, plotRows * BRAILLE_Y, totalRows * BRAILLE_Y - 1, CHART_PALETTE)
+    drawVolumeBars(buf, visible, plotRows * BRAILLE_Y, totalRows * BRAILLE_Y - 1, CHART_PALETTE, slots)
   }
 
   const plotChunks: TextChunk[] = []
@@ -844,7 +866,7 @@ export function renderCandleChart(
 
   const guideRow = Math.max(0, Math.min(plotRows - 1, Math.floor(guideY / BRAILLE_Y)))
   const timeTicks = buildTimeTicks(visible, range, layout.plotWidth, (index) =>
-    getCandleColumn(index, visible.length, layout.plotWidth))
+    getCandleColumn(slots.offset + index, slots.count, layout.plotWidth))
   return {
     kind: "braille",
     plot: new StyledText(plotChunks),
@@ -868,7 +890,7 @@ export function renderCandleChartBitmapView(
 ): BitmapChartView | string {
   const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow, dotsPerCandle)
   if (typeof frame === "string") return frame
-  const { layout, visible, plotRows, volumeRows, totalRows, floor, ceiling, latest, gridRows } = frame
+  const { layout, visible, slots, plotRows, volumeRows, totalRows, floor, ceiling, latest, gridRows } = frame
 
   const pixelWidth = Math.max(1, Math.round(layout.plotWidth * cellPixel.width))
   const pricePixels = Math.max(1, Math.round(plotRows * cellPixel.height))
@@ -887,12 +909,13 @@ export function renderCandleChartBitmapView(
     guideY,
     guideColor: rising ? CHART_PALETTE.guideUp : CHART_PALETTE.guideDown,
     palette: CHART_PALETTE,
+    slots,
   })
 
   const guideRow = Math.max(0, Math.min(plotRows - 1, Math.floor(guideY / cellPixel.height)))
   const timeTicks = buildTimeTicks(visible, range, layout.plotWidth, (index) =>
     Math.max(0, Math.min(layout.plotWidth - 1,
-      Math.floor(getCandlePixelX(index, visible.length, pixelWidth) / cellPixel.width))))
+      Math.floor(getCandlePixelX(slots.offset + index, slots.count, pixelWidth) / cellPixel.width))))
   return {
     kind: "bitmap",
     bitmap,
@@ -940,10 +963,13 @@ function buildTimeTicks(
   return ticks
 }
 
+/** Places labels newest-first (right to left), so the latest timestamp is the
+ *  one that survives when candles sit too close for both labels to fit. */
 function renderTimeAxis(ticks: TimeTick[], plotWidth: number): string {
   const cells = Array.from({ length: plotWidth }, () => " ")
-  let previousEnd = -2
-  for (const [index, tick] of ticks.entries()) {
+  let previousStart = plotWidth + 1
+  for (let index = ticks.length - 1; index >= 0; index--) {
+    const tick = ticks[index]!
     const isFirst = index === 0
     const isLast = index === ticks.length - 1
     const preferredStart = isFirst
@@ -952,11 +978,12 @@ function renderTimeAxis(ticks: TimeTick[], plotWidth: number): string {
         ? tick.column - tick.label.length + 1
         : tick.column - Math.floor(tick.label.length / 2)
     const start = Math.max(0, Math.min(plotWidth - tick.label.length, preferredStart))
-    if (start <= previousEnd + 1) continue
+    const end = start + tick.label.length - 1
+    if (end >= previousStart - 1) continue
     for (let character = 0; character < tick.label.length; character++) {
       cells[start + character] = tick.label[character] ?? " "
     }
-    previousEnd = start + tick.label.length - 1
+    previousStart = start
   }
   return cells.join("")
 }

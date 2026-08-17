@@ -3,6 +3,7 @@
 // a raw RGBA bitmap.
 import type { Candle } from "../../market/candle.ts"
 import type { ChartPalette } from "./palette.ts"
+import { candleSlots, type CandleSlots } from "./geometry.ts"
 
 export interface CandleChartBitmap {
   width: number
@@ -171,12 +172,13 @@ function drawCandles(
   palette: ChartPalette,
   min: number,
   max: number,
+  slots: CandleSlots,
 ): void {
-  const bodyWidth = getBodyWidth(candles.length, width)
+  const bodyWidth = getBodyWidth(slots.count, width)
 
   for (let index = 0; index < candles.length; index++) {
     const candle = candles[index]!
-    const x = getCandlePixelX(index, candles.length, width)
+    const x = getCandlePixelX(slots.offset + index, slots.count, width)
     const highY = projectY(candle.high, min, max, top, bottom)
     const lowY = projectY(candle.low, min, max, top, bottom)
     const openY = projectY(candle.open, min, max, top, bottom)
@@ -207,18 +209,19 @@ function drawVolume(
   top: number,
   bottom: number,
   palette: ChartPalette,
+  slots: CandleSlots,
 ): void {
   if (bottom < top) return
 
   const maxVolume = Math.max(...candles.map((candle) => candle.volume ?? 0), 1)
-  const spacing = width / Math.max(candles.length, 1)
+  const spacing = width / Math.max(slots.count, 1)
   const barWidth = clamp(spacing * 0.72, 1, Math.max(spacing, 1))
 
   for (let index = 0; index < candles.length; index++) {
     const candle = candles[index]!
     const heightRatio = (candle.volume ?? 0) / maxVolume
     if (heightRatio <= 0) continue
-    const x = projectX(index, candles.length, 0, width - 1)
+    const x = projectX(slots.offset + index, slots.count, 0, width - 1)
     const barTop = lerp(bottom, top, heightRatio)
     const color = parseHex(candle.close >= candle.open ? palette.volumeUp : palette.volumeDown, 0.6)
     fillRect(data, width, height, x - barWidth / 2, barTop, x + barWidth / 2, bottom, color, 0.8)
@@ -239,6 +242,8 @@ export interface CandleBitmapOptions {
   guideY: number | null
   guideColor: string
   palette: ChartPalette
+  /** Horizontal slot layout; defaults to spreading the candles across the full width. */
+  slots?: CandleSlots
 }
 
 /** Rasterizes the candle plot (grid, guide, candles, volume) into an RGBA bitmap. */
@@ -260,9 +265,10 @@ export function renderCandleBitmap(options: CandleBitmapOptions): CandleChartBit
     drawLine(pixels, width, height, 0, options.guideY, width - 1, options.guideY, parseHex(options.guideColor, 0.9), 1.2)
   }
 
-  drawCandles(pixels, width, height, options.candles, 0, plotBottom, options.palette, options.min, options.max)
+  const slots = options.slots ?? candleSlots(options.candles.length, options.candles.length)
+  drawCandles(pixels, width, height, options.candles, 0, plotBottom, options.palette, options.min, options.max, slots)
   if (volumeHeight > 0) {
-    drawVolume(pixels, width, height, options.candles, plotBottom + 1, height - 1, options.palette)
+    drawVolume(pixels, width, height, options.candles, plotBottom + 1, height - 1, options.palette, slots)
   }
 
   return { width, height, pixels }
