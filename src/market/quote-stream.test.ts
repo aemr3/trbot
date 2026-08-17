@@ -131,3 +131,25 @@ test("reports connection errors and keeps retrying", async () => {
   expect(errors).toHaveLength(1)
   expect(updates[0]?.lastPrice).toBe(5)
 })
+
+test("resubscribes when the symbol set changes and ignores an identical one", async () => {
+  // The stream stays open until the symbols change, so one script is enough.
+  const client = new FakeStreamClient([[priceFrame("F_AKBNK0825", 68.68)]])
+  const updates: QuoteUpdate[] = []
+  const stream = new ApiQuoteStream(client as never, { reconnectDelaysMs: [10_000] })
+  stream.subscribe((update) => updates.push(update))
+
+  stream.start(["F_AKBNK0825"])
+  await waitFor(() => updates.length >= 1)
+  expect(client.lastQuery?.symbol).toBe("F_AKBNK0825")
+  const callsAfterFirst = client.calls
+
+  // The same set is the same subscription, whatever order it arrives in.
+  stream.start(["F_AKBNK0825"])
+  expect(client.calls).toBe(callsAfterFirst)
+
+  // A position outside the watchlist joins: the stream reopens with both.
+  stream.start(["F_THYAO0825", "F_AKBNK0825"])
+  await waitFor(() => client.lastQuery?.symbol === "F_AKBNK0825,F_THYAO0825")
+  stream.stop()
+})

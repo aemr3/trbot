@@ -62,6 +62,26 @@ export const DEFAULT_INTERVALS_BY_RANGE: Record<CandleRange, CandleInterval[]> =
   FIVE_YEAR: ["WEEK_1", "MONTH_1"],
 }
 
+// Futures candles are served one grain per range: the provider infers the
+// interval from the range instead of taking a requested one, so these are the
+// only grains a contract can actually be watched at.
+export const FUTURES_INTERVALS_BY_RANGE: Record<CandleRange, CandleInterval[]> = {
+  INTRADAY: ["MIN_10"],
+  WEEK: ["HOUR_1"],
+  MONTH: ["HOUR_4"],
+  THREE_MONTH: ["DAY_1"],
+  YEAR: ["DAY_1"],
+  FIVE_YEAR: ["DAY_1"],
+}
+
+/** The grains a futures contract can be read at, finest first. */
+export const FUTURES_INTERVALS: CandleInterval[] = ["MIN_10", "HOUR_1", "HOUR_4", "DAY_1"]
+
+/** The range that yields `interval` for a futures contract, or null for none. */
+export function futuresRangeForInterval(interval: CandleInterval): CandleRange | null {
+  return CANDLE_RANGES.find((range) => FUTURES_INTERVALS_BY_RANGE[range][0] === interval) ?? null
+}
+
 export interface Candle {
   timestamp: number
   open: number
@@ -96,6 +116,46 @@ export function isCandleRange(value: string): value is CandleRange {
 
 export function isCandleInterval(value: string): value is CandleInterval {
   return CANDLE_INTERVALS.some((interval) => interval === value)
+}
+
+/**
+ * Candles that have finished, given when the series was read. A forming candle
+ * keeps changing, so anything deciding on a close has to leave it out.
+ */
+export function closedCandles(series: CandleSeries, now: number): Candle[] {
+  const intervalMs = series.intervalMs
+  if (!intervalMs || intervalMs <= 0) return series.candles.slice(0, -1)
+  return series.candles.filter((candle) => candle.timestamp + intervalMs <= now)
+}
+
+/**
+ * Wilder's average true range over the last `period` candles: the average move
+ * per candle, counting gaps from the previous close. Null when the series is
+ * too short to smooth. Pass closed candles only — a forming one drags the
+ * reading around as it prints.
+ */
+export function averageTrueRange(candles: Candle[], period = 14): number | null {
+  if (!Number.isInteger(period) || period <= 0 || candles.length < period + 1) return null
+  const ranges: number[] = []
+  for (let index = 1; index < candles.length; index++) {
+    const candle = candles[index]!
+    const previousClose = candles[index - 1]!.close
+    const range = Math.max(
+      candle.high - candle.low,
+      Math.abs(candle.high - previousClose),
+      Math.abs(candle.low - previousClose),
+    )
+    if (!Number.isFinite(range)) return null
+    ranges.push(range)
+  }
+  if (ranges.length < period) return null
+
+  // Seed with the first `period` ranges, then smooth the rest into it.
+  let average = ranges.slice(0, period).reduce((sum, range) => sum + range, 0) / period
+  for (let index = period; index < ranges.length; index++) {
+    average = (average * (period - 1) + ranges[index]!) / period
+  }
+  return average > 0 ? average : null
 }
 
 export function applyLivePrice(series: CandleSeries, price: number, timestamp: number): boolean {

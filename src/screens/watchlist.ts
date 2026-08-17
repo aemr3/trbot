@@ -35,7 +35,7 @@ import {
   type BrokerageDateRange,
 } from "../market/broker-calendar.ts"
 import type { BrokerageDistributionSource, BrokerageSide } from "../market/brokerage.ts"
-import type { CandleInterval, CandleRange, CandleSource } from "../market/candle.ts"
+import { averageTrueRange, closedCandles, type CandleInterval, type CandleRange, type CandleSource } from "../market/candle.ts"
 import type { DepthBook, DepthStream } from "../market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
@@ -48,10 +48,14 @@ import {
   type OverviewSnapshotStore,
 } from "../market/overview.ts"
 import { TradeFlowAccumulator } from "../market/trade-flow.ts"
+import { StopMonitor, rangeForInterval, type StopRuleView, type StopTriggerEvent } from "../trading/stop-monitor.ts"
+import type { StopRule, StopRuleStore } from "../trading/stop.ts"
+import { StopRuleEditor } from "./stop-rule-editor.ts"
+import { StopTriggerConfirmation } from "./stop-trigger-confirmation.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
 import type { SettlementMode, SettlementSource } from "../market/settlement.ts"
 import type { MemberFeatureSource } from "../member/features.ts"
-import type { AccountSource, AccountStream } from "../trading/account.ts"
+import type { AccountPosition, AccountSource, AccountStream } from "../trading/account.ts"
 import type {
   ViopOrderCancellationSource,
   ViopOrderSide,
@@ -104,10 +108,13 @@ const OVERVIEW_DAILY: [CandleRange, CandleInterval] = ["YEAR", "DAY_1"]
 // account column can still keep about 60. Below that it takes the news slot
 // while it holds focus instead.
 const DEPTH_LAYOUT_WIDTH = 190
+// How often close-based and ATR stop rules re-read their candles. Anything
+// finer just re-reads the same forming candle.
+const STOP_CANDLE_POLL_INTERVAL_MS = 30_000
 const SORT_LABELS = { change: "Change", volume: "Volume" } as const
 const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
-type DestructiveAction = "cancel-orders" | "exit-positions"
+type DestructiveAction = "cancel-orders" | "exit-positions" | "delete-stop"
 const NEWS_FEED_LABELS: Record<NewsFeed, string> = { instrument: "Stock", index: "Index" }
 const WATCHLIST_HINT = "B/S trade · G logs · / ticker · ? help · Ctrl+C quit"
 const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
@@ -173,10 +180,28 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
   {
     title: "Account",
     bindings: [
-      { keys: "←/→ or h/l", description: "Change account tab" },
+      { keys: "←/→ or h/l", description: "Change account tab: portfolio, orders, positions, stops" },
       { keys: "↑/↓ or j/k", description: "Scroll" },
       { keys: "Home", description: "Scroll to top" },
       { keys: "R", description: "Refresh account" },
+    ],
+  },
+  {
+    title: "Stops",
+    bindings: [
+      { keys: "n", description: "New protective level for a position" },
+      { keys: "e / Enter", description: "Edit the selected rule" },
+      { keys: "Space", description: "Arm or pause the selected rule" },
+      { keys: "d d", description: "Delete the selected rule" },
+      { keys: "↑/↓ or j/k", description: "Move between rules" },
+    ],
+  },
+  {
+    title: "Stop trigger",
+    bindings: [
+      { keys: "Enter", description: "Send the exit now" },
+      { keys: "p", description: "Hold the countdown" },
+      { keys: "Esc", description: "Cancel and stand the rule down" },
     ],
   },
   {
@@ -231,6 +256,10 @@ export interface WatchlistScreenOptions {
   memberFeatures?: MemberFeatureSource
   overview?: OverviewGenerator
   overviewSnapshots?: OverviewSnapshotStore
+  stopRules?: StopRuleStore
+  stopCandleIntervalMs?: number
+  stopStalePriceMs?: number
+  stopCountdownMs?: number
   onSessionExpired?: () => void
   newsIntervalMs?: number
   instrumentIntervalMs?: number
@@ -327,6 +356,16 @@ export class WatchlistScreen {
   private readonly tradeFlow = new TradeFlowAccumulator()
   private latestDepthBook: DepthBook | null = null
   private readonly overviewCache = new Map<string, OverviewSnapshot>()
+  // Protective levels for open positions. The monitor watches prices; the
+  // screen owns the confirmation and the order that follows it.
+  private readonly stopMonitor: StopMonitor | null
+  private stopRuleEditor: StopRuleEditor | null = null
+  private stopTrigger: StopTriggerConfirmation | null = null
+  private stopCandleTimer: ReturnType<typeof setInterval> | null = null
+  // Breaches waiting for the confirmation modal, so two levels reached at once
+  // are answered one at a time instead of racing.
+  private readonly stopTriggerQueue: StopTriggerEvent[] = []
+  private positions: AccountPosition[] = []
   private overviewEntitled: boolean | null = null
   private overviewRequest: AbortController | null = null
   private overviewTimer: ReturnType<typeof setInterval> | null = null
@@ -341,8 +380,23 @@ export class WatchlistScreen {
   private sortDirection: SortDirection
 
   private readonly handleKeypress = (key: KeyEvent): void => {
+    // Deleting a stop rule is only offered where one is selected, so its key is
+    // read against the focused panel rather than globally.
     const destructiveAction = destructiveActionForKey(key)
+      ?? (this.focus === "account" && this.accountPanel.selectedStop() && isLowercaseShortcut(key, "d")
+        ? "delete-stop"
+        : null)
     if (!destructiveAction) this.clearDestructiveConfirmation()
+    // A triggered stop is about to send a live order: it answers before
+    // anything else on screen.
+    if (this.stopTrigger) {
+      this.stopTrigger.handleKey(key)
+      return
+    }
+    if (this.stopRuleEditor) {
+      this.stopRuleEditor.handleKey(key)
+      return
+    }
     if (this.tickerSearchQuery !== null) {
       this.handleTickerSearchKey(key)
       return
@@ -397,7 +451,8 @@ export class WatchlistScreen {
     if (destructiveAction) {
       if (this.confirmDestructiveAction(destructiveAction)) {
         if (destructiveAction === "cancel-orders") void this.cancelAllPendingOrders()
-        else void this.exitAllPositions()
+        else if (destructiveAction === "exit-positions") void this.exitAllPositions()
+        else void this.deleteSelectedStopRule()
       }
       return
     }
@@ -531,8 +586,23 @@ export class WatchlistScreen {
       onFocusRequest: () => this.setFocus("account"),
       onPositionSelect: (position) => this.selectPositionInstrument(position.uid, position.symbol),
       onError: (error) => this.reportError("Account", error),
+      onPositionsChange: (positions) => this.onPositionsChange(positions),
+      onStopCreate: () => this.openStopRuleEditor(),
+      onStopEdit: (view) => this.openStopRuleEditor(view.rule),
+      onStopToggle: (view) => void this.toggleStopRule(view),
     })
     this.centerPanel.add(this.accountPanel.root)
+
+    this.stopMonitor = options.stopRules
+      ? new StopMonitor({
+          store: options.stopRules,
+          candles: options.candles,
+          stalePriceMs: options.stopStalePriceMs,
+          onTrigger: (event) => this.onStopTrigger(event),
+          onChange: () => this.accountPanel.showStopRules(this.stopMonitor?.views() ?? []),
+          onError: (error) => this.reportError("Stop manager", error),
+        })
+      : null
 
     // The order book and the broker distribution share one column: each keeps
     // the rows its fixed content needs and they split the remainder evenly.
@@ -679,6 +749,7 @@ export class WatchlistScreen {
     void this.load()
     void this.loadMemberFeatures()
     void this.loadOverviewSnapshots()
+    void this.loadStopRules()
     this.newsTimer = setInterval(() => void this.refreshNews(), this.options.newsIntervalMs ?? NEWS_POLL_INTERVAL_MS)
     this.instrumentTimer = setInterval(
       () => void this.refreshInstruments(),
@@ -694,6 +765,13 @@ export class WatchlistScreen {
     this.overviewTimer = setInterval(() => {
       if (this.isMarketOpenForOverview()) void this.generateOverview()
     }, this.options.overviewIntervalMs ?? OVERVIEW_POLL_INTERVAL_MS)
+    // Close-based and ATR rules read candles rather than ticks.
+    if (this.stopMonitor) {
+      this.stopCandleTimer = setInterval(
+        () => void this.stopMonitor?.refreshCandleRules(),
+        this.options.stopCandleIntervalMs ?? STOP_CANDLE_POLL_INTERVAL_MS,
+      )
+    }
     void this.refreshOverviewConnection()
   }
 
@@ -707,6 +785,13 @@ export class WatchlistScreen {
     this.closeShortcutHelp()
     this.closeProviderAccount()
     this.closeOrderTicket()
+    this.closeStopRuleEditor()
+    this.closeStopTrigger()
+    this.stopMonitor?.destroy()
+    if (this.stopCandleTimer) {
+      clearInterval(this.stopCandleTimer)
+      this.stopCandleTimer = null
+    }
     this.contractDetailsRequest?.abort()
     this.contractDetailsRequest = null
     this.tradingActionRequest?.abort()
@@ -773,7 +858,7 @@ export class WatchlistScreen {
       this.sortAndRenderInstrumentList(this.preferences.selectedInstrumentUid ?? undefined)
       if (instruments.length > 0) {
         this.onInstrumentSelected(this.instrumentList.selectedIndex)
-        this.options.quotes?.start(instruments.map((instrument) => instrument.symbol))
+        this.syncQuoteSubscription()
       } else {
         this.chartHeader.content = "Chart  ·  No VIOP instruments"
       }
@@ -976,6 +1061,10 @@ export class WatchlistScreen {
   private onQuote(update: QuoteUpdate): void {
     if (this.destroyed) return
     this.accountPanel.applyQuote(update)
+    // Both run before the watchlist lookup below: a protected position need not
+    // be a row in the list.
+    this.stopMonitor?.applyQuote(update)
+    this.stopTrigger?.applyQuote(update)
     const index = this.symbolIndex.get(update.symbol)
     if (index === undefined) return
     const instrument = this.instruments[index]
@@ -1181,6 +1270,197 @@ export class WatchlistScreen {
     } catch (error) {
       this.reportError("AI overview cache", error)
     }
+  }
+
+  // ── Stop rules ─────────────────────────────────────────────────────────────
+
+  private async loadStopRules(): Promise<void> {
+    const monitor = this.stopMonitor
+    if (!monitor) return
+    await monitor.load()
+    if (this.destroyed) return
+    monitor.setPositions(this.positions)
+    this.accountPanel.showStopRules(monitor.views())
+    // Rules can protect contracts the watchlist does not carry.
+    this.syncQuoteSubscription()
+  }
+
+  private onPositionsChange(positions: AccountPosition[]): void {
+    this.positions = positions
+    this.stopMonitor?.setPositions(positions)
+    this.syncQuoteSubscription()
+  }
+
+  /** Subscribes to the watchlist plus whatever the stop rules need watched. */
+  private syncQuoteSubscription(): void {
+    const symbols = new Set(this.instruments.map((instrument) => instrument.symbol))
+    for (const symbol of this.stopMonitor?.symbols() ?? []) symbols.add(symbol)
+    if (symbols.size > 0) this.options.quotes?.start([...symbols])
+  }
+
+  private openStopRuleEditor(rule?: StopRule): void {
+    if (this.destroyed || this.stopRuleEditor) return
+    if (!this.stopMonitor) {
+      this.showHintStatus("Stop rules need a database; none is configured.", "#e5c07b", 4_000)
+      return
+    }
+    if (this.positions.length === 0) {
+      this.showHintStatus("No open VIOP positions to protect.", "#888888", 3_000)
+      return
+    }
+    this.stopRuleEditor = new StopRuleEditor(this.renderer, {
+      positions: this.positions,
+      rule,
+      lastPrice: (symbol) => this.lastPriceFor(symbol),
+      atr: (instrumentUid, interval) => this.readAtr(instrumentUid, interval),
+      onSave: (draft) => {
+        void this.stopMonitor?.saveRule(draft).then(() => {
+          if (this.destroyed) return
+          this.syncQuoteSubscription()
+          this.showHintStatus(`${draft.role === "STOP" ? "Stop" : "Target"} armed for ${draft.displayName}.`, "#70d7a1", 4_000)
+        })
+        this.closeStopRuleEditor()
+      },
+      onClose: () => this.closeStopRuleEditor(),
+      onError: (error) => this.reportError("Stop manager", error),
+    })
+    this.root.add(this.stopRuleEditor.root)
+    this.stopRuleEditor.mount()
+    this.renderer.requestRender()
+  }
+
+  private closeStopRuleEditor(): void {
+    const editor = this.stopRuleEditor
+    if (!editor) return
+    this.stopRuleEditor = null
+    if (!this.root.isDestroyed && !editor.root.isDestroyed) this.root.remove(editor.root)
+    editor.destroy()
+    this.renderer.requestRender()
+  }
+
+  private async toggleStopRule(view: StopRuleView): Promise<void> {
+    const monitor = this.stopMonitor
+    if (!monitor) return
+    if (view.rule.status === "TRIGGERED") {
+      this.showHintStatus("This rule already triggered; edit it to arm a new level.", "#e5c07b", 4_000)
+      return
+    }
+    const armed = view.rule.status === "ARMED"
+    await monitor.setStatus(view.rule.id, armed ? "PAUSED" : "ARMED")
+    if (this.destroyed) return
+    this.showHintStatus(`${view.rule.displayName} ${armed ? "paused" : "armed"}.`, "#888888", 3_000)
+  }
+
+  private async deleteSelectedStopRule(): Promise<void> {
+    const monitor = this.stopMonitor
+    const view = this.accountPanel.selectedStop()
+    if (!monitor || !view) return
+    await monitor.removeRule(view.rule.id)
+    if (this.destroyed) return
+    this.syncQuoteSubscription()
+    this.showHintStatus(`Deleted the ${view.rule.role === "STOP" ? "stop" : "target"} on ${view.rule.displayName}.`, "#888888", 3_000)
+  }
+
+  /**
+   * A level was reached. Nothing is sent yet: the trader sees what the exit
+   * would be and either lets the countdown run or stops it.
+   */
+  private onStopTrigger(event: StopTriggerEvent): void {
+    this.stopTriggerQueue.push(event)
+    this.showNextStopTrigger()
+  }
+
+  private showNextStopTrigger(): void {
+    if (this.destroyed || this.stopTrigger) return
+    const event = this.stopTriggerQueue.shift()
+    if (!event) return
+    // Put the rule that fired in front of the trader behind the modal.
+    this.accountPanel.selectTab("stops")
+    this.setFocus("account")
+    this.stopTrigger = new StopTriggerConfirmation(this.renderer, {
+      event,
+      countdownMs: this.options.stopCountdownMs,
+      onConfirm: () => void this.submitStopExit(event),
+      onCancel: () => {
+        this.closeStopTrigger()
+        void this.stopMonitor?.resolveTrigger(event.rule.id, "CANCELLED")
+        this.showHintStatus(`Stood down the ${event.rule.displayName} stop; no order sent.`, "#e5c07b", 4_000)
+        this.showNextStopTrigger()
+      },
+    })
+    this.root.add(this.stopTrigger.root)
+    this.stopTrigger.mount()
+    this.renderer.requestRender()
+  }
+
+  private closeStopTrigger(): void {
+    const modal = this.stopTrigger
+    if (!modal) return
+    this.stopTrigger = null
+    if (!this.root.isDestroyed && !modal.root.isDestroyed) this.root.remove(modal.root)
+    modal.destroy()
+    this.renderer.requestRender()
+  }
+
+  /** Sends the exit a confirmed trigger asked for. */
+  private async submitStopExit(event: StopTriggerEvent): Promise<void> {
+    const source = this.options.positionExit
+    if (this.destroyed) return
+    // Nothing can be sent, so say so and leave the rule triggered rather than
+    // holding a modal open over a promise that will never resolve.
+    if (!source || this.tradingActionRequest) {
+      this.closeStopTrigger()
+      this.showHintStatus(
+        source ? "Another trading action is in flight; exit not sent." : "Position exits are unavailable.",
+        "#ff6b6b",
+        6_000,
+      )
+      return
+    }
+    const request = new AbortController()
+    this.tradingActionRequest = request
+    this.showHintStatus(`Submitting the ${event.rule.displayName} exit…`, "#e5c07b")
+    try {
+      const submitted = await source.exitPosition({
+        instrumentUid: event.rule.instrumentUid,
+        quantity: event.quantity,
+        signal: request.signal,
+      })
+      if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request) return
+      await this.stopMonitor?.resolveTrigger(event.rule.id, "SUBMITTED", submitted.orderUid)
+      void this.accountPanel.refresh()
+      this.showHintStatus(
+        `Exited ${submitted.quantity} ${submitted.symbol} on the ${event.rule.role === "STOP" ? "stop" : "target"}.`,
+        "#70d7a1",
+        4_000,
+      )
+    } catch (error) {
+      if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request || isAbortError(error)) return
+      // The rule stays triggered: nothing was closed, and it must not look done.
+      if (!this.reportError("Stop exit", error)) {
+        this.showHintStatus(`Stop exit failed: ${errorMessage(error)}`, "#ff6b6b", 6_000)
+      }
+    } finally {
+      if (this.tradingActionRequest === request) this.tradingActionRequest = null
+      if (!this.destroyed) {
+        this.closeStopTrigger()
+        this.showNextStopTrigger()
+      }
+    }
+  }
+
+  /** ATR for the rule editor, read from the same candles the chart uses. */
+  private async readAtr(instrumentUid: string, interval: CandleInterval): Promise<number | null> {
+    const series = await this.options.candles.loadCandles(instrumentUid, rangeForInterval(interval), interval, {
+      target: "INSTRUMENT",
+    })
+    return averageTrueRange(closedCandles(series, Date.now()))
+  }
+
+  private lastPriceFor(symbol: string): number | null {
+    return this.instruments.find((instrument) => instrument.symbol === symbol)?.lastPrice
+      ?? this.positions.find((position) => position.symbol === symbol)?.currentPrice
+      ?? null
   }
 
   private scheduleOverviewGeneration(): void {
@@ -1526,8 +1806,12 @@ export class WatchlistScreen {
     }
     this.clearDestructiveConfirmation()
     this.pendingDestructiveAction = action
-    const key = action === "cancel-orders" ? "c" : "x"
-    const description = action === "cancel-orders" ? "cancel all pending orders" : "exit all open positions"
+    const key = action === "cancel-orders" ? "c" : action === "exit-positions" ? "x" : "d"
+    const description = action === "cancel-orders"
+      ? "cancel all pending orders"
+      : action === "exit-positions"
+        ? "exit all open positions"
+        : "delete the selected stop rule"
     this.showHintStatus(`Press ${key} again to ${description}.`, "#e5c07b")
     this.destructiveConfirmationTimer = setTimeout(() => {
       if (this.pendingDestructiveAction !== action || this.destroyed) return
@@ -1931,7 +2215,7 @@ function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "g" | "o" | "t" | 
   return key.sequence === letter.toUpperCase() || (key.shift && key.name === letter)
 }
 
-function isLowercaseShortcut(key: KeyEvent, letter: "c" | "x"): boolean {
+function isLowercaseShortcut(key: KeyEvent, letter: "c" | "x" | "d"): boolean {
   if (key.ctrl || key.shift || key.meta || key.option) return false
   return key.name === letter && key.sequence !== letter.toUpperCase()
 }

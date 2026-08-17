@@ -44,6 +44,8 @@ export class ApiQuoteStream implements QuoteStream {
   private connected = false
   private symbols: string[] = []
   private attempt = 0
+  // Identifies the current subscription, so a resubscribe retires the old loop.
+  private generation = 0
 
   constructor(
     private readonly client: QuoteStreamApiClient,
@@ -60,21 +62,35 @@ export class ApiQuoteStream implements QuoteStream {
     this.connectionListeners.push(listener)
   }
 
+  /**
+   * Subscribes to `symbols`. Calling it again with a different set resubscribes
+   * — positions the trader protects can sit outside the watchlist, and the
+   * provider takes the symbol list only when the stream opens. An identical set
+   * is ignored so a repeated call costs nothing.
+   */
   start(symbols: string[]): void {
-    if (this.running || symbols.length === 0) return
+    if (symbols.length === 0) return
+    const wanted = [...new Set(symbols)].sort()
+    if (this.running && sameSymbols(this.symbols, wanted)) return
+    this.symbols = wanted
+    // A retiring run must not emit into the new subscription: bumping the
+    // generation ends the old loop, and a fresh one carries the new symbols.
+    this.generation += 1
+    this.controller?.abort()
+    this.controller = null
     this.running = true
-    this.symbols = symbols
-    void this.run()
+    void this.run(this.generation)
   }
 
   stop(): void {
     this.running = false
+    this.generation += 1
     this.controller?.abort()
     this.controller = null
   }
 
-  private async run(): Promise<void> {
-    while (this.running) {
+  private async run(generation: number): Promise<void> {
+    while (this.running && generation === this.generation) {
       const controller = new AbortController()
       this.controller = controller
       try {
@@ -84,7 +100,7 @@ export class ApiQuoteStream implements QuoteStream {
           signal: controller.signal,
         })
         for await (const frame of frames) {
-          if (!this.running) break
+          if (!this.running || generation !== this.generation) break
           if (frame.event && frame.event !== VIOP_PRICE_STREAM_EVENT) continue
           const update = parseFuturePriceUpdate(frame.data)
           if (!update) continue
@@ -136,4 +152,8 @@ export class ApiQuoteStream implements QuoteStream {
       )
     })
   }
+}
+
+function sameSymbols(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((symbol, index) => symbol === right[index])
 }

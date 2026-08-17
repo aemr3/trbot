@@ -1,4 +1,4 @@
-import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core"
 
 export const authState = sqliteTable("auth_state", {
   accountKey: text("account_key").primaryKey(),
@@ -41,6 +41,32 @@ export const overviewSnapshots = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.instrumentUid, table.mode] })],
 )
+
+// Protective levels for open positions. They outlive the process on purpose: a
+// trailing stop that forgot its high-water mark would silently reopen risk the
+// position had already walked away from.
+export const stopRules = sqliteTable("stop_rules", {
+  id: text("id").primaryKey(),
+  instrumentUid: text("instrument_uid").notNull(),
+  symbol: text("symbol").notNull(),
+  displayName: text("display_name").notNull(),
+  side: text("side").notNull(),
+  role: text("role").notNull(),
+  kind: text("kind").notNull(),
+  value: real("value").notNull(),
+  basis: text("basis").notNull(),
+  interval: text("interval"),
+  quantity: integer("quantity"),
+  status: text("status").notNull(),
+  triggerPrice: real("trigger_price"),
+  extremePrice: real("extreme_price"),
+  referencePrice: real("reference_price"),
+  atrValue: real("atr_value"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+  triggeredAt: integer("triggered_at"),
+  exitOrderUid: text("exit_order_uid"),
+})
 
 export const watchlistPreferences = sqliteTable("watchlist_preferences", {
   id: integer("id").primaryKey(),

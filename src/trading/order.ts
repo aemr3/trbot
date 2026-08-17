@@ -91,8 +91,18 @@ export interface ViopPositionExitResult {
   failures: ViopPositionExitFailure[]
 }
 
+export interface ExitViopPositionRequest {
+  instrumentUid: string
+  // Contracts to close; omitted exits whatever the position holds.
+  quantity?: number
+  signal?: AbortSignal
+}
+
 export interface ViopPositionExitSource {
   exitAllPositions(options?: { signal?: AbortSignal }): Promise<ViopPositionExitResult>
+  // Closes one position. Unlike the bulk exit there is no failure list to
+  // collect: a single target either submits or throws.
+  exitPosition(request: ExitViopPositionRequest): Promise<SubmittedViopPositionExit>
 }
 
 export function resolveViopOrderPrice(

@@ -18,6 +18,8 @@ import type {
   PortfolioSummary,
 } from "../trading/account.ts"
 import type { QuoteUpdate } from "../market/quote-stream.ts"
+import type { StopRuleView } from "../trading/stop-monitor.ts"
+import { isTrailingStopRule, type StopRuleStatus } from "../trading/stop.ts"
 import { RenderCoalescer } from "./render-coalescer.ts"
 
 const PANEL_BG = "#161616"
@@ -29,13 +31,21 @@ const UP_COLOR = "#70d7a1"
 const DOWN_COLOR = "#ff6b6b"
 const DEFAULT_REFRESH_INTERVAL_MS = 15_000
 
-const TABS = ["portfolio", "orders", "positions"] as const
-type AccountTab = (typeof TABS)[number]
+const TABS = ["portfolio", "orders", "positions", "stops"] as const
+export type AccountTab = (typeof TABS)[number]
 
 const TAB_LABELS: Record<AccountTab, string> = {
   portfolio: "Portfolio",
   orders: "Orders",
   positions: "Positions",
+  stops: "Stops",
+}
+
+const STATUS_LABELS: Record<StopRuleStatus, string> = {
+  ARMED: "armed",
+  PAUSED: "paused",
+  TRIGGERED: "triggered",
+  DONE: "done",
 }
 
 export interface AccountPanelOptions {
@@ -44,6 +54,12 @@ export interface AccountPanelOptions {
   onError?: (error: unknown) => void
   onFocusRequest?: () => void
   onPositionSelect?: (position: AccountPosition) => void
+  // The stops tab reports; the screen owns every action it names.
+  onStopCreate?: () => void
+  onStopEdit?: (view: StopRuleView) => void
+  onStopToggle?: (view: StopRuleView) => void
+  // Positions drive the stop monitor, so it hears about every change here.
+  onPositionsChange?: (positions: AccountPosition[]) => void
   refreshIntervalMs?: number
 }
 
@@ -56,6 +72,8 @@ export class AccountPanel {
   private readonly tabButtons = new Map<AccountTab, BoxRenderable>()
   private readonly tabLabels = new Map<AccountTab, TextRenderable>()
   private snapshot: AccountSnapshot | null = null
+  private stopViews: StopRuleView[] = []
+  private stopSelection = 0
   private tab: AccountTab = "portfolio"
   private request: AbortController | null = null
   private refreshTimer: ReturnType<typeof setInterval> | null = null
@@ -65,10 +83,12 @@ export class AccountPanel {
   private readonly liveUpdates: Array<{ sequence: number; update: AccountLiveUpdate }> = []
   // Position rows are reused across renders; see renderPositionRows.
   private positionRows: Array<{ row: BoxRenderable; text: TextRenderable; position: AccountPosition }> = []
+  private stopRows: Array<{ row: BoxRenderable; text: TextRenderable; view: StopRuleView }> = []
   // Quote and account events arrive in bursts; they mutate the snapshot and
   // the visible tab is re-rendered once per burst.
   private readonly liveRender = new RenderCoalescer(() => {
-    if (!this.destroyed) this.renderContent()
+    // A coalesced repaint can land after the renderer tore the tree down.
+    if (!this.destroyed && !this.root.isDestroyed) this.renderContent()
   })
 
   constructor(
@@ -177,6 +197,9 @@ export class AccountPanel {
       this.selectTab(TABS[(index + direction + TABS.length) % TABS.length] ?? "portfolio")
       return true
     }
+    // On the stops tab the row keys move a selection instead of scrolling, and
+    // the rule actions take over the letters.
+    if (this.tab === "stops" && this.handleStopKey(key)) return true
     if (!key.ctrl && key.name === "r") {
       void this.refresh()
       return true
@@ -194,6 +217,55 @@ export class AccountPanel {
       return true
     }
     return false
+  }
+
+  private handleStopKey(key: KeyEvent): boolean {
+    if (key.ctrl || key.meta || key.option) return false
+    const selected = this.stopViews[this.stopSelection]
+    if (key.name === "n") {
+      this.options.onStopCreate?.()
+      return true
+    }
+    if (key.name === "up" || key.name === "k" || key.name === "down" || key.name === "j") {
+      if (this.stopViews.length === 0) return false
+      const direction = key.name === "up" || key.name === "k" ? -1 : 1
+      this.stopSelection = Math.max(0, Math.min(this.stopSelection + direction, this.stopViews.length - 1))
+      this.renderContent()
+      return true
+    }
+    if (!selected) return false
+    if (key.name === "e" || key.name === "return") {
+      this.options.onStopEdit?.(selected)
+      return true
+    }
+    if (key.name === "space") {
+      this.options.onStopToggle?.(selected)
+      return true
+    }
+    // Deleting is destructive, so the screen owns it and its confirmation.
+    return false
+  }
+
+  /** The rule the stops tab is pointing at, for actions the screen owns. */
+  selectedStop(): StopRuleView | null {
+    if (this.tab !== "stops") return null
+    return this.stopViews[this.stopSelection] ?? null
+  }
+
+  /** Replaces the stops tab's contents; the monitor owns what they say. */
+  showStopRules(views: StopRuleView[]): void {
+    if (this.destroyed) return
+    this.stopViews = views
+    this.stopSelection = Math.max(0, Math.min(this.stopSelection, views.length - 1))
+    if (this.tab === "stops") this.liveRender.schedule()
+  }
+
+  selectTab(tab: AccountTab): void {
+    if (this.tab === tab) return
+    this.tab = tab
+    this.paintTabs()
+    this.body.scrollTo({ x: 0, y: 0 })
+    this.renderContent()
   }
 
   applyQuote(update: QuoteUpdate): void {
@@ -227,6 +299,7 @@ export class AccountPanel {
       }
       this.liveUpdates.length = 0
       this.syncPendingOrders()
+      this.options.onPositionsChange?.(snapshot.positions)
       this.renderContent()
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.request !== request || isAbortError(error)) return
@@ -243,6 +316,8 @@ export class AccountPanel {
     if (!this.snapshot) return
     this.mergeLiveUpdate(update)
     if (update.type === "order") this.syncPendingOrders()
+    // A position that moved or closed changes what the stop rules protect.
+    if (update.type === "position") this.options.onPositionsChange?.(this.snapshot.positions)
     this.liveRender.schedule()
   }
 
@@ -286,14 +361,6 @@ export class AccountPanel {
     this.liveStatus.fg = connected ? UP_COLOR : MUTED_COLOR
   }
 
-  private selectTab(tab: AccountTab): void {
-    if (this.tab === tab) return
-    this.tab = tab
-    this.paintTabs()
-    this.body.scrollTo({ x: 0, y: 0 })
-    this.renderContent()
-  }
-
   private paintTabs(): void {
     for (const tab of TABS) {
       const selected = tab === this.tab
@@ -306,6 +373,14 @@ export class AccountPanel {
   }
 
   private renderContent(): void {
+    if (this.tab === "stops") {
+      if (this.stopViews.length === 0) {
+        this.showTextContent(renderStops(this.stopViews), MUTED_COLOR)
+        return
+      }
+      this.renderStopRows(this.stopViews)
+      return
+    }
     if (!this.snapshot) return
     if (this.tab === "positions" && this.snapshot.positions.length > 0) {
       this.renderPositionRows(this.snapshot.positions)
@@ -317,6 +392,52 @@ export class AccountPanel {
         ? renderOrders(this.snapshot.orders)
         : renderPositions(this.snapshot.positions)
     this.showTextContent(content, "#cccccc")
+  }
+
+  // Same reuse as the position rows: the monitor repaints this list on every
+  // tick burst, so rows are updated in place rather than rebuilt.
+  private renderStopRows(views: StopRuleView[]): void {
+    if (this.stopRows.length === 0) this.clearBody()
+    while (this.stopRows.length > views.length) {
+      const extra = this.stopRows.pop()
+      if (!extra) break
+      this.body.remove(extra.row)
+      if (!extra.row.isDestroyed) extra.row.destroyRecursively()
+    }
+    views.forEach((view, index) => {
+      const selected = index === this.stopSelection
+      const existing = this.stopRows[index]
+      if (existing) {
+        existing.view = view
+        existing.text.content = new StyledText(stopChunks(view))
+        existing.row.backgroundColor = selected ? ACTIVE_BUTTON_BG : PANEL_BG
+        return
+      }
+      const entry = {
+        view,
+        row: new BoxRenderable(this.renderer, {
+          width: "100%",
+          height: 1,
+          flexShrink: 0,
+          backgroundColor: selected ? ACTIVE_BUTTON_BG : PANEL_BG,
+          onMouseDown: (event) => {
+            if (event.button !== 0) return
+            this.options.onFocusRequest?.()
+            this.stopSelection = this.stopRows.findIndex((candidate) => candidate === entry)
+            this.renderContent()
+            this.options.onStopEdit?.(entry.view)
+          },
+        }),
+        text: new TextRenderable(this.renderer, {
+          content: new StyledText(stopChunks(view)),
+          width: "100%",
+          wrapMode: "none",
+        }),
+      }
+      entry.row.add(entry.text)
+      this.body.add(entry.row)
+      this.stopRows.push(entry)
+    })
   }
 
   // Rows are reused between renders: live streams re-render this list on every
@@ -371,6 +492,7 @@ export class AccountPanel {
 
   private clearBody(): void {
     this.positionRows = []
+    this.stopRows = []
     for (const child of this.body.getChildren()) {
       this.body.remove(child)
       if (child !== this.content && !child.isDestroyed) child.destroyRecursively()
@@ -416,6 +538,58 @@ export function renderPositions(positions: AccountPosition[]): StyledText | stri
     if (index < positions.length - 1) chunks.push(fg("#cccccc")("\n"))
   })
   return new StyledText(chunks)
+}
+
+export function renderStops(views: StopRuleView[]): StyledText | string {
+  if (views.length === 0) return "No stop rules. Press n to add one."
+  const chunks: TextChunk[] = []
+  views.forEach((view, index) => {
+    chunks.push(...stopChunks(view))
+    if (index < views.length - 1) chunks.push(fg("#cccccc")("\n"))
+  })
+  return new StyledText(chunks)
+}
+
+// One rule per row: what it protects, where the level is, how far the market
+// still has to travel, and whether it is actually watching.
+function stopChunks(view: StopRuleView): TextChunk[] {
+  const { rule } = view
+  const marker = rule.status === "ARMED"
+    ? (view.feed === "live" ? fg(UP_COLOR)("●") : fg("#e5c07b")("◐"))
+    : rule.status === "TRIGGERED"
+      ? fg(DOWN_COLOR)("▲")
+      : fg(MUTED_COLOR)("○")
+  const state = rule.status === "ARMED" && view.feed !== "live"
+    ? (view.feed === "stale" ? "stale" : "no feed")
+    : !view.hasPosition && rule.status !== "DONE"
+      ? "no position"
+      : STATUS_LABELS[rule.status]
+  const distance = view.distancePercent === null
+    ? "    —"
+    : `${view.distancePercent >= 0 ? "+" : ""}${view.distancePercent.toFixed(1)}%`.padStart(6)
+  return [
+    fg("#dddddd")(`${rule.displayName.slice(0, 8).padEnd(9)}`),
+    fg(rule.role === "STOP" ? DOWN_COLOR : UP_COLOR)(rule.role === "STOP" ? "S" : "T"),
+    fg("#bbbbbb")(formatNumber(view.level).padStart(9)),
+    fg(MUTED_COLOR)(`${distance} ${stopKindLabel(view)} `),
+    marker,
+    fg(MUTED_COLOR)(` ${state}`),
+  ]
+}
+
+/** Short label for how the level is derived, plus its trigger basis. */
+function stopKindLabel(view: StopRuleView): string {
+  const { rule } = view
+  const kind = rule.kind === "PRICE"
+    ? "price"
+    : rule.kind === "PERCENT"
+      ? `${formatQuantity(rule.value)}%`
+      : rule.kind === "ATR"
+        ? `${formatQuantity(rule.value)}atr`
+        : isTrailingStopRule(rule.kind)
+          ? `trail${rule.kind === "TRAILING_ATR" ? "atr" : "%"}`
+          : rule.kind
+  return `${kind}${rule.basis === "CLOSE" ? "@cl" : ""}`.padEnd(9)
 }
 
 function positionChunks(position: AccountPosition): TextChunk[] {

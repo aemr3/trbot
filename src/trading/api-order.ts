@@ -8,10 +8,12 @@ import {
 import { tradingOperations, type OrderPreparationData } from "../api/trading.ts"
 import {
   viopPositionIntent,
+  type ExitViopPositionRequest,
   type PlaceViopOrderRequest,
   type PlacedViopOrder,
   type PendingViopOrder,
   type PrepareViopOrderRequest,
+  type SubmittedViopPositionExit,
   type ViopOrderCancellationResult,
   type ViopOrderCancellationSource,
   type ViopOrderPreparation,
@@ -82,54 +84,92 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
 
     for (const position of positions) {
       const quantity = Math.abs(position.quantity)
-      if (!Number.isInteger(quantity)) {
-        result.failures.push({ ...position, quantity, message: "Position quantity must be a whole number of contracts" })
-        continue
-      }
-      const side = position.quantity > 0 ? "SELL" : "BUY"
-      const positionIntent = position.quantity > 0 ? "SELL_TO_CLOSE" : "BUY_TO_CLOSE"
       try {
-        const [future, prepared] = await Promise.all([
-          this.client.call(
-            tradingOperations.assetFuture,
-            { instrumentId: position.instrumentUid, memberId: session.memberUid },
-            options,
-          ),
-          this.client.call(
-            tradingOperations.prepareOrder,
-            {
-              orderId: null,
-              instrumentId: position.instrumentUid,
-              accountId: accountUid,
-              orderSide: side,
-              orderType: "LIMIT",
-              positionIntent,
-            },
-            options,
-          ),
-        ])
-        const preparation = prepared.orderPreparationV2
-        if (!preparation) throw new Error("Order preparation is unavailable")
-        assertPreparationAllowsLimitOrder(preparation)
-        const limitPrice = finiteNumber(side === "BUY" ? preparation.priceRange?.maxPrice : preparation.priceRange?.minPrice)
-        if (limitPrice === null || limitPrice <= 0) throw new Error("Exchange price limit is unavailable")
-        assertPriceScale(limitPrice, boundedScale(future.assetFuture?.priceFormat?.scale))
-        const order = await this.submitLimitOrder({
-          accountUid,
-          instrumentUid: position.instrumentUid,
-          quantity,
-          limitPrice,
-          side,
-          positionIntent,
-          signal: options.signal,
-        })
-        result.submitted.push({ ...position, quantity, orderUid: order.uid })
+        result.submitted.push(
+          await this.submitPositionExit(session.memberUid, accountUid, position, quantity, options),
+        )
       } catch (error) {
         if (options.signal?.aborted || isAbortError(error)) throw error
         result.failures.push({ ...position, quantity, message: errorMessage(error) })
       }
     }
     return result
+  }
+
+  async exitPosition(request: ExitViopPositionRequest): Promise<SubmittedViopPositionExit> {
+    const options = { signal: request.signal }
+    const session = await this.client.authenticate()
+    const [overview, positionsData] = await Promise.all([
+      this.client.call(
+        accountOperations.overview,
+        { memberId: session.memberUid, currencyCode: "TRY", period: "DAY" },
+        options,
+      ),
+      this.client.call(accountOperations.positions, { accountId: session.memberUid }, options),
+    ])
+    const position = openPositions(positionsData).find((entry) => entry.instrumentUid === request.instrumentUid)
+    // The position may have closed between the decision and this call; exiting
+    // what is no longer held would open a new one in the opposite direction.
+    if (!position) throw new Error("Position is no longer open")
+
+    const open = Math.abs(position.quantity)
+    const quantity = request.quantity === undefined ? open : Math.min(request.quantity, open)
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new Error("Exit quantity must be a positive whole number of contracts")
+    }
+    return this.submitPositionExit(session.memberUid, activeTryAccountUid(overview), position, quantity, options)
+  }
+
+  /**
+   * Closes `quantity` contracts of one position with a day limit order at the
+   * exchange's far price limit — the same simulated market the bulk exit uses,
+   * so both paths fill the same way.
+   */
+  private async submitPositionExit(
+    memberUid: string,
+    accountUid: string,
+    position: { instrumentUid: string; symbol: string; quantity: number },
+    quantity: number,
+    options: { signal?: AbortSignal },
+  ): Promise<SubmittedViopPositionExit> {
+    if (!Number.isInteger(quantity)) throw new Error("Position quantity must be a whole number of contracts")
+    const side = position.quantity > 0 ? "SELL" : "BUY"
+    const positionIntent = position.quantity > 0 ? "SELL_TO_CLOSE" : "BUY_TO_CLOSE"
+    const [future, prepared] = await Promise.all([
+      this.client.call(
+        tradingOperations.assetFuture,
+        { instrumentId: position.instrumentUid, memberId: memberUid },
+        options,
+      ),
+      this.client.call(
+        tradingOperations.prepareOrder,
+        {
+          orderId: null,
+          instrumentId: position.instrumentUid,
+          accountId: accountUid,
+          orderSide: side,
+          orderType: "LIMIT",
+          positionIntent,
+        },
+        options,
+      ),
+    ])
+    const preparation = prepared.orderPreparationV2
+    if (!preparation) throw new Error("Order preparation is unavailable")
+    assertPreparationAllowsLimitOrder(preparation)
+    const limitPrice = finiteNumber(side === "BUY" ? preparation.priceRange?.maxPrice : preparation.priceRange?.minPrice)
+    if (limitPrice === null || limitPrice <= 0) throw new Error("Exchange price limit is unavailable")
+    assertPriceScale(limitPrice, boundedScale(future.assetFuture?.priceFormat?.scale))
+    const order = await this.submitLimitOrder({
+      accountUid,
+      instrumentUid: position.instrumentUid,
+      quantity,
+      limitPrice,
+      side,
+      positionIntent,
+      signal: options.signal,
+    })
+    return { instrumentUid: position.instrumentUid, symbol: position.symbol, quantity, orderUid: order.uid }
   }
 
   private async submitLimitOrder(request: {

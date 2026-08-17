@@ -34,11 +34,13 @@ import type {
   AccountStream,
 } from "../trading/account.ts"
 import type {
+  ExitViopPositionRequest,
   PlaceViopOrderRequest,
   ViopOrderCancellationSource,
   ViopOrderSource,
   ViopPositionExitSource,
 } from "../trading/order.ts"
+import { createStopRule, type StopRule, type StopRuleStore } from "../trading/stop.ts"
 import { LogsScreen } from "./logs.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 import { WatchlistScreen } from "./watchlist.ts"
@@ -751,6 +753,9 @@ test("requires lowercase x twice before submitting exits for every VIOP position
         failures: [],
       }
     },
+    async exitPosition(request) {
+      return { instrumentUid: request.instrumentUid, symbol: "F_XU0300826", quantity: 1, orderUid: "exit-1" }
+    },
   }
   const screen = new WatchlistScreen(renderer, {
     instruments,
@@ -828,7 +833,8 @@ test("opens the complete shortcut help with question mark and closes it again", 
   const contractPage = await waitForFrame((frame) => frame.includes("Sort by price change"))
   expect(contractPage).toContain("Sort by volume")
 
-  await mockInput.typeText("jjjjjjjjjjjjjjjjjj")
+  // Far enough to reach the bottom of the list however many sections it holds.
+  await mockInput.typeText("j".repeat(40))
   const lastPage = await waitForFrame((frame) => frame.includes("Order ticket"))
   expect(lastPage).toContain("Next field, review, or submit")
   expect(lastPage).toContain("Review or submit the matching side")
@@ -1703,6 +1709,155 @@ test("asks for the ChatGPT account when the overview cannot authenticate", async
 
   await waitFor(() => overview.digests.length === 1)
   await waitForFrame((value) => value.includes("Connect ChatGPT with A"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+// A rule protecting the fixture's long THYAO position, 305 under a 312 market.
+function stopRuleFixture(): StopRule {
+  return createStopRule(
+    {
+      id: "rule-1",
+      instrumentUid: "position-1",
+      symbol: "F_THYAO0826",
+      displayName: "THYAO",
+      side: "LONG",
+      role: "STOP",
+      kind: "PRICE",
+      value: 305,
+      basis: "TOUCH",
+      interval: null,
+      quantity: null,
+      referencePrice: 300,
+      atrValue: null,
+    },
+    1_786_000_000_000,
+  )
+}
+
+class FakeStopRuleStore implements StopRuleStore {
+  readonly rules = new Map<string, StopRule>()
+
+  constructor(seed: StopRule[] = []) {
+    for (const rule of seed) this.rules.set(rule.id, rule)
+  }
+
+  async list(): Promise<StopRule[]> {
+    return [...this.rules.values()]
+  }
+  async put(rule: StopRule): Promise<void> {
+    this.rules.set(rule.id, rule)
+  }
+  async remove(id: string): Promise<void> {
+    this.rules.delete(id)
+  }
+}
+
+function fakePositionExit(exits: ExitViopPositionRequest[]): ViopPositionExitSource {
+  return {
+    async exitAllPositions() {
+      return { submitted: [], failures: [] }
+    },
+    async exitPosition(request) {
+      exits.push(request)
+      return {
+        instrumentUid: request.instrumentUid,
+        symbol: "F_THYAO0826",
+        quantity: request.quantity ?? 2,
+        orderUid: "exit-1",
+      }
+    },
+  }
+}
+
+function tick(lastPrice: number): QuoteUpdate {
+  return { symbol: "F_THYAO0826", lastPrice, sessionStatus: null, timestamp: Date.now() }
+}
+
+test("subscribes to the contracts stop rules protect, not only the watchlist", async () => {
+  const { renderer, waitFor } = await createTestRenderer({ width: 120, height: 30 })
+  const quotes = new FakeQuoteStream()
+  const rule = { ...stopRuleFixture(), symbol: "F_UNWATCHED0826" }
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    quotes,
+    stopRules: new FakeStopRuleStore([rule]),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitFor(() => quotes.startedSymbols?.includes("F_UNWATCHED0826") === true)
+  expect(quotes.startedSymbols).toContain("F_XU0300826")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("a breached stop asks first, then exits only that position", async () => {
+  const { renderer, waitFor, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const quotes = new FakeQuoteStream()
+  const exits: ExitViopPositionRequest[] = []
+  const store = new FakeStopRuleStore([stopRuleFixture()])
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    quotes,
+    positionExit: fakePositionExit(exits),
+    stopRules: store,
+    // The countdown is the confirmation; zero means "send as soon as it opens".
+    stopCountdownMs: 0,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Collateral"))
+
+  // A tick on the safe side arms the rule, the next one reaches the level.
+  quotes.emit(tick(312))
+  quotes.emit(tick(304))
+
+  await waitFor(() => exits.length === 1)
+  expect(exits[0]).toMatchObject({ instrumentUid: "position-1", quantity: 2 })
+  // The rule is spent, and its order is recorded against it.
+  await waitFor(() => store.rules.get("rule-1")?.status === "DONE")
+  expect(store.rules.get("rule-1")?.exitOrderUid).toBe("exit-1")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("cancelling a trigger sends nothing and stands the rule down", async () => {
+  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const quotes = new FakeQuoteStream()
+  const exits: ExitViopPositionRequest[] = []
+  const store = new FakeStopRuleStore([stopRuleFixture()])
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    quotes,
+    positionExit: fakePositionExit(exits),
+    stopRules: store,
+    stopCountdownMs: 60_000,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Collateral"))
+
+  quotes.emit(tick(312))
+  quotes.emit(tick(304))
+  const modal = await waitForFrame((frame) => frame.includes("Stop reached"))
+  expect(modal).toContain("SELL 2 at the exchange limit")
+
+  mockInput.pressEscape()
+  await waitFor(() => store.rules.get("rule-1")?.status === "PAUSED")
+  expect(exits).toHaveLength(0)
 
   screen.destroy()
   renderer.destroy()

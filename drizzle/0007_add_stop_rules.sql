@@ -1,0 +1,22 @@
+CREATE TABLE `stop_rules` (
+	`id` text PRIMARY KEY NOT NULL,
+	`instrument_uid` text NOT NULL,
+	`symbol` text NOT NULL,
+	`display_name` text NOT NULL,
+	`side` text NOT NULL,
+	`role` text NOT NULL,
+	`kind` text NOT NULL,
+	`value` real NOT NULL,
+	`basis` text NOT NULL,
+	`interval` text,
+	`quantity` integer,
+	`status` text NOT NULL,
+	`trigger_price` real,
+	`extreme_price` real,
+	`reference_price` real,
+	`atr_value` real,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL,
+	`triggered_at` integer,
+	`exit_order_uid` text
+);

@@ -2,6 +2,7 @@ import type { ApiClient } from "../api/index.ts"
 import { marketOperations } from "../api/market.ts"
 import {
   DEFAULT_INTERVALS_BY_RANGE,
+  FUTURES_INTERVALS_BY_RANGE,
   isCandleInterval,
   isCandleRange,
   type Candle,
@@ -13,15 +14,6 @@ import {
 } from "./candle.ts"
 
 type MarketApiClient = Pick<ApiClient, "call">
-
-const FUTURE_INTERVALS_BY_RANGE: Record<CandleRange, CandleInterval[]> = {
-  INTRADAY: ["MIN_10"],
-  WEEK: ["HOUR_1"],
-  MONTH: ["HOUR_4"],
-  THREE_MONTH: ["DAY_1"],
-  YEAR: ["DAY_1"],
-  FIVE_YEAR: ["DAY_1"],
-}
 
 const INTERVAL_BY_DURATION_MS = new Map<number, CandleInterval>([
   [5 * 60_000, "MIN_5"],
@@ -102,7 +94,7 @@ export class ApiCandleSource implements CandleSource {
     const chart = data.candlestickChartV2
     const intervalMs = finiteNumber(chart?.intervalMs)
     const interval = (intervalMs === null ? undefined : INTERVAL_BY_DURATION_MS.get(intervalMs))
-      ?? FUTURE_INTERVALS_BY_RANGE[range][0]
+      ?? FUTURES_INTERVALS_BY_RANGE[range][0]
       ?? DEFAULT_INTERVALS_BY_RANGE[range][0]
       ?? "DAY_1"
 
@@ -113,7 +105,7 @@ export class ApiCandleSource implements CandleSource {
       candles: (chart?.data ?? [])
         .flatMap((entry) => toCandle({ ...entry, v2: entry.v }))
         .sort((left, right) => left.timestamp - right.timestamp),
-      availableIntervalsByRange: FUTURE_INTERVALS_BY_RANGE,
+      availableIntervalsByRange: FUTURES_INTERVALS_BY_RANGE,
       intervalMs,
       currency: chart?.currency ?? null,
     }

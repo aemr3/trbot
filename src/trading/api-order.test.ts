@@ -133,6 +133,50 @@ test("continues exiting remaining VIOP positions after an individual failure", a
   expect(calls.filter((call) => call.name === "placeOrder")).toHaveLength(2)
 })
 
+test("exits a single position, closing only what it holds", async () => {
+  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const source = new ApiViopOrderSource(fakeExitClient(calls))
+
+  const submitted = await source.exitPosition({ instrumentUid: "future-short" })
+
+  expect(submitted).toEqual({
+    instrumentUid: "future-short",
+    symbol: "F_SHORT0826",
+    quantity: 3,
+    orderUid: "exit-future-short",
+  })
+  // Covering a short buys at the upper limit; the long is left alone.
+  expect(calls.filter((call) => call.name === "placeOrder").map((call) => call.variables)).toEqual([
+    expect.objectContaining({
+      instrumentId: "future-short",
+      quantity: 3,
+      limitPrice: 230.1,
+      orderSide: "BUY",
+      orderType: "LIMIT",
+      timeInForce: "DAY",
+      positionIntent: "BUY_TO_CLOSE",
+    }),
+  ])
+})
+
+test("caps a partial exit at the open quantity", async () => {
+  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const source = new ApiViopOrderSource(fakeExitClient(calls))
+
+  expect(await source.exitPosition({ instrumentUid: "future-long", quantity: 1 })).toMatchObject({ quantity: 1 })
+  // Asking for more than the position holds would open a reverse position.
+  expect(await source.exitPosition({ instrumentUid: "future-long", quantity: 9 })).toMatchObject({ quantity: 2 })
+  expect(calls.filter((call) => call.name === "placeOrder").map((call) => call.variables.quantity)).toEqual([1, 2])
+})
+
+test("refuses to exit a position that is no longer open", async () => {
+  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const source = new ApiViopOrderSource(fakeExitClient(calls))
+
+  await expect(source.exitPosition({ instrumentUid: "future-gone" })).rejects.toThrow("Position is no longer open")
+  expect(calls.filter((call) => call.name === "placeOrder")).toHaveLength(0)
+})
+
 function fakeClient(
   calls: Array<{ name: string; variables: Record<string, unknown> }>,
   positionQuantity: number,
