@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { RGBA, StyledText, type KeyEvent } from "@opentui/core"
 import { createMockMouse, createTestRenderer } from "@opentui/core/testing"
-import { DEFAULT_INTERVALS_BY_RANGE, type Candle, type CandleRange, type CandleSeries, type CandleSource } from "../market/candle.ts"
+import { DEFAULT_INTERVALS_BY_RANGE, type Candle, type CandleSeries, type CandleSource } from "../market/candle.ts"
 import {
   CandlestickChart,
   renderCandleChart,
@@ -10,7 +10,7 @@ import {
   type BitmapChartView,
   type BrailleChartView,
 } from "./candlestick-chart.ts"
-import { CHART_PALETTE } from "./chart/palette.ts"
+import { CHART_PALETTE, SELECTION_COLOR } from "./chart/palette.ts"
 
 const candles: Candle[] = [
   { timestamp: 1000, open: 10, high: 13, low: 9, close: 12, volume: 10 },
@@ -23,15 +23,20 @@ const braille = /[⠁-⣿]/
 const UP = RGBA.fromHex("#70d7a1")
 const DOWN = RGBA.fromHex("#ff6b6b")
 
+// Grains the renderers are asked about: five minutes reads as a time, a day
+// reads as a date.
+const MIN_5_MS = 300_000
+const DAY_MS = 86_400_000
+
 function view(
   input: Candle[],
   width: number,
   height: number,
-  range: CandleRange = "INTRADAY",
+  grainMs: number = MIN_5_MS,
   scrollOffset = 0,
   reserveScrollbarRow = false,
 ): BrailleChartView {
-  const result = renderCandleChart(input, width, height, range, scrollOffset, reserveScrollbarRow)
+  const result = renderCandleChart(input, width, height, grainMs, scrollOffset, reserveScrollbarRow)
   expect(typeof result).not.toBe("string")
   return result as BrailleChartView
 }
@@ -74,6 +79,27 @@ function bitmapRows(view: BitmapChartView, color: string, fromColumn: number, to
     }
   }
   return rows
+}
+
+/** Bitmap columns carrying the given palette color anywhere down their height. */
+function bitmapColumns(view: BitmapChartView, color: string): number[] {
+  const [red, green, blue] = [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16))
+  const { width, height, pixels } = view.bitmap
+  const columns: number[] = []
+  for (let column = 0; column < width; column++) {
+    for (let row = 0; row < height; row++) {
+      const index = (row * width + column) * 4
+      const matches = pixels[index + 3]! > 60
+        && Math.abs(pixels[index]! - red!) <= 8
+        && Math.abs(pixels[index + 1]! - green!) <= 8
+        && Math.abs(pixels[index + 2]! - blue!) <= 8
+      if (matches) {
+        columns.push(column)
+        break
+      }
+    }
+  }
+  return columns
 }
 
 /** Plot cells whose chunk carries the given color, as {row, column} pairs. */
@@ -172,6 +198,39 @@ test("aligns the current-price guide row with the drawn close edge", () => {
   }
 })
 
+test("marks the picked candle in both renderers", () => {
+  const picked = candles[1]!
+
+  // Braille: the marker runs down the picked candle's own column, under the
+  // candle itself, so it shows in the empty rows above and below it.
+  const marked = renderCandleChart(candles, 40, 20, MIN_5_MS, 0, false, 3, picked.timestamp)
+  expect(typeof marked).not.toBe("string")
+  const markerCells = cellsWithColor((marked as BrailleChartView).plot, RGBA.fromHex(SELECTION_COLOR))
+  expect(markerCells.length).toBeGreaterThan(0)
+  expect(new Set(markerCells.map((cell) => cell.column)).size).toBe(1)
+
+  // Nothing is marked until something is picked.
+  const plain = renderCandleChart(candles, 40, 20, MIN_5_MS, 0, false, 3)
+  expect(cellsWithColor((plain as BrailleChartView).plot, RGBA.fromHex(SELECTION_COLOR))).toHaveLength(0)
+
+  // Kitty: the same column, drawn as pixels.
+  const bitmap = renderCandleChartBitmapView(
+    candles, 40, 20, MIN_5_MS, 0, false, { width: 8, height: 16 }, 3, picked.timestamp)
+  expect(typeof bitmap).not.toBe("string")
+  const bitmapView = bitmap as BitmapChartView
+  const markedColumns = bitmapColumns(bitmapView, SELECTION_COLOR)
+  expect(markedColumns.length).toBeGreaterThan(0)
+  expect(Math.max(...markedColumns) - Math.min(...markedColumns)).toBeLessThanOrEqual(1)
+
+  const plainBitmap = renderCandleChartBitmapView(
+    candles, 40, 20, MIN_5_MS, 0, false, { width: 8, height: 16 }, 3)
+  expect(bitmapColumns(plainBitmap as BitmapChartView, SELECTION_COLOR)).toHaveLength(0)
+
+  // A candle outside the visible window takes its marker with it.
+  const offWindow = renderCandleChart(candles.slice(2), 40, 20, MIN_5_MS, 0, false, 3, picked.timestamp)
+  expect(cellsWithColor((offWindow as BrailleChartView).plot, RGBA.fromHex(SELECTION_COLOR))).toHaveLength(0)
+})
+
 test("aligns the price guide with the close edge of the last bitmap candle", () => {
   for (const close of [38.24, 38.5, 38.79, 38.93, 37.94, 37.62]) {
     const rising = close >= 38.1
@@ -179,7 +238,7 @@ test("aligns the price guide with the close edge of the last bitmap candle", () 
       { timestamp: 1000, open: 38.0, high: 39.2, low: 37.5, close: 38.5, volume: null },
       { timestamp: 2000, open: 38.5, high: 39.2, low: 37.2, close: 38.1, volume: null },
       { timestamp: 3000, open: 38.1, high: Math.max(38.1, close) + 0.05, low: Math.min(38.1, close) - 0.05, close, volume: null },
-    ], 60, 24, "INTRADAY", 0, false, { width: 8, height: 16 })
+    ], 60, 24, MIN_5_MS, 0, false, { width: 8, height: 16 })
     expect(typeof result).not.toBe("string")
     const view = result as BitmapChartView
 
@@ -218,7 +277,7 @@ test("caps dense histories at the braille candle capacity", () => {
     close: 10.5,
     volume: 1,
   }))
-  const chart = view(denseCandles, 40, 10, "YEAR")
+  const chart = view(denseCandles, 40, 10, DAY_MS)
   const bodyCells = cellsWithColor(chart.plot, UP)
   const columns = new Set(bodyCells.map((cell) => cell.column))
 
@@ -252,21 +311,28 @@ test("adds volume bars and intraday timestamps when space allows", () => {
   expect(chart.timeAxis).toContain("16:25")
 })
 
-test("uses calendar labels for multi-day ranges", () => {
+test("labels a candle by the grain it covers, not by the range it sits in", () => {
   const firstDay = new Date("2026-07-31T07:00:00Z").getTime()
-  const weekCandles: Candle[] = Array.from({ length: 40 }, (_, index) => ({
-    timestamp: firstDay + Math.round((index * 7 * 24 * 60 * 60 * 1000) / 39),
-    open: 150 + index,
-    high: 152 + index,
-    low: 149 + index,
-    close: 151 + index,
-    volume: 100 + index,
-  }))
+  const bars = (count: number, stepMs: number): Candle[] =>
+    Array.from({ length: count }, (_, index) => ({
+      timestamp: firstDay + index * stepMs,
+      open: 150 + index,
+      high: 152 + index,
+      low: 149 + index,
+      close: 151 + index,
+      volume: 100 + index,
+    }))
 
-  const chart = view(weekCandles, 100, 20, "WEEK")
-  expect(chart.timeAxis).toContain("31 Tem")
-  expect(chart.timeAxis).toContain("07 Ağu")
-  expect(chart.timeAxis).not.toContain(":")
+  // Daily candles over a week: the day is all that distinguishes them, in
+  // English rather than the locale the prices are formatted in.
+  const daily = view(bars(8, DAY_MS), 100, 20, DAY_MS)
+  expect(daily.timeAxis).toMatch(/\d{2} Aug/)
+  expect(daily.timeAxis).not.toContain(":")
+
+  // Four-hour candles over the same week: without the hour, six of them a day
+  // would carry the same label.
+  const hourly = view(bars(40, 4 * 60 * 60 * 1000), 100, 20, 4 * 60 * 60 * 1000)
+  expect(hourly.timeAxis).toMatch(/\d{2} \w{3} \d{2}:\d{2}/)
 })
 
 test("adds years to calendar labels only when the visible window crosses a year", () => {
@@ -280,9 +346,9 @@ test("adds years to calendar labels only when the visible window crosses a year"
     volume: 100 + index,
   }))
 
-  const chart = view(multiYearCandles, 100, 20, "FIVE_YEAR")
-  expect(chart.timeAxis).toContain("17 Haz 25")
-  expect(chart.timeAxis).toMatch(/\d{2} [A-ZÇĞİÖŞÜa-zçğıöşü]{3} 26/u)
+  const chart = view(multiYearCandles, 100, 20, DAY_MS)
+  expect(chart.timeAxis).toContain("17 Jun 25")
+  expect(chart.timeAxis).toMatch(/\d{2} [A-Za-z]{3} 26/)
 })
 
 test("keeps a blank row above the native scrollbar when history scrolls", () => {
@@ -296,14 +362,14 @@ test("keeps a blank row above the native scrollbar when history scrolls", () => 
     volume: 100 + index,
   }))
 
-  const chart = view(history, 80, 20, "FIVE_YEAR", 0, true)
+  const chart = view(history, 80, 20, DAY_MS, 0, true)
   const plotLines = toText(chart.plot).split("\n")
   expect(plotLines).toHaveLength(18) // one row ceded to the reserved scrollbar row
   expect(chart.timeAxis).toMatch(/\d{2} [A-ZÇĞİÖŞÜa-zçğıöşü]{3}/u)
 })
 
 test("rasterizes a true-pixel bitmap for kitty terminals", () => {
-  const result = renderCandleChartBitmapView(candles, 40, 10, "INTRADAY", 0, false, { width: 8, height: 16 })
+  const result = renderCandleChartBitmapView(candles, 40, 10, MIN_5_MS, 0, false, { width: 8, height: 16 })
   expect(typeof result).not.toBe("string")
   const chart = result as BitmapChartView
   expect(chart.kind).toBe("bitmap")
@@ -321,6 +387,49 @@ test("rasterizes a true-pixel bitmap for kitty terminals", () => {
   expect(hasDown).toBe(true)
   expect(axisGuideRow(chart.axis, DOWN)).toBeGreaterThanOrEqual(0) // the close label
   expect(chart.timeAxis).toContain(":")
+})
+
+test("pins the OHLC line to a clicked candle until it is cleared", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 20 })
+  const source: CandleSource = {
+    async loadCandles(instrumentUid, range, interval) {
+      return {
+        instrumentUid,
+        range,
+        interval,
+        availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+        intervalMs: 300_000,
+        currency: "TRY",
+        candles: [
+          { timestamp: 1_000_000, open: 40, high: 44, low: 39, close: 43, volume: 10 },
+          { timestamp: 1_300_000, open: 43, high: 47, low: 42, close: 46, volume: 20 },
+        ],
+      }
+    },
+  }
+  const chart = new CandlestickChart(setup.renderer, { source })
+  setup.renderer.root.add(chart.root)
+  chart.setInstrument({ uid: "stock-1", symbol: "TUPRS", displayName: "TUPRS" })
+  await setup.waitForFrame((value) => value.includes("O 43,00"))
+  const mouse = createMockMouse(setup.renderer)
+
+  // The two candles sit at the right of the plot, so a click at the left edge
+  // lands on the older one.
+  await mouse.click(0, 8)
+  const pinned = await setup.waitForFrame((value) => value.includes("O 40,00"))
+  expect(pinned).toContain("◆")
+  expect(pinned).toContain("C 43,00")
+  // The pinned candle names its date and, on a five-minute grain, its hour.
+  expect(pinned).toMatch(/◆ \d{2} \w{3} \d{2}:\d{2}/)
+
+  // Esc hands the line back to the market, and only then does it fall through.
+  expect(chart.handleKey({ name: "escape" } as KeyEvent)).toBeTrue()
+  const live = await setup.waitForFrame((value) => value.includes("O 43,00"))
+  expect(live).not.toContain("◆")
+  expect(chart.handleKey({ name: "escape" } as KeyEvent)).toBeFalse()
+
+  chart.destroy()
+  setup.renderer.destroy()
 })
 
 test("applies a live tick that arrives while candle history is loading", async () => {

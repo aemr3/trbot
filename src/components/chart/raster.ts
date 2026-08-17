@@ -254,6 +254,8 @@ export interface CandleBitmapOptions {
   /** Pixel row of the current-price guide, or null to omit it. */
   guideY: number | null
   guideColor: string
+  /** Pixel column of the picked candle's marker, or null when nothing is picked. */
+  selectionX?: number | null
   palette: ChartPalette
   /** Horizontal slot layout; defaults to spreading the candles across the full width. */
   slots?: CandleSlots
@@ -276,6 +278,11 @@ export function renderCandleBitmap(options: CandleBitmapOptions): ChartBitmap {
   }
   if (options.guideY !== null) {
     drawLine(pixels, width, height, 0, options.guideY, width - 1, options.guideY, parseHex(options.guideColor, 0.9), 1.2)
+  }
+  // Under the candles, so the one it marks is not painted over by its own marker.
+  if (options.selectionX !== null && options.selectionX !== undefined) {
+    const x = options.selectionX
+    drawLine(pixels, width, height, x, 0, x, height - 1, parseHex(options.palette.selectionColor, 0.55), 1)
   }
 
   const slots = options.slots ?? candleSlots(options.candles.length, options.candles.length)

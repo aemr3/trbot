@@ -141,6 +141,20 @@ export function drawGuideLine(buf: PixelBuffer, y: number, color: string): void 
 }
 
 /**
+ * Dashed vertical marker (two dots on, two off) through the picked candle. It
+ * is drawn under the data layer, so the candle it marks stays on top of it.
+ */
+export function drawMarkerColumn(buf: PixelBuffer, x: number, color: string): void {
+  const px = Math.round(x)
+  if (px < 0 || px >= buf.width) return
+  for (let y = 0; y < buf.height; y++) {
+    if (y % 4 < 2) {
+      setPixel(buf, px, y, color, LAYER_FILL)
+    }
+  }
+}
+
+/**
  * Collapses the dot grid into one row of styled chunks per terminal row. Each
  * cell shows the dot pattern of its topmost layer, colored by that layer's
  * dominant color; equal adjacent cells are merged into a single chunk.

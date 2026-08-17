@@ -10,6 +10,8 @@ export interface ChartPalette {
   gridColor: string
   guideUp: string
   guideDown: string
+  // Vertical marker on the candle the trader picked out of the plot.
+  selectionColor: string
 }
 
 /** Mixes two "#rrggbb" colors; ratio 0 returns `a`, 1 returns `b`. */
@@ -29,6 +31,9 @@ export const DOWN_COLOR = "#ff6b6b"
 export const GRID_COLOR = "#303030"
 export const UP_GUIDE_COLOR = "#365747"
 export const DOWN_GUIDE_COLOR = "#59383a"
+// Bright enough to find at a glance, dim enough that the candle it marks still
+// reads as the subject.
+export const SELECTION_COLOR = "#8b93a8"
 
 // Wicks sit between the body color and plain text so single-dot strokes stay legible.
 export const CHART_PALETTE: ChartPalette = {
@@ -41,4 +46,5 @@ export const CHART_PALETTE: ChartPalette = {
   gridColor: GRID_COLOR,
   guideUp: UP_GUIDE_COLOR,
   guideDown: DOWN_GUIDE_COLOR,
+  selectionColor: SELECTION_COLOR,
 }

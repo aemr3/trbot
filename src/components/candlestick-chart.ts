@@ -28,13 +28,14 @@ import {
 import type { ContractOrderCost } from "../market/instrument.ts"
 import { ChartBitmapRenderable, chartBitmapSupport } from "./chart/bitmap-renderable.ts"
 import { drawCandlesticks, drawVolumeBars } from "./chart/chart-draw.ts"
-import { candleSlots, getCandleColumn, getScaledY, type CandleSlots } from "./chart/geometry.ts"
-import { CHART_PALETTE, DOWN_COLOR, UP_COLOR } from "./chart/palette.ts"
+import { candleSlots, getCandleColumn, getCandleX, getScaledY, type CandleSlots } from "./chart/geometry.ts"
+import { CHART_PALETTE, DOWN_COLOR, SELECTION_COLOR, UP_COLOR } from "./chart/palette.ts"
 import {
   bufferToBrailleLines,
   createPixelBuffer,
   drawGridLines,
   drawGuideLine,
+  drawMarkerColumn,
 } from "./chart/pixel-buffer.ts"
 import { KittyPlaceholderImages } from "./chart/kitty-placeholder.ts"
 import { getCandlePixelX, renderCandleBitmap, type ChartBitmap } from "./chart/raster.ts"
@@ -67,6 +68,10 @@ const MAX_CANDLE_HEIGHT_RATIO = 0.35
 const ZOOM_STEP = 1.25
 const MIN_VISIBLE_ZOOM_CANDLES = 3
 const DOUBLE_CLICK_MS = 400
+// Chart rows below which the summary gives up its trailing blank row so the
+// plot keeps its own: four toolbar rows and a two-line summary already claim
+// most of a short pane.
+const MIN_HEIGHT_FOR_SUMMARY_GAP = 14
 // Trackpad swipes drift across axes, so a wheel gesture stays locked to the
 // axis it started on while events keep arriving within this window.
 const WHEEL_AXIS_LOCK_MS = 200
@@ -124,6 +129,9 @@ export class CandlestickChart {
   private zoomDots: number = CANDLE_SPACING_DOTS
   // Previous left-click on the plot, for double-click detection.
   private lastPlotClick: { time: number; x: number; y: number } | null = null
+  // Candle the trader clicked, held by timestamp so scrolling, zooming and live
+  // ticks that rewrite the newest candle all keep pointing at the same bar.
+  private selectedTimestamp: number | null = null
   // Axis of the wheel gesture in progress; cross-axis events are drift.
   private wheelGesture: { horizontal: boolean; time: number } | null = null
   private pendingLivePrice: { instrumentUid: string; price: number; timestamp: number } | null = null
@@ -158,11 +166,18 @@ export class CandlestickChart {
       flexGrow: 1,
       width: "100%",
       minHeight: 5,
+      // A resize decides whether there is room for the blank row under the
+      // summary, so the summary is re-measured with the pane.
+      onSizeChange: () => this.renderSummary(),
     })
     this.summary = new TextRenderable(renderer, {
       content: "Select an instrument to view its chart.",
       fg: MUTED_COLOR,
       wrapMode: "none",
+      // One row for the prices, and a second only while there is a contract
+      // cost to put under them; a narrow terminal keeps the row for the plot.
+      height: 1,
+      flexShrink: 0,
       marginBottom: 1,
       onSizeChange: () => this.renderSummary(),
     })
@@ -260,7 +275,9 @@ export class CandlestickChart {
         if (isDoubleClick) {
           this.lastPlotClick = null
           this.zoomTo(CANDLE_SPACING_DOTS, event.x)
+          return
         }
+        this.pickCandle(event.x)
       },
     })
     const plotColumn = new BoxRenderable(renderer, {
@@ -353,6 +370,12 @@ export class CandlestickChart {
   }
 
   handleKey(key: KeyEvent): boolean {
+    // Only claimed while a candle is marked; otherwise Esc belongs to the screen.
+    if (key.name === "escape") {
+      if (this.selectedTimestamp === null) return false
+      this.clearSelection()
+      return true
+    }
     if (!key.ctrl && !key.shift && !key.meta && !key.option && key.name === "f") {
       const current = CANDLE_CHART_TARGETS.indexOf(this.target)
       const target = CANDLE_CHART_TARGETS[(current + 1) % CANDLE_CHART_TARGETS.length]
@@ -448,6 +471,8 @@ export class CandlestickChart {
     const request = new AbortController()
     this.request = request
     this.series = null
+    // The candle that was marked belongs to the series being replaced.
+    this.selectedTimestamp = null
     this.summary.content = `${CANDLE_INTERVAL_LABELS[this.interval]} · Loading OHLC…`
     this.summary.fg = "#aaaaaa"
     this.showPlotMessage("Loading candles…", MUTED_COLOR)
@@ -499,7 +524,10 @@ export class CandlestickChart {
       candleCapacity(series.candles, this.chartArea.width, this.zoomDots),
       this.scrollOffset,
     )
-    const last = visible.at(-1) ?? series.candles.at(-1)!
+    // A marked candle owns the line until it is cleared; otherwise it reads the
+    // newest candle on screen.
+    const picked = this.selectedCandle()
+    const last = picked ?? visible.at(-1) ?? series.candles.at(-1)!
     const candleColor = last.close >= last.open ? UP_COLOR : DOWN_COLOR
     const candleChange = last.open === 0 ? 0 : (last.close / last.open - 1) * 100
     const changeText = `${candleChange >= 0 ? "+" : ""}${candleChange.toFixed(2)}%`
@@ -507,6 +535,13 @@ export class CandlestickChart {
     const chunks: TextChunk[] = []
     if (this.scrollOffset > 0 && this.maxScrollOffset() > 0) {
       chunks.push(fg(MUTED_COLOR)("history · "))
+    }
+    if (picked) {
+      // Named, so a pinned line is never mistaken for the live one. The whole
+      // series decides the label, not the window: an hourly candle keeps its
+      // hour whether or not the window happens to sit inside one day.
+      const style = timestampStyle(series.candles, series.intervalMs)
+      chunks.push(fg(SELECTION_COLOR)(`◆ ${formatTimestamp(picked.timestamp, { ...style, date: true })} · `))
     }
     chunks.push(
       fg("#aaaaaa")(`${CANDLE_INTERVAL_LABELS[series.interval]} · `),
@@ -521,14 +556,23 @@ export class CandlestickChart {
       fg(candleColor)(`  ${changeText}`),
     )
     const cost = this.contractCost
-    if (cost && (cost.notional !== null || cost.required !== null)) {
+    const showsCost = cost !== null && (cost.notional !== null || cost.required !== null)
+    if (cost && showsCost) {
+      // What a contract costs is about the instrument, not about this candle,
+      // so it sits on its own line under the prices.
       chunks.push(
-        fg(MUTED_COLOR)("   1 lot "),
+        fg(MUTED_COLOR)("\n1 lot "),
         fg(COST_COLOR)(formatMoney(cost.notional, cost.currency)),
         fg(MUTED_COLOR)(" · margin "),
         fg(COST_COLOR)(formatMoney(cost.required, cost.currency)),
       )
     }
+    const rows = showsCost ? 2 : 1
+    if (this.summary.height !== rows) this.summary.height = rows
+    // The blank row below the summary is the first thing to go on a short
+    // chart: there, the cost line takes it rather than a row of the plot.
+    const margin = showsCost && this.root.height < MIN_HEIGHT_FOR_SUMMARY_GAP ? 0 : 1
+    if (this.summary.marginBottom !== margin) this.summary.marginBottom = margin
     this.summary.content = new StyledText(chunks)
   }
 
@@ -548,11 +592,14 @@ export class CandlestickChart {
     }
     const reserveScrollbarRow = this.maxScrollOffset() > 0
     const bitmapSupport = chartBitmapSupport(this.renderer)
+    const grainMs = this.series?.intervalMs ?? 0
     const view = bitmapSupport
       ? renderCandleChartBitmapView(
-          candles, width, height, this.range, this.scrollOffset, reserveScrollbarRow, bitmapSupport.cellPixel,
-          this.zoomDots)
-      : renderCandleChart(candles, width, height, this.range, this.scrollOffset, reserveScrollbarRow, this.zoomDots)
+          candles, width, height, grainMs, this.scrollOffset, reserveScrollbarRow, bitmapSupport.cellPixel,
+          this.zoomDots, this.selectedTimestamp)
+      : renderCandleChart(
+          candles, width, height, grainMs, this.scrollOffset, reserveScrollbarRow, this.zoomDots,
+          this.selectedTimestamp)
     if (typeof view === "string") {
       this.showPlotMessage(view, MUTED_COLOR)
       this.syncScrollbar()
@@ -651,6 +698,66 @@ export class CandlestickChart {
     this.scrollOffset = Math.max(0, Math.min(Math.round(candles.length - newEnd), candles.length - Math.min(candles.length, newCapacity)))
     this.renderSummary()
     this.renderBody()
+  }
+
+  /** The candle window on screen and how it is laid out, as the renderers see it. */
+  private plotWindow(): { layout: ChartLayout; visible: Candle[]; slots: CandleSlots } | null {
+    const candles = this.series?.candles
+    if (!candles || candles.length === 0 || this.chartArea.width <= 0) return null
+    const layout = chartWidthLayout(candles, this.chartArea.width, this.zoomDots)
+    const visible = selectVisibleCandles(candles, layout.capacity, Math.min(this.scrollOffset, this.maxScrollOffset()))
+    if (visible.length === 0) return null
+    const plotDots = layout.plotWidth * BRAILLE_X
+    return {
+      layout,
+      visible,
+      slots: candleSlots(visible.length, Math.min(layout.capacity, Math.floor(plotDots / MAX_CANDLE_SPACING_DOTS))),
+    }
+  }
+
+  /**
+   * Marks the candle nearest the click, so the OHLC line reads that bar instead
+   * of the live one. Clicking the marked candle again, or clicking off the plot,
+   * hands the line back to the market.
+   */
+  private pickCandle(clickX: number): void {
+    const window = this.plotWindow()
+    if (!window) return
+    const { layout, visible, slots } = window
+    const column = Math.round(clickX - this.chartArea.x)
+    if (column < 0 || column >= layout.plotWidth) {
+      this.clearSelection()
+      return
+    }
+    let nearestTimestamp: number | null = null
+    let nearestDistance = Number.POSITIVE_INFINITY
+    for (let index = 0; index < visible.length; index++) {
+      const candle = visible[index]
+      if (!candle) continue
+      const distance = Math.abs(getCandleColumn(slots.offset + index, slots.count, layout.plotWidth) - column)
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearestTimestamp = candle.timestamp
+      }
+    }
+    if (nearestTimestamp === null) return
+    this.selectedTimestamp = this.selectedTimestamp === nearestTimestamp ? null : nearestTimestamp
+    this.renderSummary()
+    this.renderBody()
+  }
+
+  private clearSelection(): void {
+    if (this.selectedTimestamp === null) return
+    this.selectedTimestamp = null
+    this.renderSummary()
+    this.renderBody()
+  }
+
+  /** The marked candle, or null when the line is following the market. */
+  private selectedCandle(): Candle | null {
+    const timestamp = this.selectedTimestamp
+    if (timestamp === null) return null
+    return this.series?.candles.find((candle) => candle.timestamp === timestamp) ?? null
   }
 
   private scrollTo(offset: number): void {
@@ -858,10 +965,12 @@ export function renderCandleChart(
   candles: Candle[],
   width: number,
   height: number,
-  range: CandleRange,
+  /** Milliseconds one candle covers, which decides how its time reads. */
+  grainMs: number,
   scrollOffset = 0,
   reserveScrollbarRow = false,
   dotsPerCandle = CANDLE_SPACING_DOTS,
+  selectedTimestamp: number | null = null,
 ): BrailleChartView | string {
   const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow, dotsPerCandle)
   if (typeof frame === "string") return frame
@@ -873,6 +982,14 @@ export function renderCandleChart(
   const guideY = getScaledY(latest.close, floor, ceiling, 0, priceBottom)
   const rising = latest.close >= latest.open
   drawGuideLine(buf, guideY, rising ? CHART_PALETTE.guideUp : CHART_PALETTE.guideDown)
+  const selectedIndex = selectedCandleIndex(visible, selectedTimestamp)
+  if (selectedIndex !== null) {
+    drawMarkerColumn(
+      buf,
+      getCandleX(slots.offset + selectedIndex, slots.count, buf.width),
+      CHART_PALETTE.selectionColor,
+    )
+  }
   drawCandlesticks(buf, visible, 0, priceBottom, CHART_PALETTE, floor, ceiling, slots)
   if (volumeRows > 0) {
     drawVolumeBars(buf, visible, plotRows * BRAILLE_Y, totalRows * BRAILLE_Y - 1, CHART_PALETTE, slots)
@@ -885,7 +1002,7 @@ export function renderCandleChart(
   })
 
   const guideRow = Math.max(0, Math.min(plotRows - 1, Math.floor(guideY / BRAILLE_Y)))
-  const timeTicks = buildTimeTicks(visible, range, layout.plotWidth, (index) =>
+  const timeTicks = buildTimeTicks(visible, timestampStyle(visible, grainMs), layout.plotWidth, (index) =>
     getCandleColumn(slots.offset + index, slots.count, layout.plotWidth))
   return {
     kind: "braille",
@@ -902,11 +1019,13 @@ export function renderCandleChartBitmapView(
   candles: Candle[],
   width: number,
   height: number,
-  range: CandleRange,
+  /** Milliseconds one candle covers, which decides how its time reads. */
+  grainMs: number,
   scrollOffset: number,
   reserveScrollbarRow: boolean,
   cellPixel: { width: number; height: number },
   dotsPerCandle = CANDLE_SPACING_DOTS,
+  selectedTimestamp: number | null = null,
 ): BitmapChartView | string {
   const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow, dotsPerCandle)
   if (typeof frame === "string") return frame
@@ -918,6 +1037,7 @@ export function renderCandleChartBitmapView(
   const guideY = getScaledY(latest.close, floor, ceiling, 0, pricePixels - 1)
   const rising = latest.close >= latest.open
 
+  const selectedIndex = selectedCandleIndex(visible, selectedTimestamp)
   const bitmap = renderCandleBitmap({
     candles: visible,
     pixelWidth,
@@ -928,12 +1048,15 @@ export function renderCandleChartBitmapView(
     gridYs: gridRows.map((row) => (row + 0.5) * cellPixel.height),
     guideY,
     guideColor: rising ? CHART_PALETTE.guideUp : CHART_PALETTE.guideDown,
+    selectionX: selectedIndex === null
+      ? null
+      : getCandlePixelX(slots.offset + selectedIndex, slots.count, pixelWidth),
     palette: CHART_PALETTE,
     slots,
   })
 
   const guideRow = Math.max(0, Math.min(plotRows - 1, Math.floor(guideY / cellPixel.height)))
-  const timeTicks = buildTimeTicks(visible, range, layout.plotWidth, (index) =>
+  const timeTicks = buildTimeTicks(visible, timestampStyle(visible, grainMs), layout.plotWidth, (index) =>
     Math.max(0, Math.min(layout.plotWidth - 1,
       Math.floor(getCandlePixelX(slots.offset + index, slots.count, pixelWidth) / cellPixel.width))))
   return {
@@ -947,6 +1070,13 @@ export function renderCandleChartBitmapView(
   }
 }
 
+/** Where the marked candle sits in the visible window, or null when it is off screen. */
+function selectedCandleIndex(visible: Candle[], selectedTimestamp: number | null): number | null {
+  if (selectedTimestamp === null) return null
+  const index = visible.findIndex((candle) => candle.timestamp === selectedTimestamp)
+  return index === -1 ? null : index
+}
+
 interface TimeTick {
   column: number
   label: string
@@ -954,19 +1084,13 @@ interface TimeTick {
 
 function buildTimeTicks(
   candles: Candle[],
-  range: CandleRange,
+  style: TimestampStyle,
   plotWidth: number,
   columnOf: (index: number) => number,
 ): TimeTick[] {
   const desiredCount = plotWidth >= 60 ? 5 : plotWidth >= 30 ? 3 : 2
   const count = Math.min(desiredCount, candles.length)
   if (count === 0) return []
-  const firstTimestamp = candles[0]?.timestamp
-  const lastTimestamp = candles.at(-1)?.timestamp
-  const includeYear = range !== "INTRADAY"
-    && firstTimestamp !== undefined
-    && lastTimestamp !== undefined
-    && calendarYear(firstTimestamp) !== calendarYear(lastTimestamp)
 
   const ticks: TimeTick[] = []
   for (let tickIndex = 0; tickIndex < count; tickIndex++) {
@@ -977,7 +1101,7 @@ function buildTimeTicks(
     if (!candle) continue
     ticks.push({
       column: columnOf(candleIndex),
-      label: formatTimestamp(candle.timestamp, range, includeYear),
+      label: formatTimestamp(candle.timestamp, style),
     })
   }
   return ticks
@@ -1036,22 +1160,78 @@ function candleCapacity(candles: Candle[], width: number, dotsPerCandle = CANDLE
   return chartWidthLayout(candles, width, dotsPerCandle).capacity
 }
 
-function formatTimestamp(timestamp: number | undefined, range: CandleRange, includeYear = false): string {
+/** Which parts of a timestamp a label carries; see `timestampStyle`. */
+interface TimestampStyle {
+  date: boolean
+  year: boolean
+  time: boolean
+}
+
+const DAY_MS = 86_400_000
+
+/**
+ * What a candle's timestamp has to say to be unambiguous, decided by the grain
+ * it covers and the window it sits in: an hourly candle needs its hour, and it
+ * needs a date too once the window runs past midnight. A daily candle or
+ * coarser never needs a time, and the year shows only when the window spans
+ * more than one.
+ */
+function timestampStyle(candles: Candle[], grainMs: number | null): TimestampStyle {
+  // A series that does not name its grain still shows it: the closest two
+  // candles are one grain apart, whatever the gaps around them.
+  const grain = grainMs && grainMs > 0 ? grainMs : closestCandleGap(candles)
+  const time = grain > 0 && grain < DAY_MS
+  const first = candles[0]?.timestamp
+  const last = candles.at(-1)?.timestamp
+  const spans = (part: (timestamp: number) => string) =>
+    first !== undefined && last !== undefined && part(first) !== part(last)
+  const date = !time || spans(calendarDay)
+  return { date, year: date && spans(calendarYear), time }
+}
+
+/** Smallest gap between neighbouring candles, or 0 when there is only one. */
+function closestCandleGap(candles: Candle[]): number {
+  let smallest = Number.POSITIVE_INFINITY
+  for (let index = 1; index < candles.length; index++) {
+    const gap = (candles[index]?.timestamp ?? 0) - (candles[index - 1]?.timestamp ?? 0)
+    if (gap > 0 && gap < smallest) smallest = gap
+  }
+  return Number.isFinite(smallest) ? smallest : 0
+}
+
+// English month names: the rest of the chart's chrome is English, and "Ağu"
+// beside "1h" reads as a mix of two languages. The date and the time are
+// formatted apart and joined, because asking for both at once yields the
+// locale's "31 Jul at 14:00", which is too wide for a time-axis tick.
+function formatTimestamp(timestamp: number | undefined, style: TimestampStyle): string {
   if (timestamp === undefined) return ""
-  const options: Intl.DateTimeFormatOptions =
-    range === "INTRADAY"
-      ? { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Europe/Istanbul" }
-      : {
-          day: "2-digit",
-          month: "short",
-          year: includeYear ? "2-digit" : undefined,
-          timeZone: "Europe/Istanbul",
-        }
-  return new Intl.DateTimeFormat("tr-TR", options).format(new Date(timestamp))
+  const date = new Date(timestamp)
+  const parts: string[] = []
+  if (style.date) {
+    parts.push(new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: style.year ? "2-digit" : undefined,
+      timeZone: "Europe/Istanbul",
+    }).format(date))
+  }
+  if (style.time) {
+    parts.push(new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "Europe/Istanbul",
+    }).format(date))
+  }
+  return parts.join(" ")
 }
 
 function calendarYear(timestamp: number): string {
   return new Intl.DateTimeFormat("en", { year: "numeric", timeZone: "Europe/Istanbul" }).format(new Date(timestamp))
+}
+
+function calendarDay(timestamp: number): string {
+  return new Intl.DateTimeFormat("en", { dateStyle: "short", timeZone: "Europe/Istanbul" }).format(new Date(timestamp))
 }
 
 function formatMoney(value: number | null, currency: string): string {
