@@ -57,6 +57,13 @@
       "when": 1786960027457,
       "tag": "0007_add_stop_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786965297211,
+      "tag": "0008_add_price_alerts",
+      "breakpoints": true
     }
   ]
 }

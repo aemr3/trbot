@@ -17,6 +17,8 @@ import type {
   AccountStream,
   PortfolioSummary,
 } from "../trading/account.ts"
+import type { PriceAlertView } from "../market/alert-monitor.ts"
+import { isTrailingAlert, type PriceAlertStatus } from "../market/alert.ts"
 import type { QuoteUpdate } from "../market/quote-stream.ts"
 import type { StopRuleView } from "../trading/stop-monitor.ts"
 import { isTrailingStopRule, type StopRuleStatus } from "../trading/stop.ts"
@@ -31,7 +33,7 @@ const UP_COLOR = "#70d7a1"
 const DOWN_COLOR = "#ff6b6b"
 const DEFAULT_REFRESH_INTERVAL_MS = 15_000
 
-const TABS = ["portfolio", "orders", "positions", "stops"] as const
+const TABS = ["portfolio", "orders", "positions", "stops", "alerts"] as const
 export type AccountTab = (typeof TABS)[number]
 
 const TAB_LABELS: Record<AccountTab, string> = {
@@ -39,6 +41,7 @@ const TAB_LABELS: Record<AccountTab, string> = {
   orders: "Orders",
   positions: "Positions",
   stops: "Stops",
+  alerts: "Alerts",
 }
 
 const STATUS_LABELS: Record<StopRuleStatus, string> = {
@@ -48,16 +51,25 @@ const STATUS_LABELS: Record<StopRuleStatus, string> = {
   DONE: "done",
 }
 
+const ALERT_STATUS_LABELS: Record<PriceAlertStatus, string> = {
+  ARMED: "armed",
+  PAUSED: "paused",
+  TRIGGERED: "fired",
+}
+
 export interface AccountPanelOptions {
   source?: AccountSource
   stream?: AccountStream
   onError?: (error: unknown) => void
   onFocusRequest?: () => void
   onPositionSelect?: (position: AccountPosition) => void
-  // The stops tab reports; the screen owns every action it names.
+  // The stops and alerts tabs report; the screen owns every action they name.
   onStopCreate?: () => void
   onStopEdit?: (view: StopRuleView) => void
   onStopToggle?: (view: StopRuleView) => void
+  onAlertCreate?: () => void
+  onAlertEdit?: (view: PriceAlertView) => void
+  onAlertToggle?: (view: PriceAlertView) => void
   // Positions drive the stop monitor, so it hears about every change here.
   onPositionsChange?: (positions: AccountPosition[]) => void
   refreshIntervalMs?: number
@@ -74,6 +86,8 @@ export class AccountPanel {
   private snapshot: AccountSnapshot | null = null
   private stopViews: StopRuleView[] = []
   private stopSelection = 0
+  private alertViews: PriceAlertView[] = []
+  private alertSelection = 0
   private tab: AccountTab = "portfolio"
   private request: AbortController | null = null
   private refreshTimer: ReturnType<typeof setInterval> | null = null
@@ -81,9 +95,11 @@ export class AccountPanel {
   private destroyed = false
   private liveSequence = 0
   private readonly liveUpdates: Array<{ sequence: number; update: AccountLiveUpdate }> = []
-  // Position rows are reused across renders; see renderPositionRows.
-  private positionRows: Array<{ row: BoxRenderable; text: TextRenderable; position: AccountPosition }> = []
-  private stopRows: Array<{ row: BoxRenderable; text: TextRenderable; view: StopRuleView }> = []
+  // Rows are reused across renders; see renderRows. `rowsKind` names the list
+  // they were built for, so switching tabs rebuilds rather than repainting one
+  // list's rows with another's contents.
+  private rows: PanelRow[] = []
+  private rowsKind: string | null = null
   // Quote and account events arrive in bursts; they mutate the snapshot and
   // the visible tab is re-rendered once per burst.
   private readonly liveRender = new RenderCoalescer(() => {
@@ -197,9 +213,10 @@ export class AccountPanel {
       this.selectTab(TABS[(index + direction + TABS.length) % TABS.length] ?? "portfolio")
       return true
     }
-    // On the stops tab the row keys move a selection instead of scrolling, and
-    // the rule actions take over the letters.
+    // On the stops and alerts tabs the row keys move a selection instead of
+    // scrolling, and the rule actions take over the letters.
     if (this.tab === "stops" && this.handleStopKey(key)) return true
+    if (this.tab === "alerts" && this.handleAlertKey(key)) return true
     if (!key.ctrl && key.name === "r") {
       void this.refresh()
       return true
@@ -246,10 +263,43 @@ export class AccountPanel {
     return false
   }
 
+  private handleAlertKey(key: KeyEvent): boolean {
+    if (key.ctrl || key.meta || key.option) return false
+    const selected = this.alertViews[this.alertSelection]
+    if (key.name === "n") {
+      this.options.onAlertCreate?.()
+      return true
+    }
+    if (key.name === "up" || key.name === "k" || key.name === "down" || key.name === "j") {
+      if (this.alertViews.length === 0) return false
+      const direction = key.name === "up" || key.name === "k" ? -1 : 1
+      this.alertSelection = Math.max(0, Math.min(this.alertSelection + direction, this.alertViews.length - 1))
+      this.renderContent()
+      return true
+    }
+    if (!selected) return false
+    if (key.name === "e" || key.name === "return") {
+      this.options.onAlertEdit?.(selected)
+      return true
+    }
+    if (key.name === "space") {
+      this.options.onAlertToggle?.(selected)
+      return true
+    }
+    // Deleting is destructive, so the screen owns it and its confirmation.
+    return false
+  }
+
   /** The rule the stops tab is pointing at, for actions the screen owns. */
   selectedStop(): StopRuleView | null {
     if (this.tab !== "stops") return null
     return this.stopViews[this.stopSelection] ?? null
+  }
+
+  /** The alert the alerts tab is pointing at, for actions the screen owns. */
+  selectedAlert(): PriceAlertView | null {
+    if (this.tab !== "alerts") return null
+    return this.alertViews[this.alertSelection] ?? null
   }
 
   /** Replaces the stops tab's contents; the monitor owns what they say. */
@@ -258,6 +308,14 @@ export class AccountPanel {
     this.stopViews = views
     this.stopSelection = Math.max(0, Math.min(this.stopSelection, views.length - 1))
     if (this.tab === "stops") this.liveRender.schedule()
+  }
+
+  /** Replaces the alerts tab's contents; the monitor owns what they say. */
+  showPriceAlerts(views: PriceAlertView[]): void {
+    if (this.destroyed) return
+    this.alertViews = views
+    this.alertSelection = Math.max(0, Math.min(this.alertSelection, views.length - 1))
+    if (this.tab === "alerts") this.liveRender.schedule()
   }
 
   selectTab(tab: AccountTab): void {
@@ -378,12 +436,20 @@ export class AccountPanel {
         this.showTextContent(renderStops(this.stopViews), MUTED_COLOR)
         return
       }
-      this.renderStopRows(this.stopViews)
+      this.renderRows("stops", this.stopViews, stopChunks, this.stopSelection)
+      return
+    }
+    if (this.tab === "alerts") {
+      if (this.alertViews.length === 0) {
+        this.showTextContent(renderPriceAlerts(this.alertViews), MUTED_COLOR)
+        return
+      }
+      this.renderRows("alerts", this.alertViews, alertChunks, this.alertSelection)
       return
     }
     if (!this.snapshot) return
     if (this.tab === "positions" && this.snapshot.positions.length > 0) {
-      this.renderPositionRows(this.snapshot.positions)
+      this.renderRows("positions", this.snapshot.positions, positionChunks)
       return
     }
     const content = this.tab === "portfolio"
@@ -394,93 +460,78 @@ export class AccountPanel {
     this.showTextContent(content, "#cccccc")
   }
 
-  // Same reuse as the position rows: the monitor repaints this list on every
-  // tick burst, so rows are updated in place rather than rebuilt.
-  private renderStopRows(views: StopRuleView[]): void {
-    if (this.stopRows.length === 0) this.clearBody()
-    while (this.stopRows.length > views.length) {
-      const extra = this.stopRows.pop()
+  /**
+   * Paints one row per item, reusing the renderables between renders: live
+   * streams re-render these lists on every burst flush, and rebuilding a
+   * renderable per row at that rate churns layout nodes. Each entry's `select`
+   * and `item` are refreshed in place, so a row's click always acts on what the
+   * row currently displays.
+   */
+  private renderRows<T>(kind: string, items: T[], chunks: (item: T) => TextChunk[], selected?: number): void {
+    if (this.rowsKind !== kind) {
+      this.clearBody()
+      this.rowsKind = kind
+    }
+    while (this.rows.length > items.length) {
+      const extra = this.rows.pop()
       if (!extra) break
       this.body.remove(extra.row)
       if (!extra.row.isDestroyed) extra.row.destroyRecursively()
     }
-    views.forEach((view, index) => {
-      const selected = index === this.stopSelection
-      const existing = this.stopRows[index]
+    items.forEach((item, index) => {
+      // A list without a selection leaves every row on the panel background.
+      const background = selected === index ? ACTIVE_BUTTON_BG : PANEL_BG
+      const existing = this.rows[index]
       if (existing) {
-        existing.view = view
-        existing.text.content = new StyledText(stopChunks(view))
-        existing.row.backgroundColor = selected ? ACTIVE_BUTTON_BG : PANEL_BG
+        existing.item = item
+        existing.text.content = new StyledText(chunks(item))
+        existing.row.backgroundColor = background
         return
       }
-      const entry = {
-        view,
+      const entry: PanelRow = {
+        item,
         row: new BoxRenderable(this.renderer, {
           width: "100%",
           height: 1,
           flexShrink: 0,
-          backgroundColor: selected ? ACTIVE_BUTTON_BG : PANEL_BG,
+          backgroundColor: background,
           onMouseDown: (event) => {
             if (event.button !== 0) return
             this.options.onFocusRequest?.()
-            this.stopSelection = this.stopRows.findIndex((candidate) => candidate === entry)
-            this.renderContent()
-            this.options.onStopEdit?.(entry.view)
+            this.selectRow(entry)
           },
         }),
         text: new TextRenderable(this.renderer, {
-          content: new StyledText(stopChunks(view)),
+          content: new StyledText(chunks(item)),
           width: "100%",
           wrapMode: "none",
         }),
       }
       entry.row.add(entry.text)
       this.body.add(entry.row)
-      this.stopRows.push(entry)
+      this.rows.push(entry)
     })
   }
 
-  // Rows are reused between renders: live streams re-render this list on every
-  // burst flush, and destroying and rebuilding a renderable per position at
-  // that rate churns layout nodes. Each entry's `position` is kept current so
-  // the row's click handler always selects what the row displays.
-  private renderPositionRows(positions: AccountPosition[]): void {
-    if (this.positionRows.length === 0) this.clearBody()
-    while (this.positionRows.length > positions.length) {
-      const extra = this.positionRows.pop()
-      if (!extra) break
-      this.body.remove(extra.row)
-      if (!extra.row.isDestroyed) extra.row.destroyRecursively()
+  /** Moves the current tab's selection to a clicked row and acts on it. */
+  private selectRow(entry: PanelRow): void {
+    const index = this.rows.indexOf(entry)
+    if (index < 0) return
+    if (this.tab === "stops") {
+      this.stopSelection = index
+      this.renderContent()
+      const view = this.stopViews[index]
+      if (view) this.options.onStopEdit?.(view)
+      return
     }
-    positions.forEach((position, index) => {
-      const existing = this.positionRows[index]
-      if (existing) {
-        existing.position = position
-        existing.text.content = new StyledText(positionChunks(position))
-        return
-      }
-      const entry = {
-        position,
-        row: new BoxRenderable(this.renderer, {
-          width: "100%",
-          height: 1,
-          flexShrink: 0,
-          onMouseDown: (event) => {
-            if (event.button !== 0) return
-            this.options.onFocusRequest?.()
-            this.options.onPositionSelect?.(entry.position)
-          },
-        }),
-        text: new TextRenderable(this.renderer, {
-          content: new StyledText(positionChunks(position)),
-          width: "100%",
-          wrapMode: "none",
-        }),
-      }
-      entry.row.add(entry.text)
-      this.body.add(entry.row)
-      this.positionRows.push(entry)
-    })
+    if (this.tab === "alerts") {
+      this.alertSelection = index
+      this.renderContent()
+      const view = this.alertViews[index]
+      if (view) this.options.onAlertEdit?.(view)
+      return
+    }
+    if (this.tab === "positions") this.options.onPositionSelect?.(entry.item as AccountPosition)
   }
 
   private showTextContent(content: StyledText | string, color: string): void {
@@ -491,13 +542,22 @@ export class AccountPanel {
   }
 
   private clearBody(): void {
-    this.positionRows = []
-    this.stopRows = []
+    this.rows = []
+    this.rowsKind = null
     for (const child of this.body.getChildren()) {
       this.body.remove(child)
       if (child !== this.content && !child.isDestroyed) child.destroyRecursively()
     }
   }
+}
+
+// One reused row. `item` is whatever the current list holds; the tab decides
+// how to read it, so it stays untyped here rather than making the whole panel
+// generic over one list at a time.
+interface PanelRow {
+  row: BoxRenderable
+  text: TextRenderable
+  item: unknown
 }
 
 export function renderPortfolio(portfolio: PortfolioSummary): StyledText {
@@ -560,7 +620,7 @@ function stopChunks(view: StopRuleView): TextChunk[] {
       ? fg(DOWN_COLOR)("▲")
       : fg(MUTED_COLOR)("○")
   const state = rule.status === "ARMED" && view.feed !== "live"
-    ? (view.feed === "stale" ? "stale" : "no feed")
+    ? feedLabel(view.feed, rule.basis === "CLOSE")
     : !view.hasPosition && rule.status !== "DONE"
       ? "no position"
       : STATUS_LABELS[rule.status]
@@ -590,6 +650,66 @@ function stopKindLabel(view: StopRuleView): string {
           ? `trail${rule.kind === "TRAILING_ATR" ? "atr" : "%"}`
           : rule.kind
   return `${kind}${rule.basis === "CLOSE" ? "@cl" : ""}`.padEnd(9)
+}
+
+/**
+ * Why a rule is not watching, named after the feed it actually reads. A
+ * close-based rule never touches the tick stream, so reporting "no feed" for
+ * one sends the trader looking at the wrong thing entirely.
+ */
+function feedLabel(feed: StopRuleView["feed"], fromCandles: boolean): string {
+  if (feed === "stale") return fromCandles ? "old candle" : "stale"
+  return fromCandles ? "no candles" : "no feed"
+}
+
+export function renderPriceAlerts(views: PriceAlertView[]): StyledText | string {
+  if (views.length === 0) return "No price alerts. Press n to add one."
+  const chunks: TextChunk[] = []
+  views.forEach((view, index) => {
+    chunks.push(...alertChunks(view))
+    if (index < views.length - 1) chunks.push(fg("#cccccc")("\n"))
+  })
+  return new StyledText(chunks)
+}
+
+// One alert per row, laid out on the same columns as a stop: what it watches,
+// where the level is, how far the market still has to travel, and whether it is
+// actually watching.
+function alertChunks(view: PriceAlertView): TextChunk[] {
+  const { alert } = view
+  const marker = alert.status === "ARMED"
+    ? (view.feed === "live" ? fg(UP_COLOR)("●") : fg("#e5c07b")("◐"))
+    : alert.status === "TRIGGERED"
+      ? fg("#e5c07b")("★")
+      : fg(MUTED_COLOR)("○")
+  const state = alert.status === "ARMED" && view.feed !== "live"
+    ? feedLabel(view.feed, alert.basis === "CLOSE")
+    : ALERT_STATUS_LABELS[alert.status]
+  const distance = view.distancePercent === null
+    ? "    —"
+    : `${view.distancePercent >= 0 ? "+" : ""}${view.distancePercent.toFixed(1)}%`.padStart(6)
+  return [
+    fg("#dddddd")(`${alert.displayName.slice(0, 8).padEnd(9)}`),
+    fg(alert.direction === "ABOVE" ? UP_COLOR : DOWN_COLOR)(alert.direction === "ABOVE" ? "↑" : "↓"),
+    fg("#bbbbbb")(formatNumber(view.level).padStart(9)),
+    fg(MUTED_COLOR)(`${distance} ${alertKindLabel(view)} `),
+    marker,
+    fg(MUTED_COLOR)(` ${state}`),
+  ]
+}
+
+function alertKindLabel(view: PriceAlertView): string {
+  const { alert } = view
+  const kind = alert.kind === "PRICE"
+    ? "price"
+    : alert.kind === "PERCENT"
+      ? `${formatQuantity(alert.value)}%`
+      : alert.kind === "ATR"
+        ? `${formatQuantity(alert.value)}atr`
+        : isTrailingAlert(alert.kind)
+          ? `trail${alert.kind === "TRAILING_ATR" ? "atr" : "%"}`
+          : alert.kind
+  return `${kind}${alert.basis === "CLOSE" ? "@cl" : ""}`.padEnd(9)
 }
 
 function positionChunks(position: AccountPosition): TextChunk[] {

@@ -34,6 +34,11 @@ import {
 // A price this old is treated as no price at all: a dead feed must not look
 // like a market standing still just above a stop.
 const DEFAULT_STALE_PRICE_MS = 20_000
+// Candle reads happen on the screen's poll rather than per tick, so a close
+// based rule is judged against a window a few polls wide instead of the tick
+// one. Holding it to the tick window would flag a perfectly healthy rule stale
+// between every read.
+const STALE_CANDLE_MS = 90_000
 const ATR_PERIOD = 14
 
 export interface StopTriggerEvent {
@@ -78,6 +83,10 @@ export class StopMonitor {
   private rules = new Map<string, StopRule>()
   private positions = new Map<string, AccountPosition>()
   private readonly quotes = new Map<string, QuoteSample>()
+  // The last closed candle read per instrument and grain, keyed
+  // `instrumentUid:interval`. A close-based rule watches these, not ticks, so
+  // this is the feed that says whether it is actually working.
+  private readonly candles = new Map<string, QuoteSample>()
   // Rules seen at least once with the market on the safe side of their level.
   // A rule typed on the wrong side of the market therefore waits instead of
   // firing the instant it is saved.
@@ -121,9 +130,13 @@ export class StopMonitor {
   views(): StopRuleView[] {
     const now = this.now()
     return [...this.rules.values()]
-      .sort((left, right) => left.symbol.localeCompare(right.symbol) || left.createdAt - right.createdAt)
+      // Newest first: the rule just written is the one being looked for.
+      .sort((left, right) => right.createdAt - left.createdAt || left.symbol.localeCompare(right.symbol))
       .map((rule) => {
-        const sample = this.quotes.get(rule.symbol)
+        // A close-based rule is read from candles, so a contract that never
+        // ticks is not a broken rule and must not be reported as one.
+        const fromCandles = rule.basis === "CLOSE"
+        const sample = fromCandles ? this.candles.get(candleKey(rule)) : this.quotes.get(rule.symbol)
         const level = resolveStopLevel(rule)
         const lastPrice = sample?.price ?? null
         return {
@@ -133,7 +146,7 @@ export class StopMonitor {
           distancePercent: level !== null && lastPrice !== null && lastPrice > 0
             ? ((level - lastPrice) / lastPrice) * 100
             : null,
-          feed: this.feedState(rule.symbol, now),
+          feed: sampleState(sample, now, fromCandles ? STALE_CANDLE_MS : this.staleAfter()),
           hasPosition: this.positions.has(rule.instrumentUid),
         }
       })
@@ -143,6 +156,10 @@ export class StopMonitor {
    * Positions arrive from the account panel. A rule whose position closed is
    * finished; one whose position flipped side goes on hold rather than exiting
    * the wrong way.
+   *
+   * Only call this with positions the account has actually reported. An empty
+   * array is read as "everything is closed" and ends every rule on the list, so
+   * passing a placeholder before the account answers destroys the rule set.
    */
   setPositions(positions: AccountPosition[]): void {
     if (this.destroyed) return
@@ -166,10 +183,14 @@ export class StopMonitor {
     // Provider timestamps can run ahead of the local clock; a future tick is
     // fresh, not stale.
     this.quotes.set(update.symbol, { price: update.lastPrice, timestamp: Math.min(update.timestamp, now) })
+    // A new price moves the distance and feed a watching row shows, whether or
+    // not it moves the rule, so the panel hears about it either way.
     let changed = false
+    let watched = false
 
     for (const rule of this.rules.values()) {
       if (rule.symbol !== update.symbol) continue
+      if (rule.basis !== "CLOSE") watched = true
       if (isTrailingStopRule(rule.kind) && rule.status === "ARMED") {
         const advanced = advanceTrailingStop(rule, update.lastPrice)
         if (advanced) {
@@ -181,7 +202,7 @@ export class StopMonitor {
       }
       if (rule.basis === "TOUCH") changed = this.evaluate(rule.id, { lastPrice: update.lastPrice }, now) || changed
     }
-    if (changed) this.options.onChange?.()
+    if (changed || watched) this.options.onChange?.()
   }
 
   /**
@@ -214,6 +235,14 @@ export class StopMonitor {
         const closed = closedCandles(series, now)
         const lastClosed = closed.at(-1) ?? null
         const atr = averageTrueRange(closed, ATR_PERIOD)
+        // A fresh reading changes what every close-based row displays, so it
+        // counts as a change in its own right. Without this the panel is only
+        // repainted when a rule itself moves — which a close-based rule may
+        // never do — and the row stays frozen on whatever it said at load.
+        if (lastClosed) {
+          this.candles.set(`${instrumentUid}:${interval}`, { price: lastClosed.close, timestamp: now })
+          changed = true
+        }
         changed = this.applyCandles(instrumentUid, interval, lastClosed, atr, now) || changed
       }
       if (changed) this.options.onChange?.()
@@ -350,11 +379,13 @@ export class StopMonitor {
     return true
   }
 
+  /** Tick freshness, which is what decides whether a touch rule may fire. */
   private feedState(symbol: string, now: number): StopFeedState {
-    const sample = this.quotes.get(symbol)
-    if (!sample) return "missing"
-    const staleAfter = this.options.stalePriceMs ?? DEFAULT_STALE_PRICE_MS
-    return now - sample.timestamp > staleAfter ? "stale" : "live"
+    return sampleState(this.quotes.get(symbol), now, this.staleAfter())
+  }
+
+  private staleAfter(): number {
+    return this.options.stalePriceMs ?? DEFAULT_STALE_PRICE_MS
   }
 
   private async persist(rule: StopRule): Promise<void> {
@@ -382,6 +413,15 @@ export class StopMonitor {
  */
 export function rangeForInterval(interval: CandleInterval): CandleRange {
   return futuresRangeForInterval(interval) ?? "INTRADAY"
+}
+
+function candleKey(rule: StopRule): string {
+  return `${rule.instrumentUid}:${rule.interval}`
+}
+
+function sampleState(sample: QuoteSample | undefined, now: number, staleAfter: number): StopFeedState {
+  if (!sample) return "missing"
+  return now - sample.timestamp > staleAfter ? "stale" : "live"
 }
 
 function isAbortError(error: unknown): boolean {

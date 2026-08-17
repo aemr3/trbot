@@ -68,6 +68,30 @@ export const stopRules = sqliteTable("stop_rules", {
   exitOrderUid: text("exit_order_uid"),
 })
 
+// Price levels the trader asked to be told about. Like stop rules they outlive
+// the process, and for the same reason: a trailing alert that forgot its
+// extreme would announce a move the market already made.
+export const priceAlerts = sqliteTable("price_alerts", {
+  id: text("id").primaryKey(),
+  instrumentUid: text("instrument_uid").notNull(),
+  symbol: text("symbol").notNull(),
+  displayName: text("display_name").notNull(),
+  direction: text("direction").notNull(),
+  kind: text("kind").notNull(),
+  value: real("value").notNull(),
+  basis: text("basis").notNull(),
+  interval: text("interval"),
+  status: text("status").notNull(),
+  triggerPrice: real("trigger_price"),
+  extremePrice: real("extreme_price"),
+  referencePrice: real("reference_price"),
+  atrValue: real("atr_value"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+  triggeredAt: integer("triggered_at"),
+  triggeredPrice: real("triggered_price"),
+})
+
 export const watchlistPreferences = sqliteTable("watchlist_preferences", {
   id: integer("id").primaryKey(),
   instrumentSort: text("instrument_sort").notNull(),

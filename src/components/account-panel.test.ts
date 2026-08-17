@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
+import type { PriceAlertView } from "../market/alert-monitor.ts"
+import { createPriceAlert } from "../market/alert.ts"
 import type { StopRuleView } from "../trading/stop-monitor.ts"
 import { createStopRule, type StopRule, type StopRuleDraft } from "../trading/stop.ts"
 import { AccountPanel, type AccountPanelOptions } from "./account-panel.ts"
@@ -95,6 +97,22 @@ test("shows why a rule is not watching", async () => {
   renderer.destroy()
 })
 
+test("names the feed a rule actually reads when it is missing", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+
+  panel.selectTab("stops")
+  // A close-based rule never reads the tick stream, so "no feed" would send the
+  // trader looking at a stream this rule does not use.
+  panel.showStopRules([view(rule({ basis: "CLOSE", interval: "MIN_10" }), { feed: "missing" })])
+  await Bun.sleep(0)
+  await renderOnce()
+
+  expect(captureCharFrame()).toContain("no candles")
+
+  panel.destroy()
+  renderer.destroy()
+})
+
 test("invites a first rule when there are none", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
 
@@ -152,6 +170,123 @@ test("offers no stop selection from the other tabs", async () => {
   expect(panel.selectedStop()).toBeNull()
   // The letters belong to the other tabs while they are showing.
   expect(panel.handleKey(key("n"))).toBeFalse()
+
+  panel.destroy()
+  renderer.destroy()
+})
+
+function alertView(overrides: Partial<PriceAlertView> = {}): PriceAlertView {
+  const alert = createPriceAlert(
+    {
+      id: "alert-1",
+      instrumentUid: "instrument-1",
+      symbol: "F_ASELS0826",
+      displayName: "ASELS",
+      direction: "ABOVE",
+      kind: "PRICE",
+      value: 420,
+      basis: "TOUCH",
+      interval: null,
+      referencePrice: 400,
+      atrValue: null,
+    },
+    NOW,
+  )
+  return { alert, level: 420, lastPrice: 400, distancePercent: 5, feed: "live", ...overrides }
+}
+
+test("lists price alerts with the side they watch", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+
+  panel.selectTab("alerts")
+  panel.showPriceAlerts([
+    alertView(),
+    alertView({
+      alert: { ...alertView().alert, id: "alert-2", direction: "BELOW", status: "TRIGGERED", triggeredPrice: 380 },
+      level: 380,
+      distancePercent: -5,
+    }),
+  ])
+  // showPriceAlerts repaints through the coalescer, one event-loop turn later.
+  await Bun.sleep(0)
+  await renderOnce()
+  const frame = captureCharFrame()
+
+  expect(frame).toContain("Alerts")
+  expect(frame).toContain("420,00")
+  expect(frame).toContain("armed")
+  // A fired alert reads as fired, not as something still being watched for.
+  expect(frame).toContain("fired")
+
+  panel.destroy()
+  renderer.destroy()
+})
+
+test("reports alert actions instead of taking them", async () => {
+  const created: number[] = []
+  const edited: string[] = []
+  const toggled: string[] = []
+  const { renderer, renderOnce, panel } = await mountPanel({
+    onAlertCreate: () => created.push(1),
+    onAlertEdit: (view) => edited.push(view.alert.id),
+    onAlertToggle: (view) => toggled.push(view.alert.id),
+  })
+
+  panel.selectTab("alerts")
+  const second = alertView({ alert: { ...alertView().alert, id: "alert-2" } })
+  panel.showPriceAlerts([alertView(), second])
+  await renderOnce()
+
+  expect(panel.handleKey(key("n"))).toBeTrue()
+  expect(created).toHaveLength(1)
+
+  expect(panel.handleKey(key("j"))).toBeTrue()
+  expect(panel.selectedAlert()?.alert.id).toBe("alert-2")
+
+  expect(panel.handleKey(key("e"))).toBeTrue()
+  expect(edited).toEqual(["alert-2"])
+  expect(panel.handleKey(key("space"))).toBeTrue()
+  expect(toggled).toEqual(["alert-2"])
+
+  // Deleting belongs to the screen, which owns the confirmation.
+  expect(panel.handleKey(key("d"))).toBeFalse()
+  // And the stops tab's selection stays out of it.
+  expect(panel.selectedStop()).toBeNull()
+
+  panel.destroy()
+  renderer.destroy()
+})
+
+test("invites a first alert when there are none", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+
+  panel.selectTab("alerts")
+  panel.showPriceAlerts([])
+  await renderOnce()
+
+  expect(captureCharFrame()).toContain("No price alerts. Press n to add one.")
+
+  panel.destroy()
+  renderer.destroy()
+})
+
+test("switching between the two rule tabs does not leave the other's rows behind", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+
+  panel.selectTab("stops")
+  panel.showStopRules([view(rule())])
+  await Bun.sleep(0)
+  await renderOnce()
+  expect(captureCharFrame()).toContain("380,00")
+
+  panel.selectTab("alerts")
+  panel.showPriceAlerts([alertView()])
+  await Bun.sleep(0)
+  await renderOnce()
+  const frame = captureCharFrame()
+
+  expect(frame).toContain("420,00")
+  expect(frame).not.toContain("380,00")
 
   panel.destroy()
   renderer.destroy()

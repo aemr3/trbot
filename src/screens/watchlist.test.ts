@@ -41,6 +41,7 @@ import type {
   ViopPositionExitSource,
 } from "../trading/order.ts"
 import { createStopRule, type StopRule, type StopRuleStore } from "../trading/stop.ts"
+import { createPriceAlert, type PriceAlert, type PriceAlertStore } from "../market/alert.ts"
 import { LogsScreen } from "./logs.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 import { WatchlistScreen } from "./watchlist.ts"
@@ -1820,6 +1821,113 @@ test("subscribes to the contracts stop rules protect, not only the watchlist", a
 
   await waitFor(() => quotes.startedSymbols?.includes("F_UNWATCHED0826") === true)
   expect(quotes.startedSymbols).toContain("F_XU0300826")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+function priceAlertFixture(): PriceAlert {
+  return createPriceAlert(
+    {
+      id: "alert-1",
+      instrumentUid: "u2",
+      symbol: "F_THYAO0826",
+      displayName: "THYAO",
+      direction: "BELOW",
+      kind: "PRICE",
+      value: 305,
+      basis: "TOUCH",
+      interval: null,
+      referencePrice: 312,
+      atrValue: null,
+    },
+    1_786_000_000_000,
+  )
+}
+
+class FakePriceAlertStore implements PriceAlertStore {
+  readonly alerts = new Map<string, PriceAlert>()
+
+  constructor(seed: PriceAlert[] = []) {
+    for (const alert of seed) this.alerts.set(alert.id, alert)
+  }
+
+  async list(): Promise<PriceAlert[]> {
+    return [...this.alerts.values()]
+  }
+  async put(alert: PriceAlert): Promise<void> {
+    this.alerts.set(alert.id, alert)
+  }
+  async remove(id: string): Promise<void> {
+    this.alerts.delete(id)
+  }
+}
+
+test("a reached alert rings and shows a notice, and trades nothing", async () => {
+  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const quotes = new FakeQuoteStream()
+  const exits: ExitViopPositionRequest[] = []
+  const cues: string[] = []
+  const store = new FakePriceAlertStore([priceAlertFixture()])
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    quotes,
+    positionExit: fakePositionExit(exits),
+    priceAlerts: store,
+    sound: { play: (cue) => cues.push(cue) },
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitFor(() => quotes.startedSymbols?.includes("F_THYAO0826") === true)
+
+  // The level has to be approached from the near side before it counts.
+  quotes.emit(tick(310))
+  quotes.emit(tick(304))
+
+  await waitForFrame((value) => value.includes("Nothing was traded"))
+  expect(cues).toEqual(["ALERT"])
+  expect(exits).toEqual([])
+  expect(store.alerts.get("alert-1")).toMatchObject({ status: "TRIGGERED", triggeredPrice: 304 })
+
+  // Any key dismisses it; still nothing is sent.
+  mockInput.pressKey("escape")
+  await waitForFrame((value) => !value.includes("Nothing was traded"))
+  expect(exits).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("an account that has not answered yet does not end every stop rule", async () => {
+  const { renderer, waitFor } = await createTestRenderer({ width: 120, height: 30 })
+  const store = new FakeStopRuleStore([stopRuleFixture()])
+  let loads = 0
+  // In the real app the account is a network call, so the rules finish loading
+  // first. An empty position list at that moment is "not known yet" — reading
+  // it as "every position closed" ended every rule, on disk, on every restart.
+  const slowAccount: AccountSource = {
+    async loadAccount(options) {
+      await Bun.sleep(20)
+      const snapshot = await account.loadAccount(options)
+      loads += 1
+      return snapshot
+    },
+  }
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account: slowAccount,
+    stopRules: store,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitFor(() => loads > 0)
+  expect(store.rules.get("rule-1")?.status).toBe("ARMED")
 
   screen.destroy()
   renderer.destroy()

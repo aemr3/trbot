@@ -218,6 +218,58 @@ test("a close-based rule ignores a wick and fires on the finished candle", async
   expect(triggers[0]?.price).toBe(375)
 })
 
+test("reports a close-based rule against its candles, not against ticks", async () => {
+  const candles = new FakeCandleSource()
+  candles.candles = [
+    { timestamp: NOW - 2 * INTERVAL_MS, open: 400, high: 401, low: 395, close: 398, volume: null },
+    { timestamp: NOW - INTERVAL_MS, open: 398, high: 399, low: 390, close: 392, volume: null },
+  ]
+  const { monitor } = await monitorWith([rule({ basis: "CLOSE", interval: "MIN_10" })], { candles })
+
+  // A contract that never prints a tick is not a broken rule: this one reads
+  // candles, and saying "no feed" would send the trader chasing a phantom.
+  expect(monitor.views()[0]?.feed).toBe("missing")
+
+  await monitor.refreshCandleRules()
+  const view = monitor.views()[0]
+  expect(view?.feed).toBe("live")
+  expect(view?.lastPrice).toBe(392)
+  expect(view?.distancePercent).toBeCloseTo(((380 - 392) / 392) * 100, 6)
+})
+
+test("tells the panel to repaint when what a row shows has moved", async () => {
+  const candles = new FakeCandleSource()
+  candles.candles = [
+    { timestamp: NOW - 2 * INTERVAL_MS, open: 400, high: 401, low: 395, close: 398, volume: null },
+    { timestamp: NOW - INTERVAL_MS, open: 398, high: 399, low: 393, close: 396, volume: null },
+  ]
+  const store = new FakeStopRuleStore([
+    rule({ id: "touch" }),
+    rule({ id: "close", basis: "CLOSE", interval: "MIN_10" }),
+  ])
+  let repaints = 0
+  const monitor = new StopMonitor({
+    store,
+    candles,
+    onTrigger: () => {},
+    onChange: () => (repaints += 1),
+    now: () => NOW,
+  })
+  await monitor.load()
+  monitor.setPositions([position()])
+  repaints = 0
+
+  // A tick nothing acts on still moves the distance a touch rule displays.
+  monitor.applyQuote(quote(390))
+  expect(repaints).toBe(1)
+
+  // And a candle read nothing acts on still moves what a close rule displays.
+  // Without this the row freezes on whatever it said when the app started.
+  await monitor.refreshCandleRules()
+  expect(repaints).toBe(2)
+  expect(monitor.views().find((view) => view.rule.id === "close")?.lastPrice).toBe(396)
+})
+
 test("refreshes the width an ATR trail follows, but not a standing ATR level", async () => {
   const candles = new FakeCandleSource()
   candles.candles = Array.from({ length: 20 }, (_, index) => ({

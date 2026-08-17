@@ -2,6 +2,7 @@
 // to cap a loss or take a profit. A rule is plain data — the monitor decides
 // when one is breached, and the trader confirms every exit it proposes.
 import type { Candle, CandleInterval } from "../market/candle.ts"
+import { isLevelReached, offsetLevel as offsetByDistance, tightensLevel, type LevelDirection } from "../market/price-level.ts"
 import type { AccountPosition } from "./account.ts"
 import type { ViopOrderSide } from "./order.ts"
 
@@ -139,7 +140,7 @@ export function stopExitSide(side: StopPositionSide): ViopOrderSide {
  * targeted above; a short is the mirror image. Everything downstream compares
  * against this instead of re-deriving long/short.
  */
-export function stopRuleDirection(rule: Pick<StopRule, "role" | "side">): "ABOVE" | "BELOW" {
+export function stopRuleDirection(rule: Pick<StopRule, "role" | "side">): LevelDirection {
   const below = rule.side === "LONG" ? rule.role === "STOP" : rule.role === "TARGET"
   return below ? "BELOW" : "ABOVE"
 }
@@ -168,9 +169,7 @@ export function advanceTrailingStop(
   if (!improved) return null
   const trail = trailFrom(rule, price)
   if (!trail) return null
-  // A widening ATR must never loosen a level that already moved.
-  const tightened = rule.triggerPrice === null
-    || (stopRuleDirection(rule) === "BELOW" ? trail.triggerPrice > rule.triggerPrice : trail.triggerPrice < rule.triggerPrice)
+  const tightened = tightensLevel(stopRuleDirection(rule), rule.triggerPrice, trail.triggerPrice)
   return { extremePrice: price, triggerPrice: tightened ? trail.triggerPrice : rule.triggerPrice }
 }
 
@@ -185,8 +184,8 @@ export function isStopBreached(rule: StopRule, sample: StopRuleSample): boolean 
   const level = resolveStopLevel(rule)
   if (level === null) return false
   const price = rule.basis === "CLOSE" ? (sample.closedCandle?.close ?? null) : (sample.lastPrice ?? null)
-  if (price === null || !Number.isFinite(price)) return false
-  return stopRuleDirection(rule) === "BELOW" ? price <= level : price >= level
+  if (price === null) return false
+  return isLevelReached(stopRuleDirection(rule), price, level)
 }
 
 /** Contracts the exit should cover, clamped to what the position still holds. */
@@ -292,9 +291,8 @@ function offsetLevel(
   const distance = isAtrStopRule(rule.kind)
     ? multiplyFinite(rule.atrValue, rule.value)
     : multiplyFinite(anchor, rule.value / 100)
-  if (distance === null || distance <= 0) return null
-  const level = stopRuleDirection(rule) === "BELOW" ? anchor - distance : anchor + distance
-  return level > 0 ? level : null
+  if (distance === null) return null
+  return offsetByDistance(stopRuleDirection(rule), anchor, distance)
 }
 
 function multiplyFinite(left: number | null, right: number): number | null {

@@ -57,6 +57,11 @@ import {
 import { TradeFlowAccumulator } from "../market/trade-flow.ts"
 import { StopMonitor, rangeForInterval, type StopRuleView, type StopTriggerEvent } from "../trading/stop-monitor.ts"
 import type { StopRule, StopRuleStore } from "../trading/stop.ts"
+import { AlertMonitor, type AlertTriggerEvent, type PriceAlertView } from "../market/alert-monitor.ts"
+import type { PriceAlert, PriceAlertStore } from "../market/alert.ts"
+import type { SoundPlayer } from "../components/sound.ts"
+import { AlertEditor } from "./alert-editor.ts"
+import { AlertPopup } from "./alert-popup.ts"
 import { StopRuleEditor } from "./stop-rule-editor.ts"
 import { StopTriggerConfirmation } from "./stop-trigger-confirmation.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
@@ -121,7 +126,7 @@ const STOP_CANDLE_POLL_INTERVAL_MS = 30_000
 const SORT_LABELS = { change: "Change", volume: "Volume" } as const
 const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
-type DestructiveAction = "cancel-orders" | "exit-positions" | "delete-stop"
+type DestructiveAction = "cancel-orders" | "exit-positions" | "delete-stop" | "delete-alert"
 const NEWS_FEED_LABELS: Record<NewsFeed, string> = { instrument: "Stock", index: "Index" }
 const WATCHLIST_HINT = "B/S trade · G logs · / ticker · ? help · Ctrl+C quit"
 const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
@@ -187,7 +192,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
   {
     title: "Account",
     bindings: [
-      { keys: "←/→ or h/l", description: "Change account tab: portfolio, orders, positions, stops" },
+      { keys: "←/→ or h/l", description: "Change tab: portfolio, orders, positions, stops, alerts" },
       { keys: "↑/↓ or j/k", description: "Scroll" },
       { keys: "Home", description: "Scroll to top" },
       { keys: "R", description: "Refresh account" },
@@ -209,6 +214,23 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
       { keys: "Enter", description: "Send the exit now" },
       { keys: "p", description: "Hold the countdown" },
       { keys: "Esc", description: "Cancel and stand the rule down" },
+    ],
+  },
+  {
+    title: "Alerts",
+    bindings: [
+      { keys: "n", description: "New price alert on a contract" },
+      { keys: "e / Enter", description: "Edit the selected alert" },
+      { keys: "Space", description: "Arm or pause the selected alert" },
+      { keys: "d d", description: "Delete the selected alert" },
+      { keys: "↑/↓ or j/k", description: "Move between alerts" },
+    ],
+  },
+  {
+    title: "Alert popup",
+    bindings: [
+      { keys: "r", description: "Re-arm the same level" },
+      { keys: "Any key", description: "Dismiss; nothing is ever traded" },
     ],
   },
   {
@@ -267,6 +289,8 @@ export interface WatchlistScreenOptions {
   stopCandleIntervalMs?: number
   stopStalePriceMs?: number
   stopCountdownMs?: number
+  priceAlerts?: PriceAlertStore
+  sound?: SoundPlayer
   onSessionExpired?: () => void
   newsIntervalMs?: number
   instrumentIntervalMs?: number
@@ -372,7 +396,17 @@ export class WatchlistScreen {
   // Breaches waiting for the confirmation modal, so two levels reached at once
   // are answered one at a time instead of racing.
   private readonly stopTriggerQueue: StopTriggerEvent[] = []
+  // Price levels the trader asked to be told about. Same watching, none of the
+  // trading: a reached level rings and shows a notice, and that is all.
+  private readonly alertMonitor: AlertMonitor | null
+  private alertEditor: AlertEditor | null = null
+  private alertPopup: AlertPopup | null = null
+  private alertCandleTimer: ReturnType<typeof setInterval> | null = null
+  private readonly alertQueue: AlertTriggerEvent[] = []
   private positions: AccountPosition[] = []
+  // Whether the account has ever answered. Until it has, an empty position list
+  // means "not known yet", which is not the same as "nothing is open".
+  private positionsKnown = false
   private overviewEntitled: boolean | null = null
   private overviewRequest: AbortController | null = null
   private overviewTimer: ReturnType<typeof setInterval> | null = null
@@ -390,8 +424,12 @@ export class WatchlistScreen {
     // Deleting a stop rule is only offered where one is selected, so its key is
     // read against the focused panel rather than globally.
     const destructiveAction = destructiveActionForKey(key)
-      ?? (this.focus === "account" && this.accountPanel.selectedStop() && isLowercaseShortcut(key, "d")
-        ? "delete-stop"
+      ?? (this.focus === "account" && isLowercaseShortcut(key, "d")
+        ? this.accountPanel.selectedStop()
+          ? "delete-stop"
+          : this.accountPanel.selectedAlert()
+            ? "delete-alert"
+            : null
         : null)
     if (!destructiveAction) this.clearDestructiveConfirmation()
     // A triggered stop is about to send a live order: it answers before
@@ -400,8 +438,18 @@ export class WatchlistScreen {
       this.stopTrigger.handleKey(key)
       return
     }
+    // A fired alert is only a notice, so it sits behind the stop but in front
+    // of everything the trader might otherwise type into.
+    if (this.alertPopup) {
+      this.alertPopup.handleKey(key)
+      return
+    }
     if (this.stopRuleEditor) {
       this.stopRuleEditor.handleKey(key)
+      return
+    }
+    if (this.alertEditor) {
+      this.alertEditor.handleKey(key)
       return
     }
     if (this.tickerSearchQuery !== null) {
@@ -459,6 +507,7 @@ export class WatchlistScreen {
       if (this.confirmDestructiveAction(destructiveAction)) {
         if (destructiveAction === "cancel-orders") void this.cancelAllPendingOrders()
         else if (destructiveAction === "exit-positions") void this.exitAllPositions()
+        else if (destructiveAction === "delete-alert") void this.deleteSelectedAlert()
         else void this.deleteSelectedStopRule()
       }
       return
@@ -597,6 +646,9 @@ export class WatchlistScreen {
       onStopCreate: () => this.openStopRuleEditor(),
       onStopEdit: (view) => this.openStopRuleEditor(view.rule),
       onStopToggle: (view) => void this.toggleStopRule(view),
+      onAlertCreate: () => this.openAlertEditor(),
+      onAlertEdit: (view) => this.openAlertEditor(view.alert),
+      onAlertToggle: (view) => void this.togglePriceAlert(view),
     })
     this.centerPanel.add(this.accountPanel.root)
 
@@ -608,6 +660,17 @@ export class WatchlistScreen {
           onTrigger: (event) => this.onStopTrigger(event),
           onChange: () => this.accountPanel.showStopRules(this.stopMonitor?.views() ?? []),
           onError: (error) => this.reportError("Stop manager", error),
+        })
+      : null
+
+    this.alertMonitor = options.priceAlerts
+      ? new AlertMonitor({
+          store: options.priceAlerts,
+          candles: options.candles,
+          stalePriceMs: options.stopStalePriceMs,
+          onTrigger: (event) => this.onAlertTrigger(event),
+          onChange: () => this.accountPanel.showPriceAlerts(this.alertMonitor?.views() ?? []),
+          onError: (error) => this.reportError("Price alerts", error),
         })
       : null
 
@@ -757,6 +820,7 @@ export class WatchlistScreen {
     void this.loadMemberFeatures()
     void this.loadOverviewSnapshots()
     void this.loadStopRules()
+    void this.loadPriceAlerts()
     this.newsTimer = setInterval(() => void this.refreshNews(), this.options.newsIntervalMs ?? NEWS_POLL_INTERVAL_MS)
     this.instrumentTimer = setInterval(
       () => void this.refreshInstruments(),
@@ -779,6 +843,12 @@ export class WatchlistScreen {
         this.options.stopCandleIntervalMs ?? STOP_CANDLE_POLL_INTERVAL_MS,
       )
     }
+    if (this.alertMonitor) {
+      this.alertCandleTimer = setInterval(
+        () => void this.alertMonitor?.refreshCandleAlerts(),
+        this.options.stopCandleIntervalMs ?? STOP_CANDLE_POLL_INTERVAL_MS,
+      )
+    }
     void this.refreshOverviewConnection()
   }
 
@@ -794,7 +864,14 @@ export class WatchlistScreen {
     this.closeOrderTicket()
     this.closeStopRuleEditor()
     this.closeStopTrigger()
+    this.closeAlertEditor()
+    this.closeAlertPopup()
     this.stopMonitor?.destroy()
+    this.alertMonitor?.destroy()
+    if (this.alertCandleTimer) {
+      clearInterval(this.alertCandleTimer)
+      this.alertCandleTimer = null
+    }
     if (this.stopCandleTimer) {
       clearInterval(this.stopCandleTimer)
       this.stopCandleTimer = null
@@ -1068,10 +1145,12 @@ export class WatchlistScreen {
   private onQuote(update: QuoteUpdate): void {
     if (this.destroyed) return
     this.accountPanel.applyQuote(update)
-    // Both run before the watchlist lookup below: a protected position need not
-    // be a row in the list.
+    // All of these run before the watchlist lookup below: a protected position
+    // or a watched level need not be a row in the list.
     this.stopMonitor?.applyQuote(update)
     this.stopTrigger?.applyQuote(update)
+    this.alertMonitor?.applyQuote(update)
+    this.alertPopup?.applyQuote(update)
     const index = this.symbolIndex.get(update.symbol)
     if (index === undefined) return
     const instrument = this.instruments[index]
@@ -1286,22 +1365,32 @@ export class WatchlistScreen {
     if (!monitor) return
     await monitor.load()
     if (this.destroyed) return
-    monitor.setPositions(this.positions)
+    // Deliberately no setPositions here. The account has not reported yet, and
+    // an empty list would read as "every position is closed" — which ends every
+    // rule on the list, permanently and on disk. onPositionsChange does it once
+    // the account actually answers.
+    if (this.positionsKnown) monitor.setPositions(this.positions)
     this.accountPanel.showStopRules(monitor.views())
     // Rules can protect contracts the watchlist does not carry.
     this.syncQuoteSubscription()
+    // Read candles now rather than waiting out the first poll: a close-based
+    // rule has no ticks to fall back on, so until this lands it looks like a
+    // rule with no feed instead of one that is simply between reads.
+    void monitor.refreshCandleRules()
   }
 
   private onPositionsChange(positions: AccountPosition[]): void {
     this.positions = positions
+    this.positionsKnown = true
     this.stopMonitor?.setPositions(positions)
     this.syncQuoteSubscription()
   }
 
-  /** Subscribes to the watchlist plus whatever the stop rules need watched. */
+  /** Subscribes to the watchlist plus whatever rules and alerts need watched. */
   private syncQuoteSubscription(): void {
     const symbols = new Set(this.instruments.map((instrument) => instrument.symbol))
     for (const symbol of this.stopMonitor?.symbols() ?? []) symbols.add(symbol)
+    for (const symbol of this.alertMonitor?.symbols() ?? []) symbols.add(symbol)
     if (symbols.size > 0) this.options.quotes?.start([...symbols])
   }
 
@@ -1324,6 +1413,9 @@ export class WatchlistScreen {
         void this.stopMonitor?.saveRule(draft).then(() => {
           if (this.destroyed) return
           this.syncQuoteSubscription()
+          // A close-based rule reads candles, not ticks, so give it its first
+          // read now instead of leaving it blank until the poll comes round.
+          if (draft.basis === "CLOSE") void this.stopMonitor?.refreshCandleRules()
           this.showHintStatus(`${draft.role === "STOP" ? "Stop" : "Target"} armed for ${draft.displayName}.`, "#70d7a1", 4_000)
         })
         this.closeStopRuleEditor()
@@ -1381,6 +1473,9 @@ export class WatchlistScreen {
     if (this.destroyed || this.stopTrigger) return
     const event = this.stopTriggerQueue.shift()
     if (!event) return
+    // Its own sound, not the alert's: an order is about to go out, and which of
+    // the two fired should be clear without looking at the screen.
+    this.options.sound?.play("STOP")
     // Put the rule that fired in front of the trader behind the modal.
     this.accountPanel.selectTab("stops")
     this.setFocus("account")
@@ -1454,6 +1549,131 @@ export class WatchlistScreen {
         this.showNextStopTrigger()
       }
     }
+  }
+
+  // ── Price alerts ───────────────────────────────────────────────────────────
+
+  private async loadPriceAlerts(): Promise<void> {
+    const monitor = this.alertMonitor
+    if (!monitor) return
+    await monitor.load()
+    if (this.destroyed) return
+    this.accountPanel.showPriceAlerts(monitor.views())
+    // Alerts can watch contracts the watchlist does not carry.
+    this.syncQuoteSubscription()
+    // Read candles now rather than waiting out the first poll; see loadStopRules.
+    void monitor.refreshCandleAlerts()
+  }
+
+  private openAlertEditor(alert?: PriceAlert): void {
+    if (this.destroyed || this.alertEditor) return
+    if (!this.alertMonitor) {
+      this.showHintStatus("Price alerts need a database; none is configured.", "#e5c07b", 4_000)
+      return
+    }
+    if (this.instruments.length === 0) {
+      this.showHintStatus("No contracts to watch yet.", "#888888", 3_000)
+      return
+    }
+    this.alertEditor = new AlertEditor(this.renderer, {
+      instruments: this.instruments,
+      alert,
+      instrumentUid: this.instruments[this.instrumentList.selectedIndex]?.uid,
+      lastPrice: (symbol) => this.lastPriceFor(symbol),
+      atr: (instrumentUid, interval) => this.readAtr(instrumentUid, interval),
+      onSave: (draft) => {
+        void this.alertMonitor?.saveAlert(draft).then(() => {
+          if (this.destroyed) return
+          this.syncQuoteSubscription()
+          // Same as a close-based stop rule: read its candles straight away.
+          if (draft.basis === "CLOSE") void this.alertMonitor?.refreshCandleAlerts()
+          this.showHintStatus(
+            `Alert set on ${draft.displayName} ${draft.direction === "ABOVE" ? "above" : "below"} the level.`,
+            "#70d7a1",
+            4_000,
+          )
+        })
+        this.closeAlertEditor()
+      },
+      onClose: () => this.closeAlertEditor(),
+      onError: (error) => this.reportError("Price alerts", error),
+    })
+    this.root.add(this.alertEditor.root)
+    this.alertEditor.mount()
+    this.renderer.requestRender()
+  }
+
+  private closeAlertEditor(): void {
+    const editor = this.alertEditor
+    if (!editor) return
+    this.alertEditor = null
+    if (!this.root.isDestroyed && !editor.root.isDestroyed) this.root.remove(editor.root)
+    editor.destroy()
+    this.renderer.requestRender()
+  }
+
+  private async togglePriceAlert(view: PriceAlertView): Promise<void> {
+    const monitor = this.alertMonitor
+    if (!monitor) return
+    const armed = view.alert.status === "ARMED"
+    await monitor.setStatus(view.alert.id, armed ? "PAUSED" : "ARMED")
+    if (this.destroyed) return
+    this.syncQuoteSubscription()
+    this.showHintStatus(`${view.alert.displayName} alert ${armed ? "paused" : "armed"}.`, "#888888", 3_000)
+  }
+
+  private async deleteSelectedAlert(): Promise<void> {
+    const monitor = this.alertMonitor
+    const view = this.accountPanel.selectedAlert()
+    if (!monitor || !view) return
+    await monitor.removeAlert(view.alert.id)
+    if (this.destroyed) return
+    this.syncQuoteSubscription()
+    this.showHintStatus(`Deleted the ${view.alert.displayName} alert.`, "#888888", 3_000)
+  }
+
+  /**
+   * A level was reached. Nothing is traded and nothing is pending: the sound
+   * and the notice are the whole of what an alert does.
+   */
+  private onAlertTrigger(event: AlertTriggerEvent): void {
+    this.alertQueue.push(event)
+    this.showNextAlert()
+  }
+
+  private showNextAlert(): void {
+    if (this.destroyed || this.alertPopup) return
+    const event = this.alertQueue.shift()
+    if (!event) return
+    this.options.sound?.play("ALERT")
+    // Put the alert that fired in front of the trader behind the popup.
+    this.accountPanel.selectTab("alerts")
+    this.setFocus("account")
+    this.alertPopup = new AlertPopup(this.renderer, {
+      event,
+      onDismiss: () => {
+        this.closeAlertPopup()
+        this.showNextAlert()
+      },
+      onRearm: () => {
+        this.closeAlertPopup()
+        void this.alertMonitor?.setStatus(event.alert.id, "ARMED").then(() => {
+          if (!this.destroyed) this.showHintStatus(`${event.alert.displayName} alert re-armed.`, "#70d7a1", 3_000)
+        })
+        this.showNextAlert()
+      },
+    })
+    this.root.add(this.alertPopup.root)
+    this.renderer.requestRender()
+  }
+
+  private closeAlertPopup(): void {
+    const popup = this.alertPopup
+    if (!popup) return
+    this.alertPopup = null
+    if (!this.root.isDestroyed && !popup.root.isDestroyed) this.root.remove(popup.root)
+    popup.destroy()
+    this.renderer.requestRender()
   }
 
   /** ATR for the rule editor, read from the same candles the chart uses. */
@@ -1840,7 +2060,9 @@ export class WatchlistScreen {
       ? "cancel all pending orders"
       : action === "exit-positions"
         ? "exit all open positions"
-        : "delete the selected stop rule"
+        : action === "delete-alert"
+          ? "delete the selected price alert"
+          : "delete the selected stop rule"
     this.showHintStatus(`Press ${key} again to ${description}.`, "#e5c07b")
     this.destructiveConfirmationTimer = setTimeout(() => {
       if (this.pendingDestructiveAction !== action || this.destroyed) return

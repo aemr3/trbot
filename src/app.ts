@@ -14,7 +14,10 @@ import { loadConfig, type AppConfig, type AppCredentials } from "./config.ts"
 import { openDatabase, type DatabaseConnection } from "./db/client.ts"
 import { DrizzleOverviewSnapshotStore } from "./db/overview-snapshot-store.ts"
 import { DrizzleProviderStateStore } from "./db/provider-state-store.ts"
+import { DrizzlePriceAlertStore } from "./db/price-alert-store.ts"
 import { DrizzleStopRuleStore } from "./db/stop-rule-store.ts"
+import { SystemSoundPlayer, type SoundPlayer } from "./components/sound.ts"
+import type { PriceAlertStore } from "./market/alert.ts"
 import { DrizzleWatchlistPreferencesStore } from "./db/watchlist-preferences-store.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
 import { ApiBrokerageDistributionSource } from "./market/api-brokerage.ts"
@@ -57,6 +60,8 @@ interface AppOptions {
   overview?: OverviewGenerator
   overviewSnapshots?: OverviewSnapshotStore
   stopRules?: StopRuleStore
+  priceAlerts?: PriceAlertStore
+  sound?: SoundPlayer
   logs?: ApplicationLog
   recoverSession?: (credentials: AppCredentials) => Promise<ApiClientHandle>
 }
@@ -94,6 +99,11 @@ export async function startApp(): Promise<void> {
       chatGptAccount,
       overviewSnapshots: new DrizzleOverviewSnapshotStore(preferencesConnection.db),
       stopRules: new DrizzleStopRuleStore(preferencesConnection.db),
+      priceAlerts: new DrizzlePriceAlertStore(preferencesConnection.db),
+      // Cues are written through the renderer so a bell never races a frame.
+      sound: new SystemSoundPlayer({
+        write: (data) => (renderer as unknown as { writeOut(data: string): void }).writeOut(data),
+      }),
       // The overview model rides the ChatGPT account; auth is resolved lazily
       // per request, so building it before login is safe.
       overview: new ModelOverviewGenerator(createChatGptModel(chatGptAccount, config.aiModel), {
@@ -141,6 +151,8 @@ export class App {
   private readonly overview: OverviewGenerator | undefined
   private readonly overviewSnapshots: OverviewSnapshotStore | undefined
   private readonly stopRules: StopRuleStore | undefined
+  private readonly priceAlerts: PriceAlertStore | undefined
+  private readonly sound: SoundPlayer | undefined
   private readonly logs: ApplicationLog
   private readonly recoverSession: (credentials: AppCredentials) => Promise<ApiClientHandle>
 
@@ -168,6 +180,8 @@ export class App {
     this.overview = options.overview
     this.overviewSnapshots = options.overviewSnapshots
     this.stopRules = options.stopRules
+    this.priceAlerts = options.priceAlerts
+    this.sound = options.sound
     this.logs = options.logs ?? new ApplicationLog()
     this.recoverSession = options.recoverSession ?? ((credentials) => authenticateApiClient(config, credentials))
     this.root = new BoxRenderable(renderer, {
@@ -262,6 +276,8 @@ export class App {
       overview: this.overview,
       overviewSnapshots: this.overviewSnapshots,
       stopRules: this.stopRules,
+      priceAlerts: this.priceAlerts,
+      sound: this.sound,
       logs: this.logs,
       manageInput: false,
       onOpenLogs: () => workspace?.selectTab("logs"),
