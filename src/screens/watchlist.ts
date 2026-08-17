@@ -1194,7 +1194,9 @@ export class WatchlistScreen {
     const request = new AbortController()
     this.overviewRequest = request
     const cached = this.overviewCache.get(overviewCacheKey(instrument.uid, mode))
-    if (!cached) this.overviewPanel.setCollecting()
+    // The panel holds any review it already shows, so the progress is safe to
+    // report even for a cached instrument.
+    this.overviewPanel.setCollecting()
     try {
       const intraday = mode === "INTRADAY"
       const brokerage = this.brokerageEntitled ? this.options.brokerage : undefined

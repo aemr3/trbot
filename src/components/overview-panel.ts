@@ -37,6 +37,7 @@ export class OverviewPanel {
   readonly root: BoxRenderable
 
   private readonly header: TextRenderable
+  private readonly progress: TextRenderable
   private readonly modeButtons = new Map<OverviewMode, BoxRenderable>()
   private readonly modeLabels = new Map<OverviewMode, TextRenderable>()
   private readonly scroll: ScrollBoxRenderable
@@ -47,6 +48,9 @@ export class OverviewPanel {
   private entitled: boolean | null = null
   private connected: boolean | null = null
   private commentary = ""
+  // Replacement commentary while a review is already on screen; null when the
+  // stream is going straight to `commentary` because there is nothing to keep.
+  private pendingCommentary: string | null = null
   private message: string | null = null
   private focused = false
   // Token deltas arrive far faster than the terminal should repaint.
@@ -100,6 +104,15 @@ export class OverviewPanel {
       this.modeButtons.set(mode, button)
       this.modeLabels.set(mode, label)
     }
+    // Pushed to the far end of the row so a run in progress never crowds the tabs.
+    headerRow.add(new BoxRenderable(renderer, { flexGrow: 1, height: 1 }))
+    this.progress = new TextRenderable(renderer, {
+      content: "",
+      fg: MUTED_COLOR,
+      wrapMode: "none",
+      flexShrink: 0,
+    })
+    headerRow.add(this.progress)
     this.scroll = new ScrollBoxRenderable(renderer, {
       flexGrow: 1,
       width: "100%",
@@ -151,6 +164,7 @@ export class OverviewPanel {
   reset(): void {
     this.state = this.connected === false ? "disconnected" : "idle"
     this.commentary = ""
+    this.pendingCommentary = null
     this.message = null
     this.render()
   }
@@ -164,17 +178,29 @@ export class OverviewPanel {
   // A fresh digest reached the model; its commentary streams in from here.
   startStreaming(): void {
     this.state = "streaming"
-    this.commentary = ""
+    // A review already on screen stays readable while its replacement streams
+    // into the buffer, so regenerating never blanks the panel. The header
+    // carries the progress instead.
+    this.pendingCommentary = this.commentary ? "" : null
+    if (this.pendingCommentary === null) this.commentary = ""
     this.message = null
     this.render()
   }
 
   appendCommentary(text: string): void {
+    if (this.pendingCommentary !== null) {
+      this.pendingCommentary += text
+      return
+    }
     this.commentary += text
     this.liveRender.schedule()
   }
 
   finishCommentary(): void {
+    if (this.pendingCommentary !== null) {
+      this.commentary = this.pendingCommentary
+      this.pendingCommentary = null
+    }
     this.state = "ready"
     this.render()
   }
@@ -183,11 +209,14 @@ export class OverviewPanel {
   showSnapshot(snapshot: OverviewSnapshot): void {
     this.state = "ready"
     this.commentary = snapshot.commentary
+    this.pendingCommentary = null
     this.message = null
     this.render()
   }
 
   showError(message: string): void {
+    // A failed run keeps the last review; the notice goes above it.
+    this.pendingCommentary = null
     if (isNotConnectedError(message)) {
       this.state = "disconnected"
     } else {
@@ -200,7 +229,7 @@ export class OverviewPanel {
   setFocused(focused: boolean): void {
     if (this.focused === focused) return
     this.focused = focused
-    this.header.fg = focused ? FOCUSED_HEADER : UNFOCUSED_HEADER
+    this.renderHeader()
     this.paintModeTabs()
   }
 
@@ -248,7 +277,19 @@ export class OverviewPanel {
   }
 
   private render(): void {
+    this.renderHeader()
     this.commentaryText.content = new StyledText(this.commentaryChunks())
+  }
+
+  // While a run is in flight the header row carries its progress, because the
+  // body is busy holding the previous review.
+  private renderHeader(): void {
+    this.header.fg = this.focused ? FOCUSED_HEADER : UNFOCUSED_HEADER
+    this.progress.content = this.state === "collecting"
+      ? "gathering…"
+      : this.state === "streaming" && this.pendingCommentary !== null
+        ? "writing…"
+        : ""
   }
 
   private commentaryChunks(): TextChunk[] {
@@ -258,18 +299,25 @@ export class OverviewPanel {
       case "locked":
         return []
       case "disconnected":
-        return [fg(WARNING_COLOR)("Connect ChatGPT with A to generate overviews.")]
+        return this.overCachedReview(fg(WARNING_COLOR)("Connect ChatGPT with A to generate overviews."))
       case "idle":
         return [fg(MUTED_COLOR)("Waiting for market data…")]
       case "collecting":
-        return [fg(MUTED_COLOR)("Gathering broker data…")]
+        return this.commentary ? [fg(VALUE_COLOR)(this.commentary)] : [fg(MUTED_COLOR)("Gathering broker data…")]
       case "error":
-        return [fg(ERROR_COLOR)(this.message ?? "Overview failed.")]
-      default:
-        return this.commentary
-          ? [fg(VALUE_COLOR)(this.commentary), ...(this.state === "streaming" ? [fg(MUTED_COLOR)("▍")] : [])]
-          : [fg(MUTED_COLOR)("Writing…")]
+        return this.overCachedReview(fg(ERROR_COLOR)(this.message ?? "Overview failed."))
+      default: {
+        if (!this.commentary) return [fg(MUTED_COLOR)("Writing…")]
+        // The cursor belongs to text still growing, not to a review being held.
+        const streamingLive = this.state === "streaming" && this.pendingCommentary === null
+        return [fg(VALUE_COLOR)(this.commentary), ...(streamingLive ? [fg(MUTED_COLOR)("▍")] : [])]
+      }
     }
+  }
+
+  /** Puts a notice above the last review, so a failed run still shows it. */
+  private overCachedReview(notice: TextChunk): TextChunk[] {
+    return this.commentary ? [notice, fg(MUTED_COLOR)("\n\n"), fg(VALUE_COLOR)(this.commentary)] : [notice]
   }
 }
 

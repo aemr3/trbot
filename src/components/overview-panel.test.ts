@@ -65,6 +65,51 @@ test("renders cached snapshots in one shot", async () => {
   renderer.destroy()
 })
 
+test("holds the last review on screen until the new one is written", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+
+  panel.showSnapshot({ digest: DIGEST, commentary: "Old reading.", generatedAt: 0 })
+  panel.setCollecting()
+  await renderOnce()
+  expect(captureCharFrame()).toContain("Old reading.")
+  expect(captureCharFrame()).toContain("gathering…")
+
+  panel.startStreaming()
+  panel.appendCommentary("Fresh reading.")
+  await Bun.sleep(0)
+  await renderOnce()
+  let frame = captureCharFrame()
+  expect(frame).toContain("Old reading.")
+  expect(frame).not.toContain("Fresh reading.")
+  expect(frame).toContain("writing…")
+
+  panel.finishCommentary()
+  await renderOnce()
+  frame = captureCharFrame()
+  expect(frame).toContain("Fresh reading.")
+  expect(frame).not.toContain("Old reading.")
+  expect(frame).not.toContain("writing…")
+
+  renderer.destroy()
+})
+
+test("keeps the last review under a failed run", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+
+  panel.showSnapshot({ digest: DIGEST, commentary: "Old reading.", generatedAt: 0 })
+  panel.startStreaming()
+  panel.appendCommentary("Half a rea")
+  panel.showError("Overview failed: timeout")
+  await renderOnce()
+  const frame = captureCharFrame()
+
+  expect(frame).toContain("Overview failed: timeout")
+  expect(frame).toContain("Old reading.")
+  expect(frame).not.toContain("Half a rea")
+
+  renderer.destroy()
+})
+
 test("walks the pre-generation states", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
 
