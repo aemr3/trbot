@@ -102,6 +102,12 @@ function drawLine(
   }
 }
 
+/**
+ * Fills the half-open rect `[left, right) x [top, bottom)`, snapping each edge
+ * to the nearest pixel boundary. A stroke centered on a coordinate lands on the
+ * same boundary a rect edge does, which is what keeps the price guide flush
+ * with the close edge of the candle it tracks. Always paints at least one pixel.
+ */
 function fillRect(
   data: Uint8Array,
   width: number,
@@ -113,8 +119,12 @@ function fillRect(
   color: RgbaColor,
   opacity = 1,
 ): void {
-  for (let y = Math.max(Math.floor(top), 0); y <= Math.min(Math.ceil(bottom), height - 1); y++) {
-    for (let x = Math.max(Math.floor(left), 0); x <= Math.min(Math.ceil(right), width - 1); x++) {
+  const firstColumn = Math.round(left)
+  const firstRow = Math.round(top)
+  const lastColumn = Math.max(Math.round(right) - 1, firstColumn)
+  const lastRow = Math.max(Math.round(bottom) - 1, firstRow)
+  for (let y = Math.max(firstRow, 0); y <= Math.min(lastRow, height - 1); y++) {
+    for (let x = Math.max(firstColumn, 0); x <= Math.min(lastColumn, width - 1); x++) {
       blendPixel(data, width, height, x, y, color, opacity)
     }
   }
@@ -191,9 +201,11 @@ function drawCandles(
     const bodyTop = Math.min(openY, closeY)
     const bodyBottom = Math.max(openY, closeY)
     if (Math.abs(bodyBottom - bodyTop) < 1.25) {
-      // Doji: full wick plus a thin horizontal body stroke.
+      // Doji: full wick plus a thin horizontal body stroke. The stroke sits on
+      // the close, snapped to a pixel boundary, so the price guide overlays it.
+      const closeEdge = Math.round(closeY)
       drawLine(data, width, height, x, highY, x, lowY, wickColor, 1.2)
-      drawLine(data, width, height, x - bodyWidth / 2, bodyTop, x + bodyWidth / 2, bodyTop, bodyColor, 1.5)
+      drawLine(data, width, height, x - bodyWidth / 2, closeEdge, x + bodyWidth / 2, closeEdge, bodyColor, 1.5)
     } else {
       drawWickOutsideBody(data, width, height, x, highY, lowY, bodyTop, bodyBottom, wickColor)
       fillRect(data, width, height, x - bodyWidth / 2, bodyTop, x + bodyWidth / 2, bodyBottom, bodyColor, 1)
@@ -224,7 +236,8 @@ function drawVolume(
     const x = projectX(slots.offset + index, slots.count, 0, width - 1)
     const barTop = lerp(bottom, top, heightRatio)
     const color = parseHex(candle.close >= candle.open ? palette.volumeUp : palette.volumeDown, 0.6)
-    fillRect(data, width, height, x - barWidth / 2, barTop, x + barWidth / 2, bottom, color, 0.8)
+    // `bottom` is the last pixel row of the pane, so the rect ends one past it.
+    fillRect(data, width, height, x - barWidth / 2, barTop, x + barWidth / 2, bottom + 1, color, 0.8)
   }
 }
 

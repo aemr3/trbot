@@ -10,6 +10,7 @@ import {
   type BitmapChartView,
   type BrailleChartView,
 } from "./candlestick-chart.ts"
+import { CHART_PALETTE } from "./chart/palette.ts"
 
 const candles: Candle[] = [
   { timestamp: 1000, open: 10, high: 13, low: 9, close: 12, volume: 10 },
@@ -42,6 +43,27 @@ function toText(styled: StyledText): string {
 /** Waits out the wheel-gesture axis lock so the next scroll starts a new gesture. */
 function settleWheelAxis(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 220))
+}
+
+/** Bitmap rows carrying the given palette color within a column range. */
+function bitmapRows(view: BitmapChartView, color: string, fromColumn: number, toColumn: number): number[] {
+  const [red, green, blue] = [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16))
+  const { width, height, pixels } = view.bitmap
+  const rows: number[] = []
+  for (let row = 0; row < height; row++) {
+    for (let column = fromColumn; column <= toColumn; column++) {
+      const index = (row * width + column) * 4
+      const matches = pixels[index + 3]! > 180
+        && Math.abs(pixels[index]! - red!) <= 8
+        && Math.abs(pixels[index + 1]! - green!) <= 8
+        && Math.abs(pixels[index + 2]! - blue!) <= 8
+      if (matches) {
+        rows.push(row)
+        break
+      }
+    }
+  }
+  return rows
 }
 
 /** Plot cells whose chunk carries the given color, as {row, column} pairs. */
@@ -137,6 +159,33 @@ test("aligns the current-price guide row with the drawn close edge", () => {
       const rowsAtLastColumn = bodyCells.filter((cell) => cell.column === lastColumn).map((cell) => cell.row)
       expect(rowsAtLastColumn).toContain(guideRow)
     }
+  }
+})
+
+test("aligns the price guide with the close edge of the last bitmap candle", () => {
+  for (const close of [38.24, 38.5, 38.79, 38.93, 37.94, 37.62]) {
+    const rising = close >= 38.1
+    const result = renderCandleChartBitmapView([
+      { timestamp: 1000, open: 38.0, high: 39.2, low: 37.5, close: 38.5, volume: null },
+      { timestamp: 2000, open: 38.5, high: 39.2, low: 37.2, close: 38.1, volume: null },
+      { timestamp: 3000, open: 38.1, high: Math.max(38.1, close) + 0.05, low: Math.min(38.1, close) - 0.05, close, volume: null },
+    ], 60, 24, "INTRADAY", 0, false, { width: 8, height: 16 })
+    expect(typeof result).not.toBe("string")
+    const view = result as BitmapChartView
+
+    // The guide spans the full width; only the last candle reaches the right edge.
+    const guideRows = bitmapRows(view, rising ? CHART_PALETTE.guideUp : CHART_PALETTE.guideDown, 0, 4)
+    const bodyRows = bitmapRows(
+      view,
+      rising ? CHART_PALETTE.candleUp : CHART_PALETTE.candleDown,
+      view.bitmap.width - 6,
+      view.bitmap.width - 1,
+    )
+    const closeEdge = rising ? Math.min(...bodyRows) : Math.max(...bodyRows) + 1
+
+    // The guide straddles the pixel boundary its price maps to, and that
+    // boundary is the body edge holding the close.
+    expect(guideRows).toEqual([closeEdge - 1, closeEdge])
   }
 })
 
