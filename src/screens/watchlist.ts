@@ -158,7 +158,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
       { keys: "B / S", description: "Open buy / sell ticket" },
       { keys: "c c", description: "Cancel all pending VIOP orders" },
       { keys: "x x", description: "Exit all VIOP positions" },
-      { keys: "Tab", description: "Move focus to the next panel" },
+      { keys: "Tab / Shift+Tab", description: "Move focus to the next / previous panel" },
       { keys: "Ctrl+C", description: "Quit" },
     ],
   },
@@ -539,8 +539,10 @@ export class WatchlistScreen {
       }
       return
     }
-    if (key.name === "tab") {
-      this.toggleFocus()
+    // Shift+Tab arrives as a shifted tab or as its own backtab key, depending on
+    // the terminal; either way it walks the panels the other way.
+    if (key.name === "tab" || key.name === "backtab") {
+      this.moveFocus(key.shift || key.name === "backtab" ? -1 : 1)
       return
     }
     // The depth panel is read-only; it swallows keys rather than letting them
@@ -2324,10 +2326,11 @@ export class WatchlistScreen {
     this.newsSection.add(node)
   }
 
-  private toggleFocus(): void {
+  private moveFocus(direction: 1 | -1): void {
     const order: Focus[] = ["instruments", "portfolio", "chart", "depth", "brokers", "account", "news", "overview"]
     const index = order.indexOf(this.focus)
-    this.setFocus(order[(index + 1) % order.length] ?? "instruments")
+    const next = (index + direction + order.length) % order.length
+    this.setFocus(order[next] ?? "instruments")
   }
 
   private setFocus(focus: Focus): void {

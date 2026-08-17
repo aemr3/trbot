@@ -448,6 +448,32 @@ test("reloads the account for the portfolio range the panel asks for", async () 
   renderer.destroy()
 })
 
+test("walks panel focus backwards with Shift+Tab", async () => {
+  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 160, height: 40 })
+  const ranges: Array<string | undefined> = []
+  const rangedAccount: AccountSource = {
+    async loadAccount(options) {
+      ranges.push(options?.portfolioRange)
+      return account.loadAccount(options)
+    },
+  }
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account: rangedAccount })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Week P/L"))
+
+  // Two tabs forward reach the chart, so one back belongs to the portfolio;
+  // its range keys are what proves where the focus landed.
+  focusPanel(mockInput, "chart")
+  mockInput.pressTab({ shift: true })
+  mockInput.pressArrow("right")
+  await waitFor(() => ranges.includes("MONTH"))
+  await waitForFrame((frame) => frame.includes("Month P/L"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("applies live account, order, and futures price updates", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 160, height: 30 })
   const quotes = new FakeQuoteStream()
