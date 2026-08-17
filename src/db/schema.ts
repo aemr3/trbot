@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core"
 
 export const authState = sqliteTable("auth_state", {
   accountKey: text("account_key").primaryKey(),
@@ -25,6 +25,22 @@ export const providerState = sqliteTable("provider_state", {
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 })
+
+// One finished AI overview per instrument and horizon, so a reopened app shows
+// the last reading instead of paying for a new one. `digest` holds the JSON the
+// commentary was written from, which the next run compares against.
+export const overviewSnapshots = sqliteTable(
+  "overview_snapshots",
+  {
+    instrumentUid: text("instrument_uid").notNull(),
+    mode: text("mode").notNull(),
+    digest: text("digest").notNull(),
+    commentary: text("commentary").notNull(),
+    generatedAt: integer("generated_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.instrumentUid, table.mode] })],
+)
 
 export const watchlistPreferences = sqliteTable("watchlist_preferences", {
   id: integer("id").primaryKey(),

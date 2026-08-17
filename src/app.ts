@@ -12,6 +12,7 @@ import {
 import { isTransientStreamError } from "./api/transport.ts"
 import { loadConfig, type AppConfig, type AppCredentials } from "./config.ts"
 import { openDatabase, type DatabaseConnection } from "./db/client.ts"
+import { DrizzleOverviewSnapshotStore } from "./db/overview-snapshot-store.ts"
 import { DrizzleProviderStateStore } from "./db/provider-state-store.ts"
 import { DrizzleWatchlistPreferencesStore } from "./db/watchlist-preferences-store.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
@@ -24,6 +25,7 @@ import { ApiEquityQuoteStream } from "./market/equity-quote-stream.ts"
 import { ApiQuoteStream } from "./market/quote-stream.ts"
 import { ApiViopInstrumentSource } from "./market/api-source.ts"
 import { ApiMemberFeatureSource } from "./member/api-features.ts"
+import type { OverviewSnapshotStore } from "./market/overview.ts"
 import { LoginScreen } from "./screens/login.ts"
 import { LogsScreen } from "./screens/logs.ts"
 import { TradingWorkspaceScreen } from "./screens/trading-workspace.ts"
@@ -51,6 +53,7 @@ interface AppOptions {
   exit?: () => void
   chatGptAccount?: ChatGptAccount
   overview?: OverviewGenerator
+  overviewSnapshots?: OverviewSnapshotStore
   logs?: ApplicationLog
   recoverSession?: (credentials: AppCredentials) => Promise<ApiClientHandle>
 }
@@ -86,6 +89,7 @@ export async function startApp(): Promise<void> {
       savePreferences: (preferences) => preferencesStore.put(preferences),
       closePreferences: preferencesConnection.close,
       chatGptAccount,
+      overviewSnapshots: new DrizzleOverviewSnapshotStore(preferencesConnection.db),
       // The overview model rides the ChatGPT account; auth is resolved lazily
       // per request, so building it before login is safe.
       overview: new ModelOverviewGenerator(createChatGptModel(chatGptAccount, config.aiModel), {
@@ -131,6 +135,7 @@ export class App {
   private readonly exit: () => void
   private readonly chatGptAccount: ChatGptAccount | undefined
   private readonly overview: OverviewGenerator | undefined
+  private readonly overviewSnapshots: OverviewSnapshotStore | undefined
   private readonly logs: ApplicationLog
   private readonly recoverSession: (credentials: AppCredentials) => Promise<ApiClientHandle>
 
@@ -156,6 +161,7 @@ export class App {
     this.exit = options.exit ?? exitWithSigint
     this.chatGptAccount = options.chatGptAccount
     this.overview = options.overview
+    this.overviewSnapshots = options.overviewSnapshots
     this.logs = options.logs ?? new ApplicationLog()
     this.recoverSession = options.recoverSession ?? ((credentials) => authenticateApiClient(config, credentials))
     this.root = new BoxRenderable(renderer, {
@@ -248,6 +254,7 @@ export class App {
       onSessionExpired: () => this.showLogin(),
       chatGptAccount: this.chatGptAccount,
       overview: this.overview,
+      overviewSnapshots: this.overviewSnapshots,
       logs: this.logs,
       manageInput: false,
       onOpenLogs: () => workspace?.selectTab("logs"),

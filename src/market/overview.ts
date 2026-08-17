@@ -137,6 +137,18 @@ export interface OverviewSnapshot {
   generatedAt: number
 }
 
+// A snapshot together with the instrument and horizon it belongs to.
+export interface StoredOverviewSnapshot extends OverviewSnapshot {
+  instrumentUid: string
+  mode: OverviewMode
+}
+
+// Snapshots outlive the process so a reopened app starts with its last reading.
+export interface OverviewSnapshotStore {
+  list(): Promise<StoredOverviewSnapshot[]>
+  put(snapshot: StoredOverviewSnapshot): Promise<void>
+}
+
 export interface OverviewDigestInputs {
   mode: OverviewMode
   instrument: OverviewInstrument

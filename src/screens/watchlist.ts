@@ -40,7 +40,13 @@ import type { DepthBook, DepthStream } from "../market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
 import type { NewsArticle, NewsSource } from "../market/news.ts"
-import { buildOverviewDigest, isSameDigest, type OverviewMode, type OverviewSnapshot } from "../market/overview.ts"
+import {
+  buildOverviewDigest,
+  isSameDigest,
+  type OverviewMode,
+  type OverviewSnapshot,
+  type OverviewSnapshotStore,
+} from "../market/overview.ts"
 import { TradeFlowAccumulator } from "../market/trade-flow.ts"
 import type { QuoteStream, QuoteUpdate } from "../market/quote-stream.ts"
 import type { SettlementMode, SettlementSource } from "../market/settlement.ts"
@@ -224,6 +230,7 @@ export interface WatchlistScreenOptions {
   settlement?: SettlementSource
   memberFeatures?: MemberFeatureSource
   overview?: OverviewGenerator
+  overviewSnapshots?: OverviewSnapshotStore
   onSessionExpired?: () => void
   newsIntervalMs?: number
   instrumentIntervalMs?: number
@@ -314,7 +321,9 @@ export class WatchlistScreen {
   private brokerageLive = false
   private brokerageDateModal: BrokerageDateModal | null = null
   // The AI overview joins the live book and tape with the broker feeds; every
-  // finished run is cached per instrument so revisiting a ticker is free.
+  // finished run is cached per instrument so revisiting a ticker is free. The
+  // cache is seeded from, and written through to, the snapshot store, so the
+  // readings survive a restart.
   private readonly tradeFlow = new TradeFlowAccumulator()
   private latestDepthBook: DepthBook | null = null
   private readonly overviewCache = new Map<string, OverviewSnapshot>()
@@ -669,6 +678,7 @@ export class WatchlistScreen {
     this.accountPanel.mount()
     void this.load()
     void this.loadMemberFeatures()
+    void this.loadOverviewSnapshots()
     this.newsTimer = setInterval(() => void this.refreshNews(), this.options.newsIntervalMs ?? NEWS_POLL_INTERVAL_MS)
     this.instrumentTimer = setInterval(
       () => void this.refreshInstruments(),
@@ -1147,6 +1157,32 @@ export class WatchlistScreen {
     void this.generateOverview()
   }
 
+  // Seeds the cache with the readings a previous run left behind, then shows
+  // the one belonging to the current selection unless a run is already writing.
+  private async loadOverviewSnapshots(): Promise<void> {
+    const store = this.options.overviewSnapshots
+    if (!store) return
+    try {
+      const stored = await store.list()
+      if (this.destroyed) return
+      for (const snapshot of stored) {
+        this.overviewCache.set(overviewCacheKey(snapshot.instrumentUid, snapshot.mode), {
+          digest: snapshot.digest,
+          commentary: snapshot.commentary,
+          generatedAt: snapshot.generatedAt,
+        })
+      }
+      if (this.overviewRequest) return
+      const instrument = this.instruments[this.instrumentList.selectedIndex]
+      const cached = instrument
+        ? this.overviewCache.get(overviewCacheKey(instrument.uid, this.overviewPanel.activeMode))
+        : undefined
+      if (cached) this.overviewPanel.showSnapshot(cached)
+    } catch (error) {
+      this.reportError("AI overview cache", error)
+    }
+  }
+
   private scheduleOverviewGeneration(): void {
     if (!this.options.overview || this.destroyed) return
     if (this.overviewDebounce) clearTimeout(this.overviewDebounce)
@@ -1245,8 +1281,14 @@ export class WatchlistScreen {
         },
       })
       if (this.destroyed || signal.aborted || this.overviewRequest !== request) return
-      this.overviewCache.set(overviewCacheKey(instrument.uid, mode), { digest, commentary, generatedAt: Date.now() })
+      const snapshot: OverviewSnapshot = { digest, commentary, generatedAt: Date.now() }
+      this.overviewCache.set(overviewCacheKey(instrument.uid, mode), snapshot)
       this.overviewPanel.finishCommentary()
+      // Persisted after the panel settles: the reading is already usable, and a
+      // failed write only costs the next launch its head start.
+      void this.options.overviewSnapshots
+        ?.put({ instrumentUid: instrument.uid, mode, ...snapshot })
+        .catch((error: unknown) => this.reportError("AI overview cache", error))
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.overviewRequest !== request || isAbortError(error)) return
       if (this.reportError("AI overview", error)) return
