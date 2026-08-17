@@ -50,6 +50,16 @@ test("each horizon gets its own commentary contract", () => {
   expect(daily).toContain("swing idea")
 })
 
+test("the idea has to say where to get out, both ways", () => {
+  // Entry and invalidation without a target leaves the winning side of the
+  // trade unmanaged, which is the half a stop manager cannot help with.
+  for (const mode of ["INTRADAY", "DAILY"] as const) {
+    const prompt = overviewSystemPrompt(mode)
+    expect(prompt).toContain("take profit")
+    expect(prompt).toContain("Name both exits")
+  }
+})
+
 test("the brief commits to a side instead of listing both", () => {
   // A long paired with a short is not a reading, it is two readings; the brief
   // has to pick, or say to stand aside.
