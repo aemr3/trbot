@@ -809,7 +809,7 @@ function expandPriceSpan(floor: number, ceiling: number, minSpan: number): { flo
   return { floor: middle - minSpan / 2, ceiling: middle + minSpan / 2 }
 }
 
-/** Price axis column: `┫`+close on the guide row, `┤`+price on grid rows. */
+/** Price axis column: the close on the guide row, grid prices on grid rows. */
 function renderPriceAxis(frame: ChartFrame, guideRow: number): StyledText {
   const { layout, plotRows, volumeRows, latest, floor, ceiling, gridRows } = frame
   const span = ceiling - floor
@@ -820,15 +820,14 @@ function renderPriceAxis(frame: ChartFrame, guideRow: number): StyledText {
   for (let row = 0; row < plotRows; row++) {
     if (row > 0) chunks.push(fg(AXIS_COLOR)("\n"))
     const isGuide = row === guideRow
-    const glyph = isGuide ? "┫" : grid.has(row) ? "┤" : "│"
     // Inverse of the price mapping at this row's center, so a tick names the
     // price a candle touching that row would be trading at.
     const rowPrice = ceiling - ((row + 0.5) / plotRows) * span
     const label = isGuide ? formatPrice(latest.close) : grid.has(row) ? formatPrice(rowPrice) : ""
-    chunks.push(fg(isGuide ? latestColor : AXIS_COLOR)(`${glyph} ${label.padStart(layout.priceLabelWidth)}`))
+    chunks.push(fg(isGuide ? latestColor : AXIS_COLOR)(`  ${label.padStart(layout.priceLabelWidth)}`))
   }
   for (let row = 0; row < volumeRows; row++) {
-    chunks.push(fg(AXIS_COLOR)(`\n${row === volumeRows - 1 ? "┴" : "│"}`))
+    chunks.push(fg(AXIS_COLOR)("\n"))
   }
   return new StyledText(chunks)
 }

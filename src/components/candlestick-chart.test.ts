@@ -45,6 +45,16 @@ function settleWheelAxis(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 220))
 }
 
+/** Axis row holding the close label, which is the only one in the candle color. */
+function axisGuideRow(axis: StyledText, color: RGBA): number {
+  let row = 0
+  for (const chunk of axis.chunks) {
+    if (chunk.text.trim().length > 0 && chunk.fg?.equals(color)) return row
+    row += chunk.text.split("\n").length - 1
+  }
+  return -1
+}
+
 /** Bitmap rows carrying the given palette color within a column range. */
 function bitmapRows(view: BitmapChartView, color: string, fromColumn: number, toColumn: number): number[] {
   const [red, green, blue] = [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16))
@@ -104,8 +114,8 @@ test("renders braille candles with axis columns and a time axis", () => {
 
   const axisLines = toText(chart.axis).split("\n")
   expect(axisLines).toHaveLength(9)
-  expect(toText(chart.axis)).toContain("┫")
-  expect(toText(chart.axis)).toContain("┤")
+  expect(toText(chart.axis)).toContain("9,0000") // the last close
+  expect(toText(chart.axis)).not.toMatch(/[│┤┫┴]/) // prices only, no tick glyphs
   expect(chart.timeAxis).toContain(":") // intraday hour labels
 })
 
@@ -148,7 +158,7 @@ test("aligns the current-price guide row with the drawn close edge", () => {
         { timestamp: 3000, open: 38.1, high: Math.max(38.1, close) + 0.08, low: Math.min(38.1, close) - 0.08, close, volume: null },
       ], 44, height)
       const axisLines = toText(chart.axis).split("\n")
-      const guideRow = axisLines.findIndex((line) => line.includes("┫"))
+      const guideRow = axisGuideRow(chart.axis, close >= 38.1 ? UP : DOWN)
       expect(guideRow).toBeGreaterThanOrEqual(0)
       // The label beside the guide is the close it sits on.
       expect(axisLines[guideRow]).toContain(close.toLocaleString("tr-TR", { minimumFractionDigits: 2 }))
@@ -231,11 +241,13 @@ test("adds volume bars and intraday timestamps when space allows", () => {
   const chart = view(sessionCandles, 100, 20)
   const plotLines = toText(chart.plot).split("\n")
   expect(plotLines).toHaveLength(19)
-  // Bottom three rows hold the volume pane, closed by ┴ on the axis.
+  // Bottom three rows hold the volume pane, which carries no price labels.
   expect(plotLines.slice(-3).join("")).toMatch(braille)
   const volumeCells = cellsWithColor(chart.plot, RGBA.fromHex("#365747"))
   expect(volumeCells.some((cell) => cell.row >= 16)).toBe(true)
-  expect(toText(chart.axis)).toContain("┴")
+  const axisLines = toText(chart.axis).split("\n")
+  expect(axisLines).toHaveLength(19)
+  expect(axisLines.slice(-3).join("").trim()).toBe("")
   expect(chart.timeAxis).toContain("09:55")
   expect(chart.timeAxis).toContain("16:25")
 })
@@ -307,7 +319,7 @@ test("rasterizes a true-pixel bitmap for kitty terminals", () => {
   }
   expect(hasUp).toBe(true)
   expect(hasDown).toBe(true)
-  expect(toText(chart.axis)).toContain("┫")
+  expect(axisGuideRow(chart.axis, DOWN)).toBeGreaterThanOrEqual(0) // the close label
   expect(chart.timeAxis).toContain(":")
 })
 
