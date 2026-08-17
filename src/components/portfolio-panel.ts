@@ -82,9 +82,9 @@ export class PortfolioPanel {
     private readonly options: PortfolioPanelOptions = {},
   ) {
     this.root = new BoxRenderable(renderer, {
-      // The range header, four figures, a blank row, the bars around their zero
-      // line, and the day under each one.
-      height: 15,
+      // The range header, a blank row, four figures, another blank row, the
+      // bars around their zero line, and the day under each one.
+      height: 16,
       flexShrink: 0,
       flexDirection: "column",
       border: ["top"],
@@ -96,14 +96,24 @@ export class PortfolioPanel {
       onSizeChange: () => this.render(),
     })
 
-    const header = new BoxRenderable(renderer, { height: 1, flexDirection: "row", flexShrink: 0 })
-    // The title never gives way: the six chips plus a padded title overrun the
-    // 34 columns this panel gets, so the chips carry the padding on one side
-    // only and the title keeps its full width.
+    // The blank row keeps the range chips off the figures they filter, and the
+    // right padding keeps the selected chip's highlight off the panel's edge.
+    // A sidebar too narrow for both cuts the header off at its own edge rather
+    // than painting the chips over the panel beside it.
+    const header = new BoxRenderable(renderer, {
+      height: 1,
+      flexDirection: "row",
+      flexShrink: 0,
+      marginBottom: 1,
+      paddingRight: 1,
+      overflow: "hidden",
+    })
+    // The chips are what the header is for, so the title is what gives way when
+    // the sidebar narrows.
     header.add(new TextRenderable(renderer, {
       content: "Portfolio",
       fg: HEADING_COLOR,
-      flexShrink: 0,
+      flexShrink: 1,
       marginRight: 1,
       wrapMode: "none",
     }))
@@ -114,6 +124,7 @@ export class PortfolioPanel {
         height: 1,
         flexShrink: 0,
         paddingLeft: 1,
+        paddingRight: 1,
         onMouseDown: (event) => {
           if (event.button !== 0) return
           this.options.onFocusRequest?.()

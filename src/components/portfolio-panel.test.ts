@@ -40,6 +40,23 @@ async function mountPanel(onRangeChange?: (range: PortfolioRange) => void) {
   return { ...harness, panel }
 }
 
+test("keeps its range chips inside the panel however narrow it is", async () => {
+  // The sidebar narrows with the terminal, and the panel beside it starts one
+  // column later: a header wider than the panel must be cut off, not painted
+  // over the neighbour.
+  const harness = await createTestRenderer({ width: 60, height: 8 })
+  const panel = new PortfolioPanel(harness.renderer, {})
+  panel.root.width = 28
+  harness.renderer.root.add(panel.root)
+  await harness.renderOnce()
+
+  const header = harness.captureCharFrame().split("\n").find((line) => line.includes("1W")) ?? ""
+  expect(header).toContain("1W")
+  expect(header.slice(28).trim()).toBe("")
+
+  harness.renderer.destroy()
+})
+
 test("shows the account's figures and the range's own profit", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
 

@@ -105,6 +105,16 @@ const INSTRUMENT_POLL_INTERVAL_MS = 60_000
 const DESTRUCTIVE_CONFIRMATION_TIMEOUT_MS = 3_000
 const COMPACT_LAYOUT_WIDTH = 104
 const DEPTH_PANEL_WIDTH = 48
+// The sidebar's own padding takes two columns, so the panels inside get two
+// less: the portfolio's title, its six padded range chips and the gap they keep
+// from the panel edge need 37 of the 38 this leaves. A narrow terminal cannot
+// afford that, and the portfolio header clips itself instead.
+const SIDEBAR_WIDTH = 40
+const COMPACT_SIDEBAR_WIDTH = 30
+// What the instrument list spends on chrome rather than on a row: the sidebar's
+// own padding, the list's selection indicator, its scrollbar gutter, and two
+// columns of breathing room so the change column does not sit on the edge.
+const SIDEBAR_LIST_CHROME = 8
 const BROKERAGE_POLL_INTERVAL_MS = 60_000
 // Each panel is guaranteed the rows its fixed content needs, then both grow at
 // the same rate so whatever the terminal has left over is split evenly.
@@ -583,7 +593,9 @@ export class WatchlistScreen {
     })
 
     this.leftPanel = new BoxRenderable(renderer, {
-      width: 36,
+      // Kept in step with updateResponsiveLayout, which owns this from the
+      // first resize onward.
+      width: SIDEBAR_WIDTH,
       flexDirection: "column",
       paddingLeft: 1,
       paddingRight: 1,
@@ -2374,7 +2386,7 @@ export class WatchlistScreen {
     const wide = this.root.width >= DEPTH_LAYOUT_WIDTH
     const depthFocused = this.focus === "depth" || this.focus === "brokers"
     const rightFocused = this.focus === "news" || this.focus === "overview"
-    this.leftPanel.width = compact ? 30 : 36
+    this.leftPanel.width = compact ? COMPACT_SIDEBAR_WIDTH : SIDEBAR_WIDTH
     this.centerPanel.visible = !compact || (!rightFocused && !depthFocused)
     this.depthColumn.visible = compact ? depthFocused : wide || depthFocused
     this.rightPanel.visible = compact ? rightFocused : wide || !depthFocused
@@ -2470,8 +2482,17 @@ function changeColor(changePercent: number | null): string {
   return changePercent >= 0 ? UP_COLOR : DOWN_COLOR
 }
 
+// The row fills the sidebar's list column: the ticker on the left, the change
+// hard against the right edge, and the price right-aligned in what is left. The
+// two numbers therefore stay in one column each however wide the sidebar is set.
+const INSTRUMENT_ROW_WIDTH = SIDEBAR_WIDTH - SIDEBAR_LIST_CHROME
+const INSTRUMENT_NAME_WIDTH = 6
+const INSTRUMENT_CHANGE_WIDTH = 7
+const INSTRUMENT_PRICE_WIDTH =
+  INSTRUMENT_ROW_WIDTH - INSTRUMENT_NAME_WIDTH - INSTRUMENT_CHANGE_WIDTH - 4
+
 function formatInstrumentRow(instrument: ViopInstrument): string {
-  const name = instrument.displayName.padEnd(6)
+  const name = instrument.displayName.padEnd(INSTRUMENT_NAME_WIDTH)
   const price =
     instrument.lastPrice !== null
       ? instrument.lastPrice.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -2480,7 +2501,7 @@ function formatInstrumentRow(instrument: ViopInstrument): string {
     instrument.changePercent !== null
       ? `${instrument.changePercent >= 0 ? "+" : ""}${instrument.changePercent.toFixed(2)}%`
       : ""
-  return `${name}  ${price.padStart(10)}  ${change.padStart(7)}`
+  return `${name}  ${price.padStart(INSTRUMENT_PRICE_WIDTH)}  ${change.padStart(INSTRUMENT_CHANGE_WIDTH)}`
 }
 
 function instrumentComparator(sort: InstrumentSort, direction: SortDirection): (left: ViopInstrument, right: ViopInstrument) => number {
