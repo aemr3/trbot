@@ -35,7 +35,14 @@ import {
   type BrokerageDateRange,
 } from "../market/broker-calendar.ts"
 import type { BrokerageDistributionSource, BrokerageSide } from "../market/brokerage.ts"
-import { averageTrueRange, closedCandles, type CandleInterval, type CandleRange, type CandleSource } from "../market/candle.ts"
+import {
+  averageTrueRange,
+  closedCandles,
+  type CandleInterval,
+  type CandleRange,
+  type CandleSeries,
+  type CandleSource,
+} from "../market/candle.ts"
 import type { DepthBook, DepthStream } from "../market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
 import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
@@ -1463,6 +1470,21 @@ export class WatchlistScreen {
       ?? null
   }
 
+  // The underlying's own last trade, for the overview digest. The depth tape is
+  // the freshest source and is sorted newest first; its candles are the fallback,
+  // and they already resolve to the underlying, so both legs price the same
+  // instrument. The equity quote stream is not usable here — it only runs while
+  // the chart is on the underlying.
+  private underlyingLastPrice(...series: Array<CandleSeries | null>): number | null {
+    const print = this.latestDepthBook?.trades[0]?.price
+    if (print !== undefined) return print
+    for (const candles of series) {
+      const close = candles?.candles.at(-1)?.close
+      if (close !== undefined) return close
+    }
+    return null
+  }
+
   private scheduleOverviewGeneration(): void {
     if (!this.options.overview || this.destroyed) return
     if (this.overviewDebounce) clearTimeout(this.overviewDebounce)
@@ -1530,12 +1552,19 @@ export class WatchlistScreen {
         this.options.candles.loadCandles(instrument.uid, ...OVERVIEW_DAILY, { signal }),
       ])
       if (this.destroyed || signal.aborted || this.overviewRequest !== request) return
+      // Every feed above reads the underlying equity, so the digest is priced on
+      // it too. A contract without an underlying is its own subject.
+      const underlyingSymbol = instrument.underlyingSymbol
       const digest = buildOverviewDigest({
         mode,
         instrument: {
-          symbol: instrument.symbol,
+          symbol: underlyingSymbol ?? instrument.symbol,
           displayName: instrument.displayName,
-          lastPrice: instrument.lastPrice,
+          lastPrice: underlyingSymbol
+            ? this.underlyingLastPrice(intradayCandles, dailyCandles)
+            : instrument.lastPrice,
+          contractSymbol: instrument.symbol,
+          contractLastPrice: instrument.lastPrice,
         },
         book: this.latestDepthBook,
         tape: this.tradeFlow.snapshot(),

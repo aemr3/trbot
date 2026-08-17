@@ -20,12 +20,20 @@ const OVERVIEW_PROMPT_BASE = [
   "You are a market microstructure analyst writing a brief for the trader's own reading.",
   "You receive a JSON digest of one instrument, built from that instrument's brokerage-house data",
   "and its own price history.",
+  "Every figure in the digest is measured on the underlying equity, named by instrument.symbol and",
+  "priced by instrument.lastPrice. The trader deals the futures contract instead:",
+  "instrument.contractSymbol at instrument.contractLastPrice, which sits instrument.basis above the",
+  "underlying. Never compare the two prices as if they were one market.",
   "The brief renders in a narrow plain-text terminal panel: write in English, at most 120 words,",
   "no markdown, no headers — short paragraphs only.",
   "Do not narrate every section; surface only the few signals that matter right now, citing the",
   "digest's own numbers and naming the houses behind them.",
-  "Close with one or two trade ideas, one line each: direction, entry zone, invalidation level,",
-  "and the single digest fact that carries the idea.",
+  "Close with exactly one trade idea on one line: direction, entry zone, invalidation level, and",
+  "the single digest fact that carries it. Quote its levels on the contract, converting the",
+  "underlying levels you read them from with the basis.",
+  "Commit to the side the evidence favours — never pair a long and a short, and never hedge one",
+  "idea with the other direction. When the digest genuinely supports neither side, write one line",
+  "saying to stand aside and what would have to happen to make a trade.",
 ].join(" ")
 
 const OVERVIEW_PROMPT_BY_MODE: Record<OverviewMode, string> = {
@@ -34,8 +42,8 @@ const OVERVIEW_PROMPT_BY_MODE: Record<OverviewMode, string> = {
     "the range's trade-flow distribution with each house's volume-weighted average price, session",
     "candles, and a short daily tail for trend context.",
     "Read the session's structure from the intraday candles and anchor it to who is aggressing on",
-    "the tape and how the resting book leans. Trade ideas must be intraday: entries and",
-    "invalidations at this session's levels.",
+    "the tape and how the resting book leans. The idea must be intraday: entry and",
+    "invalidation at this session's levels.",
   ].join(" "),
   DAILY: [
     "This is the daily view: the range's trade-flow distribution with each house's volume-weighted",
@@ -44,7 +52,7 @@ const OVERVIEW_PROMPT_BY_MODE: Record<OverviewMode, string> = {
     "The custody register settles after the session: treat it as positioning as of its lastUpdate,",
     "never as live activity. Call out where flow and custody diverge: heavy flow with a flat",
     "register is churn, custody growth with quiet flow is accumulation.",
-    "Trade ideas must be swing ideas on the daily timeframe, at levels from the daily candles.",
+    "The idea must be a swing idea on the daily timeframe, at levels from the daily candles.",
   ].join(" "),
 }
 
@@ -54,7 +62,7 @@ export function overviewSystemPrompt(mode: OverviewMode): string {
 
 export function overviewPrompt(digest: MarketOverviewDigest): string {
   return [
-    `Digest for ${digest.instrument.symbol}:`,
+    `Digest for ${digest.instrument.symbol}, traded as ${digest.instrument.contractSymbol}:`,
     JSON.stringify(digest),
     "Write the overview.",
   ].join("\n")

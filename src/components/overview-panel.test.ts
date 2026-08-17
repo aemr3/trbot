@@ -6,7 +6,7 @@ import { OverviewPanel, type OverviewPanelOptions } from "./overview-panel.ts"
 
 const DIGEST = buildOverviewDigest({
   mode: "INTRADAY",
-  instrument: { symbol: "ASELS", displayName: null, lastPrice: 390 },
+  instrument: { symbol: "ASELS", displayName: null, lastPrice: 390, contractSymbol: "F_ASELS0826", contractLastPrice: 394 },
   range: { start: null, end: null },
 })
 

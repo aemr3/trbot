@@ -6,7 +6,7 @@ import { ModelOverviewGenerator, overviewPrompt, overviewSystemPrompt } from "./
 
 const DIGEST = buildOverviewDigest({
   mode: "INTRADAY",
-  instrument: { symbol: "ASELS", displayName: null, lastPrice: 390 },
+  instrument: { symbol: "ASELS", displayName: null, lastPrice: 390, contractSymbol: "F_ASELS0826", contractLastPrice: 394 },
   buyerFlow: {
     side: "BUYER",
     shares: [{ brokerage: "Alpha", netLots: 500, averagePrice: 388, percentage: 25 }],
@@ -39,15 +39,25 @@ test("prompt hands the model the digest verbatim", () => {
 
 test("each horizon gets its own commentary contract", () => {
   const intraday = overviewSystemPrompt("INTRADAY")
-  expect(intraday).toContain("trade ideas")
+  expect(intraday).toContain("exactly one trade idea")
   expect(intraday).toContain("intraday view")
   expect(intraday).not.toContain("custody register")
 
   const daily = overviewSystemPrompt("DAILY")
-  expect(daily).toContain("trade ideas")
+  expect(daily).toContain("exactly one trade idea")
   expect(daily).toContain("custody register")
   expect(daily).toContain("lastUpdate")
-  expect(daily).toContain("swing ideas")
+  expect(daily).toContain("swing idea")
+})
+
+test("the brief commits to a side instead of listing both", () => {
+  // A long paired with a short is not a reading, it is two readings; the brief
+  // has to pick, or say to stand aside.
+  for (const mode of ["INTRADAY", "DAILY"] as const) {
+    const prompt = overviewSystemPrompt(mode)
+    expect(prompt).toContain("never pair a long and a short")
+    expect(prompt).toContain("stand aside")
+  }
 })
 
 test("streams deltas through onDelta and forwards the reasoning effort", async () => {

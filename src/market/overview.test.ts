@@ -4,7 +4,14 @@ import type { DepthBook } from "./depth.ts"
 import { buildOverviewDigest, isSameDigest } from "./overview.ts"
 import type { SettlementAnalysis, SettlementHolding } from "./settlement.ts"
 
-const INSTRUMENT = { symbol: "ASELS", displayName: "ASELS Aug Future", lastPrice: 390 }
+// The digest is priced on the underlying; the contract trades four lira over it.
+const INSTRUMENT = {
+  symbol: "ASELS",
+  displayName: "ASELS Aug Future",
+  lastPrice: 390,
+  contractSymbol: "F_ASELS0826",
+  contractLastPrice: 394,
+}
 
 function share(brokerage: string, netLots: number, averagePrice: number, percentage = 10): BrokerageShare {
   return { brokerage, netLots, averagePrice, percentage }
@@ -84,6 +91,31 @@ test("falls back to ladder sums when the book totals are missing", () => {
 
   expect(digest.book?.bidLots).toBe(300)
   expect(digest.book?.askLots).toBe(100)
+})
+
+test("prices the reading on the underlying and reports the contract's basis", () => {
+  const digest = buildOverviewDigest({
+    mode: "DAILY",
+    instrument: INSTRUMENT,
+    buyerFlow: distribution("BUYER", [share("Alpha", 500, 388)]),
+    range: { start: null, end: null },
+  })
+
+  expect(digest.instrument.basis).toBe(4)
+  // Alpha's VWAP is an underlying VWAP, so it is two lira onside — not six. The
+  // contract's premium must not leak into the comparison.
+  expect(digest.houses[0]?.averagePriceVsLast).toBe(2)
+})
+
+test("leaves the basis unknown when either price is missing", () => {
+  const digest = buildOverviewDigest({
+    mode: "DAILY",
+    instrument: { ...INSTRUMENT, lastPrice: null },
+    range: { start: null, end: null },
+  })
+
+  expect(digest.instrument.basis).toBeNull()
+  expect(digest.instrument.contractLastPrice).toBe(394)
 })
 
 test("joins flow and custody by house and signs custody moves", () => {

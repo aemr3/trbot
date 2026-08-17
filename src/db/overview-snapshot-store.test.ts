@@ -44,7 +44,7 @@ function snapshot(mode: "INTRADAY" | "DAILY", commentary: string): StoredOvervie
     mode,
     digest: buildOverviewDigest({
       mode,
-      instrument: { symbol: "ASELS", displayName: null, lastPrice: 390 },
+      instrument: { symbol: "ASELS", displayName: null, lastPrice: 390, contractSymbol: "F_ASELS0826", contractLastPrice: 394 },
       range: { start: null, end: null },
     }),
     commentary,

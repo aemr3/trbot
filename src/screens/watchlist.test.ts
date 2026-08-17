@@ -1585,7 +1585,7 @@ test("generates the intraday overview by default and streams the commentary", as
   screen.mount()
 
   await waitFor(() => overview.digests.length === 1)
-  const frame = await waitForFrame((value) => value.includes("Overview 1 for F_XU0300826."))
+  const frame = await waitForFrame((value) => value.includes("Overview 1 for XU030."))
   expect(frame).toContain("AI Overview")
 
   // The live reading takes both flow sides and the session candles, but never
@@ -1595,11 +1595,39 @@ test("generates the intraday overview by default and streams the commentary", as
 
   const digest = overview.digests[0]
   expect(digest?.mode).toBe("INTRADAY")
+  // Every feed in the digest reads the underlying, so it is priced on the
+  // underlying's own last close; the contract rides alongside with its basis.
+  expect(digest?.instrument).toMatchObject({
+    symbol: "XU030",
+    lastPrice: 102,
+    contractSymbol: "F_XU0300826",
+    contractLastPrice: 15910,
+    basis: 15_808,
+  })
   expect(digest?.flow?.buyers[0]?.brokerage).toBe("Buyer 1 Yatırım")
   expect(digest?.custody).toBeNull()
   expect(digest?.houses.length).toBeGreaterThan(0)
   expect(digest?.history?.intraday?.candles).toHaveLength(2)
   expect(digest?.history?.daily?.interval).toBe("DAY_1")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("prices the overview from the underlying's own tape when the book is live", async () => {
+  const { renderer, waitFor } = await createTestRenderer({ width: 200, height: 44 })
+  const overview = new FakeOverviewGenerator()
+  const depth = new FakeDepthStream()
+  const screen = new WatchlistScreen(renderer, { ...overviewScreenOptions(overview), depth })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitFor(() => depth.startedSymbols.includes("XU030"))
+  depth.emit(depthBook("XU030"))
+
+  // The newest print on the underlying's tape beats its last candle close, and
+  // the contract's own 15910 never stands in for either.
+  await waitFor(() => overview.digests.some((digest) => digest.instrument.lastPrice === 390))
+  expect(overview.digests.map((digest) => digest.instrument.contractLastPrice)).not.toContain(390)
 
   screen.destroy()
   renderer.destroy()
@@ -1617,7 +1645,7 @@ test("switching to the daily view reads the custody register", async () => {
   focusPanel(mockInput, "overview")
   mockInput.pressArrow("right")
   await waitFor(() => overview.digests.length === 2)
-  await waitForFrame((value) => value.includes("Overview 2 for F_XU0300826."))
+  await waitForFrame((value) => value.includes("Overview 2 for XU030."))
 
   expect(options.settlement.requests.map((request) => request.mode).sort()).toEqual(["GAINED", "LOST"])
   const digest = overview.digests[1]
@@ -1629,7 +1657,7 @@ test("switching to the daily view reads the custody register", async () => {
 
   // Each view keeps its own cache: switching back is free.
   mockInput.pressArrow("left")
-  await waitForFrame((value) => value.includes("Overview 1 for F_XU0300826."))
+  await waitForFrame((value) => value.includes("Overview 1 for XU030."))
   await Bun.sleep(60)
   expect(overview.digests).toHaveLength(2)
 
@@ -1648,12 +1676,12 @@ test("serves a cached overview when revisiting an instrument", async () => {
   // The second instrument has no cache, so it generates its own run.
   mockInput.pressArrow("down")
   await waitFor(() => overview.digests.length === 2)
-  expect(overview.digests[1]?.instrument.symbol).toBe("F_THYAO0826")
-  await waitForFrame((value) => value.includes("Overview 2 for F_THYAO0826."))
+  expect(overview.digests[1]?.instrument).toMatchObject({ symbol: "THYAO", contractSymbol: "F_THYAO0826" })
+  await waitForFrame((value) => value.includes("Overview 2 for THYAO."))
 
   // Back to the first: the cached run shows without another generation.
   mockInput.pressArrow("up")
-  await waitForFrame((value) => value.includes("Overview 1 for F_XU0300826."))
+  await waitForFrame((value) => value.includes("Overview 1 for XU030."))
   await Bun.sleep(120)
   expect(overview.digests).toHaveLength(2)
 

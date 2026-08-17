@@ -28,10 +28,22 @@ const MAX_DAILY_CANDLES = 90
 // The intraday view keeps a shorter daily tail, for trend context only.
 const MAX_CONTEXT_DAILY_CANDLES = 30
 
-export interface OverviewInstrument {
+// Which instrument the digest's figures belong to. The book, the tape, the flow
+// VWAPs, the custody register and the candles are all read on the underlying
+// equity, so its price is the one every comparison here is made against. The
+// contract is carried separately, and only so ideas can be quoted where the
+// trader actually deals.
+export interface OverviewInstrumentInputs {
   symbol: string
   displayName: string | null
   lastPrice: number | null
+  contractSymbol: string
+  contractLastPrice: number | null
+}
+
+export interface OverviewInstrument extends OverviewInstrumentInputs {
+  // Contract minus underlying: what a level on one is worth on the other.
+  basis: number | null
 }
 
 export interface OverviewBook {
@@ -151,7 +163,7 @@ export interface OverviewSnapshotStore {
 
 export interface OverviewDigestInputs {
   mode: OverviewMode
-  instrument: OverviewInstrument
+  instrument: OverviewInstrumentInputs
   book?: DepthBook | null
   tape?: TradeFlowSummary | null
   buyerFlow?: BrokerageDistribution | null
@@ -172,13 +184,24 @@ export function buildOverviewDigest(inputs: OverviewDigestInputs): MarketOvervie
   const custody = intraday ? null : custodySection(inputs)
   return {
     mode: inputs.mode,
-    instrument: inputs.instrument,
+    instrument: instrumentSection(inputs.instrument),
     book: intraday && inputs.book ? bookSection(inputs.book) : null,
     tape: intraday ? tapeSection(inputs.tape ?? null) : null,
     flow,
     custody,
+    // The underlying's price, never the contract's: the VWAPs these houses are
+    // compared against are underlying VWAPs, so the contract's basis would
+    // inflate every one of them.
     houses: joinHouses(flow, custody, inputs.instrument.lastPrice),
     history: historySection(inputs),
+  }
+}
+
+function instrumentSection(instrument: OverviewInstrumentInputs): OverviewInstrument {
+  const { lastPrice, contractLastPrice } = instrument
+  return {
+    ...instrument,
+    basis: lastPrice !== null && contractLastPrice !== null ? round(contractLastPrice - lastPrice) : null,
   }
 }
 
