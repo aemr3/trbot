@@ -16,7 +16,7 @@ import { AccountPanel } from "../components/account-panel.ts"
 import { BrokerageDateModal } from "../components/brokerage-date-modal.ts"
 import { BrokeragePanel, brokerageSideOf, settlementModeOf } from "../components/brokerage-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
-import { ContractDetailsPanel } from "../components/contract-details-panel.ts"
+import { PortfolioPanel } from "../components/portfolio-panel.ts"
 import { DepthPanel } from "../components/depth-panel.ts"
 import { OverviewPanel } from "../components/overview-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
@@ -45,7 +45,12 @@ import {
 } from "../market/candle.ts"
 import type { DepthBook, DepthStream } from "../market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "../market/equity-quote-stream.ts"
-import type { ViopInstrument, ViopInstrumentSource } from "../market/instrument.ts"
+import {
+  contractOrderCost,
+  type ViopContractDetails,
+  type ViopInstrument,
+  type ViopInstrumentSource,
+} from "../market/instrument.ts"
 import type { NewsArticle, NewsSource } from "../market/news.ts"
 import {
   buildOverviewDigest,
@@ -190,6 +195,12 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
     ],
   },
   {
+    title: "Portfolio",
+    bindings: [
+      { keys: "←/→ or h/l", description: "Change performance range: 1W, 1M, 3M, YTD, 1Y, All" },
+    ],
+  },
+  {
     title: "Account",
     bindings: [
       { keys: "←/→ or h/l", description: "Change tab: portfolio, orders, positions, stops, alerts" },
@@ -307,7 +318,7 @@ export interface WatchlistScreenOptions {
   onOpenLogs?: () => void
 }
 
-type Focus = "instruments" | "chart" | "depth" | "brokers" | "account" | "news" | "overview"
+type Focus = "instruments" | "portfolio" | "chart" | "depth" | "brokers" | "account" | "news" | "overview"
 
 export class WatchlistScreen {
   readonly root: BoxRenderable
@@ -315,7 +326,7 @@ export class WatchlistScreen {
   private readonly leftPanel: BoxRenderable
   private readonly centerPanel: BoxRenderable
   private readonly instrumentList: SelectableList
-  private readonly contractDetailsPanel: ContractDetailsPanel
+  private readonly portfolioPanel: PortfolioPanel
   private readonly sortButtons = new Map<InstrumentSort, BoxRenderable>()
   private readonly sortButtonLabels = new Map<InstrumentSort, TextRenderable>()
   private readonly chart: CandlestickChart
@@ -362,6 +373,8 @@ export class WatchlistScreen {
   private newsRequestUid: string | null = null
   private articleRequestUid: string | null = null
   private contractDetailsRequest: AbortController | null = null
+  // The selected contract's details, kept so the chart can price one lot.
+  private contractDetails: ViopContractDetails | null = null
   private tradingActionRequest: AbortController | null = null
   private readerLastClickAt = 0
   private newsTimer: ReturnType<typeof setInterval> | null = null
@@ -523,6 +536,10 @@ export class WatchlistScreen {
       this.brokeragePanel.handleKey(key)
       return
     }
+    // The portfolio panel only owns its range keys; anything else falls through
+    // to the instrument list, which is what the arrow keys mean everywhere else
+    // in this column.
+    if (this.focus === "portfolio" && this.portfolioPanel.handleKey(key)) return
     if (this.focus === "overview") {
       this.overviewPanel.handleKey(key)
       return
@@ -607,8 +624,11 @@ export class WatchlistScreen {
       onFocusRequest: () => this.setFocus("instruments"),
     })
     this.leftPanel.add(this.instrumentList.root)
-    this.contractDetailsPanel = new ContractDetailsPanel(renderer)
-    this.leftPanel.add(this.contractDetailsPanel.root)
+    this.portfolioPanel = new PortfolioPanel(renderer, {
+      onFocusRequest: () => this.setFocus("portfolio"),
+      onRangeChange: () => void this.accountPanel.refresh(),
+    })
+    this.leftPanel.add(this.portfolioPanel.root)
 
     this.centerPanel = new BoxRenderable(renderer, {
       flexGrow: 1,
@@ -643,6 +663,9 @@ export class WatchlistScreen {
       onPositionSelect: (position) => this.selectPositionInstrument(position.uid, position.symbol),
       onError: (error) => this.reportError("Account", error),
       onPositionsChange: (positions) => this.onPositionsChange(positions),
+      onPortfolioChange: (portfolio) => this.portfolioPanel.showPortfolio(portfolio),
+      onPerformanceChange: (performance) => this.portfolioPanel.showPerformance(performance),
+      portfolioRange: () => this.portfolioPanel.activeRange,
       onStopCreate: () => this.openStopRuleEditor(),
       onStopEdit: (view) => this.openStopRuleEditor(view.rule),
       onStopToggle: (view) => void this.toggleStopRule(view),
@@ -1164,7 +1187,10 @@ export class WatchlistScreen {
     ) {
       this.chart.updateLastPrice(instrument.uid, update.lastPrice, update.timestamp)
     }
-    if (update.lastPrice !== null) this.contractDetailsPanel.applyPrice(update.symbol, update.lastPrice)
+    // What a lot costs moves with the price, and it rides the chart's OHLC line.
+    if (update.lastPrice !== null && this.instruments[this.instrumentList.selectedIndex]?.uid === instrument.uid) {
+      this.refreshContractCost()
+    }
     if (this.orderTicket && this.instruments[this.instrumentList.selectedIndex]?.symbol === update.symbol) {
       this.orderTicket.applyQuote({ lastPrice: update.lastPrice, ask: update.ask, bid: update.bid })
     }
@@ -1204,7 +1230,7 @@ export class WatchlistScreen {
         this.sortAndRenderInstrumentList(selectedUid, true)
       }
       const selected = this.instruments[this.instrumentList.selectedIndex]
-      if (selected) void this.loadContractDetails(selected, true)
+      if (selected) void this.loadContractDetails(selected)
     } catch (error) {
       if (!this.destroyed && !request.signal.aborted && !isAbortError(error)) this.reportError("Watchlist refresh", error)
     } finally {
@@ -1283,7 +1309,9 @@ export class WatchlistScreen {
     if (this.preferences.selectedInstrumentUid !== instrument.uid) {
       this.savePreferences({ selectedInstrumentUid: instrument.uid })
     }
-    this.contractDetailsPanel.selectInstrument(instrument, Boolean(this.options.instruments.loadContractDetails))
+    // The old contract's cost must not linger over a new one.
+    this.contractDetails = null
+    this.refreshContractCost()
     void this.loadContractDetails(instrument)
     this.chart.setInstrument(instrument)
     this.selectedEquitySymbol = instrument.underlyingSymbol
@@ -1705,6 +1733,17 @@ export class WatchlistScreen {
     return null
   }
 
+  /**
+   * Pushes what one contract costs onto the chart's OHLC line. The notional
+   * moves with the price, so this runs on every tick for the selected contract
+   * as well as when its details arrive.
+   */
+  private refreshContractCost(): void {
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    const details = this.contractDetails
+    this.chart.setContractCost(instrument && details ? contractOrderCost(instrument, details) : null)
+  }
+
   private scheduleOverviewGeneration(): void {
     if (!this.options.overview || this.destroyed) return
     if (this.overviewDebounce) clearTimeout(this.overviewDebounce)
@@ -1839,11 +1878,10 @@ export class WatchlistScreen {
     this.instrumentList.selectIndex(index)
   }
 
-  // Loads the contract stats behind the details panel. Session high/low, volume,
-  // open interest and the settlement prices only arrive with this call, so a
-  // background reload keeps them current while the selection stays put; it also
-  // leaves the last good values on screen when a poll fails.
-  private async loadContractDetails(instrument: ViopInstrument, background = false): Promise<void> {
+  // Loads the contract's size and collateral, which is what prices one lot on
+  // the chart's OHLC line. A background reload keeps it current while the
+  // selection stays put, and a failed poll leaves the last good figures there.
+  private async loadContractDetails(instrument: ViopInstrument): Promise<void> {
     const source = this.options.instruments
     if (!source.loadContractDetails) return
     this.contractDetailsRequest?.abort()
@@ -1852,11 +1890,11 @@ export class WatchlistScreen {
     try {
       const details = await source.loadContractDetails(instrument.uid, { signal: request.signal })
       if (this.destroyed || request.signal.aborted || this.contractDetailsRequest !== request) return
-      this.contractDetailsPanel.showDetails(instrument.uid, details)
+      this.contractDetails = details
+      this.refreshContractCost()
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.contractDetailsRequest !== request || isAbortError(error)) return
-      if (this.reportError("Contract details", error)) return
-      if (!background) this.contractDetailsPanel.showError(instrument.uid)
+      this.reportError("Contract details", error)
     }
   }
 
@@ -2256,7 +2294,7 @@ export class WatchlistScreen {
   }
 
   private toggleFocus(): void {
-    const order: Focus[] = ["instruments", "chart", "depth", "brokers", "account", "news", "overview"]
+    const order: Focus[] = ["instruments", "portfolio", "chart", "depth", "brokers", "account", "news", "overview"]
     const index = order.indexOf(this.focus)
     this.setFocus(order[(index + 1) % order.length] ?? "instruments")
   }
@@ -2282,6 +2320,7 @@ export class WatchlistScreen {
     this.depthPanel.setFocused(this.focus === "depth")
     this.brokeragePanel.setFocused(this.focus === "brokers")
     this.accountPanel.setFocused(this.focus === "account")
+    this.portfolioPanel.setFocused(this.focus === "portfolio")
     this.overviewPanel.setFocused(this.focus === "overview")
     this.newsHeader.fg = this.focus === "news" ? FOCUSED_HEADER : UNFOCUSED_HEADER
     this.paintNewsFeedToolbar()

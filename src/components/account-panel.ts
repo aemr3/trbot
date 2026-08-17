@@ -15,6 +15,8 @@ import type {
   AccountSnapshot,
   AccountSource,
   AccountStream,
+  PortfolioPerformance,
+  PortfolioRange,
   PortfolioSummary,
 } from "../trading/account.ts"
 import type { PriceAlertView } from "../market/alert-monitor.ts"
@@ -33,13 +35,15 @@ const UP_COLOR = "#70d7a1"
 const DOWN_COLOR = "#ff6b6b"
 const DEFAULT_REFRESH_INTERVAL_MS = 15_000
 
-const TABS = ["portfolio", "orders", "positions", "stops", "alerts"] as const
+// The portfolio summary is not a tab: it has a panel of its own under the
+// instrument list. What is open leads, because it is what the other three tabs
+// are all about.
+const TABS = ["positions", "orders", "stops", "alerts"] as const
 export type AccountTab = (typeof TABS)[number]
 
 const TAB_LABELS: Record<AccountTab, string> = {
-  portfolio: "Portfolio",
-  orders: "Orders",
   positions: "Positions",
+  orders: "Orders",
   stops: "Stops",
   alerts: "Alerts",
 }
@@ -72,6 +76,12 @@ export interface AccountPanelOptions {
   onAlertToggle?: (view: PriceAlertView) => void
   // Positions drive the stop monitor, so it hears about every change here.
   onPositionsChange?: (positions: AccountPosition[]) => void
+  // The portfolio and its performance are shown by the portfolio panel, not by
+  // this one; the range comes back the other way because the provider returns
+  // both from the single call this panel already makes.
+  onPortfolioChange?: (portfolio: PortfolioSummary) => void
+  onPerformanceChange?: (performance: PortfolioPerformance) => void
+  portfolioRange?: () => PortfolioRange
   refreshIntervalMs?: number
 }
 
@@ -88,7 +98,7 @@ export class AccountPanel {
   private stopSelection = 0
   private alertViews: PriceAlertView[] = []
   private alertSelection = 0
-  private tab: AccountTab = "portfolio"
+  private tab: AccountTab = "positions"
   private request: AbortController | null = null
   private refreshTimer: ReturnType<typeof setInterval> | null = null
   private focused = false
@@ -210,7 +220,7 @@ export class AccountPanel {
     if (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l") {
       const direction = key.name === "left" || key.name === "h" ? -1 : 1
       const index = TABS.indexOf(this.tab)
-      this.selectTab(TABS[(index + direction + TABS.length) % TABS.length] ?? "portfolio")
+      this.selectTab(TABS[(index + direction + TABS.length) % TABS.length] ?? "positions")
       return true
     }
     // On the stops and alerts tabs the row keys move a selection instead of
@@ -348,7 +358,10 @@ export class AccountPanel {
       this.content.fg = MUTED_COLOR
     }
     try {
-      const snapshot = await source.loadAccount({ signal: request.signal })
+      const snapshot = await source.loadAccount({
+        signal: request.signal,
+        portfolioRange: this.options.portfolioRange?.(),
+      })
       if (this.destroyed || request.signal.aborted || this.request !== request) return
       this.snapshot = snapshot
       const minimumSequence = hadSnapshot ? refreshStartedAtSequence : 0
@@ -358,6 +371,8 @@ export class AccountPanel {
       this.liveUpdates.length = 0
       this.syncPendingOrders()
       this.options.onPositionsChange?.(snapshot.positions)
+      this.options.onPortfolioChange?.(snapshot.portfolio)
+      this.options.onPerformanceChange?.(snapshot.performance)
       this.renderContent()
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.request !== request || isAbortError(error)) return
@@ -376,6 +391,8 @@ export class AccountPanel {
     if (update.type === "order") this.syncPendingOrders()
     // A position that moved or closed changes what the stop rules protect.
     if (update.type === "position") this.options.onPositionsChange?.(this.snapshot.positions)
+    // Collateral moves with every fill, and it is read outside this panel.
+    if (update.type === "collateral") this.options.onPortfolioChange?.(this.snapshot.portfolio)
     this.liveRender.schedule()
   }
 
@@ -452,11 +469,9 @@ export class AccountPanel {
       this.renderRows("positions", this.snapshot.positions, positionChunks)
       return
     }
-    const content = this.tab === "portfolio"
-      ? renderPortfolio(this.snapshot.portfolio)
-      : this.tab === "orders"
-        ? renderOrders(this.snapshot.orders)
-        : renderPositions(this.snapshot.positions)
+    const content = this.tab === "orders"
+      ? renderOrders(this.snapshot.orders)
+      : renderPositions(this.snapshot.positions)
     this.showTextContent(content, "#cccccc")
   }
 
@@ -558,22 +573,6 @@ interface PanelRow {
   row: BoxRenderable
   text: TextRenderable
   item: unknown
-}
-
-export function renderPortfolio(portfolio: PortfolioSummary): StyledText {
-  const dayProfitColor = (portfolio.dailyProfitLoss ?? 0) >= 0 ? UP_COLOR : DOWN_COLOR
-  const periodProfitColor = (portfolio.periodProfitLoss ?? 0) >= 0 ? UP_COLOR : DOWN_COLOR
-  return new StyledText([
-    ...metricLine("Collateral", formatMoney(portfolio.totalCollateral, portfolio.currency)),
-    fg("#cccccc")("\n"),
-    ...metricLine("Available", formatMoney(portfolio.availableCollateral, portfolio.currency)),
-    fg("#cccccc")("\n"),
-    fg(MUTED_COLOR)("Day P/L".padEnd(12)),
-    fg(dayProfitColor)(formatProfit(portfolio.dailyProfitLoss, portfolio.dailyProfitLossPercent, portfolio.currency)),
-    fg("#cccccc")("\n"),
-    fg(MUTED_COLOR)("Week P/L".padEnd(12)),
-    fg(periodProfitColor)(formatProfit(portfolio.periodProfitLoss, portfolio.periodProfitLossPercent, portfolio.currency)),
-  ])
 }
 
 export function renderOrders(orders: AccountOrder[]): StyledText | string {
@@ -723,15 +722,6 @@ function positionChunks(position: AccountPosition): TextChunk[] {
     fg("#bbbbbb")(`${formatNumber(position.averageCost)}→${formatNumber(position.currentPrice)}  `),
     fg(pnlColor)(formatSignedMoney(position.unrealizedProfitLoss, position.currency)),
   ]
-}
-
-function metricLine(label: string, value: string): TextChunk[] {
-  return [fg(MUTED_COLOR)(label.padEnd(12)), fg("#dddddd")(value)]
-}
-
-function formatProfit(value: number | null, percent: number | null, currency: string): string {
-  const percentText = percent === null ? "" : `  ${percent >= 0 ? "+" : ""}${percent.toFixed(2)}%`
-  return `${formatSignedMoney(value, currency)}${percentText}`
 }
 
 function formatMoney(value: number | null, currency: string): string {

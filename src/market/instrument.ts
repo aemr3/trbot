@@ -26,3 +26,24 @@ export interface ViopInstrumentSource {
   listInstruments(options?: { signal?: AbortSignal }): Promise<ViopInstrument[]>
   loadContractDetails?(instrumentUid: string, options?: { signal?: AbortSignal }): Promise<ViopContractDetails>
 }
+
+// What one contract costs to hold: the notional it controls and the collateral
+// it ties up. Both are wanted in more than one place, and the notional moves
+// with every tick, so the arithmetic lives here rather than in a renderer.
+export interface ContractOrderCost {
+  // Last price times contract size: what a single contract is exposure to.
+  notional: number | null
+  // Collateral one contract requires.
+  required: number | null
+  currency: string
+}
+
+export function contractOrderCost(instrument: ViopInstrument, details: ViopContractDetails): ContractOrderCost {
+  return {
+    notional: instrument.lastPrice !== null && details.contractSize !== null
+      ? instrument.lastPrice * details.contractSize
+      : null,
+    required: details.initialCollateral,
+    currency: instrument.currency,
+  }
+}

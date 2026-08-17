@@ -13,6 +13,9 @@ import type {
   AccountPosition,
   AccountSnapshot,
   AccountSource,
+  PortfolioPerformance,
+  PortfolioPoint,
+  PortfolioRange,
   PortfolioSummary,
 } from "./account.ts"
 
@@ -28,7 +31,10 @@ export class ApiAccountSource implements AccountSource {
     private readonly now: () => number = Date.now,
   ) {}
 
-  async loadAccount(options: { signal?: AbortSignal } = {}): Promise<AccountSnapshot> {
+  async loadAccount(
+    options: { signal?: AbortSignal; portfolioRange?: PortfolioRange } = {},
+  ): Promise<AccountSnapshot> {
+    const range = options.portfolioRange ?? "WEEK"
     const session = await this.client.authenticate()
     const overview = await this.client.call(
       accountOperations.overview,
@@ -40,7 +46,7 @@ export class ApiAccountSource implements AccountSource {
     const [portfolio, margin, positions, pendingOrders, completedOrders] = await Promise.all([
       this.client.call(
         accountOperations.portfolio,
-        { accountId: session.memberUid, period: "WEEK" },
+        { accountId: session.memberUid, period: range },
         options,
       ),
       this.client.call(
@@ -81,6 +87,7 @@ export class ApiAccountSource implements AccountSource {
 
     return {
       portfolio: normalizePortfolio(overview, portfolio, margin, accountUid),
+      performance: normalizePerformance(portfolio, range),
       positions: (positions.viopOverviewPositions?.positions ?? []).flatMap(normalizePosition),
       orders: [
         ...normalizeOrders(pendingOrders.transactionHistoryForInvestmentType?.items, "pending"),
@@ -115,6 +122,31 @@ export function normalizePortfolio(
     dailyProfitLossPercent: finiteNumber(portfolio?.dailyProfitLoss?.percentage),
     periodProfitLoss: finiteNumber(portfolio?.profitLoss?.value),
     periodProfitLossPercent: finiteNumber(portfolio?.profitLoss?.percentage),
+  }
+}
+
+/**
+ * The range's performance bars. The provider pads a short history with
+ * `virtual` points that carry invented figures against a zero collateral, so
+ * those are dropped: three real bars say more than six imaginary ones.
+ */
+export function normalizePerformance(data: ViopPortfolioData, range: PortfolioRange): PortfolioPerformance {
+  const portfolio = data.viopRealizedProfitLoss
+  const points: PortfolioPoint[] = []
+  for (const point of portfolio?.profitLossChart?.dataPoints ?? []) {
+    if (point.virtual || !point.date) continue
+    points.push({
+      date: point.date,
+      profitLoss: finiteNumber(point.profitLoss?.value),
+      profitLossPercent: finiteNumber(point.profitLoss?.percentage),
+      totalCollateral: finiteNumber(point.totalCollateral),
+    })
+  }
+  return {
+    range,
+    points,
+    profitLoss: finiteNumber(portfolio?.profitLoss?.value),
+    profitLossPercent: finiteNumber(portfolio?.profitLoss?.percentage),
   }
 }
 

@@ -5,7 +5,7 @@ import type { Candle } from "../../market/candle.ts"
 import type { ChartPalette } from "./palette.ts"
 import { candleSlots, type CandleSlots } from "./geometry.ts"
 
-export interface CandleChartBitmap {
+export interface ChartBitmap {
   width: number
   height: number
   pixels: Uint8Array // straight-alpha RGBA8, row-major
@@ -260,7 +260,7 @@ export interface CandleBitmapOptions {
 }
 
 /** Rasterizes the candle plot (grid, guide, candles, volume) into an RGBA bitmap. */
-export function renderCandleBitmap(options: CandleBitmapOptions): CandleChartBitmap {
+export function renderCandleBitmap(options: CandleBitmapOptions): ChartBitmap {
   const width = Math.max(Math.floor(options.pixelWidth), 1)
   const height = Math.max(Math.floor(options.pixelHeight), 1)
   const pixels = new Uint8Array(width * height * 4)

@@ -17,6 +17,21 @@ export interface AccountOverviewVariables {
   [key: string]: unknown
 }
 
+export interface ViopProfitLossPoint {
+  // Null on the synthetic points the provider pads short histories with.
+  date?: string | null
+  startDate?: string | null
+  totalCollateral?: number | string | null
+  interestIncome?: number | string | null
+  profitLoss?: {
+    value?: number | string | null
+    percentage?: number | string | null
+  } | null
+  // True for a padding point the provider invented to fill the chart.
+  virtual?: boolean | null
+  realized?: boolean | null
+}
+
 export interface ViopPortfolioData {
   viopRealizedProfitLoss?: {
     totalCollateral?: number | string | null
@@ -28,12 +43,20 @@ export interface ViopPortfolioData {
       value?: number | string | null
       percentage?: number | string | null
     } | null
+    profitLossChart?: {
+      maxCount?: number | string | null
+      timeRange?: string | null
+      dataPoints?: ViopProfitLossPoint[] | null
+      emptyChartFlag?: boolean | null
+    } | null
   } | null
 }
 
 export interface ViopPortfolioVariables {
+  // The provider takes the member uid here, not the account uid; an account uid
+  // is refused outright.
   accountId: string
-  period: "WEEK"
+  period: string
   [key: string]: unknown
 }
 

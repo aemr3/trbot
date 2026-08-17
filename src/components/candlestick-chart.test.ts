@@ -358,6 +358,39 @@ test("applies a live tick that arrives while candle history is loading", async (
   setup.renderer.destroy()
 })
 
+test("carries what one contract costs beside the OHLC line", async () => {
+  const setup = await createTestRenderer({ width: 100, height: 16 })
+  const source: CandleSource = {
+    async loadCandles(instrumentUid, range, interval) {
+      return {
+        instrumentUid,
+        range,
+        interval,
+        availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+        intervalMs: 600_000,
+        currency: "TRY",
+        candles: [{ timestamp: 1_000_000, open: 100, high: 102, low: 99, close: 101, volume: 10 }],
+      }
+    },
+  }
+  const chart = new CandlestickChart(setup.renderer, { source })
+  setup.renderer.root.add(chart.root)
+  chart.setInstrument({ uid: "future-1", symbol: "F_TUPRS0826", displayName: "TUPRS" })
+  chart.setContractCost({ notional: 28_245, required: 5_213.32, currency: "TRY" })
+
+  const frame = await setup.waitForFrame((value) => value.includes("1 lot ₺28.245,00"))
+  expect(frame).toContain("margin ₺5.213,32")
+
+  // Moving to a contract whose cost is not known yet drops the old one rather
+  // than leaving the previous contract's numbers under a new symbol.
+  chart.setContractCost(null)
+  const cleared = await setup.waitForFrame((value) => !value.includes("1 lot"))
+  expect(cleared).toContain("C 101,00")
+
+  chart.destroy()
+  setup.renderer.destroy()
+})
+
 test("updates OHLC from the current candle for the selected timeframe", async () => {
   const setup = await createTestRenderer({ width: 80, height: 18 })
   const source: CandleSource = {

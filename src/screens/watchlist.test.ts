@@ -49,7 +49,7 @@ import type { WatchlistPreferences } from "./watchlist-preferences.ts"
 
 // Tab cycles the panels in this order from a freshly mounted screen. Naming the
 // destination keeps the tests readable, and adding a panel only moves this list.
-const FOCUS_ORDER = ["instruments", "chart", "depth", "brokers", "account", "news", "overview"] as const
+const FOCUS_ORDER = ["instruments", "portfolio", "chart", "depth", "brokers", "account", "news", "overview"] as const
 
 function focusPanel(mockInput: { pressTab(): void }, panel: (typeof FOCUS_ORDER)[number]): void {
   for (let step = 0; step < FOCUS_ORDER.indexOf(panel); step++) mockInput.pressTab()
@@ -187,7 +187,7 @@ const candles: CandleSource = {
 }
 
 const account: AccountSource = {
-  async loadAccount() {
+  async loadAccount(options) {
     return {
       portfolio: {
         currency: "TRY",
@@ -197,6 +197,15 @@ const account: AccountSource = {
         dailyProfitLossPercent: 2.04,
         periodProfitLoss: 5_000,
         periodProfitLossPercent: 4.17,
+      },
+      performance: {
+        range: options?.portfolioRange ?? "WEEK",
+        points: [
+          { date: "2026-08-13", profitLoss: -1_200, profitLossPercent: -1.2, totalCollateral: 120_000 },
+          { date: "2026-08-14", profitLoss: 3_400, profitLossPercent: 2.8, totalCollateral: 123_400 },
+        ],
+        profitLoss: 5_000,
+        profitLossPercent: 4.17,
       },
       orders: [{
         uid: "order-1",
@@ -265,11 +274,6 @@ test("renders the VIOP, chart, and news panels with instrument data", async () =
   expect(frame).toContain("Chart")
   expect(frame).toContain("News")
   expect(frame).toContain("XU030")
-  expect(frame).toContain("1 contract")
-  expect(frame).toContain("Order size  ₺1.591.000,00")
-  expect(frame).toContain("Required    ₺4.719,55")
-  expect(frame).toContain("Stats · High ₺210,00 · Low ₺195,00")
-  expect(frame).toContain("Vol 1.040.270.720 · OI 54.068")
 
   screen.destroy()
   renderer.destroy()
@@ -386,24 +390,19 @@ test("opens modal buy and sell tickets and submits simulated market orders at ex
   renderer.destroy()
 })
 
-test("shows portfolio, orders, and positions in tabs below the chart", async () => {
+test("shows the account's figures beside the contract, and the rest in tabs", async () => {
   const { renderer, mockInput, mockMouse, waitForFrame } = await createTestRenderer({ width: 160, height: 30 })
   const screen = new WatchlistScreen(renderer, { instruments, candles, news, account })
   renderer.root.add(screen.root)
   screen.mount()
 
+  // The portfolio is not a tab: it has a panel of its own under the list.
   const portfolioFrame = await waitForFrame((frame) => frame.includes("Available") && frame.includes("₺125.000,00"))
-  expect(portfolioFrame).toContain("Portfolio")
-  expect(portfolioFrame).toContain("Orders")
-  expect(portfolioFrame).toContain("Positions")
-  expect(portfolioFrame).toContain("  Portfolio    Orders    Positions ")
+  expect(portfolioFrame).toContain("Collateral")
+  expect(portfolioFrame).toContain("  Positions    Orders    Stops    Alerts")
 
   focusPanel(mockInput, "account")
-  mockInput.pressArrow("right")
-  const ordersFrame = await waitForFrame((frame) => frame.includes("THYAO alış"))
-  expect(ordersFrame).toContain("PENDING")
-
-  mockInput.pressArrow("right")
+  // Positions lead: they are what the other three tabs are all about.
   const positionsFrame = await waitForFrame((frame) => frame.includes("300,00→312,00"))
   expect(positionsFrame).toContain("+₺240,00")
 
@@ -413,6 +412,37 @@ test("shows portfolio, orders, and positions in tabs below the chart", async () 
   expect(positionX).toBeGreaterThanOrEqual(0)
   await mockMouse.click(positionX, positionY)
   await waitForFrame((frame) => frame.includes("Chart  THYAO stock") && frame.includes("▶ THYAO"))
+
+  mockInput.pressArrow("right")
+  const ordersFrame = await waitForFrame((frame) => frame.includes("THYAO alış"))
+  expect(ordersFrame).toContain("PENDING")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("reloads the account for the portfolio range the panel asks for", async () => {
+  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 160, height: 40 })
+  const ranges: Array<string | undefined> = []
+  const rangedAccount: AccountSource = {
+    async loadAccount(options) {
+      ranges.push(options?.portfolioRange)
+      return account.loadAccount(options)
+    },
+  }
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account: rangedAccount })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Week P/L"))
+  expect(ranges).toEqual(["WEEK"])
+
+  focusPanel(mockInput, "portfolio")
+  mockInput.pressArrow("right")
+
+  // One call serves both the summary and the bars, so changing the range is a
+  // reload rather than a second request.
+  await waitFor(() => ranges.includes("MONTH"))
+  await waitForFrame((frame) => frame.includes("Month P/L"))
 
   screen.destroy()
   renderer.destroy()
@@ -436,6 +466,7 @@ test("applies live account, order, and futures price updates", async () => {
   expect(livePortfolio).toContain("Available")
 
   focusPanel(mockInput, "account")
+  // Orders sit one tab right of the positions the panel opens on.
   mockInput.pressArrow("right")
   accountStream.emit({
     type: "order",
@@ -448,7 +479,7 @@ test("applies live account, order, and futures price updates", async () => {
   expect(orderFrame).toContain("THYAO alış")
   expect(accountStream.pendingOrders).toEqual([])
 
-  mockInput.pressArrow("right")
+  mockInput.pressArrow("left")
   quotes.emit({ symbol: "F_THYAO0826", lastPrice: 320, sessionStatus: "OPEN", timestamp: 2 })
   const pricedPosition = await waitForFrame((frame) => frame.includes("300,00→320,00") && frame.includes("+₺400,00"))
   expect(pricedPosition).toContain("THYAO")
@@ -638,11 +669,13 @@ test("re-derives the daily change reference when the snapshot rolls into a new s
   renderer.destroy()
 })
 
-// Session stats, volume, open interest and the settlement prices only arrive
-// with the contract detail call, which used to run on selection alone.
-test("keeps the selected contract stats fresh while the selection stays put", async () => {
-  const { renderer, waitFor, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({ width: 120, height: 24 })
-  let openInterest = 1_000
+// Contract size and collateral only arrive with the contract detail call,
+// which used to run on selection alone.
+test("keeps what one lot costs fresh while the selection stays put", async () => {
+  // Wide enough for the cost to sit beside the OHLC line, and under the width
+  // at which the depth panel claims part of the chart column.
+  const { renderer, waitFor, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({ width: 180, height: 24 })
+  let collateral = 1_000
   let failing = false
   let detailCalls = 0
   const refreshingDetails: ViopInstrumentSource = {
@@ -655,7 +688,7 @@ test("keeps the selected contract stats fresh while the selection stays put", as
       detailCalls++
       if (failing) throw new Error("contract details are down")
       return {
-        initialCollateral: 1_000,
+        initialCollateral: collateral,
         leverage: 3,
         contractSize: 100,
         expiryDate: "31/08/2026",
@@ -664,7 +697,7 @@ test("keeps the selected contract stats fresh while the selection stays put", as
         settlementPrice: null,
         previousSettlementPrice: 107.84,
         volume: 5_000,
-        openInterest,
+        openInterest: 1_000,
       }
     },
   }
@@ -677,19 +710,18 @@ test("keeps the selected contract stats fresh while the selection stays put", as
   renderer.root.add(screen.root)
   screen.mount()
 
-  await waitForFrame((frame) => frame.includes("OI 1.000"))
+  // 110 a lot of 100 is ₺11.000 of exposure for ₺1.000 of collateral.
+  await waitForFrame((frame) => frame.includes("1 lot ₺11.000,00") && frame.includes("margin ₺1.000,00"))
 
-  openInterest = 2_000
-  await waitForFrame((frame) => frame.includes("OI 2.000"))
+  collateral = 2_000
+  await waitForFrame((frame) => frame.includes("margin ₺2.000,00"))
 
-  // A failed background refresh keeps the last good stats on screen.
+  // A failed background refresh keeps the last good figures on screen.
   failing = true
   const callsBeforeFailure = detailCalls
   await waitFor(() => detailCalls > callsBeforeFailure + 1)
   await renderOnce()
-  const frame = captureCharFrame()
-  expect(frame).toContain("OI 2.000")
-  expect(frame).not.toContain("Contract details unavailable")
+  expect(captureCharFrame()).toContain("margin ₺2.000,00")
 
   screen.destroy()
   renderer.destroy()
@@ -948,7 +980,7 @@ test("restores and reports list and chart display choices", async () => {
   await waitForFrame((frame) => frame.includes("Change ↓"))
   expect(changes.at(-1)).toMatchObject({ instrumentSort: "change", sortDirection: "desc" })
 
-  mockInput.pressTab()
+  focusPanel(mockInput, "chart")
   mockInput.pressArrow("right")
   await waitFor(() => changes.some((preferences) => preferences.candleRange === "MONTH"))
   expect(changes.at(-1)).toMatchObject({ candleRange: "MONTH", candleInterval: "HOUR_1" })
@@ -1102,7 +1134,7 @@ test("switches chart ranges and timeframes from the focused chart panel", async 
 
   await waitForFrame((frame) => frame.includes("XU030"))
   await waitFor(() => requested.some((request) => request.range === "INTRADAY" && request.interval === "MIN_5"))
-  mockInput.pressTab()
+  focusPanel(mockInput, "chart")
   mockInput.pressArrow("right")
   await waitFor(() => requested.some((request) => request.range === "WEEK" && request.interval === "HOUR_1"))
   mockInput.pressArrow("down")
@@ -1147,7 +1179,7 @@ test("routes modified arrows to horizontal chart scrolling", async () => {
 
   const newestFrame = await waitForFrame((frame) => frame.includes("XU030 stock") && frame.includes("◀") && !frame.includes("history"))
   expect(newestFrame).toContain("█")
-  mockInput.pressTab()
+  focusPanel(mockInput, "chart")
   mockInput.pressArrow("left", { shift: true })
   await waitForFrame((frame) => frame.includes("history"))
 
@@ -1211,7 +1243,7 @@ test("routes stock, futures, and index streams to the selected chart asset", asy
   await waitForFrame((frame) => frame.includes("THYAO stock"))
   expect(equityQuotes.startedSymbols).toEqual(["TUPRS", "THYAO"])
 
-  mockInput.pressTab()
+  focusPanel(mockInput, "chart")
   await mockInput.typeText("f")
   await waitForFrame((frame) => frame.includes("THYAO futures"))
   quotes.emitConnection(true)
@@ -1800,6 +1832,19 @@ function fakePositionExit(exits: ExitViopPositionRequest[]): ViopPositionExitSou
   }
 }
 
+/**
+ * Waits for a stored rule to reach a status. The harness's own waitFor is tied
+ * to render passes, and persisting a rule repaints nothing, so it gives up
+ * before the write lands.
+ */
+async function waitForStatus(store: FakeStopRuleStore, id: string, status: StopRule["status"]): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (store.rules.get(id)?.status === status) return
+    await Bun.sleep(5)
+  }
+  throw new Error(`${id} never reached ${status}; it is ${store.rules.get(id)?.status}`)
+}
+
 function tick(lastPrice: number): QuoteUpdate {
   return { symbol: "F_THYAO0826", lastPrice, sessionStatus: null, timestamp: Date.now() }
 }
@@ -1969,7 +2014,7 @@ test("a breached stop asks first, then exits only that position", async () => {
 })
 
 test("cancelling a trigger sends nothing and stands the rule down", async () => {
-  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
   const quotes = new FakeQuoteStream()
   const exits: ExitViopPositionRequest[] = []
   const store = new FakeStopRuleStore([stopRuleFixture()])
@@ -1992,8 +2037,10 @@ test("cancelling a trigger sends nothing and stands the rule down", async () => 
   const modal = await waitForFrame((frame) => frame.includes("Stop reached"))
   expect(modal).toContain("SELL 2 at the exchange limit")
 
+  // Standing the rule down persists it, and nothing repaints afterwards, so the
+  // wait is on the store settling rather than on another frame arriving.
   mockInput.pressEscape()
-  await waitFor(() => store.rules.get("rule-1")?.status === "PAUSED")
+  await waitForStatus(store, "rule-1", "PAUSED")
   expect(exits).toHaveLength(0)
 
   screen.destroy()

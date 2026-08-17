@@ -25,6 +25,7 @@ import {
   type CandleSeries,
   type CandleSource,
 } from "../market/candle.ts"
+import type { ContractOrderCost } from "../market/instrument.ts"
 import { ChartBitmapRenderable, chartBitmapSupport } from "./chart/bitmap-renderable.ts"
 import { drawCandlesticks, drawVolumeBars } from "./chart/chart-draw.ts"
 import { candleSlots, getCandleColumn, getScaledY, type CandleSlots } from "./chart/geometry.ts"
@@ -36,11 +37,12 @@ import {
   drawGuideLine,
 } from "./chart/pixel-buffer.ts"
 import { KittyPlaceholderImages } from "./chart/kitty-placeholder.ts"
-import { getCandlePixelX, renderCandleBitmap, type CandleChartBitmap } from "./chart/raster.ts"
+import { getCandlePixelX, renderCandleBitmap, type ChartBitmap } from "./chart/raster.ts"
 import { RenderCoalescer } from "./render-coalescer.ts"
 
 const MUTED_COLOR = "#777777"
 const AXIS_COLOR = "#777777"
+const COST_COLOR = "#7c8cff"
 const ACTIVE_BUTTON_BG = "#333333"
 const PRICE_PADDING_RATIO = 0.02
 const MIN_HEIGHT_WITH_VOLUME = 14
@@ -110,6 +112,9 @@ export class CandlestickChart {
   private readonly targetButtonLabels = new Map<CandleChartTarget, TextRenderable>()
   private instrument: ChartInstrument | null = null
   private series: CandleSeries | null = null
+  // What one contract of the selected instrument costs, shown beside the OHLC
+  // line. The screen owns the arithmetic; the chart only has the room for it.
+  private contractCost: ContractOrderCost | null = null
   private range: CandleRange
   private interval: CandleInterval
   private target: CandleChartTarget
@@ -334,6 +339,13 @@ export class CandlestickChart {
     this.load()
   }
 
+  /** What one contract costs, for the OHLC line. Null while it is unknown. */
+  setContractCost(cost: ContractOrderCost | null): void {
+    if (this.destroyed) return
+    this.contractCost = cost
+    this.renderSummary()
+  }
+
   setFocused(focused: boolean): void {
     if (this.focused === focused) return
     this.focused = focused
@@ -508,6 +520,15 @@ export class CandlestickChart {
       fg(candleColor)(formatPrice(last.close)),
       fg(candleColor)(`  ${changeText}`),
     )
+    const cost = this.contractCost
+    if (cost && (cost.notional !== null || cost.required !== null)) {
+      chunks.push(
+        fg(MUTED_COLOR)("   1 lot "),
+        fg(COST_COLOR)(formatMoney(cost.notional, cost.currency)),
+        fg(MUTED_COLOR)(" · margin "),
+        fg(COST_COLOR)(formatMoney(cost.required, cost.currency)),
+      )
+    }
     this.summary.content = new StyledText(chunks)
   }
 
@@ -746,7 +767,7 @@ export interface BrailleChartView extends ChartViewBase {
 
 export interface BitmapChartView extends ChartViewBase {
   kind: "bitmap"
-  bitmap: CandleChartBitmap
+  bitmap: ChartBitmap
   /** Terminal rows the bitmap covers (price pane plus volume pane). */
   rows: number
 }
@@ -1031,6 +1052,12 @@ function formatTimestamp(timestamp: number | undefined, range: CandleRange, incl
 
 function calendarYear(timestamp: number): string {
   return new Intl.DateTimeFormat("en", { year: "numeric", timeZone: "Europe/Istanbul" }).format(new Date(timestamp))
+}
+
+function formatMoney(value: number | null, currency: string): string {
+  if (value === null) return "—"
+  const amount = value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return currency === "TRY" ? `₺${amount}` : `${amount} ${currency}`
 }
 
 function formatPrice(price: number): string {

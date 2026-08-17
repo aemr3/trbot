@@ -9,7 +9,7 @@ import {
   type RenderContext,
   type RenderableOptions,
 } from "@opentui/core"
-import type { CandleChartBitmap } from "./raster.ts"
+import type { ChartBitmap } from "./raster.ts"
 
 // A cell's pixel size is a property of the terminal font, not of the window, so
 // the last measurement stays valid across resizes. It has to be remembered:
@@ -66,7 +66,7 @@ export class ChartBitmapRenderable extends Renderable {
   }
 
   /** Swaps in a freshly rasterized frame; null clears the display. */
-  setBitmap(bitmap: CandleChartBitmap | null): void {
+  setBitmap(bitmap: ChartBitmap | null): void {
     const previous = this.image
     this.image = bitmap ? NativeImage.fromRgba(bitmap.pixels, bitmap.width, bitmap.height) : null
     previous?.dispose()

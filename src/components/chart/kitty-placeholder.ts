@@ -7,7 +7,7 @@
 import { deflateSync } from "node:zlib"
 import { RGBA, StyledText, type TextChunk } from "@opentui/core"
 import { ROW_COLUMN_DIACRITICS } from "./kitty-diacritics.ts"
-import type { CandleChartBitmap } from "./raster.ts"
+import type { ChartBitmap } from "./raster.ts"
 
 const PLACEHOLDER = String.fromCodePoint(0x10eeee)
 const APC_START = "\x1b_G"
@@ -21,7 +21,7 @@ export function wrapTmuxPassthrough(sequence: string): string {
 }
 
 /** Chunked RGBA transmission (f=32, zlib) for the given image id. */
-export function encodeTransmit(bitmap: CandleChartBitmap, imageId: number): string[] {
+export function encodeTransmit(bitmap: ChartBitmap, imageId: number): string[] {
   // Level 3 keeps compression cheap enough for live-tick retransmits.
   const compressed = deflateSync(bitmap.pixels, { level: 3 })
   const base64 = Buffer.from(compressed).toString("base64")
@@ -84,7 +84,7 @@ export class KittyPlaceholderImages {
   // serialize with frame output; the raw-stdout default is for tests only.
   constructor(private readonly write: (data: string) => void = (data) => void process.stdout.write(data)) {}
 
-  render(bitmap: CandleChartBitmap, cols: number, rows: number): StyledText {
+  render(bitmap: ChartBitmap, cols: number, rows: number): StyledText {
     const slot = this.activeSlot === 0 ? 1 : 0
     const imageId = this.imageIds[slot]!
     const sequences = [...encodeTransmit(bitmap, imageId), encodeVirtualPlacement(imageId, cols, rows)]
