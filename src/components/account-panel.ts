@@ -317,7 +317,9 @@ export class AccountPanel {
     if (this.destroyed) return
     this.stopViews = views
     this.stopSelection = Math.max(0, Math.min(this.stopSelection, views.length - 1))
-    if (this.tab === "stops") this.liveRender.schedule()
+    // Position rows carry their own rules, so they repaint on this too — a
+    // trail that advanced or a feed that died shows without changing tabs.
+    if (this.tab === "stops" || this.tab === "positions") this.liveRender.schedule()
   }
 
   /** Replaces the alerts tab's contents; the monitor owns what they say. */
@@ -466,12 +468,13 @@ export class AccountPanel {
     }
     if (!this.snapshot) return
     if (this.tab === "positions" && this.snapshot.positions.length > 0) {
-      this.renderRows("positions", this.snapshot.positions, positionChunks)
+      this.renderRows("positions", this.snapshot.positions, (position) =>
+        positionChunks(position, this.stopViews))
       return
     }
     const content = this.tab === "orders"
       ? renderOrders(this.snapshot.orders)
-      : renderPositions(this.snapshot.positions)
+      : renderPositions(this.snapshot.positions, this.stopViews)
     this.showTextContent(content, "#cccccc")
   }
 
@@ -589,11 +592,14 @@ export function renderOrders(orders: AccountOrder[]): StyledText | string {
   return new StyledText(chunks)
 }
 
-export function renderPositions(positions: AccountPosition[]): StyledText | string {
+export function renderPositions(
+  positions: AccountPosition[],
+  stops: StopRuleView[] = [],
+): StyledText | string {
   if (positions.length === 0) return "No open VIOP positions."
   const chunks: TextChunk[] = []
   positions.forEach((position, index) => {
-    chunks.push(...positionChunks(position))
+    chunks.push(...positionChunks(position, stops))
     if (index < positions.length - 1) chunks.push(fg("#cccccc")("\n"))
   })
   return new StyledText(chunks)
@@ -613,11 +619,7 @@ export function renderStops(views: StopRuleView[]): StyledText | string {
 // still has to travel, and whether it is actually watching.
 function stopChunks(view: StopRuleView): TextChunk[] {
   const { rule } = view
-  const marker = rule.status === "ARMED"
-    ? (view.feed === "live" ? fg(UP_COLOR)("●") : fg("#e5c07b")("◐"))
-    : rule.status === "TRIGGERED"
-      ? fg(DOWN_COLOR)("▲")
-      : fg(MUTED_COLOR)("○")
+  const marker = stopMarker(view)
   const state = rule.status === "ARMED" && view.feed !== "live"
     ? feedLabel(view.feed, rule.basis === "CLOSE")
     : !view.hasPosition && rule.status !== "DONE"
@@ -634,6 +636,16 @@ function stopChunks(view: StopRuleView): TextChunk[] {
     marker,
     fg(MUTED_COLOR)(` ${state}`),
   ]
+}
+
+/**
+ * Whether a rule is actually watching, in one glyph: filled while the feed is
+ * live, hollowed when it is not, and pointing up once the level was reached.
+ */
+function stopMarker(view: StopRuleView): TextChunk {
+  if (view.rule.status === "TRIGGERED") return fg(DOWN_COLOR)("▲")
+  if (view.rule.status !== "ARMED") return fg(MUTED_COLOR)("○")
+  return view.feed === "live" ? fg(UP_COLOR)("●") : fg("#e5c07b")("◐")
 }
 
 /** Short label for how the level is derived, plus its trigger basis. */
@@ -714,14 +726,41 @@ function alertKindLabel(view: PriceAlertView): string {
   return `${kind}${alert.basis === "CLOSE" ? "@cl" : ""}`.padEnd(9)
 }
 
-function positionChunks(position: AccountPosition): TextChunk[] {
+function positionChunks(position: AccountPosition, stops: StopRuleView[] = []): TextChunk[] {
   const pnlColor = (position.unrealizedProfitLoss ?? 0) >= 0 ? UP_COLOR : DOWN_COLOR
-  return [
+  const chunks = [
     fg("#dddddd")(`${position.displayName}  `),
     fg(MUTED_COLOR)(`${formatQuantity(position.quantity)}x  `),
     fg("#bbbbbb")(`${formatNumber(position.averageCost)}→${formatNumber(position.currentPrice)}  `),
     fg(pnlColor)(formatSignedMoney(position.unrealizedProfitLoss, position.currency)),
   ]
+  // The protective levels this position is carrying, so the stops tab is where
+  // rules are managed rather than where they have to be checked. The row is
+  // clipped rather than wrapped, so these trail off the end when space runs out.
+  for (const view of positionStops(position, stops)) {
+    const isStop = view.rule.role === "STOP"
+    chunks.push(
+      fg(isStop ? DOWN_COLOR : UP_COLOR)(`   ${isStop ? "S" : "T"} `),
+      fg("#bbbbbb")(`${formatNumber(view.level)} `),
+      stopMarker(view),
+    )
+  }
+  return chunks
+}
+
+/**
+ * The rules a position is currently protected by, loss side first. Paused and
+ * finished rules are left to the stops tab: a position row should say what is
+ * watching it now, not what once did.
+ */
+function positionStops(position: AccountPosition, stops: StopRuleView[]): StopRuleView[] {
+  return stops
+    .filter(
+      (view) =>
+        (view.rule.status === "ARMED" || view.rule.status === "TRIGGERED") &&
+        (view.rule.instrumentUid === position.uid || view.rule.symbol === position.symbol),
+    )
+    .sort((left, right) => (left.rule.role === right.rule.role ? 0 : left.rule.role === "STOP" ? -1 : 1))
 }
 
 function formatMoney(value: number | null, currency: string): string {

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { PriceAlertView } from "../market/alert-monitor.ts"
+import type { AccountPosition, AccountSnapshot } from "../trading/account.ts"
 import { createPriceAlert } from "../market/alert.ts"
 import type { StopRuleView } from "../trading/stop-monitor.ts"
 import { createStopRule, type StopRule, type StopRuleDraft } from "../trading/stop.ts"
@@ -46,12 +47,30 @@ function view(rule: StopRule, overrides: Partial<StopRuleView> = {}): StopRuleVi
 }
 
 // The watchlist gives the panel a fixed eight rows; the test matches it.
-async function mountPanel(options: AccountPanelOptions = {}) {
-  const harness = await createTestRenderer({ width: 60, height: 10 })
+async function mountPanel(options: AccountPanelOptions = {}, width = 60) {
+  const harness = await createTestRenderer({ width, height: 10 })
   const panel = new AccountPanel(harness.renderer, options)
-  panel.root.width = 60
+  panel.root.width = width
   harness.renderer.root.add(panel.root)
   return { ...harness, panel }
+}
+
+function snapshot(positions: AccountPosition[]): AccountSnapshot {
+  return {
+    portfolio: {
+      currency: "TRY",
+      totalCollateral: 20_000,
+      availableCollateral: 15_000,
+      dailyProfitLoss: 0,
+      dailyProfitLossPercent: 0,
+      periodProfitLoss: 0,
+      periodProfitLossPercent: 0,
+    },
+    performance: { range: "WEEK", points: [], profitLoss: 0, profitLossPercent: 0 },
+    orders: [],
+    positions,
+    updatedAt: NOW,
+  }
 }
 
 test("lists stop rules with their level, distance and state", async () => {
@@ -170,6 +189,49 @@ test("offers no stop selection from the other tabs", async () => {
   expect(panel.selectedStop()).toBeNull()
   // The letters belong to the other tabs while they are showing.
   expect(panel.handleKey(key("n"))).toBeFalse()
+
+  panel.destroy()
+  renderer.destroy()
+})
+
+test("shows the levels protecting a position on its own row", async () => {
+  const positions: AccountPosition[] = [
+    {
+      uid: "instrument-1",
+      symbol: "F_ASELS0826",
+      displayName: "ASELS",
+      quantity: 2,
+      averageCost: 400,
+      currentPrice: 405,
+      unrealizedProfitLoss: 500,
+      currency: "TRY",
+      multiplier: 1,
+    },
+  ]
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel(
+    { source: { loadAccount: async () => snapshot(positions) } },
+    80,
+  )
+
+  await panel.refresh()
+  panel.showStopRules([
+    // Out of order and mixed with rules that are not watching, to prove the row
+    // shows the loss side first and leaves the rest to the stops tab.
+    view(rule({ id: "rule-2", role: "TARGET", value: 440 }), { level: 440 }),
+    view(rule()),
+    view(rule({ id: "rule-3", value: 370 }), { level: 370, rule: rule({ id: "rule-3" }, { status: "PAUSED" }) }),
+    view(rule({ id: "rule-4", instrumentUid: "instrument-9", symbol: "F_TUPRS0826" }), { level: 111 }),
+  ])
+  await Bun.sleep(0)
+  await renderOnce()
+  const row = captureCharFrame().split("\n").find((line) => line.includes("ASELS")) ?? ""
+
+  expect(row).toContain("S 380,00")
+  expect(row).toContain("T 440,00")
+  expect(row.indexOf("S 380,00")).toBeLessThan(row.indexOf("T 440,00"))
+  // A paused rule and another position's rule stay off this row.
+  expect(row).not.toContain("370,00")
+  expect(row).not.toContain("111,00")
 
   panel.destroy()
   renderer.destroy()
