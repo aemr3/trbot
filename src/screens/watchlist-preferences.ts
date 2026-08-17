@@ -7,11 +7,19 @@ import {
 } from "../market/candle.ts"
 import type { ViopOrderKind } from "../trading/order.ts"
 
-export const INSTRUMENT_SORTS = ["change", "volume"] as const
+export const INSTRUMENT_SORTS = ["change", "volume", "name"] as const
 export type InstrumentSort = (typeof INSTRUMENT_SORTS)[number]
 
 export const SORT_DIRECTIONS = ["asc", "desc"] as const
 export type SortDirection = (typeof SORT_DIRECTIONS)[number]
+
+// Which way a sort reads when it is first picked: the biggest movers and the
+// busiest contracts lead, but a list by name reads A to Z.
+export const DEFAULT_SORT_DIRECTIONS: Record<InstrumentSort, SortDirection> = {
+  change: "desc",
+  volume: "desc",
+  name: "asc",
+}
 
 export function isInstrumentSort(value: string): value is InstrumentSort {
   return INSTRUMENT_SORTS.some((sort) => sort === value)

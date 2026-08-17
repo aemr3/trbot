@@ -584,6 +584,15 @@ test("sorts VIOP stocks by change or volume and preserves the selected stock", a
   const volumeAgainFrame = await waitForFrame((frame) => frame.includes("Volume ↓"))
   expect(viopRowSymbols(volumeAgainFrame)).toEqual(["AAA", "BBB", "CCC"])
 
+  // A list by ticker reads A to Z first, unlike the two figure sorts.
+  mockInput.pressKey("n", { shift: true })
+  const nameFrame = await waitForFrame((frame) => frame.includes("Name ↑"))
+  expect(viopRowSymbols(nameFrame)).toEqual(["AAA", "BBB", "CCC"])
+
+  mockInput.pressKey("n", { shift: true })
+  const nameDescFrame = await waitForFrame((frame) => frame.includes("Name ↓"))
+  expect(viopRowSymbols(nameDescFrame)).toEqual(["CCC", "BBB", "AAA"])
+
   screen.destroy()
   renderer.destroy()
 })

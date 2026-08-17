@@ -81,7 +81,9 @@ import type {
 } from "../trading/order.ts"
 import { ViopOrderTicket } from "./order-ticket.ts"
 import {
+  DEFAULT_SORT_DIRECTIONS,
   DEFAULT_WATCHLIST_PREFERENCES,
+  INSTRUMENT_SORTS,
   normalizeWatchlistPreferences,
   type InstrumentSort,
   type SortDirection,
@@ -138,7 +140,7 @@ const DEPTH_LAYOUT_WIDTH = 190
 // How often close-based and ATR stop rules re-read their candles. Anything
 // finer just re-reads the same forming candle.
 const STOP_CANDLE_POLL_INTERVAL_MS = 30_000
-const SORT_LABELS = { change: "Change", volume: "Volume" } as const
+const SORT_LABELS: Record<InstrumentSort, string> = { change: "Change", volume: "Volume", name: "Name" }
 const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
 type DestructiveAction = "cancel-orders" | "exit-positions" | "delete-stop" | "delete-alert"
@@ -177,6 +179,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
       { keys: "Home / End", description: "Select first / last contract" },
       { keys: "C", description: "Sort by price change" },
       { keys: "V", description: "Sort by volume" },
+      { keys: "N", description: "Sort by ticker" },
     ],
   },
   {
@@ -568,6 +571,7 @@ export class WatchlistScreen {
     else if (this.focus === "chart") this.chart.handleKey(key)
     else if (isCapitalShortcut(key, "c")) this.selectInstrumentSort("change")
     else if (isCapitalShortcut(key, "v")) this.selectInstrumentSort("volume")
+    else if (isCapitalShortcut(key, "n")) this.selectInstrumentSort("name")
     else this.instrumentList.handleKey(key)
   }
 
@@ -610,7 +614,7 @@ export class WatchlistScreen {
       marginBottom: 1,
     })
     sortToolbar.add(new TextRenderable(renderer, { content: "Sort", fg: NEUTRAL_COLOR, width: 5 }))
-    for (const sort of ["change", "volume"] as const) {
+    for (const sort of INSTRUMENT_SORTS) {
       const button = new BoxRenderable(renderer, {
         height: 1,
         paddingLeft: 1,
@@ -2410,7 +2414,7 @@ export class WatchlistScreen {
     if (this.instrumentSort === sort) this.sortDirection = this.sortDirection === "desc" ? "asc" : "desc"
     else {
       this.instrumentSort = sort
-      this.sortDirection = "desc"
+      this.sortDirection = DEFAULT_SORT_DIRECTIONS[sort]
     }
     this.sortAndRenderInstrumentList(selectedUid)
     this.paintSortToolbar()
@@ -2438,7 +2442,7 @@ export class WatchlistScreen {
   }
 
   private paintSortToolbar(): void {
-    for (const sort of ["change", "volume"] as const) {
+    for (const sort of INSTRUMENT_SORTS) {
       const active = this.instrumentSort === sort
       const button = this.sortButtons.get(sort)
       const label = this.sortButtonLabels.get(sort)
@@ -2506,6 +2510,12 @@ function formatInstrumentRow(instrument: ViopInstrument): string {
 
 function instrumentComparator(sort: InstrumentSort, direction: SortDirection): (left: ViopInstrument, right: ViopInstrument) => number {
   return (left, right) => {
+    // Ticker order is the one sort with no figure behind it, and it is also
+    // what breaks every other sort's ties below.
+    if (sort === "name") {
+      const order = left.displayName.localeCompare(right.displayName, "tr")
+      return direction === "desc" ? -order : order
+    }
     const leftValue = sort === "change" ? left.changePercent : left.volume
     const rightValue = sort === "change" ? right.changePercent : right.volume
     if (leftValue === null && rightValue !== null) return 1
@@ -2521,7 +2531,7 @@ function overviewCacheKey(instrumentUid: string, mode: OverviewMode): string {
   return `${instrumentUid}:${mode}`
 }
 
-function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "g" | "o" | "t" | "v"): boolean {
+function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "g" | "n" | "o" | "t" | "v"): boolean {
   if (key.ctrl || key.meta || key.option) return false
   return key.sequence === letter.toUpperCase() || (key.shift && key.name === letter)
 }
