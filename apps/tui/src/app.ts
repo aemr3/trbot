@@ -1,5 +1,6 @@
 import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core"
 import { HttpAiAccount, HttpOverviewGenerator } from "@trbot/client/ai.ts"
+import { ChatClient, HttpChatSessions } from "@trbot/client/chat.ts"
 import {
   HttpAccountSource,
   HttpBrokerageDistributionSource,
@@ -28,9 +29,10 @@ import { ApplicationLog } from "./logging/application-log.ts"
 import type { OverviewGenerator, OverviewSnapshotStore } from "@trbot/market/overview.ts"
 import { ConnectingScreen } from "./screens/connecting.ts"
 import { LoginScreen } from "./screens/login.ts"
+import { AiScreen } from "./screens/ai.ts"
 import { LogsScreen } from "./screens/logs.ts"
 import { TradingWorkspaceScreen } from "./screens/trading-workspace.ts"
-import { WatchlistScreen } from "./screens/watchlist.ts"
+import { TradeScreen } from "./screens/trade.ts"
 import { RemoteAlerts, RemoteStopRules } from "./remote-monitors.ts"
 import { createServerSession, serverAuthenticated, type ServerSession } from "./server-session.ts"
 import type { WatchlistPreferences } from "@trbot/preferences/watchlist.ts"
@@ -268,7 +270,7 @@ export class App {
    * is restarting has no settings yet, and building on defaults would replace
    * them the first time the trader adjusted anything.
    */
-  private async showWatchlist(): Promise<void> {
+  private async showWorkspace(): Promise<void> {
     if (this.disposed) return
     this.stopWatchingForSession()
     if (!this.preferencesLoaded && this.fetchPreferences) {
@@ -302,7 +304,7 @@ export class App {
     const instruments = new HttpInstrumentSource(http)
     const candles = new HttpCandleSource(http)
     let workspace: TradingWorkspaceScreen | null = null
-    const watchlist = new WatchlistScreen(this.renderer, {
+    const trade = new TradeScreen(this.renderer, {
       instruments,
       candles,
       news: new HttpNewsSource(http),
@@ -333,20 +335,36 @@ export class App {
       sound: this.sound,
       logs: this.logs,
       manageInput: false,
-      onOpenLogs: () => workspace?.selectTab("logs"),
+    })
+    // The chat screen is built with the workspace and stays mounted behind the
+    // other tabs: a reply the server is generating has to keep arriving while the
+    // trader is watching the market.
+    const chats = new HttpChatSessions(http)
+    const ai = new AiScreen(this.renderer, {
+      chats,
+      ...(this.aiAccount ? { account: this.aiAccount } : {}),
+      logs: this.logs,
+    })
+    new ChatClient(stream, {
+      onSessions: (sessions) => ai.acceptSessions(sessions),
+      onMessage: (sessionId, message) => ai.acceptMessage(sessionId, message),
+      onMessageRemoved: (sessionId, messageId) => ai.acceptMessageRemoved(sessionId, messageId),
+      onDelta: (sessionId, runId, delta) => ai.acceptDelta(sessionId, runId, delta),
+      onRun: (sessionId, runId, status, error) => ai.acceptRun(sessionId, runId, status, error),
+      onResync: (sessionId) => ai.resync(sessionId),
     })
     const logs = new LogsScreen(this.renderer, {
       logs: this.logs,
-      onClose: () => workspace?.selectTab("watchlist"),
+      onClose: () => workspace?.selectTab("trade"),
     })
-    workspace = new TradingWorkspaceScreen(this.renderer, { watchlist, logs })
+    workspace = new TradingWorkspaceScreen(this.renderer, { trade, ai, logs })
     return workspace
   }
 
   private createLogin(): LoginScreen {
     return new LoginScreen(this.renderer, this.session.http, {
       credentials: null,
-      onAuthenticated: () => void this.showWatchlist(),
+      onAuthenticated: () => void this.showWorkspace(),
     })
   }
 
@@ -381,7 +399,7 @@ export class App {
   private onSessionAnswer(authenticated: boolean): void {
     if (this.disposed || this.screen instanceof TradingWorkspaceScreen) return
     if (authenticated) {
-      void this.showWatchlist()
+      void this.showWorkspace()
       return
     }
     // The server is reachable and holds nothing, so now there is something for
@@ -419,7 +437,7 @@ export class App {
       new LoginScreen(this.renderer, this.session.http, {
         initialStatus: "Session expired · Sign in",
         credentials: null,
-        onAuthenticated: () => void this.showWatchlist(),
+        onAuthenticated: () => void this.showWorkspace(),
       }),
     )
   }

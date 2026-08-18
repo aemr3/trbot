@@ -22,7 +22,6 @@ import { DepthPanel } from "../components/depth-panel.ts"
 import { OverviewPanel } from "../components/overview-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
 import { isShortcutHelpKey, ShortcutHelp, type ShortcutHelpSection } from "../components/shortcut-help.ts"
-import { ProviderAccountModal } from "../components/provider-account-modal.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
 import {
   WORKSPACE_CHROME_BACKGROUND,
@@ -146,15 +145,14 @@ const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
 type DestructiveAction = "cancel-orders" | "exit-positions" | "delete-stop" | "delete-alert"
 const NEWS_FEED_LABELS: Record<NewsFeed, string> = { instrument: "Stock", index: "Index" }
-const WATCHLIST_HINT = "B/S trade · G logs · / ticker · ? help · Ctrl+C quit"
-const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
+const TRADE_HINT = "B/S trade · A chat · L logs · / ticker · ? help · Ctrl+C quit"
+const TRADE_SHORTCUTS: ShortcutHelpSection[] = [
   {
     title: "Global",
     bindings: [
       { keys: "?", description: "Toggle this help" },
-      { keys: "A", description: "Open AI provider account" },
+      { keys: "T / A / L", description: "Switch tab: trade, AI chat, logs" },
       { keys: "O", description: "Focus the AI overview and regenerate" },
-      { keys: "G", description: "Open application logs" },
       { keys: "/", description: "Search and switch ticker" },
       { keys: "B / S", description: "Open buy / sell ticket" },
       { keys: "c c", description: "Cancel all pending VIOP orders" },
@@ -188,7 +186,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
     bindings: [
       { keys: "←/→ or h/l", description: "Change range" },
       { keys: "↑/↓ or j/k", description: "Change timeframe" },
-      { keys: "Shift+←/→ or H/L", description: "Scroll candle history" },
+      { keys: "Shift+←/→", description: "Scroll candle history" },
       { keys: "Shift+Home / End", description: "Jump to oldest / newest candles" },
       { keys: "Click", description: "Read a candle's OHLC; Esc releases it" },
       { keys: "f / F", description: "Cycle chart asset forwards / backwards" },
@@ -294,7 +292,7 @@ const WATCHLIST_SHORTCUTS: ShortcutHelpSection[] = [
   },
 ]
 
-export interface WatchlistScreenOptions {
+export interface TradeScreenOptions {
   instruments: ViopInstrumentSource
   candles: CandleSource
   news: NewsSource
@@ -328,12 +326,11 @@ export interface WatchlistScreenOptions {
   aiAccount?: AiAccount
   logs?: ApplicationLog
   manageInput?: boolean
-  onOpenLogs?: () => void
 }
 
 type Focus = "instruments" | "portfolio" | "chart" | "depth" | "brokers" | "account" | "news" | "overview"
 
-export class WatchlistScreen {
+export class TradeScreen {
   readonly root: BoxRenderable
 
   private readonly leftPanel: BoxRenderable
@@ -361,7 +358,6 @@ export class WatchlistScreen {
   private readonly hint: TextRenderable
   private orderTicket: ViopOrderTicket | null = null
   private shortcutHelp: ShortcutHelp | null = null
-  private providerAccountModal: ProviderAccountModal | null = null
   private tickerSearchQuery: string | null = null
   private tickerSearchMatchIndex = 0
   private pendingDestructiveAction: DestructiveAction | null = null
@@ -490,10 +486,6 @@ export class WatchlistScreen {
       this.shortcutHelp.handleKey(key)
       return
     }
-    if (this.providerAccountModal) {
-      this.providerAccountModal.handleKey(key)
-      return
-    }
     if (this.brokerageDateModal) {
       this.brokerageDateModal.handleKey(key)
       return
@@ -514,14 +506,6 @@ export class WatchlistScreen {
     }
     if (isTickerSearchKey(key)) {
       this.openTickerSearch()
-      return
-    }
-    if (isCapitalShortcut(key, "a")) {
-      this.openProviderAccount()
-      return
-    }
-    if (isCapitalShortcut(key, "g")) {
-      this.openLogs()
       return
     }
     if (isCapitalShortcut(key, "o")) {
@@ -583,7 +567,7 @@ export class WatchlistScreen {
 
   constructor(
     private readonly renderer: RenderContext,
-    private readonly options: WatchlistScreenOptions,
+    private readonly options: TradeScreenOptions,
   ) {
     this.preferences = normalizeWatchlistPreferences(options.preferences ?? DEFAULT_WATCHLIST_PREFERENCES)
     this.instrumentSort = this.preferences.instrumentSort
@@ -840,7 +824,7 @@ export class WatchlistScreen {
     columns.add(this.rightPanel)
 
     this.hint = new TextRenderable(renderer, {
-      content: WATCHLIST_HINT,
+      content: TRADE_HINT,
       fg: WORKSPACE_CHROME_MUTED,
       width: "100%",
     })
@@ -901,7 +885,6 @@ export class WatchlistScreen {
     this.accountPanel.destroy()
     this.tickerSearchQuery = null
     this.closeShortcutHelp()
-    this.closeProviderAccount()
     this.closeOrderTicket()
     this.closeStopRuleEditor()
     this.closeStopTrigger()
@@ -956,6 +939,23 @@ export class WatchlistScreen {
     }
     if (this.options.manageInput !== false) this.renderer.keyInput.off("keypress", this.handleKeypress)
     if (!this.root.isDestroyed) this.root.destroyRecursively()
+  }
+
+  /**
+   * Whether a key typed now belongs to something on this screen rather than to
+   * the tab bar. True while anything with a field or a confirmation is up: the
+   * ticker search takes letters, and a modal in front of the panels owns Escape.
+   */
+  capturesInput(): boolean {
+    return this.tickerSearchQuery !== null
+      || this.orderTicket !== null
+      || this.shortcutHelp !== null
+      || this.brokerageDateModal !== null
+      || this.stopRuleEditor !== null
+      || this.stopTrigger !== null
+      || this.alertEditor !== null
+      || this.alertPopup !== null
+      || this.articleOpen
   }
 
   handleKey(key: KeyEvent): void {
@@ -1991,41 +1991,12 @@ export class WatchlistScreen {
   private openShortcutHelp(): void {
     if (this.shortcutHelp || this.destroyed) return
     const help = new ShortcutHelp(this.renderer, {
-      sections: WATCHLIST_SHORTCUTS,
+      sections: TRADE_SHORTCUTS,
       onClose: () => this.closeShortcutHelp(),
     })
     this.shortcutHelp = help
     this.root.add(help.root)
     this.renderer.requestRender()
-  }
-
-  private openProviderAccount(): void {
-    const account = this.options.aiAccount
-    if (!account || this.providerAccountModal || this.destroyed) return
-    const modal = new ProviderAccountModal(this.renderer, {
-      account,
-      onClose: () => this.closeProviderAccount(),
-    })
-    this.providerAccountModal = modal
-    this.root.add(modal.root)
-    modal.mount()
-    this.renderer.requestRender()
-  }
-
-  private closeProviderAccount(): void {
-    const modal = this.providerAccountModal
-    if (!modal) return
-    this.providerAccountModal = null
-    if (!this.root.isDestroyed && !modal.root.isDestroyed) this.root.remove(modal.root)
-    modal.destroy()
-    // The account may have been connected or disconnected in the modal.
-    void this.refreshOverviewConnection()
-    this.renderer.requestRender()
-  }
-
-  private openLogs(): void {
-    if (this.destroyed) return
-    this.options.onOpenLogs?.()
   }
 
   private openTickerSearch(): void {
@@ -2041,7 +2012,7 @@ export class WatchlistScreen {
     if (this.tickerSearchQuery === null) return
     this.tickerSearchQuery = null
     this.tickerSearchMatchIndex = 0
-    this.hint.content = WATCHLIST_HINT
+    this.hint.content = TRADE_HINT
     this.hint.fg = WORKSPACE_CHROME_MUTED
   }
 
@@ -2164,7 +2135,7 @@ export class WatchlistScreen {
     this.pendingDestructiveAction = null
     if (this.hintTimer) clearTimeout(this.hintTimer)
     this.hintTimer = null
-    this.hint.content = WATCHLIST_HINT
+    this.hint.content = TRADE_HINT
     this.hint.fg = WORKSPACE_CHROME_MUTED
     this.renderer.requestRender()
   }
@@ -2258,7 +2229,7 @@ export class WatchlistScreen {
     this.hintTimer = setTimeout(() => {
       this.hintTimer = null
       if (this.destroyed) return
-      this.hint.content = WATCHLIST_HINT
+      this.hint.content = TRADE_HINT
       this.hint.fg = WORKSPACE_CHROME_MUTED
     }, resetAfterMs)
   }

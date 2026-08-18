@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
+import { BoxRenderable, type RenderContext } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import type { AiAccount } from "@trbot/protocol/ai.ts"
 import type { OverviewGenerateOptions, OverviewGenerator } from "@trbot/market/overview.ts"
 import type { MarketOverviewDigest } from "@trbot/market/overview.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
@@ -47,7 +47,7 @@ import type { StopRuleView, StopTriggerEvent } from "@trbot/trading/stop-monitor
 import { RemoteAlerts, RemoteStopRules } from "../remote-monitors.ts"
 import { LogsScreen } from "./logs.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
-import { WatchlistScreen } from "./watchlist.ts"
+import { TradeScreen } from "./trade.ts"
 import type { WatchlistPreferences } from "@trbot/preferences/watchlist.ts"
 
 // Tab cycles the panels in this order from a freshly mounted screen. Naming the
@@ -263,7 +263,7 @@ test("renders the VIOP, chart, and news panels with instrument data", async () =
     height: 30,
   })
 
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news })
+  const screen = new TradeScreen(renderer, { instruments, candles, news })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -303,7 +303,7 @@ test("switches between selected-stock and index news feeds", async () => {
       return null
     },
   }
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news: scopedNews })
+  const screen = new TradeScreen(renderer, { instruments, candles, news: scopedNews })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -333,25 +333,28 @@ test("opens application logs and returns to the watchlist", async () => {
     responseBody: '{"detail":"Unknown parameter: candles"}',
   }))
   let workspace: TradingWorkspaceScreen | null = null
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
     logs,
     manageInput: false,
-    onOpenLogs: () => workspace?.selectTab("logs"),
   })
-  const logScreen = new LogsScreen(renderer, { logs, onClose: () => workspace?.selectTab("watchlist") })
-  workspace = new TradingWorkspaceScreen(renderer, { watchlist: screen, logs: logScreen })
+  const logScreen = new LogsScreen(renderer, { logs, onClose: () => workspace?.selectTab("trade") })
+  workspace = new TradingWorkspaceScreen(renderer, {
+    trade: screen,
+    ai: idlePanel(renderer),
+    logs: logScreen,
+  })
   renderer.root.add(workspace.root)
   workspace.mount()
   await waitForFrame((frame) => frame.includes("XU030 stock"))
 
-  mockInput.pressKey("g", { shift: true })
+  mockInput.pressKey("l", { shift: true })
   const logFrame = await waitForFrame((frame) => frame.includes("APPLICATION LOGS") && frame.includes("Unknown parameter"))
   expect(logFrame).toContain("Market data")
   expect(logFrame).toContain("statusCode")
-  mockInput.pressKey("w", { shift: true })
+  mockInput.pressKey("t", { shift: true })
   await waitForFrame((frame) => frame.includes("XU030 stock") && !frame.includes("APPLICATION LOGS"))
 
   workspace.destroy()
@@ -361,7 +364,7 @@ test("opens application logs and returns to the watchlist", async () => {
 test("opens modal buy and sell tickets and submits simulated market orders at exchange limits", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 160, height: 30, kittyKeyboard: true })
   const placed: PlaceViopOrderRequest[] = []
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -395,7 +398,7 @@ test("opens modal buy and sell tickets and submits simulated market orders at ex
 
 test("shows the account's figures beside the contract, and the rest in tabs", async () => {
   const { renderer, mockInput, mockMouse, waitForFrame } = await createTestRenderer({ width: 160, height: 30 })
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account })
+  const screen = new TradeScreen(renderer, { instruments, candles, news, account })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -433,7 +436,7 @@ test("reloads the account for the portfolio range the panel asks for", async () 
       return account.loadAccount(options)
     },
   }
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account: rangedAccount })
+  const screen = new TradeScreen(renderer, { instruments, candles, news, account: rangedAccount })
   renderer.root.add(screen.root)
   screen.mount()
   await waitForFrame((frame) => frame.includes("Week P/L"))
@@ -460,7 +463,7 @@ test("walks panel focus backwards with Shift+Tab", async () => {
       return account.loadAccount(options)
     },
   }
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account: rangedAccount })
+  const screen = new TradeScreen(renderer, { instruments, candles, news, account: rangedAccount })
   renderer.root.add(screen.root)
   screen.mount()
   await waitForFrame((frame) => frame.includes("Week P/L"))
@@ -481,7 +484,7 @@ test("applies live account, order, and futures price updates", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 160, height: 30 })
   const quotes = new FakeQuoteStream()
   const accountStream = new FakeAccountStream()
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account, accountStream, quotes })
+  const screen = new TradeScreen(renderer, { instruments, candles, news, account, accountStream, quotes })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -529,7 +532,7 @@ test("shows a snapshot indicator until the stream reports live ticks", async () 
   })
   const quotes = new FakeQuoteStream()
 
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news, quotes })
+  const screen = new TradeScreen(renderer, { instruments, candles, news, quotes })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -554,7 +557,7 @@ test("applies live price ticks in place and subscribes with instrument symbols",
   })
   const quotes = new FakeQuoteStream()
 
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news, quotes })
+  const screen = new TradeScreen(renderer, { instruments, candles, news, quotes })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -585,7 +588,7 @@ test("sorts VIOP stocks by change or volume and preserves the selected stock", a
       ]
     },
   }
-  const screen = new WatchlistScreen(renderer, { instruments: sortable, candles, news })
+  const screen = new TradeScreen(renderer, { instruments: sortable, candles, news })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -646,7 +649,7 @@ test("refreshes snapshot volumes and re-sorts without replacing live prices", as
       ]
     },
   }
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments: refreshing,
     candles,
     news,
@@ -683,7 +686,7 @@ test("re-derives the daily change reference when the snapshot rolls into a new s
       ]
     },
   }
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments: rollingOver,
     candles,
     news,
@@ -739,7 +742,7 @@ test("keeps what one lot costs fresh while the selection stays put", async () =>
       }
     },
   }
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments: refreshingDetails,
     candles,
     news,
@@ -780,7 +783,7 @@ test("requires lowercase c twice before cancelling every pending VIOP order", as
       return { cancelledOrderUids: orderUids, failures: [] }
     },
   }
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -828,7 +831,7 @@ test("requires lowercase x twice before submitting exits for every VIOP position
       return { instrumentUid: request.instrumentUid, symbol: "F_XU0300826", quantity: 1, orderUid: "exit-1" }
     },
   }
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -876,7 +879,7 @@ test("retrying a bulk exit reuses its key, and a later one gets its own", async 
       return { instrumentUid: request.instrumentUid, symbol: "F_XU0300826", quantity: 1, orderUid: "exit-1" }
     },
   }
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account, positionExit })
+  const screen = new TradeScreen(renderer, { instruments, candles, news, account, positionExit })
   renderer.root.add(screen.root)
   screen.mount()
   await waitForFrame((frame) => frame.includes("XU030 stock"))
@@ -922,7 +925,7 @@ test("expires destructive-action confirmation after its timeout", async () => {
       return { cancelledOrderUids: [], failures: [] }
     },
   }
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -948,7 +951,7 @@ test("expires destructive-action confirmation after its timeout", async () => {
 
 test("opens the complete shortcut help with question mark and closes it again", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24 })
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news })
+  const screen = new TradeScreen(renderer, { instruments, candles, news })
   renderer.root.add(screen.root)
   screen.mount()
   await waitForFrame((frame) => frame.includes("XU030 stock"))
@@ -975,39 +978,10 @@ test("opens the complete shortcut help with question mark and closes it again", 
   renderer.destroy()
 })
 
-test("opens the ChatGPT provider modal with capital A", async () => {
-  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
-    width: 100,
-    height: 24,
-    kittyKeyboard: true,
-  })
-  const aiAccount: AiAccount = {
-    async getState() {
-      return null
-    },
-    async connect() {
-      throw new Error("not used")
-    },
-    async disconnect() {},
-  }
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news, aiAccount })
-  renderer.root.add(screen.root)
-  screen.mount()
-  await waitForFrame((frame) => frame.includes("XU030 stock"))
-
-  mockInput.pressKey("a", { shift: true })
-  await waitForFrame((frame) => frame.includes("AI provider") && frame.includes("Not connected"))
-  mockInput.pressEscape()
-  await waitForFrame((frame) => !frame.includes("AI provider") && frame.includes("XU030 stock"))
-
-  screen.destroy()
-  renderer.destroy()
-})
-
 test("searches tickers with slash and switches only after Enter", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const preferences: WatchlistPreferences[] = []
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -1046,7 +1020,7 @@ test("restores and reports list and chart display choices", async () => {
     selectedInstrumentUid: string | null
     orderKind: string
   }> = []
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -1099,7 +1073,7 @@ test("restores and reports list and chart display choices", async () => {
 test("falls back to an available contract when the saved contract no longer exists", async () => {
   const { renderer, waitForFrame, waitFor } = await createTestRenderer({ width: 120, height: 24 })
   const selectedInstrumentUids: Array<string | null> = []
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -1141,7 +1115,7 @@ test("notifies onSessionExpired when device relogin fails", async () => {
     },
   }
 
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments: failing,
     candles,
     news,
@@ -1165,7 +1139,7 @@ test("opens a news article on double-click and returns on a second double-click"
     height: 20,
   })
 
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news })
+  const screen = new TradeScreen(renderer, { instruments, candles, news })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -1194,7 +1168,7 @@ test("opens a news article with its full body on Enter and returns on Backspace"
     height: 20,
   })
 
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news })
+  const screen = new TradeScreen(renderer, { instruments, candles, news })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -1226,7 +1200,7 @@ test("switches chart ranges and timeframes from the focused chart panel", async 
       }
     },
   }
-  const screen = new WatchlistScreen(renderer, { instruments, candles: trackingCandles, news })
+  const screen = new TradeScreen(renderer, { instruments, candles: trackingCandles, news })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -1271,7 +1245,7 @@ test("routes modified arrows to horizontal chart scrolling", async () => {
       }
     },
   }
-  const screen = new WatchlistScreen(renderer, { instruments, candles: historyCandles, news })
+  const screen = new TradeScreen(renderer, { instruments, candles: historyCandles, news })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -1290,7 +1264,7 @@ test("routes modified arrows to horizontal chart scrolling", async () => {
 
 test("keeps the chart usable in an 80-column terminal", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 80, height: 24 })
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news })
+  const screen = new TradeScreen(renderer, { instruments, candles, news })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -1320,7 +1294,7 @@ test("routes stock, futures, and index streams to the selected chart asset", asy
       ]
     },
   }
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments: stockFutures,
     candles,
     news,
@@ -1428,7 +1402,7 @@ const entitledFeatures: MemberFeatureSource = {
 test("streams the underlying stock's order book beside the chart", async () => {
   const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 32 })
   const depth = new FakeDepthStream()
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -1458,7 +1432,7 @@ test("streams the underlying stock's order book beside the chart", async () => {
 test("keeps the book closed when the subscription does not include market depth", async () => {
   const { renderer, waitForFrame } = await createTestRenderer({ width: 200, height: 32 })
   const depth = new FakeDepthStream()
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -1510,7 +1484,7 @@ class FakeBrokerageSource implements BrokerageDistributionSource {
 test("ranks broker buyers and sellers under the order book", async () => {
   const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
   const brokerage = new FakeBrokerageSource()
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -1538,7 +1512,7 @@ test("ranks broker buyers and sellers under the order book", async () => {
 test("changes the broker date range through the popup", async () => {
   const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
   const brokerage = new FakeBrokerageSource()
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -1566,7 +1540,7 @@ test("changes the broker date range through the popup", async () => {
 test("keeps the broker table closed without the entitlement", async () => {
   const { renderer, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
   const brokerage = new FakeBrokerageSource()
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -1617,7 +1591,7 @@ test("reads the settlement register from the broker panel's own tabs", async () 
   const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
   const brokerage = new FakeBrokerageSource()
   const settlement = new FakeSettlementSource()
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -1656,7 +1630,7 @@ test("locks the settlement tabs on their own entitlement", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
   const brokerage = new FakeBrokerageSource()
   const settlement = new FakeSettlementSource()
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -1711,7 +1685,7 @@ test("generates the intraday overview by default and streams the commentary", as
   const { renderer, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
   const overview = new FakeOverviewGenerator()
   const options = overviewScreenOptions(overview)
-  const screen = new WatchlistScreen(renderer, options)
+  const screen = new TradeScreen(renderer, options)
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -1749,7 +1723,7 @@ test("prices the overview from the underlying's own tape when the book is live",
   const { renderer, waitFor } = await createTestRenderer({ width: 200, height: 44 })
   const overview = new FakeOverviewGenerator()
   const depth = new FakeDepthStream()
-  const screen = new WatchlistScreen(renderer, { ...overviewScreenOptions(overview), depth })
+  const screen = new TradeScreen(renderer, { ...overviewScreenOptions(overview), depth })
   renderer.root.add(screen.root)
   screen.mount()
   await waitFor(() => depth.startedSymbols.includes("XU030"))
@@ -1768,7 +1742,7 @@ test("switching to the daily view reads the custody register", async () => {
   const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
   const overview = new FakeOverviewGenerator()
   const options = overviewScreenOptions(overview)
-  const screen = new WatchlistScreen(renderer, options)
+  const screen = new TradeScreen(renderer, options)
   renderer.root.add(screen.root)
   screen.mount()
   await waitFor(() => overview.digests.length === 1)
@@ -1799,7 +1773,7 @@ test("switching to the daily view reads the custody register", async () => {
 test("serves a cached overview when revisiting an instrument", async () => {
   const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
   const overview = new FakeOverviewGenerator()
-  const screen = new WatchlistScreen(renderer, overviewScreenOptions(overview))
+  const screen = new TradeScreen(renderer, overviewScreenOptions(overview))
   renderer.root.add(screen.root)
   screen.mount()
   await waitFor(() => overview.digests.length === 1)
@@ -1823,7 +1797,7 @@ test("serves a cached overview when revisiting an instrument", async () => {
 test("skips the periodic refresh while the digest stands still", async () => {
   const { renderer, mockInput, waitFor } = await createTestRenderer({ width: 200, height: 44 })
   const overview = new FakeOverviewGenerator()
-  const screen = new WatchlistScreen(renderer, overviewScreenOptions(overview))
+  const screen = new TradeScreen(renderer, overviewScreenOptions(overview))
   renderer.root.add(screen.root)
   screen.mount()
   await waitFor(() => overview.digests.length === 1)
@@ -1843,7 +1817,7 @@ test("skips the periodic refresh while the digest stands still", async () => {
 test("locks the overview when no broker feed is entitled", async () => {
   const { renderer, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
   const overview = new FakeOverviewGenerator()
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     ...overviewScreenOptions(overview),
     memberFeatures: { async loadFeatures() { return memberFeatureSet(["SUBSCRIPTION"]) } },
   })
@@ -1862,7 +1836,7 @@ test("asks for the ChatGPT account when the overview cannot authenticate", async
   const { renderer, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
   const overview = new FakeOverviewGenerator()
   overview.failWith = new Error("ChatGPT is not connected")
-  const screen = new WatchlistScreen(renderer, overviewScreenOptions(overview))
+  const screen = new TradeScreen(renderer, overviewScreenOptions(overview))
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -2034,7 +2008,7 @@ test("subscribes to the contracts the server's stop rules protect, not only the 
   const quotes = new FakeQuoteStream()
   const rule = { ...stopRuleFixture(), symbol: "F_UNWATCHED0826" }
   const stops = new RemoteStopRules(new FakeStopRules([rule], []))
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account, quotes, stops })
+  const screen = new TradeScreen(renderer, { instruments, candles, news, account, quotes, stops })
   renderer.root.add(screen.root)
   screen.mount()
 
@@ -2053,7 +2027,7 @@ test("a stop the server reports as fired asks first and never exits locally", as
   const decisions: string[] = []
   const rule = stopRuleFixture()
   const stops = new RemoteStopRules(new FakeStopRules([rule], decisions))
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -2084,7 +2058,7 @@ test("confirming a fired stop asks the server to send it", async () => {
   const decisions: string[] = []
   const rule = stopRuleFixture()
   const stops = new RemoteStopRules(new FakeStopRules([rule], decisions))
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -2115,7 +2089,7 @@ test("cancelling a fired stop stands it down through the server", async () => {
   const decisions: string[] = []
   const rule = stopRuleFixture()
   const stops = new RemoteStopRules(new FakeStopRules([rule], decisions))
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -2149,7 +2123,7 @@ test("an alert the server reports as fired rings and trades nothing", async () =
   const cues: string[] = []
   const alert = priceAlertFixture()
   const alerts = new RemoteAlerts(new FakeAlerts([alert]), fakeMonitorClient([]))
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -2188,7 +2162,7 @@ test("dismissing an alert tells the server, so it stops being replayed", async (
   const decisions: string[] = []
   const alert = priceAlertFixture()
   const alerts = new RemoteAlerts(new FakeAlerts([alert]), fakeMonitorClient(decisions))
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -2226,7 +2200,7 @@ test("does not claim a stop was stood down until the server says it was", async 
   const rules = new FakeStopRules([rule])
   rules.decideFailure = new ProtocolError("upstream_unavailable", "Cannot reach the trbot server")
   const stops = new RemoteStopRules(rules)
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -2258,7 +2232,7 @@ test("the rules a fired stop shows come from the server, not local evaluation", 
   const { renderer, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
   const rule = stopRuleFixture()
   const stops = new RemoteStopRules(new FakeStopRules([rule], []))
-  const screen = new WatchlistScreen(renderer, {
+  const screen = new TradeScreen(renderer, {
     instruments,
     candles,
     news,
@@ -2278,3 +2252,22 @@ test("the rules a fired stop shows come from the server, not local evaluation", 
   screen.destroy()
   renderer.destroy()
 })
+
+/**
+ * A stand-in for the AI tab, which this file is not testing. The workspace mounts
+ * every panel, so it needs something there.
+ */
+function idlePanel(renderer: RenderContext): {
+  root: BoxRenderable
+  handleKey(): void
+  destroy(): void
+} {
+  const root = new BoxRenderable(renderer, { width: "100%", height: "100%" })
+  return {
+    root,
+    handleKey: () => {},
+    destroy: () => {
+      if (!root.isDestroyed) root.destroyRecursively()
+    },
+  }
+}

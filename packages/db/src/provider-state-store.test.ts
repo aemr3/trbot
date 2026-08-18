@@ -47,7 +47,6 @@ function state(): ProviderState {
     refreshToken: "refresh-old",
     expiresAt: 1_786_000_600_000,
     accountId: "account-1",
-    email: "trader@example.com",
     createdAt: 1_786_000_000_000,
     updatedAt: 1_786_000_000_000,
   }

@@ -11,6 +11,7 @@
   "dependencies": {
     "@trbot/ai": "workspace:*",
     "@trbot/auth": "workspace:*",
+    "@trbot/chat": "workspace:*",
     "@trbot/config": "workspace:*",
     "@trbot/market": "workspace:*",
     "@trbot/preferences": "workspace:*",

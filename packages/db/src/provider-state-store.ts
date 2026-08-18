@@ -22,7 +22,6 @@ export class DrizzleProviderStateStore implements ProviderStateStore {
           refreshToken: state.refreshToken,
           expiresAt: state.expiresAt,
           accountId: state.accountId,
-          email: state.email,
           updatedAt: state.updatedAt,
         },
       })

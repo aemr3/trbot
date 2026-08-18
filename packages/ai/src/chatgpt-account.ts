@@ -1,22 +1,55 @@
-import { chatGptIdentity, ChatGptOAuthClient, type ChatGptOAuth, type ChatGptTokenResponse } from "./chatgpt-oauth.ts"
+import { refreshOpenAICodexToken } from "@mariozechner/pi-ai/oauth"
 import { CHATGPT_PROVIDER_ID, type ProviderState, type ProviderStateStore } from "./provider-state.ts"
 
 const REFRESH_MARGIN_MS = 60_000
 
+/**
+ * What a finished ChatGPT login produces, in the harness's own shape.
+ *
+ * The login itself runs on the trader's machine — the provider only redirects to
+ * a loopback address — so these arrive over the wire and are stored here. The
+ * account id is read out of the access token by the harness; nothing in trbot
+ * parses a token.
+ */
+export interface ChatGptCredentials {
+  accessToken: string
+  refreshToken: string
+  /** Absolute expiry, as the harness reports it. */
+  expiresAt: number
+  accountId: string | null
+}
+
+/** Exchanging a refresh token for a new access token. Replaced in tests. */
+export interface ChatGptTokenRefresh {
+  refresh(refreshToken: string): Promise<ChatGptCredentials>
+}
+
+export const chatGptTokenRefresh: ChatGptTokenRefresh = {
+  async refresh(refreshToken) {
+    const credentials = await refreshOpenAICodexToken(refreshToken)
+    return {
+      accessToken: credentials.access,
+      refreshToken: credentials.refresh,
+      expiresAt: credentials.expires,
+      accountId: typeof credentials.accountId === "string" ? credentials.accountId : null,
+    }
+  },
+}
+
 interface ChatGptAccountServiceOptions {
-  oauth?: ChatGptOAuth
+  tokens?: ChatGptTokenRefresh
   now?: () => number
 }
 
 /**
  * Owns the stored ChatGPT tokens and keeps them fresh.
  *
- * This runs on the server only. A client learns which account is connected
- * through the protocol summary; the tokens themselves never leave the process
- * that talks to ChatGPT.
+ * This runs on the server only. A client hands over the credentials a login
+ * produced and afterwards learns only which account is connected; refreshing
+ * happens here, unattended, for as long as the server runs.
  */
 export class ChatGptAccountService {
-  private readonly oauth: ChatGptOAuth
+  private readonly tokens: ChatGptTokenRefresh
   private readonly now: () => number
   private refreshRequest: Promise<ProviderState> | null = null
 
@@ -24,7 +57,7 @@ export class ChatGptAccountService {
     private readonly states: ProviderStateStore,
     options: ChatGptAccountServiceOptions = {},
   ) {
-    this.oauth = options.oauth ?? new ChatGptOAuthClient()
+    this.tokens = options.tokens ?? chatGptTokenRefresh
     this.now = options.now ?? Date.now
   }
 
@@ -32,18 +65,16 @@ export class ChatGptAccountService {
     return this.states.get(CHATGPT_PROVIDER_ID)
   }
 
-  /** Records the tokens a finished authorization produced. */
-  async save(tokens: ChatGptTokenResponse): Promise<ProviderState> {
-    const identity = chatGptIdentity(tokens)
+  /** Records the credentials a finished login produced. */
+  async save(credentials: ChatGptCredentials): Promise<ProviderState> {
     const previous = await this.getState()
     const now = this.now()
     const state: ProviderState = {
       providerId: CHATGPT_PROVIDER_ID,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      expiresAt: now + tokens.expiresIn * 1_000,
-      accountId: identity.accountId,
-      email: identity.email,
+      accessToken: credentials.accessToken,
+      refreshToken: credentials.refreshToken,
+      expiresAt: credentials.expiresAt,
+      accountId: credentials.accountId,
       createdAt: previous?.createdAt ?? now,
       updatedAt: now,
     }
@@ -68,17 +99,14 @@ export class ChatGptAccountService {
   }
 
   private async refresh(state: ProviderState): Promise<ProviderState> {
-    const tokens = await this.oauth.refresh(state.refreshToken)
-    const identity = chatGptIdentity(tokens)
-    const now = this.now()
+    const credentials = await this.tokens.refresh(state.refreshToken)
     const refreshed: ProviderState = {
       ...state,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      expiresAt: now + tokens.expiresIn * 1_000,
-      accountId: identity.accountId ?? state.accountId,
-      email: identity.email ?? state.email,
-      updatedAt: now,
+      accessToken: credentials.accessToken,
+      refreshToken: credentials.refreshToken,
+      expiresAt: credentials.expiresAt,
+      accountId: credentials.accountId ?? state.accountId,
+      updatedAt: this.now(),
     }
     await this.states.put(refreshed)
     return refreshed

@@ -8,7 +8,13 @@ import { DrizzlePriceAlertStore } from "@trbot/db/price-alert-store.ts"
 import { DrizzleProviderStateStore } from "@trbot/db/provider-state-store.ts"
 import { DrizzleStopRuleStore } from "@trbot/db/stop-rule-store.ts"
 import { DrizzleWatchlistPreferencesStore } from "@trbot/db/watchlist-preferences-store.ts"
+import { ChatAgent } from "@trbot/ai/chat.ts"
+import { HARNESS_VERSION } from "@trbot/ai/harness.ts"
+import { codexModel } from "@trbot/ai/codex-model.ts"
+import { noTools } from "@trbot/ai/tool.ts"
+import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { AiService } from "./ai.ts"
+import { ChatController } from "./chat.ts"
 import { certificateExpiry } from "./tls.ts"
 import { AlertController } from "./monitors/alert.ts"
 import { isDefiniteRefusal, toProtocolError } from "./errors.ts"
@@ -70,6 +76,22 @@ async function startTrbotServer(): Promise<void> {
     reasoningEffort: config.aiReasoningEffort,
   })
 
+  // Chat runs belong to the server for the same reason the monitors do: a reply
+  // has to survive the terminal that asked for it closing its tab or quitting.
+  const chat = new ChatController({
+    store: new DrizzleChatSessionStore(connection.db, { harnessVersion: HARNESS_VERSION }),
+    agent: new ChatAgent({
+      model: codexModel(config.aiModel),
+      accessToken: () => ai.accessToken(),
+      reasoningEffort: config.aiReasoningEffort,
+      tools: noTools(),
+    }),
+    model: config.aiModel,
+    requireConnected: () => ai.requireConnected(),
+    broadcast: (frame) => hub?.broadcast(frame),
+    onError: (error) => log("Chat", error),
+  })
+
   let hub: StreamHub | null = null
 
   const stops = new StopController({
@@ -123,6 +145,7 @@ async function startTrbotServer(): Promise<void> {
 
   await stops.rules.load()
   await alerts.alerts.load()
+  await chat.start()
 
   const resumed = await session.resume()
   console.log(resumed ? "Provider session resumed" : "No provider session; waiting for a client to sign in")
@@ -174,8 +197,10 @@ async function startTrbotServer(): Promise<void> {
     stops,
     overviewSnapshots: new DrizzleOverviewSnapshotStore(connection.db),
     ai,
+    chat,
     hub,
     backlog: () => [
+      ...chat.backlog(),
       ...stops.outstanding().map((event) =>
         event.type === "triggered"
           ? { type: "stopTriggered", event: event.event, remainingMs: event.remainingMs, held: event.held }
@@ -198,6 +223,7 @@ async function startTrbotServer(): Promise<void> {
     clearInterval(positionTimer)
     clearInterval(candleTimer)
     if (positionRefreshTimer) clearTimeout(positionRefreshTimer)
+    chat.destroy()
     stops.destroy()
     alerts.destroy()
     session.close()

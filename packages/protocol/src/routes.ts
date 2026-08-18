@@ -35,10 +35,18 @@ export const ROUTES = {
   login: `${API_PREFIX}/auth/login`,
   otp: `${API_PREFIX}/auth/otp`,
   session: `${API_PREFIX}/auth/session`,
+  /**
+   * The ChatGPT connection. `POST` takes the credentials a terminal's login
+   * produced; `GET` answers with a summary that never carries one back.
+   */
   aiAccount: `${API_PREFIX}/ai/account`,
-  aiLogin: `${API_PREFIX}/ai/account/login`,
-  aiLoginCallback: `${API_PREFIX}/ai/account/login/callback`,
   overview: `${API_PREFIX}/ai/overview`,
+  chatSessions: `${API_PREFIX}/ai/chat/sessions`,
+  chatSession: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}`,
+  chatMessages: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/messages`,
+  chatMessage: (sessionId: string, messageId: string) =>
+    `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`,
+  chatAbort: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/abort`,
   overviewSnapshots: `${API_PREFIX}/overview-snapshots`,
   streamTicket: `${API_PREFIX}/stream/ticket`,
   stream: `${API_PREFIX}/stream`,

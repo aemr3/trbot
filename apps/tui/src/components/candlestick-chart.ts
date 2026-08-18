@@ -481,8 +481,11 @@ export class CandlestickChart {
       if (target) this.selectTarget(target)
       return true
     }
-    if (key.shift && (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l")) {
-      this.scrollBy(key.name === "left" || key.name === "h" ? 1 : -1)
+    // Shifted arrows only: H and L are the workspace's tab shortcuts now, and a
+    // key that scrolls a chart in one panel and changes tab everywhere else is
+    // worse than one way of doing it.
+    if (key.shift && (key.name === "left" || key.name === "right")) {
+      this.scrollBy(key.name === "left" ? 1 : -1)
       return true
     }
     if (key.shift && (key.name === "home" || key.name === "end")) {

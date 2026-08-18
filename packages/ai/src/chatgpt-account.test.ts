@@ -1,18 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import type { ChatGptOAuth, ChatGptTokenResponse } from "./chatgpt-oauth.ts"
-import { ChatGptAccountService } from "./chatgpt-account.ts"
+import { ChatGptAccountService, type ChatGptTokenRefresh } from "./chatgpt-account.ts"
 import type { ProviderState, ProviderStateStore } from "./provider-state.ts"
 
 describe("ChatGPT account", () => {
-  test("persists exchanged tokens and removes them on disconnect", async () => {
+  test("stores the credentials a login produced and removes them on disconnect", async () => {
     const store = memoryStore()
-    const account = new ChatGptAccountService(store, { now: () => 1_000, oauth: oauth() })
+    const account = new ChatGptAccountService(store, { now: () => 1_000, tokens: refresher() })
 
     const saved = await account.save({
-      idToken: jwt({ chatgpt_account_id: "account-1", email: "trader@example.com" }),
       accessToken: "access-1",
       refreshToken: "refresh-1",
-      expiresIn: 600,
+      expiresAt: 601_000,
+      accountId: "account-1",
     })
 
     expect(saved).toEqual({
@@ -21,7 +20,6 @@ describe("ChatGPT account", () => {
       refreshToken: "refresh-1",
       expiresAt: 601_000,
       accountId: "account-1",
-      email: "trader@example.com",
       createdAt: 1_000,
       updatedAt: 1_000,
     })
@@ -29,37 +27,63 @@ describe("ChatGPT account", () => {
     expect(await account.getState()).toBeNull()
   })
 
-  test("refreshes an expiring session once for concurrent callers", async () => {
-    const store = memoryStore({
-      providerId: "openai",
-      accessToken: "access-old",
-      refreshToken: "refresh-old",
-      expiresAt: 1_500,
+  test("reconnecting keeps the original connection date", async () => {
+    const store = memoryStore(state({ createdAt: 100, updatedAt: 100 }))
+    const account = new ChatGptAccountService(store, { now: () => 5_000, tokens: refresher() })
+
+    const saved = await account.save({
+      accessToken: "access-2",
+      refreshToken: "refresh-2",
+      expiresAt: 900_000,
       accountId: "account-1",
-      email: null,
-      createdAt: 100,
-      updatedAt: 100,
     })
+
+    expect(saved.createdAt).toBe(100)
+    expect(saved.updatedAt).toBe(5_000)
+  })
+
+  test("refreshes an expiring session once for concurrent callers", async () => {
+    const store = memoryStore(state({ expiresAt: 1_500 }))
     let refreshes = 0
     const account = new ChatGptAccountService(store, {
       now: () => 1_000,
-      oauth: oauth({
-        async refresh() {
-          refreshes += 1
-          await Promise.resolve()
-          return { idToken: null, accessToken: "access-new", refreshToken: "refresh-new", expiresIn: 600 }
-        },
+      tokens: refresher(async () => {
+        refreshes += 1
+        await Promise.resolve()
+        return {
+          accessToken: "access-new",
+          refreshToken: "refresh-new",
+          expiresAt: 601_000,
+          accountId: "account-1",
+        }
       }),
     })
 
     const [first, second] = await Promise.all([account.validState(), account.validState()])
     expect(refreshes).toBe(1)
-    expect(first.accessToken).toBe("access-new")
+    expect(first?.accessToken).toBe("access-new")
     expect(second).toEqual(first)
   })
 
+  test("a refresh that reports no account keeps the one already stored", async () => {
+    // The harness reads the account id out of the token it was handed; a build
+    // that stops reporting one must not blank a working connection.
+    const store = memoryStore(state({ expiresAt: 1_500, accountId: "account-1" }))
+    const account = new ChatGptAccountService(store, {
+      now: () => 1_000,
+      tokens: refresher(async () => ({
+        accessToken: "access-new",
+        refreshToken: "refresh-new",
+        expiresAt: 601_000,
+        accountId: null,
+      })),
+    })
+
+    expect((await account.validState()).accountId).toBe("account-1")
+  })
+
   test("reports a missing connection rather than returning an unusable state", async () => {
-    const account = new ChatGptAccountService(memoryStore(), { oauth: oauth() })
+    const account = new ChatGptAccountService(memoryStore(), { tokens: refresher() })
     const failure = await account.validState().then(
       () => new Error("expected a failure"),
       (error: unknown) => error as Error,
@@ -68,32 +92,38 @@ describe("ChatGPT account", () => {
   })
 })
 
+function state(overrides: Partial<ProviderState> = {}): ProviderState {
+  return {
+    providerId: "openai",
+    accessToken: "access-old",
+    refreshToken: "refresh-old",
+    expiresAt: 1_500,
+    accountId: "account-1",
+    createdAt: 100,
+    updatedAt: 100,
+    ...overrides,
+  }
+}
+
 function memoryStore(initial: ProviderState | null = null): ProviderStateStore {
-  let state = initial
+  let stored = initial
   return {
     async get(providerId) {
-      return state?.providerId === providerId ? state : null
+      return stored?.providerId === providerId ? stored : null
     },
     async put(value) {
-      state = value
+      stored = value
     },
     async delete(providerId) {
-      if (state?.providerId === providerId) state = null
+      if (stored?.providerId === providerId) stored = null
     },
   }
 }
 
-function oauth(overrides: Partial<ChatGptOAuth> = {}): ChatGptOAuth {
-  const unused = (): never => {
-    throw new Error("not used")
-  }
+function refresher(refresh?: ChatGptTokenRefresh["refresh"]): ChatGptTokenRefresh {
   return {
-    authorize: overrides.authorize ?? unused,
-    exchange: overrides.exchange ?? unused,
-    refresh: overrides.refresh ?? (unused as () => Promise<ChatGptTokenResponse>),
+    refresh: refresh ?? (() => {
+      throw new Error("not used")
+    }),
   }
-}
-
-function jwt(payload: object): string {
-  return `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`
 }

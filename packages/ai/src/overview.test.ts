@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test"
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test"
-import type { LanguageModelV3StreamPart } from "@ai-sdk/provider"
+import { fauxAssistantMessage, fauxText, fauxThinking, registerFauxProvider } from "@mariozechner/pi-ai"
 import { buildOverviewDigest } from "@trbot/market/overview.ts"
 import { ModelOverviewGenerator, overviewPrompt, overviewSystemPrompt } from "./overview.ts"
 
@@ -21,15 +20,6 @@ const DIGEST = buildOverviewDigest({
   },
   range: { start: null, end: null },
 })
-
-const NO_TOKENS = {
-  inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-  outputTokens: { total: undefined, text: undefined, reasoning: undefined },
-}
-
-function streamOf(parts: LanguageModelV3StreamPart[]) {
-  return { stream: simulateReadableStream({ chunks: parts }) }
-}
 
 test("prompt hands the model the digest verbatim", () => {
   const prompt = overviewPrompt(DIGEST)
@@ -70,34 +60,55 @@ test("the brief commits to a side instead of listing both", () => {
   }
 })
 
-test("streams deltas through onDelta and forwards the reasoning effort", async () => {
-  const model = new MockLanguageModelV3({
-    doStream: streamOf([
-      { type: "text-start", id: "1" },
-      { type: "text-delta", id: "1", delta: "Bid side " },
-      { type: "text-delta", id: "1", delta: "dominates." },
-      { type: "text-end", id: "1" },
-      { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: NO_TOKENS },
-    ]),
+test("streams the model's words through onDelta and leaves its reasoning out", async () => {
+  // The trader reads the brief, not the working. A reasoning model emits both, so
+  // the generator has to forward one and drop the other.
+  const faux = registerFauxProvider({ models: [{ id: "overview-model", reasoning: true }] })
+  faux.setResponses([
+    fauxAssistantMessage([fauxThinking("weighing the tape"), fauxText("Bid side dominates.")]),
+  ])
+  const generator = new ModelOverviewGenerator(faux.getModel(), {
+    reasoningEffort: "high",
+    accessToken: async () => "token-1",
   })
-  const generator = new ModelOverviewGenerator(model, { reasoningEffort: "high" })
 
   const deltas: string[] = []
   await generator.generate(DIGEST, { onDelta: (text) => deltas.push(text) })
 
   expect(deltas.join("")).toBe("Bid side dominates.")
-  expect(model.doStreamCalls[0]?.providerOptions).toEqual({ openai: { reasoningEffort: "high" } })
+  faux.unregister()
 })
 
-test("rethrows a stream error instead of finishing silently", async () => {
-  const model = new MockLanguageModelV3({
-    doStream: streamOf([
-      { type: "text-start", id: "1" },
-      { type: "text-delta", id: "1", delta: "Partial" },
-      { type: "error", error: new Error("stream lost") },
-    ]),
+test("reads the credential per call rather than holding one", async () => {
+  // A ChatGPT access token lasts under an hour and is refreshed underneath this,
+  // so a generator that captured one would work until the first refresh and then
+  // fail every overview after it.
+  const faux = registerFauxProvider({ models: [{ id: "overview-model" }] })
+  faux.setResponses([fauxAssistantMessage("First."), fauxAssistantMessage("Second.")])
+  const tokens: string[] = []
+  const generator = new ModelOverviewGenerator(faux.getModel(), {
+    accessToken: async () => {
+      tokens.push(`token-${tokens.length + 1}`)
+      return `token-${tokens.length}`
+    },
   })
-  const generator = new ModelOverviewGenerator(model)
+
+  await generator.generate(DIGEST, { onDelta: () => {} })
+  await generator.generate(DIGEST, { onDelta: () => {} })
+
+  expect(tokens).toEqual(["token-1", "token-2"])
+  faux.unregister()
+})
+
+test("rethrows a stream failure instead of finishing silently", async () => {
+  // The harness reports a failure as the stream's final message rather than by
+  // throwing, so an unread one becomes an empty overview and no error at all.
+  const faux = registerFauxProvider({ models: [{ id: "overview-model" }] })
+  faux.setResponses([
+    fauxAssistantMessage([fauxText("Partial")], { stopReason: "error", errorMessage: "stream lost" }),
+  ])
+  const generator = new ModelOverviewGenerator(faux.getModel(), { accessToken: async () => "token-1" })
 
   expect(generator.generate(DIGEST, { onDelta: () => {} })).rejects.toThrow("stream lost")
+  faux.unregister()
 })

@@ -20,12 +20,12 @@ const ERROR_COLOR = "#ff6b6b"
 
 type ModalStatus = "loading" | "disconnected" | "connecting" | "connected" | "disconnecting" | "error"
 
-export interface ProviderAccountModalOptions {
+export interface AiAccountModalOptions {
   account: AiAccount
   onClose: () => void
 }
 
-export class ProviderAccountModal {
+export class AiAccountModal {
   readonly root: BoxRenderable
 
   private readonly modal: BoxRenderable
@@ -35,11 +35,17 @@ export class ProviderAccountModal {
   private message: string | null = null
   private authorizationUrl: string | null = null
   private request: AbortController | null = null
+  /**
+   * A code typed by hand, for when the redirect cannot be caught: a machine with
+   * no browser, or one where the callback port is already in use. Null when the
+   * login has not asked for one.
+   */
+  private manualCode: { prompt: string; typed: string; settle: (code: string) => void } | null = null
   private destroyed = false
 
   constructor(
     private readonly renderer: RenderContext,
-    private readonly options: ProviderAccountModalOptions,
+    private readonly options: AiAccountModalOptions,
   ) {
     this.root = new BoxRenderable(renderer, {
       position: "absolute",
@@ -80,6 +86,7 @@ export class ProviderAccountModal {
   }
 
   handleKey(key: KeyEvent): boolean {
+    if (this.manualCode) return this.handleManualCodeKey(key)
     if (key.name === "escape" || key.name === "esc") {
       this.options.onClose()
       return true
@@ -99,6 +106,8 @@ export class ProviderAccountModal {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.manualCode?.settle("")
+    this.manualCode = null
     this.request?.abort()
     this.request = null
     if (!this.root.isDestroyed) this.root.destroyRecursively()
@@ -138,6 +147,7 @@ export class ProviderAccountModal {
           this.message = "Could not open the browser. Open the link below."
           this.render()
         },
+        onManualCode: (prompt) => this.askForCode(prompt),
       })
       if (this.destroyed || request.signal.aborted || this.request !== request) return
       this.state = state
@@ -171,6 +181,51 @@ export class ProviderAccountModal {
     }
   }
 
+  /**
+   * Waits for a code the trader types in.
+   *
+   * Resolving with an empty string cancels the login, which is what Esc means
+   * here — there is nothing else to fall back to at this point.
+   */
+  private askForCode(prompt: string): Promise<string> {
+    return new Promise<string>((resolve) => {
+      if (this.destroyed) {
+        resolve("")
+        return
+      }
+      this.manualCode = { prompt, typed: "", settle: resolve }
+      this.message = null
+      this.render()
+    })
+  }
+
+  private handleManualCodeKey(key: KeyEvent): boolean {
+    const pending = this.manualCode
+    if (!pending) return true
+    if (key.name === "escape" || key.name === "esc") {
+      this.manualCode = null
+      pending.settle("")
+      this.render()
+      return true
+    }
+    if (key.name === "return" || key.name === "enter") {
+      this.manualCode = null
+      this.message = "Finishing the login…"
+      pending.settle(pending.typed.trim())
+      this.render()
+      return true
+    }
+    if (key.name === "backspace") {
+      pending.typed = [...pending.typed].slice(0, -1).join("")
+      this.render()
+      return true
+    }
+    if (key.ctrl || key.meta || key.option || !isPrintable(key.sequence)) return true
+    pending.typed = `${pending.typed}${key.sequence}`
+    this.render()
+    return true
+  }
+
   private fail(error: unknown): void {
     this.status = "error"
     this.message = errorMessage(error)
@@ -183,8 +238,7 @@ export class ProviderAccountModal {
       ...row("Provider", "ChatGPT"),
       ...row("Status", statusLabel(this.status), statusColor(this.status)),
     ]
-    if (this.state?.email) chunks.push(...row("Account", this.state.email))
-    else if (this.state?.accountId) chunks.push(...row("Account", this.state.accountId))
+    if (this.state?.accountId) chunks.push(...row("Account", this.state.accountId))
     if (this.message) chunks.push(fg(VALUE_COLOR)("\n"), fg(this.status === "error" ? ERROR_COLOR : MUTED_COLOR)(this.message))
     if (this.authorizationUrl) {
       chunks.push(
@@ -192,12 +246,22 @@ export class ProviderAccountModal {
         fg(EMPHASIS_COLOR)(link(this.authorizationUrl)(this.authorizationUrl)),
       )
     }
-    chunks.push(
-      fg(VALUE_COLOR)("\n\n"),
-      fg(MUTED_COLOR)(this.state
-        ? "Enter reconnect · d disconnect · Esc close"
-        : "Enter connect in browser · Esc close"),
-    )
+    if (this.manualCode) {
+      chunks.push(
+        fg(VALUE_COLOR)("\n\n"),
+        fg(MUTED_COLOR)(`${this.manualCode.prompt}\n`),
+        fg(VALUE_COLOR)(`${this.manualCode.typed}▌`),
+        fg(VALUE_COLOR)("\n\n"),
+        fg(MUTED_COLOR)("Enter finish · Esc cancel the login"),
+      )
+    } else {
+      chunks.push(
+        fg(VALUE_COLOR)("\n\n"),
+        fg(MUTED_COLOR)(this.state
+          ? "Enter reconnect · d disconnect · Esc close"
+          : "Enter connect in browser · Esc close"),
+      )
+    }
     this.content.content = new StyledText(chunks)
     this.renderer.requestRender()
   }
@@ -235,4 +299,11 @@ function errorMessage(error: unknown): string {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError"
+}
+
+function isPrintable(value: string): boolean {
+  return value.length > 0 && [...value].every((character) => {
+    const codePoint = character.codePointAt(0)
+    return codePoint !== undefined && codePoint >= 0x20 && codePoint !== 0x7f
+  })
 }

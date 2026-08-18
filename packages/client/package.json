@@ -6,6 +6,8 @@
     "./*": "./src/*"
   },
   "dependencies": {
+    "@mariozechner/pi-ai": "0.73.1",
+    "@trbot/chat": "workspace:*",
     "@trbot/market": "workspace:*",
     "@trbot/member": "workspace:*",
     "@trbot/preferences": "workspace:*",

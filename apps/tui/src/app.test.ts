@@ -244,7 +244,7 @@ test("a stream failure is written to the log the trader can open", async () => {
  * decides it; reached here to avoid standing up a whole server per assertion.
  */
 function openWorkspace(app: App): Promise<void> {
-  return (app as unknown as { showWatchlist(): Promise<void> }).showWatchlist()
+  return (app as unknown as { showWorkspace(): Promise<void> }).showWorkspace()
 }
 
 /** Whether the settings are known, which is what gates writing them back. */

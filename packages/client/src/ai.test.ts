@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { MarketOverviewDigest } from "@trbot/market/overview.ts"
 import { isProtocolError } from "@trbot/protocol/error.ts"
-import { HttpOverviewGenerator, awaitAuthorizationCode } from "./ai.ts"
+import type { AiAccountSummary } from "@trbot/protocol/ai.ts"
+import { HttpAiAccount, HttpOverviewGenerator, type ChatGptLogin } from "./ai.ts"
 import type { HttpClient } from "./http.ts"
 
 const DIGEST = { mode: "DAILY" } as unknown as MarketOverviewDigest
@@ -68,79 +69,94 @@ describe("the streamed overview", () => {
 })
 
 /**
- * The provider only redirects to a loopback address, so this listener runs on
- * the trader's machine even though the server owns the exchange. It is the one
- * piece of the login the terminal is responsible for.
+ * The login runs here, on the trader's machine, because the provider only
+ * redirects an authorization to localhost and it is their browser that has to
+ * open. What this side owns is what happens around it: the address is reported so
+ * a machine with no browser can follow it by hand, and the credentials go inward
+ * to the server, which stores them.
  */
-describe("the authorization callback listener", () => {
-  test("reports the code and state the redirect carries", async () => {
-    const redirectUri = await loopbackUri()
-    const listener = awaitAuthorizationCode(redirectUri)
-    try {
-      const response = await fetch(`${redirectUri}?code=authorization-code&state=state-1`)
-      expect(response.ok).toBe(true)
-      expect(await listener.result).toEqual({ code: "authorization-code", state: "state-1" })
-    } finally {
-      listener.stop()
+describe("connecting ChatGPT", () => {
+  test("hands the server what the login produced and answers with its summary", async () => {
+    const posted: { path: string; body: unknown }[] = []
+    const summary: AiAccountSummary = {
+      providerId: "openai",
+      accountId: "account-1",
+      connectedAt: 1_000,
+      updatedAt: 1_000,
     }
+    const http = {
+      post: (path: string, options: { body?: unknown }) => {
+        posted.push({ path, body: options.body })
+        return Promise.resolve(summary)
+      },
+    } as unknown as HttpClient
+
+    const urls: string[] = []
+    const opened: string[] = []
+    const account = new HttpAiAccount(http, {
+      login: (async (options) => {
+        options.onAuth({ url: "https://auth.openai.test/authorize?state=state-1" })
+        return { access: "access-1", refresh: "refresh-1", expires: 601_000, accountId: "account-1" }
+      }) as ChatGptLogin,
+      // Never a real browser from a test.
+      openUrl: async (url) => {
+        opened.push(url)
+      },
+    })
+
+    expect(await account.connect({ onAuthorizationUrl: (url) => urls.push(url) })).toEqual(summary)
+    expect(urls).toEqual(["https://auth.openai.test/authorize?state=state-1"])
+    // The harness only reports the address; opening it is this side's job, and it
+    // has to be the same address the trader was shown.
+    expect(opened).toEqual(urls)
+    expect(posted).toEqual([{
+      path: "/v1/ai/account",
+      body: {
+        accessToken: "access-1",
+        refreshToken: "refresh-1",
+        expiresAt: 601_000,
+        accountId: "account-1",
+      },
+    }])
   })
 
-  test("fails with the provider's own message when authorization is refused", async () => {
-    const redirectUri = await loopbackUri()
-    const listener = awaitAuthorizationCode(redirectUri)
-    // Caught before the redirect arrives, so the rejection always has a reader.
-    const refused = failureOf(listener.result)
-    try {
-      await fetch(`${redirectUri}?error=access_denied&error_description=The+trader+said+no`)
-      expect((await refused).message).toBe("The trader said no")
-    } finally {
-      listener.stop()
-    }
+  test("a login that reports no account is still stored", async () => {
+    // The account id is read out of the token by the harness. A build that stops
+    // reporting one must not stop a trader connecting.
+    const bodies: unknown[] = []
+    const http = {
+      post: (_path: string, options: { body?: unknown }) => {
+        bodies.push(options.body)
+        return Promise.resolve({ providerId: "openai", accountId: null, connectedAt: 1, updatedAt: 1 })
+      },
+    } as unknown as HttpClient
+    const account = new HttpAiAccount(http, {
+      login: (async () => ({ access: "access-1", refresh: "refresh-1", expires: 1 })) as ChatGptLogin,
+    })
+
+    await account.connect()
+    expect(bodies).toEqual([{
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      expiresAt: 1,
+      accountId: null,
+    }])
   })
 
-  test("ignores a request to any other path", async () => {
-    const redirectUri = await loopbackUri()
-    const listener = awaitAuthorizationCode(redirectUri)
-    try {
-      const stray = await fetch(new URL("/somewhere-else", redirectUri))
-      expect(stray.status).toBe(404)
+  test("a trader who cancels the pasted-code prompt cancels the login", async () => {
+    // The prompt is the way out when the redirect cannot be caught — no browser, or
+    // the callback port already taken. Answering it with nothing means "stop", and
+    // must not be sent to the server as a login that half happened.
+    const http = { post: () => Promise.reject(new Error("must not reach the server")) } as unknown as HttpClient
+    const account = new HttpAiAccount(http, {
+      login: ((options: { onPrompt: (prompt: { message: string }) => Promise<string> }) =>
+        options.onPrompt({ message: "Paste the code" })) as unknown as ChatGptLogin,
+    })
 
-      await fetch(`${redirectUri}?code=authorization-code&state=state-1`)
-      expect(await listener.result).toMatchObject({ code: "authorization-code" })
-    } finally {
-      listener.stop()
-    }
-  })
-
-  test("a cancelled login stops waiting", async () => {
-    const redirectUri = await loopbackUri()
-    const cancel = new AbortController()
-    const listener = awaitAuthorizationCode(redirectUri, cancel.signal)
-    const cancelled = failureOf(listener.result)
-    try {
-      cancel.abort()
-      expect((await cancelled).message).toContain("cancelled")
-    } finally {
-      listener.stop()
-    }
+    const failure = await account
+      .connect({ onManualCode: async () => "" })
+      .then(() => null, (error: unknown) => error as Error)
+    expect(failure?.name).toBe("AbortError")
   })
 })
 
-/**
- * The failure a promise ends in. Subscribed before the failure is triggered, so
- * a rejection never goes briefly unhandled and takes down the test run.
- */
-function failureOf(promise: Promise<unknown>): Promise<Error> {
-  return promise.then(
-    () => new Error("expected a failure"),
-    (error: unknown) => error as Error,
-  )
-}
-
-/** A free loopback address, so the tests never fight over the real port 1455. */
-async function loopbackUri(): Promise<string> {
-  const probe = Bun.serve({ port: 0, fetch: () => new Response() })
-  const port = probe.port
-  await probe.stop(true)
-  return `http://127.0.0.1:${port}/auth/callback`
-}

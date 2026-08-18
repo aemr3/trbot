@@ -115,6 +115,7 @@ describe("editing the rules the server evaluates", () => {
         preferences: notUsed as never,
         overviewSnapshots: notUsed as never,
         ai: notUsed as never,
+        chat: notUsed as never,
         alerts,
         stops,
         backlog: () => [],

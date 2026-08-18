@@ -56,17 +56,12 @@ function memoryStates(): ProviderStateStore {
   }
 }
 
-function jwt(payload: object): string {
-  return `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`
-}
-
 describe("server and client over the wire", () => {
   let server: Server<SocketData>
   let client: HttpClient
   let url: string
   let connection: DatabaseConnection
   let session: ProviderSession
-  let exchanged: { code: string; redirectUri: string; verifier: string } | null = null
   let overviewFailure: Error | null = null
 
   beforeAll(async () => {
@@ -76,27 +71,6 @@ describe("server and client over the wire", () => {
     const ai = new AiService({
       states: memoryStates(),
       model: "test-model",
-      oauth: {
-        async authorize(redirectUri) {
-          return {
-            authorizationUrl: `https://auth.openai.test/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`,
-            verifier: "verifier-1",
-            state: "state-1",
-          }
-        },
-        async exchange(code, redirectUri, verifier) {
-          exchanged = { code, redirectUri, verifier }
-          return {
-            idToken: jwt({ chatgpt_account_id: "account-1", email: "trader@example.com" }),
-            accessToken: "access-1",
-            refreshToken: "refresh-1",
-            expiresIn: 3_600,
-          }
-        },
-        async refresh() {
-          throw new Error("not used in this test")
-        },
-      },
       generator: {
         async generate(_digest, options) {
           options.onDelta("Flow is ")
@@ -116,6 +90,7 @@ describe("server and client over the wire", () => {
         stops: notUsed as never,
         overviewSnapshots: notUsed as never,
         ai,
+        chat: notUsed as never,
         backlog: () => [],
         onDecision: () => {},
       },
@@ -204,50 +179,47 @@ describe("server and client over the wire", () => {
     expect(isProtocolError(refused) && refused.message).toContain("Too many attempts")
   })
 
-  test("the ChatGPT login is completed by the server and never hands back a token", async () => {
+  test("takes on a connection the terminal logged in and never hands a token back", async () => {
     const account = new HttpAiAccount(client)
     expect(await account.getState()).toBeNull()
 
-    // The client half — browser and loopback listener — is exercised by driving
-    // the two routes directly, which is all that crosses the wire.
-    const started = await client.post<{ loginId: string; redirectUri: string }>(ROUTES.aiLogin)
-    const summary = await client.post<AiAccountSummary>(ROUTES.aiLoginCallback, {
-      body: { loginId: started.loginId, code: "authorization-code", state: "state-1" },
+    // The login itself runs on the trader's machine, because the provider only
+    // redirects to localhost and it is their browser that has to open. What crosses
+    // the wire is the result, inward — the same direction as the provider password.
+    const summary = await client.post<AiAccountSummary>(ROUTES.aiAccount, {
+      body: {
+        accessToken: "access-1",
+        refreshToken: "refresh-1",
+        expiresAt: Date.now() + 3_600_000,
+        accountId: "account-1",
+      },
     })
 
-    // The verifier stayed on the server; only the code travelled.
-    expect(exchanged).toEqual({
-      code: "authorization-code",
-      redirectUri: started.redirectUri,
-      verifier: "verifier-1",
-    })
-    expect(summary).toMatchObject({ providerId: "openai", email: "trader@example.com", accountId: "account-1" })
+    expect(summary).toMatchObject({ providerId: "openai", accountId: "account-1" })
+    // Nothing hands a credential back out, which is the half of the rule that
+    // still holds absolutely.
     expect(Object.keys(summary)).not.toContain("accessToken")
     expect(Object.keys(summary)).not.toContain("refreshToken")
+    expect(await account.getState()).toMatchObject({ accountId: "account-1" })
 
-    expect(await account.getState()).toMatchObject({ email: "trader@example.com" })
-  })
+    await account.disconnect()
+    expect(await account.getState()).toBeNull()
 
-  test("a stale login cannot be finished twice", async () => {
-    const started = await client.post<{ loginId: string }>(ROUTES.aiLogin)
-    await client.post(ROUTES.aiLoginCallback, {
-      body: { loginId: started.loginId, code: "authorization-code", state: "state-1" },
+    // Left connected: the overview tests below share this server, and a route that
+    // refuses without a connection is exactly what they would trip over.
+    await client.post(ROUTES.aiAccount, {
+      body: {
+        accessToken: "access-1",
+        refreshToken: "refresh-1",
+        expiresAt: Date.now() + 3_600_000,
+        accountId: "account-1",
+      },
     })
-
-    const replay = await client
-      .post(ROUTES.aiLoginCallback, {
-        body: { loginId: started.loginId, code: "authorization-code", state: "state-1" },
-      })
-      .catch((caught: unknown) => caught)
-    expect(isProtocolError(replay) && replay.code).toBe("not_found")
   })
 
-  test("a callback whose state does not match is refused", async () => {
-    const started = await client.post<{ loginId: string }>(ROUTES.aiLogin)
+  test("credentials missing a token are refused rather than stored", async () => {
     const error = await client
-      .post(ROUTES.aiLoginCallback, {
-        body: { loginId: started.loginId, code: "authorization-code", state: "not-the-state" },
-      })
+      .post(ROUTES.aiAccount, { body: { accessToken: "access-1", expiresAt: Date.now() } })
       .catch((caught: unknown) => caught)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })

@@ -1,3 +1,4 @@
+import type { ChatMessage, ChatRunStatus, ChatSession } from "@trbot/chat/session.ts"
 import type { AlertTriggerEvent, PriceAlertView } from "@trbot/market/alert-monitor.ts"
 import { DEPTH_STATUSES } from "@trbot/market/depth.ts"
 import type { DepthBook, DepthStatus } from "@trbot/market/depth.ts"
@@ -35,7 +36,28 @@ export type ServerFrame =
   | { type: "stops"; views: StopRuleView[] }
   | { type: "alertTriggered"; event: AlertTriggerEvent }
   | { type: "alerts"; views: PriceAlertView[] }
+  | ChatFrame
   | { type: "error"; channel?: StreamChannel; message: string }
+
+/**
+ * What a chat is doing, from the process that is doing it.
+ *
+ * A run belongs to the server, not to whoever asked for it, so a reply keeps
+ * being generated and stored when the terminal that started it closes its tab or
+ * quits — and every attached client sees the same one. These frames are what make
+ * that visible, so they are broadcast rather than sent to a subscriber: a client
+ * did not ask for a chat channel, it asked for a chat.
+ *
+ * `seq` counts deltas within a run, so a client that has fallen behind can tell it
+ * missed one and re-read the session instead of rendering a transcript with a hole
+ * in it.
+ */
+export type ChatFrame =
+  | { type: "chatSessions"; sessions: ChatSession[] }
+  | { type: "chatMessage"; sessionId: string; message: ChatMessage }
+  | { type: "chatMessageRemoved"; sessionId: string; messageId: string }
+  | { type: "chatDelta"; sessionId: string; runId: string; seq: number; text?: string; reasoning?: string; toolName?: string }
+  | { type: "chatRun"; sessionId: string; runId: string; status: ChatRunStatus; message?: ChatMessage; error?: string }
 
 // Owned by the trading package: how a stop ended is a trading fact, and this
 // package already depends on it.
@@ -85,6 +107,7 @@ function isClientFrame(value: unknown): value is ClientFrame {
 }
 
 const ALERT_DECISIONS = ["dismiss", "rearm"] as const
+const CHAT_RUN_STATUSES = ["running", "done", "failed", "aborted"] as const
 
 function isChannel(value: unknown): value is StreamChannel {
   return isOneOf(value, STREAM_CHANNELS)
@@ -143,6 +166,18 @@ function isServerFrame(value: unknown): value is ServerFrame {
       return isListOf(frame.views, (view) => isObject(field(view, "alert")))
     case "alertTriggered":
       return isObject(field(frame.event, "alert"))
+    case "chatSessions":
+      return isListOf(frame.sessions, (session) => typeof field(session, "id") === "string")
+    case "chatMessage":
+      return typeof frame.sessionId === "string" && typeof field(frame.message, "id") === "string"
+    case "chatMessageRemoved":
+      return typeof frame.sessionId === "string" && typeof frame.messageId === "string"
+    case "chatDelta":
+      return typeof frame.sessionId === "string" && typeof frame.runId === "string"
+        && typeof frame.seq === "number"
+    case "chatRun":
+      return typeof frame.sessionId === "string" && typeof frame.runId === "string"
+        && isOneOf(frame.status, CHAT_RUN_STATUSES)
     case "error":
       return typeof frame.message === "string" && (frame.channel === undefined || isChannel(frame.channel))
     default:

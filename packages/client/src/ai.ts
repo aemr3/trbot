@@ -1,51 +1,90 @@
+import { loginOpenAICodex } from "@mariozechner/pi-ai/oauth"
 import type {
   MarketOverviewDigest,
   OverviewGenerateOptions,
   OverviewGenerator,
 } from "@trbot/market/overview.ts"
-import type { AiAccount, AiAccountSummary, AiLoginOptions, AiLoginStart } from "@trbot/protocol/ai.ts"
+import type { AiAccount, AiAccountSummary, AiCredentials, AiLoginOptions } from "@trbot/protocol/ai.ts"
 import { ProtocolError, parseErrorBody } from "@trbot/protocol/error.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import { openExternalUrl } from "./browser.ts"
 import type { HttpClient } from "./http.ts"
 
-/** How long the redirect listener waits before giving the port back. */
-const CALLBACK_TIMEOUT_MS = 5 * 60 * 1_000
+/** Identifies this application to the provider during an authorization. */
+const LOGIN_ORIGINATOR = "trbot"
 
 /**
- * The ChatGPT connection, driven from the terminal but owned by the server.
+ * Running the provider's authorization flow on this machine.
  *
- * The server builds the authorization and exchanges the code; this side only
- * does what has to happen where the trader is sitting — open the browser and
- * catch the loopback redirect the provider insists on. No token passes through
- * here, only a single-use authorization code.
+ * Named as a seam because it reaches well outside the process — it binds a
+ * loopback listener and exchanges a single-use code — so a test can drive the
+ * mapping around it without performing a real authorization.
+ */
+export type ChatGptLogin = typeof loginOpenAICodex
+
+export interface HttpAiAccountOptions {
+  login?: ChatGptLogin
+  /**
+   * Opening the authorization page. Injectable because it reaches outside the
+   * process: a test that drove a login would otherwise open a real browser.
+   */
+  openUrl?: (url: string) => Promise<void>
+}
+
+/**
+ * The ChatGPT connection: logged in here, owned by the server.
+ *
+ * The whole login runs on this machine because that is where it has to: the
+ * provider will only redirect an authorization to `localhost`, and it is the
+ * trader's browser that has to be opened. What crosses the wire afterwards is the
+ * result — travelling inward, the same direction as the provider password on the
+ * sign-in route — and the server stores it, refreshes it, and never hands it back.
+ * Nothing is kept here.
  */
 export class HttpAiAccount implements AiAccount {
-  constructor(private readonly http: HttpClient) {}
+  private readonly login: ChatGptLogin
+  private readonly openUrl: (url: string) => Promise<void>
+
+  constructor(
+    private readonly http: HttpClient,
+    options: HttpAiAccountOptions = {},
+  ) {
+    this.login = options.login ?? loginOpenAICodex
+    this.openUrl = options.openUrl ?? openExternalUrl
+  }
 
   getState(): Promise<AiAccountSummary | null> {
     return this.http.get<AiAccountSummary | null>(ROUTES.aiAccount)
   }
 
   async connect(options: AiLoginOptions = {}): Promise<AiAccountSummary> {
-    const login = await this.http.post<AiLoginStart>(ROUTES.aiLogin, { signal: options.signal })
-    options.onAuthorizationUrl?.(login.authorizationUrl)
+    const credentials = await this.login({
+      originator: LOGIN_ORIGINATOR,
+      onAuth: (info) => {
+        options.onAuthorizationUrl?.(info.url)
+        // The harness only reports the address; opening it is this side's job.
+        // A machine with no browser is not a failure: the modal shows the link,
+        // and the prompt below takes a code pasted back by hand.
+        void this.openUrl(info.url).catch((error: unknown) => options.onBrowserError?.(error))
+      },
+      onPrompt: async (prompt) => {
+        if (!options.onManualCode) throw abortError()
+        const code = await options.onManualCode(prompt.message)
+        if (!code) throw abortError()
+        return code
+      },
+    })
 
-    const callback = awaitAuthorizationCode(login.redirectUri, options.signal)
-    try {
-      try {
-        await openExternalUrl(login.authorizationUrl)
-      } catch (error) {
-        // A machine with no browser is not a failure: the modal shows the link.
-        options.onBrowserError?.(error)
-      }
-      const { code, state } = await callback.result
-      return await this.http.post<AiAccountSummary>(ROUTES.aiLoginCallback, {
-        body: { loginId: login.loginId, code, state },
-      })
-    } finally {
-      callback.stop()
+    const stored: AiCredentials = {
+      accessToken: credentials.access,
+      refreshToken: credentials.refresh,
+      expiresAt: credentials.expires,
+      accountId: typeof credentials.accountId === "string" ? credentials.accountId : null,
     }
+    return await this.http.post<AiAccountSummary>(ROUTES.aiAccount, {
+      body: stored,
+      ...(options.signal ? { signal: options.signal } : {}),
+    })
   }
 
   async disconnect(): Promise<void> {
@@ -81,80 +120,6 @@ export class HttpOverviewGenerator implements OverviewGenerator {
   }
 }
 
-interface AuthorizationCode {
-  code: string
-  state: string
-}
-
-interface CallbackListener {
-  result: Promise<AuthorizationCode>
-  stop: () => void
-}
-
-/**
- * Listens on the loopback address the provider redirects to and reports what it
- * receives. The port is fixed by the provider's registered redirect URI, so a
- * second login attempt while one is running will fail to bind.
- */
-export function awaitAuthorizationCode(redirectUri: string, signal?: AbortSignal): CallbackListener {
-  const address = new URL(redirectUri)
-  let settle: ((code: AuthorizationCode) => void) | null = null
-  let reject: ((error: Error) => void) | null = null
-  let settled = false
-
-  const result = new Promise<AuthorizationCode>((resolve, fail) => {
-    settle = (code) => {
-      if (settled) return
-      settled = true
-      resolve(code)
-    }
-    reject = (error) => {
-      if (settled) return
-      settled = true
-      fail(error)
-    }
-  })
-
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: Number(address.port),
-    fetch: (request) => {
-      const url = new URL(request.url)
-      if (url.pathname !== address.pathname) return new Response("Not found", { status: 404 })
-
-      const failure = url.searchParams.get("error_description") ?? url.searchParams.get("error")
-      if (failure) {
-        reject?.(new Error(failure))
-        return htmlResponse(callbackPage("ChatGPT login failed", failure), 400)
-      }
-
-      const code = url.searchParams.get("code")
-      const state = url.searchParams.get("state")
-      if (!code || !state) {
-        reject?.(new Error("Missing authorization code"))
-        return htmlResponse(callbackPage("ChatGPT login failed", "Missing authorization code."), 400)
-      }
-
-      settle?.({ code, state })
-      return htmlResponse(callbackPage("ChatGPT connected", "You can return to trbot."))
-    },
-  })
-
-  const timeout = setTimeout(() => reject?.(new Error("ChatGPT login timed out")), CALLBACK_TIMEOUT_MS)
-  const onAbort = (): void => reject?.(abortError())
-  signal?.addEventListener("abort", onAbort, { once: true })
-  if (signal?.aborted) onAbort()
-
-  return {
-    result,
-    stop: () => {
-      clearTimeout(timeout)
-      signal?.removeEventListener("abort", onAbort)
-      void server.stop(true)
-    },
-  }
-}
-
 async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const decoder = new TextDecoder()
   let buffer = ""
@@ -170,24 +135,6 @@ async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<st
   }
   const rest = buffer.trim()
   if (rest) yield rest
-}
-
-function callbackPage(title: string, message: string): string {
-  return `<!doctype html><meta charset="utf-8"><title>${escapeHtml(title)}</title><body style="font-family:system-ui;background:#101010;color:#eee;padding:3rem"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body>`
-}
-
-function htmlResponse(content: string, status = 200): Response {
-  return new Response(content, { status, headers: { "Content-Type": "text/html; charset=utf-8" } })
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;",
-  })[character] ?? character)
 }
 
 function abortError(): DOMException {

@@ -1,4 +1,4 @@
-import { integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { index, integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core"
 
 export const authState = sqliteTable("auth_state", {
   accountKey: text("account_key").primaryKey(),
@@ -21,7 +21,6 @@ export const providerState = sqliteTable("provider_state", {
   refreshToken: text("refresh_token").notNull(),
   expiresAt: integer("expires_at").notNull(),
   accountId: text("account_id"),
-  email: text("email"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 })
@@ -108,6 +107,102 @@ export const watchlistPreferences = sqliteTable("watchlist_preferences", {
   orderKind: text("order_kind").notNull().default("LIMIT"),
   updatedAt: integer("updated_at").notNull(),
 })
+
+// A conversation with the model. Sessions outlive the terminal that started them
+// for the same reason stop rules do: the server, not a screen, is what runs them.
+export const chatSessions = sqliteTable("chat_sessions", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  // Recorded per session so an old transcript still says what wrote it, even
+  // after the configured model changes.
+  model: text("model").notNull(),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+})
+
+/**
+ * One message in a conversation, whether the trader wrote it, the model replied,
+ * or a tool answered.
+ *
+ * The columns are a full mirror of what the model harness produced, not a summary
+ * of it: replaying a session means handing the model back exactly what it said,
+ * and a field that was not stored is a field that cannot be handed back. `extra`
+ * carries anything a future harness version adds that this build does not model,
+ * so an old row still replays exactly instead of quietly losing part of itself.
+ *
+ * `seq` is assigned when the row is written, queued messages included, so the
+ * order of a conversation is fixed before anything is sent to the model and a
+ * restart cannot reshuffle it.
+ */
+export const chatMessages = sqliteTable(
+  "chat_messages",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull(),
+    seq: integer("seq").notNull(),
+    role: text("role").notNull(),
+    status: text("status").notNull(),
+    // The readable text of the message: what a transcript shows, and what makes a
+    // conversation searchable in SQL. The blocks are what a turn is rebuilt from.
+    text: text("text").notNull(),
+    api: text("api"),
+    provider: text("provider"),
+    model: text("model"),
+    responseModel: text("response_model"),
+    responseId: text("response_id"),
+    stopReason: text("stop_reason"),
+    errorMessage: text("error_message"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    cacheReadTokens: integer("cache_read_tokens"),
+    cacheWriteTokens: integer("cache_write_tokens"),
+    totalTokens: integer("total_tokens"),
+    costInput: real("cost_input"),
+    costOutput: real("cost_output"),
+    costCacheRead: real("cost_cache_read"),
+    costCacheWrite: real("cost_cache_write"),
+    costTotal: real("cost_total"),
+    // Set on a tool result, naming the call it answers. `details` is whatever
+    // structured result the tool returned, which is shapeless by contract.
+    toolCallId: text("tool_call_id"),
+    toolName: text("tool_name"),
+    isError: integer("is_error"),
+    details: text("details"),
+    /** Which harness version wrote this row, for when a round trip starts failing. */
+    harnessVersion: text("harness_version"),
+    extra: text("extra"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("chat_messages_session_seq").on(table.sessionId, table.seq)],
+)
+
+/**
+ * The pieces of a message, in order.
+ *
+ * `signature` is one column because exactly one signature applies per kind — a
+ * text signature, a thinking signature, or a tool call's thought signature. They
+ * are as load-bearing as the text: a reasoning model handed its own signatures
+ * back continues from the reasoning it already did, and without them it starts
+ * over from the words alone.
+ */
+export const chatMessageBlocks = sqliteTable(
+  "chat_message_blocks",
+  {
+    messageId: text("message_id").notNull(),
+    idx: integer("idx").notNull(),
+    kind: text("kind").notNull(),
+    text: text("text"),
+    signature: text("signature"),
+    redacted: integer("redacted"),
+    toolCallId: text("tool_call_id"),
+    toolName: text("tool_name"),
+    toolArguments: text("tool_arguments"),
+    mimeType: text("mime_type"),
+    data: text("data"),
+    extra: text("extra"),
+  },
+  (table) => [primaryKey({ columns: [table.messageId, table.idx] })],
+)
 
 // Deduplicates mutating requests. A client retrying after a reconnect presents
 // the same key, and the stored response is replayed instead of a second order

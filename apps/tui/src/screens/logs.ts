@@ -77,7 +77,7 @@ export class LogsScreen {
       backgroundColor: WORKSPACE_CHROME_BACKGROUND,
     })
     footer.add(new TextRenderable(renderer, {
-      content: "W / Esc watchlist · ↑/↓ scroll · PgUp/PgDn · Home/End jump · c clear",
+      content: "T / Esc trade · ↑/↓ scroll · PgUp/PgDn · Home/End jump · c clear",
       fg: WORKSPACE_CHROME_MUTED,
       width: "100%",
     }))
@@ -88,7 +88,7 @@ export class LogsScreen {
 
   handleKey(key: KeyEvent): boolean {
     if (this.destroyed) return true
-    if (isCapitalShortcut(key, "g") || key.name === "escape" || key.name === "esc") {
+    if (key.name === "escape" || key.name === "esc") {
       this.options.onClose()
       return true
     }
@@ -139,8 +139,4 @@ function logContent(entries: LogEntry[]): StyledText {
     if (entry.details) chunks.push(fg(MUTED_COLOR)(`\n${entry.details}`))
   })
   return new StyledText(chunks)
-}
-
-function isCapitalShortcut(key: KeyEvent, name: string): boolean {
-  return !key.ctrl && !key.meta && !key.option && (key.sequence === name.toUpperCase() || (key.shift && key.name === name))
 }

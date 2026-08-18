@@ -7,32 +7,24 @@
  */
 export interface AiAccountSummary {
   providerId: string
-  email: string | null
   accountId: string | null
   connectedAt: number
   updatedAt: number
 }
 
 /**
- * An authorization the server has begun and is waiting to finish.
+ * What a finished login hands to the server.
  *
- * The provider only redirects to a loopback address, so the browser and the
- * listener that catches the redirect must both run on the trader's machine even
- * though the server owns the exchange. The client opens `authorizationUrl`,
- * listens on `redirectUri`, and posts the code back under `loginId`.
+ * The provider only redirects an authorization to a loopback address, so the
+ * login runs where the trader is sitting and its result travels inward — the same
+ * direction as the provider password on the sign-in route. This is the only
+ * message in the protocol that carries a token, and it only ever travels this way.
  */
-export interface AiLoginStart {
-  loginId: string
-  authorizationUrl: string
-  redirectUri: string
+export interface AiCredentials {
+  accessToken: string
+  refreshToken: string
   expiresAt: number
-}
-
-/** What the client caught at the redirect. The code is single-use. */
-export interface AiLoginCallback {
-  loginId: string
-  code: string
-  state: string
+  accountId: string | null
 }
 
 export interface AiLoginOptions {
@@ -40,6 +32,12 @@ export interface AiLoginOptions {
   /** Reported so a trader whose browser did not open can follow the link. */
   onAuthorizationUrl?: (url: string) => void
   onBrowserError?: (error: unknown) => void
+  /**
+   * Asked for the authorization code when the redirect could not be caught —
+   * a machine with no browser, or one where the callback port is already taken.
+   * Resolving with an empty string cancels the login.
+   */
+  onManualCode?: (message: string) => Promise<string>
 }
 
 export interface AiAccount {

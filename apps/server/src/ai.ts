@@ -1,6 +1,5 @@
-import { ChatGptAccountService } from "@trbot/ai/chatgpt-account.ts"
-import { ChatGptOAuthClient, chatGptRedirectUri, type ChatGptOAuth } from "@trbot/ai/chatgpt-oauth.ts"
-import { createChatGptModel } from "@trbot/ai/chatgpt-provider.ts"
+import { ChatGptAccountService, type ChatGptCredentials, type ChatGptTokenRefresh } from "@trbot/ai/chatgpt-account.ts"
+import { codexModel } from "@trbot/ai/codex-model.ts"
 import { ModelOverviewGenerator } from "@trbot/ai/overview.ts"
 import type { ProviderState, ProviderStateStore } from "@trbot/ai/provider-state.ts"
 import type {
@@ -8,52 +7,43 @@ import type {
   OverviewGenerateOptions,
   OverviewGenerator,
 } from "@trbot/market/overview.ts"
-import type { AiAccountSummary, AiLoginCallback, AiLoginStart } from "@trbot/protocol/ai.ts"
+import type { AiAccountSummary } from "@trbot/protocol/ai.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
-
-/** How long a started authorization waits for the trader to finish it. */
-const LOGIN_TTL_MS = 5 * 60 * 1_000
-
-interface PendingLogin {
-  verifier: string
-  state: string
-  redirectUri: string
-  expiresAt: number
-}
 
 export interface AiServiceOptions {
   states: ProviderStateStore
   model: string
   reasoningEffort?: string
-  oauth?: ChatGptOAuth
+  tokens?: ChatGptTokenRefresh
   /** Overridden in tests; the real generator streams from ChatGPT. */
   generator?: OverviewGenerator
   now?: () => number
 }
 
 /**
- * Everything the server does with ChatGPT: holding the connection, running the
- * login, and generating the market overview.
+ * Everything the server does with ChatGPT: holding the connection and generating
+ * the market overview.
  *
- * The login is split because the provider only redirects to a loopback address.
- * The server builds the authorization URL and keeps the PKCE verifier; the
- * client opens the browser and catches the redirect; the code comes back here
- * to be exchanged. The tokens are only ever written and read in this process.
+ * The login itself is not here. The provider only redirects an authorization to a
+ * loopback address, which is the trader's machine and not necessarily this one, so
+ * the terminal runs the whole login and hands over what it produced — the same
+ * direction, and the same trust, as the provider password it already sends. The
+ * tokens are only ever stored and refreshed in this process, and nothing hands one
+ * back out.
  */
 export class AiService {
   private readonly account: ChatGptAccountService
-  private readonly oauth: ChatGptOAuth
   private readonly generator: OverviewGenerator
-  private readonly now: () => number
-  private readonly pending = new Map<string, PendingLogin>()
 
   constructor(options: AiServiceOptions) {
-    this.now = options.now ?? Date.now
-    this.oauth = options.oauth ?? new ChatGptOAuthClient()
-    this.account = new ChatGptAccountService(options.states, { oauth: this.oauth, now: this.now })
+    this.account = new ChatGptAccountService(options.states, {
+      ...(options.tokens ? { tokens: options.tokens } : {}),
+      ...(options.now ? { now: options.now } : {}),
+    })
     this.generator = options.generator
-      ?? new ModelOverviewGenerator(createChatGptModel(this.account, options.model), {
-        reasoningEffort: options.reasoningEffort,
+      ?? new ModelOverviewGenerator(codexModel(options.model), {
+        ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+        accessToken: () => this.accessToken(),
       })
   }
 
@@ -62,37 +52,23 @@ export class AiService {
     return state ? summarize(state) : null
   }
 
-  async beginLogin(): Promise<AiLoginStart> {
-    this.sweep()
-    const redirectUri = chatGptRedirectUri()
-    const authorization = await this.oauth.authorize(redirectUri)
-    const loginId = crypto.randomUUID()
-    const expiresAt = this.now() + LOGIN_TTL_MS
-    this.pending.set(loginId, {
-      verifier: authorization.verifier,
-      state: authorization.state,
-      redirectUri,
-      expiresAt,
-    })
-    return { loginId, authorizationUrl: authorization.authorizationUrl, redirectUri, expiresAt }
-  }
-
-  async completeLogin(callback: AiLoginCallback): Promise<AiAccountSummary> {
-    this.sweep()
-    const login = this.pending.get(callback.loginId)
-    // Consumed either way: an authorization code is single-use, so a failed
-    // exchange must not leave the verifier available for a second attempt.
-    this.pending.delete(callback.loginId)
-    if (!login) throw new ProtocolError("not_found", "That ChatGPT login has expired; start it again")
-    if (login.state !== callback.state) {
-      throw new ProtocolError("invalid_request", "The authorization state did not match")
-    }
-    const tokens = await this.oauth.exchange(callback.code, login.redirectUri, login.verifier)
-    return summarize(await this.account.save(tokens))
+  /** Takes on the connection a terminal's login produced. */
+  async connect(credentials: ChatGptCredentials): Promise<AiAccountSummary> {
+    return summarize(await this.account.save(credentials))
   }
 
   disconnect(): Promise<void> {
     return this.account.disconnect()
+  }
+
+  /**
+   * The credential for a model call, refreshed if it is close to lapsing.
+   *
+   * Read per call rather than held: an access token lasts under an hour, so
+   * anything that captured one would work until the first refresh and then stop.
+   */
+  async accessToken(): Promise<string> {
+    return (await this.account.validState()).accessToken
   }
 
   /**
@@ -110,19 +86,11 @@ export class AiService {
   generate(digest: MarketOverviewDigest, options: OverviewGenerateOptions): Promise<void> {
     return this.generator.generate(digest, options)
   }
-
-  private sweep(): void {
-    const now = this.now()
-    for (const [id, login] of this.pending) {
-      if (login.expiresAt <= now) this.pending.delete(id)
-    }
-  }
 }
 
 function summarize(state: ProviderState): AiAccountSummary {
   return {
     providerId: state.providerId,
-    email: state.email,
     accountId: state.accountId,
     connectedAt: state.createdAt,
     updatedAt: state.updatedAt,

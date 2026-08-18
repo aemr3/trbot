@@ -6,6 +6,7 @@
     "./*": "./src/*"
   },
   "dependencies": {
+    "@trbot/chat": "workspace:*",
     "@trbot/market": "workspace:*",
     "@trbot/trading": "workspace:*"
   },

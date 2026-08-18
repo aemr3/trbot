@@ -8,6 +8,10 @@ const PROVIDER_PACKAGES = ["@trbot/api", "@trbot/provider"]
 // Packages that hold a credential of their own. `@trbot/ai` owns the ChatGPT
 // tokens, so it belongs on the server beside the provider session even though
 // it never touches the market provider.
+//
+// `@trbot/client` is deliberately absent: it runs the ChatGPT login on the
+// trader's machine and hands the result inward, so it holds a token in flight and
+// stores none. Anything that starts *keeping* one belongs on this list instead.
 const SERVER_ONLY_PACKAGES = [...PROVIDER_PACKAGES, "@trbot/ai", "@trbot/auth", "@trbot/db"]
 
 interface WorkspacePackage {

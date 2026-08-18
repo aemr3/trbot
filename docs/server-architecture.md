@@ -28,6 +28,8 @@ The rule is checked, not trusted:
   or `@trbot/provider` appears.
 - A second test widens that to every package holding a credential — `@trbot/ai`
   for the ChatGPT tokens, `@trbot/auth`, and `@trbot/db`, which stores both.
+  `@trbot/client` is not on that list and must not join it: it *runs* the ChatGPT
+  login and hands the result inward, so it holds a token in flight and stores none.
 - Both run in CI, so a regression fails a pull request rather than reaching
   `main`.
 
@@ -72,7 +74,7 @@ would run either in a second process has to answer this first.
 ### How the terminal sees a fired stop
 
 `RemoteStopRules` and `RemoteAlerts` keep the shape of the monitor interfaces, so
-the watchlist screen reads the same way — but they decide nothing. Levels are
+the trade screen reads the same way — but they decide nothing. Levels are
 watched, countdowns run, and exits are sent by the server. The terminal displays
 what the server reports and forwards the trader's decision.
 
@@ -104,6 +106,52 @@ and replays it to whoever attaches, so it survives a terminal that was not open
 when the level was reached. That makes answering it a decision the client has to
 send — dismissing one only on screen leaves it outstanding, and it rings again on
 the next reconnect.
+
+## Chat runs and their queues
+
+A chat run belongs to the server, not to the request that asked for one. `POST` a
+message and the reply arrives on the socket, as `chatDelta` frames and a terminal
+`chatRun`, because the run has to outlive whoever started it: a trader who switches
+to the trade tab, loses a socket, or quits and comes back should find the answer
+finished and stored rather than truncated. It is the same reason the monitors are
+here, and it is what lets two attached clients watch one conversation.
+
+Those frames are broadcast rather than sent to a subscriber, and they are never
+dropped for a slow reader: a missing delta does not age out like a stale quote, it
+leaves a hole in a transcript. `seq` counts deltas within a run so a client that
+fell behind can tell, and re-read the session instead of rendering the hole. A
+client that attaches mid-run is told the run is `running` and does the same.
+
+**Sending never fails for being busy.** A message is persisted as queued and each
+session works through its own queue one turn at a time, while different sessions run
+at once. Refusing a second message would make the trader the retry mechanism for a
+server that is merely busy. A queued message can be taken back until its turn
+starts, which is what makes it a queue rather than a hidden buffer, and a queue
+survives a restart — one that only drained while the process that filled it stayed
+alive would not be a queue at all.
+
+A message takes its place in the queue when it is written but its place in the
+conversation only when it is actually asked, so its position moves then. Otherwise a
+question queued behind another would sort before the answer to that one, and the
+model would be replayed a conversation in an order nobody ever had.
+
+Every run ends in a frame — done, failed, or aborted — and persists what it produced,
+a stopped or half-written reply included. A turn that fails marks its question as
+failed rather than consuming it, so the trader can send it again or drop it; and
+stopping the reply in flight leaves the rest of the queue alone, because stopping one
+answer is not clearing what is waiting.
+
+### A session can always be resumed
+
+Continuing a conversation means handing the model back exactly what it produced,
+including the signatures on its own reasoning — without them a reasoning model starts
+over from the words alone. So messages are stored as a full relational mirror of the
+harness's own message rather than a summary of one, and `chat_messages.extra` and
+`chat_message_blocks.extra` keep verbatim any field this build does not model, so a
+row written by an older build still replays whole. The harness version is pinned and
+recorded per row, and `chat-store.test.ts` asserts the round trip is lossless: that
+test is the guarantee, and it is the first thing to fail after an upgrade that changes
+the shape.
 
 ## Losing and regaining the provider session
 
@@ -277,27 +325,34 @@ already on its screen. It posts that digest to `POST /v1/ai/overview` and render
 the words as they stream back. The prompt, the model, and the effort setting are
 the server's.
 
-### Why the login is split
+### Why the login runs on the trader's machine
 
 The provider will only redirect an authorization to `http://localhost:1455`, which
-is the trader's machine, not necessarily the server's. So the login is split at
-exactly that seam:
+is the trader's machine, not necessarily the server's. And it is the trader's
+browser that has to be opened. So the whole login runs there, and hands the server
+what it produced:
 
-1. The server builds the authorization URL and keeps the PKCE verifier and state,
-   answering with a `loginId`, the URL, and the address to listen on.
-2. The terminal opens the URL in the local browser and listens on that address. A
-   machine with no browser is not a failure: the modal shows the link to open by
-   hand.
-3. The terminal posts back the `loginId`, the authorization code, and the state.
-   The server matches the state, exchanges the code, and stores the tokens.
+1. The terminal runs the authorization — PKCE, the browser, the loopback listener,
+   the code exchange — through the model harness, which is where that flow lives.
+2. It posts the resulting credentials to `POST /v1/ai/account`.
+3. The server stores them, refreshes them from then on, and answers with a summary.
 
-What travels towards the terminal is an authorization URL and, later, an account
-summary — an email address and an account id. What travels back is a single-use
-code. **No token crosses the wire in either direction**, and `GET /v1/ai/account`
-answers with the summary rather than the stored state.
+This is the direction the wire already carries a credential: the trader's provider
+password travels terminal→server on `POST /v1/auth/login`, over the same
+bearer-authenticated, TLS-required connection. A ChatGPT token going the same way is
+the same trust. The rule that matters is the other direction, and it still holds
+absolutely: **the server stores every credential and no stored credential ever
+travels outward.** `GET /v1/ai/account` answers with an account id, never a token.
 
-A pending login is consumed whether or not the exchange succeeds, since an
-authorization code is single-use, and expires after five minutes.
+The login was once split across the two — the server building the URL and holding
+the verifier, the terminal catching the redirect and posting a code back. That
+worked, but it existed only to keep a token off the wire in a direction the password
+already crossed, and it meant reimplementing a flow the harness already performs. It
+was dropped when the harness became the one place that runs it.
+
+A machine with no browser, or one where port 1455 is already taken, is not a
+failure: the modal shows the address to open by hand and takes the code — or the
+whole redirect URL — pasted back.
 
 ## Security
 

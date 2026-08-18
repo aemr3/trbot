@@ -3,6 +3,7 @@ import type { WatchlistPreferences } from "@trbot/preferences/watchlist.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import { IDEMPOTENCY_HEADER, ROUTES, type SessionState } from "@trbot/protocol/routes.ts"
 import type { AiService } from "../ai.ts"
+import type { ChatController } from "../chat.ts"
 import type { AlertController } from "../monitors/alert.ts"
 import type { StopController } from "../monitors/stop.ts"
 import { hashRequest, type IdempotencyStore } from "./idempotency.ts"
@@ -24,6 +25,7 @@ export interface RouteContext {
   stops: StopController
   overviewSnapshots: OverviewSnapshotStore
   ai: AiService
+  chat: ChatController
 }
 
 type Handler = (request: Request, context: RouteContext) => Promise<Response>
@@ -225,27 +227,36 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
 
   [ROUTES.aiAccount]: {
     GET: async (_request, { ai }) => json(await ai.summary()),
+    /**
+     * Takes on the connection a terminal's login produced.
+     *
+     * The provider only redirects an authorization to a loopback address, which is
+     * the trader's machine and not necessarily this one, so the login runs there
+     * and its result arrives here. This is the only route that accepts a token, and
+     * it only ever travels this way — nothing hands one back.
+     */
+    POST: async (request, { ai }) => {
+      const body = await readJsonObject(request)
+      return json(
+        await ai.connect({
+          accessToken: check.text(body.accessToken, "accessToken"),
+          refreshToken: check.text(body.refreshToken, "refreshToken"),
+          expiresAt: check.positiveNumber(body.expiresAt, "expiresAt"),
+          accountId: body.accountId === null || body.accountId === undefined
+            ? null
+            : check.text(body.accountId, "accountId"),
+        }),
+      )
+    },
     DELETE: async (_request, { ai }) => {
       await ai.disconnect()
       return json({ ok: true })
     },
   },
 
-  [ROUTES.aiLogin]: {
-    POST: async (_request, { ai }) => json(await ai.beginLogin()),
-  },
-
-  [ROUTES.aiLoginCallback]: {
-    POST: async (request, { ai }) => {
-      const body = await readJsonObject(request)
-      return json(
-        await ai.completeLogin({
-          loginId: check.text(body.loginId, "loginId"),
-          code: check.text(body.code, "code"),
-          state: check.text(body.state, "state"),
-        }),
-      )
-    },
+  [ROUTES.chatSessions]: {
+    GET: async (_request, { chat }) => json(await chat.list()),
+    POST: async (_request, { chat }) => json(await chat.create()),
   },
 
   // The commentary streams because the trader reads it as it arrives. The
@@ -356,6 +367,51 @@ export const PARAMETERIZED: {
       const body = await readJsonObject(request)
       await stops.setStatus(decodeURIComponent(match[1] ?? ""), check.stopRuleStatus(body.status))
       return json(stops.list())
+    },
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,
+    method: "GET",
+    handle: async (match, _request, { chat }) => json(await chat.detail(decodeURIComponent(match[1] ?? ""))),
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,
+    method: "DELETE",
+    handle: async (match, _request, { chat }) => {
+      await chat.remove(decodeURIComponent(match[1] ?? ""))
+      return json({ ok: true })
+    },
+  },
+  /**
+   * Asking the model something.
+   *
+   * This never refuses for being busy: the message is queued and the server works
+   * through the queue, so what comes back is the queued message rather than a reply.
+   * The reply arrives on the socket, because the run belongs to the server and
+   * outlives this request.
+   */
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/messages$/,
+    method: "POST",
+    handle: async (match, request, { chat }) => {
+      const body = await readJsonObject(request)
+      return json(await chat.send(decodeURIComponent(match[1] ?? ""), check.text(body.text, "text")))
+    },
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/messages\/([^/]+)$/,
+    method: "DELETE",
+    handle: async (match, _request, { chat }) => {
+      await chat.cancel(decodeURIComponent(match[1] ?? ""), decodeURIComponent(match[2] ?? ""))
+      return json({ ok: true })
+    },
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/abort$/,
+    method: "POST",
+    handle: async (match, _request, { chat }) => {
+      await chat.abort(decodeURIComponent(match[1] ?? ""))
+      return json({ ok: true })
     },
   },
   /**

@@ -10,10 +10,11 @@
 
 This is a Bun workspace. Shared code lives in `packages/*`, runnable programs in `apps/*`.
 
-- Organize domain contracts by feature package, such as `packages/auth`, `packages/market`, and `packages/trading`.
+- Organize domain contracts by feature package, such as `packages/auth`, `packages/chat`, `packages/market`, and `packages/trading`.
 - Keep external API transport, GraphQL operations, and client behavior in `packages/api`.
 - Keep database connections, schemas, migrations, and store implementations in `packages/db`.
 - Keep full-screen views in `apps/tui/src/screens` and reusable TUI controls in `apps/tui/src/components`.
+- Keep the model harness behind `packages/ai`. Only the ChatGPT login reaches it from a client, through `packages/client`.
 - Keep request handling in `apps/server/src/http`, background rule evaluation in `apps/server/src/monitors`, and the provider session and stream fan-out beside them.
 - Keep `apps/tui/src/index.ts` and `apps/server/src/index.ts` limited to application bootstrap.
 - Do not create a generic `models` or `utils` dumping ground. Put types and helpers with the feature that owns them.

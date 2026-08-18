@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { AiAccount, AiAccountSummary } from "@trbot/protocol/ai.ts"
-import { ProviderAccountModal } from "./provider-account-modal.ts"
+import { AiAccountModal } from "./ai-account-modal.ts"
 
-test("connects and disconnects ChatGPT from the provider modal", async () => {
+test("connects and disconnects ChatGPT from the account modal", async () => {
   const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({
     width: 90,
     height: 24,
@@ -24,7 +24,7 @@ test("connects and disconnects ChatGPT from the provider modal", async () => {
     },
   }
   let closed = false
-  const modal = new ProviderAccountModal(renderer, { account, onClose: () => { closed = true } })
+  const modal = new AiAccountModal(renderer, { account, onClose: () => { closed = true } })
   renderer.root.add(modal.root)
   modal.mount()
   renderer.keyInput.on("keypress", (key) => modal.handleKey(key))
@@ -32,7 +32,9 @@ test("connects and disconnects ChatGPT from the provider modal", async () => {
   await waitForFrame((frame) => frame.includes("Not connected"))
   mockInput.pressEnter()
   const connected = await waitForFrame((frame) => frame.includes("Connected"))
-  expect(connected).toContain("trader@example.com")
+  // The account id is what identifies the connection; no token and no address
+  // ever reaches a client.
+  expect(connected).toContain("account-1")
 
   await mockInput.typeText("d")
   await waitForFrame((frame) => frame.includes("Not connected"))
@@ -48,7 +50,6 @@ function connectedState(): AiAccountSummary {
   return {
     providerId: "openai",
     accountId: "account-1",
-    email: "trader@example.com",
     connectedAt: Date.now(),
     updatedAt: Date.now(),
   }

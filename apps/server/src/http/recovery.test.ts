@@ -64,6 +64,7 @@ function serve(session: ProviderSession): HttpClient {
       preferences: notUsed as never,
       overviewSnapshots: notUsed as never,
       ai: notUsed as never,
+      chat: notUsed as never,
       alerts: notUsed as never,
       stops: notUsed as never,
       backlog: () => [],

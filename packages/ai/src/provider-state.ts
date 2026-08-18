@@ -6,7 +6,6 @@ export interface ProviderState {
   refreshToken: string
   expiresAt: number
   accountId: string | null
-  email: string | null
   createdAt: number
   updatedAt: number
 }
