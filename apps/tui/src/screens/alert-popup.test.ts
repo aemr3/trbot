@@ -91,3 +91,22 @@ test("keeps the market line current while it stands open", async () => {
   popup.destroy()
   renderer.destroy()
 })
+
+test("a click dismisses it, on the popup or beside it", async () => {
+  const { renderer, renderOnce, mockMouse, popup, dismissed } = await mountPopup()
+
+  await renderOnce()
+
+  // The root covers the terminal, so a click that misses the modal still lands
+  // on the popup rather than on the screen behind it.
+  await mockMouse.click(2, 2)
+  expect(dismissed).toHaveLength(1)
+
+  // And a click on the notice itself closes it too: there is nothing in there
+  // to click on, so nothing a click could have meant instead.
+  await mockMouse.click(45, 15)
+  expect(dismissed).toHaveLength(2)
+
+  popup.destroy()
+  renderer.destroy()
+})

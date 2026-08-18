@@ -43,6 +43,14 @@ export class AlertPopup {
       alignItems: "center",
       justifyContent: "center",
       onSizeChange: () => this.resizeModal(),
+      // A click closes it for the same reason any key does. The root covers the
+      // screen and mouse events bubble up to it, so this catches a click on the
+      // popup itself as well as one beside it.
+      onMouseDown: (event) => {
+        if (this.destroyed || event.button !== 0) return
+        event.stopPropagation()
+        this.options.onDismiss()
+      },
     })
     this.modal = new BoxRenderable(renderer, {
       width: 66,
@@ -111,8 +119,8 @@ export class AlertPopup {
       fg(ALERT_COLOR)("Nothing was traded. This is only a notice."),
       fg(MUTED_COLOR)(
         alert.repeat === "ALWAYS"
-          ? "\n\nStill armed for the next crossing · any key dismisses"
-          : "\n\nAny key dismisses · r re-arms the same level",
+          ? "\n\nStill armed for the next crossing · any key or click dismisses"
+          : "\n\nAny key or click dismisses · r re-arms the same level",
       ),
     ]
     this.content.content = new StyledText(chunks)
