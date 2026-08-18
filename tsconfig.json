@@ -3,6 +3,7 @@
   "include": [
     "apps/*/src",
     "packages/*/src",
-    "packages/*/*.ts"
+    "packages/*/*.ts",
+    "scripts"
   ]
 }

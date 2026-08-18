@@ -3,7 +3,7 @@
 // to send a live order. They are deliberately different sounds — hearing which
 // one fired should not require looking at the screen.
 
-export const SOUND_CUES = ["ALERT", "STOP"] as const
+const SOUND_CUES = ["ALERT", "STOP"] as const
 export type SoundCue = (typeof SOUND_CUES)[number]
 
 export interface SoundPlayer {

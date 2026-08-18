@@ -14,7 +14,8 @@ This is a Bun workspace. Shared code lives in `packages/*`, runnable programs in
 - Keep external API transport, GraphQL operations, and client behavior in `packages/api`.
 - Keep database connections, schemas, migrations, and store implementations in `packages/db`.
 - Keep full-screen views in `apps/tui/src/screens` and reusable TUI controls in `apps/tui/src/components`.
-- Keep `apps/tui/src/index.ts` limited to application bootstrap.
+- Keep request handling in `apps/server/src/http`, background rule evaluation in `apps/server/src/monitors`, and the provider session and stream fan-out beside them.
+- Keep `apps/tui/src/index.ts` and `apps/server/src/index.ts` limited to application bootstrap.
 - Do not create a generic `models` or `utils` dumping ground. Put types and helpers with the feature that owns them.
 
 ## Workspace Boundaries
@@ -22,6 +23,8 @@ This is a Bun workspace. Shared code lives in `packages/*`, runnable programs in
 - Import across packages by name and file, as in `@trbot/market/candle.ts`. Use relative paths only within a package.
 - Keep the package graph acyclic. A new import that closes a cycle is a sign the contract belongs in a lower package.
 - Keep domain contract packages free of transport, storage, and terminal concerns so a server and a client can both depend on them.
+- Client applications never reach the provider. Only the server may depend on `@trbot/api` or `@trbot/provider`, including transitively. See [docs/server-architecture.md](docs/server-architecture.md).
+- Client applications hold no credentials. `@trbot/ai` (ChatGPT tokens), `@trbot/auth`, and `@trbot/db` are server-only for the same reason. Both rules are enforced by `apps/tui/src/boundaries.test.ts`.
 - Declare every package a package imports in its own `package.json`.
 - Extend `@trbot/tsconfig/base.json` from every workspace member rather than repeating compiler settings. Add a named config to that package when a member genuinely needs a different shape.
 - Define runnable scripts on the root `package.json`. Never launch the terminal application through `bun run --filter`: it pipes the child's output, which breaks terminal rendering. Filtering is fine for tools that need their own working directory, such as drizzle-kit.

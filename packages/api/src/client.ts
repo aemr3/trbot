@@ -65,7 +65,7 @@ export class ApiHttpError extends Error {
   }
 }
 
-export class GraphqlError extends Error {
+class GraphqlError extends Error {
   readonly codes: number[]
 
   constructor(

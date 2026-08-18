@@ -9,9 +9,10 @@ import {
   type Renderable,
   type RenderContext,
 } from "@opentui/core"
-import { requiresAuthentication } from "@trbot/api"
-import type { ChatGptAccount } from "@trbot/ai/chatgpt-account.ts"
-import type { OverviewGenerator } from "@trbot/ai/overview.ts"
+import { requiresAuthentication } from "@trbot/protocol/error.ts"
+import type { StopOutcome } from "@trbot/protocol/stream.ts"
+import { RemoteAlerts, RemoteStopRules } from "../remote-monitors.ts"
+import type { AiAccount } from "@trbot/protocol/ai.ts"
 import { AccountPanel } from "../components/account-panel.ts"
 import { BrokerageDateModal } from "../components/brokerage-date-modal.ts"
 import { BrokeragePanel, brokerageSideOf, settlementModeOf } from "../components/brokerage-panel.ts"
@@ -55,15 +56,16 @@ import type { NewsArticle, NewsSource } from "@trbot/market/news.ts"
 import {
   buildOverviewDigest,
   isSameDigest,
+  type OverviewGenerator,
   type OverviewMode,
   type OverviewSnapshot,
   type OverviewSnapshotStore,
 } from "@trbot/market/overview.ts"
 import { TradeFlowAccumulator } from "@trbot/market/trade-flow.ts"
-import { StopMonitor, rangeForInterval, type StopRuleView, type StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
-import type { StopRule, StopRuleStore } from "@trbot/trading/stop.ts"
-import { AlertMonitor, type AlertTriggerEvent, type PriceAlertView } from "@trbot/market/alert-monitor.ts"
-import type { PriceAlert, PriceAlertStore } from "@trbot/market/alert.ts"
+import { rangeForInterval, type StopRuleView, type StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
+import type { StopRule } from "@trbot/trading/stop.ts"
+import type { AlertTriggerEvent, PriceAlertView } from "@trbot/market/alert-monitor.ts"
+import type { PriceAlert } from "@trbot/market/alert.ts"
 import type { SoundPlayer } from "../components/sound.ts"
 import { AlertEditor } from "./alert-editor.ts"
 import { AlertPopup } from "./alert-popup.ts"
@@ -139,7 +141,6 @@ const OVERVIEW_DAILY: [CandleRange, CandleInterval] = ["YEAR", "DAY_1"]
 const DEPTH_LAYOUT_WIDTH = 190
 // How often close-based and ATR stop rules re-read their candles. Anything
 // finer just re-reads the same forming candle.
-const STOP_CANDLE_POLL_INTERVAL_MS = 30_000
 const SORT_LABELS: Record<InstrumentSort, string> = { change: "Change", volume: "Volume", name: "Name" }
 const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
@@ -310,11 +311,9 @@ export interface WatchlistScreenOptions {
   memberFeatures?: MemberFeatureSource
   overview?: OverviewGenerator
   overviewSnapshots?: OverviewSnapshotStore
-  stopRules?: StopRuleStore
-  stopCandleIntervalMs?: number
-  stopStalePriceMs?: number
+  stops?: RemoteStopRules
   stopCountdownMs?: number
-  priceAlerts?: PriceAlertStore
+  alerts?: RemoteAlerts
   sound?: SoundPlayer
   onSessionExpired?: () => void
   newsIntervalMs?: number
@@ -326,7 +325,7 @@ export interface WatchlistScreenOptions {
   destructiveConfirmationTimeoutMs?: number
   preferences?: WatchlistPreferences
   onPreferencesChange?: (preferences: WatchlistPreferences) => void
-  chatGptAccount?: ChatGptAccount
+  aiAccount?: AiAccount
   logs?: ApplicationLog
   manageInput?: boolean
   onOpenLogs?: () => void
@@ -390,6 +389,10 @@ export class WatchlistScreen {
   // The selected contract's details, kept so the chart can price one lot.
   private contractDetails: ViopContractDetails | null = null
   private tradingActionRequest: AbortController | null = null
+  // Held across a bulk exit whose outcome is unknown, so pressing again retries
+  // that exit rather than sending a second set of orders. Cleared once the
+  // server has answered. See the order ticket, which names an order the same way.
+  private bulkExitKey: string | null = null
   private readerLastClickAt = 0
   private newsTimer: ReturnType<typeof setInterval> | null = null
   private instrumentTimer: ReturnType<typeof setInterval> | null = null
@@ -416,19 +419,19 @@ export class WatchlistScreen {
   private readonly overviewCache = new Map<string, OverviewSnapshot>()
   // Protective levels for open positions. The monitor watches prices; the
   // screen owns the confirmation and the order that follows it.
-  private readonly stopMonitor: StopMonitor | null
+  private readonly stopMonitor: RemoteStopRules | null
+  private pendingStopCountdownMs: number | null = null
+  private pendingStopHeld = false
   private stopRuleEditor: StopRuleEditor | null = null
   private stopTrigger: StopTriggerConfirmation | null = null
-  private stopCandleTimer: ReturnType<typeof setInterval> | null = null
   // Breaches waiting for the confirmation modal, so two levels reached at once
   // are answered one at a time instead of racing.
   private readonly stopTriggerQueue: StopTriggerEvent[] = []
   // Price levels the trader asked to be told about. Same watching, none of the
   // trading: a reached level rings and shows a notice, and that is all.
-  private readonly alertMonitor: AlertMonitor | null
+  private readonly alertMonitor: RemoteAlerts | null
   private alertEditor: AlertEditor | null = null
   private alertPopup: AlertPopup | null = null
-  private alertCandleTimer: ReturnType<typeof setInterval> | null = null
   private readonly alertQueue: AlertTriggerEvent[] = []
   private positions: AccountPosition[] = []
   // Whether the account has ever answered. Until it has, an empty position list
@@ -708,27 +711,22 @@ export class WatchlistScreen {
     })
     this.centerPanel.add(this.accountPanel.root)
 
-    this.stopMonitor = options.stopRules
-      ? new StopMonitor({
-          store: options.stopRules,
-          candles: options.candles,
-          stalePriceMs: options.stopStalePriceMs,
-          onTrigger: (event) => this.onStopTrigger(event),
-          onChange: () => this.accountPanel.showStopRules(this.stopMonitor?.views() ?? []),
-          onError: (error) => this.reportError("Stop manager", error),
-        })
-      : null
+    this.stopMonitor = options.stops ?? null
+    this.stopMonitor?.onTrigger((event, remainingMs, held) => this.onStopTrigger(event, remainingMs, held))
+    this.stopMonitor?.onChange(() => {
+      this.accountPanel.showStopRules(this.stopMonitor?.views() ?? [])
+      // Rules can protect contracts the watchlist does not carry, so a changed
+      // rule list can widen what this screen needs quoted.
+      this.syncQuoteSubscription()
+    })
+    this.stopMonitor?.onResolved((ruleId, outcome) => this.onStopResolved(ruleId, outcome))
 
-    this.alertMonitor = options.priceAlerts
-      ? new AlertMonitor({
-          store: options.priceAlerts,
-          candles: options.candles,
-          stalePriceMs: options.stopStalePriceMs,
-          onTrigger: (event) => this.onAlertTrigger(event),
-          onChange: () => this.accountPanel.showPriceAlerts(this.alertMonitor?.views() ?? []),
-          onError: (error) => this.reportError("Price alerts", error),
-        })
-      : null
+    this.alertMonitor = options.alerts ?? null
+    this.alertMonitor?.onTrigger((event) => this.onAlertTrigger(event))
+    this.alertMonitor?.onChange(() => {
+      this.accountPanel.showPriceAlerts(this.alertMonitor?.views() ?? [])
+      this.syncQuoteSubscription()
+    })
 
     // The order book and the broker distribution share one column: each keeps
     // the rows its fixed content needs and they split the remainder evenly.
@@ -892,19 +890,6 @@ export class WatchlistScreen {
     this.overviewTimer = setInterval(() => {
       if (this.isMarketOpenForOverview()) void this.generateOverview()
     }, this.options.overviewIntervalMs ?? OVERVIEW_POLL_INTERVAL_MS)
-    // Close-based and ATR rules read candles rather than ticks.
-    if (this.stopMonitor) {
-      this.stopCandleTimer = setInterval(
-        () => void this.stopMonitor?.refreshCandleRules(),
-        this.options.stopCandleIntervalMs ?? STOP_CANDLE_POLL_INTERVAL_MS,
-      )
-    }
-    if (this.alertMonitor) {
-      this.alertCandleTimer = setInterval(
-        () => void this.alertMonitor?.refreshCandleAlerts(),
-        this.options.stopCandleIntervalMs ?? STOP_CANDLE_POLL_INTERVAL_MS,
-      )
-    }
     void this.refreshOverviewConnection()
   }
 
@@ -924,14 +909,6 @@ export class WatchlistScreen {
     this.closeAlertPopup()
     this.stopMonitor?.destroy()
     this.alertMonitor?.destroy()
-    if (this.alertCandleTimer) {
-      clearInterval(this.alertCandleTimer)
-      this.alertCandleTimer = null
-    }
-    if (this.stopCandleTimer) {
-      clearInterval(this.stopCandleTimer)
-      this.stopCandleTimer = null
-    }
     this.contractDetailsRequest?.abort()
     this.contractDetailsRequest = null
     this.tradingActionRequest?.abort()
@@ -1434,10 +1411,6 @@ export class WatchlistScreen {
     this.accountPanel.showStopRules(monitor.views())
     // Rules can protect contracts the watchlist does not carry.
     this.syncQuoteSubscription()
-    // Read candles now rather than waiting out the first poll: a close-based
-    // rule has no ticks to fall back on, so until this lands it looks like a
-    // rule with no feed instead of one that is simply between reads.
-    void monitor.refreshCandleRules()
   }
 
   private onPositionsChange(positions: AccountPosition[]): void {
@@ -1476,7 +1449,6 @@ export class WatchlistScreen {
           this.syncQuoteSubscription()
           // A close-based rule reads candles, not ticks, so give it its first
           // read now instead of leaving it blank until the poll comes round.
-          if (draft.basis === "CLOSE") void this.stopMonitor?.refreshCandleRules()
           this.showHintStatus(`${draft.role === "STOP" ? "Stop" : "Target"} armed for ${draft.displayName}.`, "#70d7a1", 4_000)
         })
         this.closeStopRuleEditor()
@@ -1525,8 +1497,14 @@ export class WatchlistScreen {
    * A level was reached. Nothing is sent yet: the trader sees what the exit
    * would be and either lets the countdown run or stops it.
    */
-  private onStopTrigger(event: StopTriggerEvent): void {
+  private onStopTrigger(event: StopTriggerEvent, remainingMs: number, held: boolean): void {
+    // A repeat of a rule already queued or on screen is the server refreshing
+    // its countdown, not a second trigger.
+    if (this.stopTrigger?.ruleId === event.rule.id) return
+    if (this.stopTriggerQueue.some((queued) => queued.rule.id === event.rule.id)) return
     this.stopTriggerQueue.push(event)
+    this.pendingStopCountdownMs = remainingMs
+    this.pendingStopHeld = held
     this.showNextStopTrigger()
   }
 
@@ -1542,14 +1520,26 @@ export class WatchlistScreen {
     this.setFocus("account")
     this.stopTrigger = new StopTriggerConfirmation(this.renderer, {
       event,
-      countdownMs: this.options.stopCountdownMs,
-      onConfirm: () => void this.submitStopExit(event),
-      onCancel: () => {
-        this.closeStopTrigger()
-        void this.stopMonitor?.resolveTrigger(event.rule.id, "CANCELLED")
-        this.showHintStatus(`Stood down the ${event.rule.displayName} stop; no order sent.`, "#e5c07b", 4_000)
-        this.showNextStopTrigger()
+      // The server owns the real countdown; this mirrors what it reported so the
+      // trader sees the same clock.
+      countdownMs: this.pendingStopCountdownMs ?? this.options.stopCountdownMs,
+      held: this.pendingStopHeld,
+      onHoldChange: (held) => {
+        const decision = held ? this.stopMonitor?.hold(event.rule.id) : this.stopMonitor?.release(event.rule.id)
+        void decision?.catch((error: unknown) => {
+          if (this.destroyed) return
+          // The clock the trader sees is now not the clock the server is
+          // running, which they need to know before it runs out.
+          this.reportError("Stop decision", error)
+          this.showHintStatus(
+            `Could not ${held ? "hold" : "release"} the ${event.rule.displayName} stop: ${errorMessage(error)}`,
+            "#ff6b6b",
+            6_000,
+          )
+        })
       },
+      onConfirm: () => void this.submitStopExit(event),
+      onCancel: () => void this.standDownStop(event),
     })
     this.root.add(this.stopTrigger.root)
     this.stopTrigger.mount()
@@ -1566,49 +1556,70 @@ export class WatchlistScreen {
   }
 
   /** Sends the exit a confirmed trigger asked for. */
+  /**
+   * Sends the exit now instead of waiting out the server's countdown. The server
+   * places the order — the terminal never does — and reports back through
+   * `onResolved`, so a trader who closes the terminal mid-countdown still gets
+   * the exit.
+   */
   private async submitStopExit(event: StopTriggerEvent): Promise<void> {
-    const source = this.options.positionExit
     if (this.destroyed) return
-    // Nothing can be sent, so say so and leave the rule triggered rather than
-    // holding a modal open over a promise that will never resolve.
-    if (!source || this.tradingActionRequest) {
-      this.closeStopTrigger()
+    this.showHintStatus(`Submitting the ${event.rule.displayName} exit…`, "#e5c07b")
+    this.closeStopTrigger()
+    this.showNextStopTrigger()
+    try {
+      await this.stopMonitor?.confirm(event.rule.id)
+    } catch (error) {
+      if (this.destroyed) return
+      this.reportError("Stop decision", error)
+      // The countdown is still running on the server, so this is a delay rather
+      // than a cancellation — and saying nothing would imply the exit went out.
       this.showHintStatus(
-        source ? "Another trading action is in flight; exit not sent." : "Position exits are unavailable.",
+        `Could not send the ${event.rule.displayName} exit now: ${errorMessage(error)}`,
         "#ff6b6b",
         6_000,
       )
+    }
+  }
+
+  /**
+   * Stands a fired stop down, and only says so once the server agrees.
+   *
+   * The countdown belongs to the server. Closing the modal and reporting "no
+   * order sent" without an acknowledgement is how a trader stops watching a stop
+   * that then exits their position anyway.
+   */
+  private async standDownStop(event: StopTriggerEvent): Promise<void> {
+    this.closeStopTrigger()
+    try {
+      await this.stopMonitor?.cancel(event.rule.id)
+      if (this.destroyed) return
+      this.showHintStatus(`Stood down the ${event.rule.displayName} stop; no order sent.`, "#e5c07b", 4_000)
+    } catch (error) {
+      if (this.destroyed) return
+      this.reportError("Stop decision", error)
+      this.showHintStatus(
+        `Could not stand down the ${event.rule.displayName} stop — its countdown is still running: ${errorMessage(error)}`,
+        "#ff6b6b",
+        8_000,
+      )
+    } finally {
+      if (!this.destroyed) this.showNextStopTrigger()
+    }
+  }
+
+  private onStopResolved(ruleId: string, outcome: StopOutcome): void {
+    if (this.destroyed) return
+    const rule = this.stopMonitor?.rule(ruleId)
+    const name = rule?.displayName ?? "stop"
+    if (outcome === "SUBMITTED") {
+      void this.accountPanel.refresh()
+      this.showHintStatus(`Exited on the ${name} ${rule?.role === "TARGET" ? "target" : "stop"}.`, "#70d7a1", 4_000)
       return
     }
-    const request = new AbortController()
-    this.tradingActionRequest = request
-    this.showHintStatus(`Submitting the ${event.rule.displayName} exit…`, "#e5c07b")
-    try {
-      const submitted = await source.exitPosition({
-        instrumentUid: event.rule.instrumentUid,
-        quantity: event.quantity,
-        signal: request.signal,
-      })
-      if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request) return
-      await this.stopMonitor?.resolveTrigger(event.rule.id, "SUBMITTED", submitted.orderUid)
-      void this.accountPanel.refresh()
-      this.showHintStatus(
-        `Exited ${submitted.quantity} ${submitted.symbol} on the ${event.rule.role === "STOP" ? "stop" : "target"}.`,
-        "#70d7a1",
-        4_000,
-      )
-    } catch (error) {
-      if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request || isAbortError(error)) return
+    if (outcome === "FAILED") {
       // The rule stays triggered: nothing was closed, and it must not look done.
-      if (!this.reportError("Stop exit", error)) {
-        this.showHintStatus(`Stop exit failed: ${errorMessage(error)}`, "#ff6b6b", 6_000)
-      }
-    } finally {
-      if (this.tradingActionRequest === request) this.tradingActionRequest = null
-      if (!this.destroyed) {
-        this.closeStopTrigger()
-        this.showNextStopTrigger()
-      }
+      this.showHintStatus(`The ${name} exit failed; nothing was closed.`, "#ff6b6b", 6_000)
     }
   }
 
@@ -1623,7 +1634,6 @@ export class WatchlistScreen {
     // Alerts can watch contracts the watchlist does not carry.
     this.syncQuoteSubscription()
     // Read candles now rather than waiting out the first poll; see loadStopRules.
-    void monitor.refreshCandleAlerts()
   }
 
   private openAlertEditor(alert?: PriceAlert): void {
@@ -1647,7 +1657,6 @@ export class WatchlistScreen {
           if (this.destroyed) return
           this.syncQuoteSubscription()
           // Same as a close-based stop rule: read its candles straight away.
-          if (draft.basis === "CLOSE") void this.alertMonitor?.refreshCandleAlerts()
           this.showHintStatus(
             `Alert set on ${draft.displayName} ${draft.direction === "ABOVE" ? "above" : "below"} the level.`,
             "#70d7a1",
@@ -1713,6 +1722,10 @@ export class WatchlistScreen {
     this.alertPopup = new AlertPopup(this.renderer, {
       event,
       onDismiss: () => {
+        // The server keeps a fired alert outstanding until a client answers it,
+        // and replays what is outstanding to whoever attaches. Closing only the
+        // popup means the next reconnect rings for it again.
+        this.alertMonitor?.dismiss(event.alert.id)
         this.closeAlertPopup()
         this.showNextAlert()
       },
@@ -1801,7 +1814,7 @@ export class WatchlistScreen {
   }
 
   private async refreshOverviewConnection(): Promise<void> {
-    const account = this.options.chatGptAccount
+    const account = this.options.aiAccount
     if (!account || !this.options.overview) return
     try {
       const state = await account.getState()
@@ -1987,7 +2000,7 @@ export class WatchlistScreen {
   }
 
   private openProviderAccount(): void {
-    const account = this.options.chatGptAccount
+    const account = this.options.aiAccount
     if (!account || this.providerAccountModal || this.destroyed) return
     const modal = new ProviderAccountModal(this.renderer, {
       account,
@@ -2202,8 +2215,16 @@ export class WatchlistScreen {
     const request = new AbortController()
     this.tradingActionRequest = request
     this.showHintStatus("Submitting simulated-market VIOP exits…", "#e5c07b")
+    // Names the exit the trader is trying to send, not the call that carries it.
+    this.bulkExitKey ??= crypto.randomUUID()
     try {
-      const result = await source.exitAllPositions({ signal: request.signal })
+      const result = await source.exitAllPositions({
+        signal: request.signal,
+        idempotencyKey: this.bulkExitKey,
+      })
+      // The server answered, so this exit is settled either way and pressing
+      // again is a new one — over positions opened since, most likely.
+      this.bulkExitKey = null
       if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request) return
       if (result.submitted.length > 0) void this.accountPanel.refresh()
       if (result.submitted.length === 0 && result.failures.length === 0) {

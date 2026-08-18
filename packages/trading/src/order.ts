@@ -27,7 +27,16 @@ export interface PrepareViopOrderRequest {
   signal?: AbortSignal
 }
 
-export interface PlaceViopOrderRequest {
+/**
+ * Names the attempt rather than the call, so a resubmit of the same order after
+ * a failure whose outcome is unknown is recognised as the same intent. A caller
+ * that leaves it out gets no protection: two calls are two orders.
+ */
+interface IdempotentRequest {
+  idempotencyKey?: string
+}
+
+export interface PlaceViopOrderRequest extends IdempotentRequest {
   instrumentUid: string
   side: ViopOrderSide
   quantity: number
@@ -52,12 +61,12 @@ export interface PendingViopOrder {
   description: string | null
 }
 
-export interface CancelPendingViopOrdersRequest {
+export interface CancelPendingViopOrdersRequest extends IdempotentRequest {
   orderUids: string[]
   signal?: AbortSignal
 }
 
-export interface ViopOrderCancellationFailure {
+interface ViopOrderCancellationFailure {
   orderUid: string
   message: string
 }
@@ -79,7 +88,7 @@ export interface SubmittedViopPositionExit {
   orderUid: string
 }
 
-export interface ViopPositionExitFailure {
+interface ViopPositionExitFailure {
   instrumentUid: string
   symbol: string
   quantity: number
@@ -91,7 +100,7 @@ export interface ViopPositionExitResult {
   failures: ViopPositionExitFailure[]
 }
 
-export interface ExitViopPositionRequest {
+export interface ExitViopPositionRequest extends IdempotentRequest {
   instrumentUid: string
   // Contracts to close; omitted exits whatever the position holds.
   quantity?: number
@@ -99,7 +108,7 @@ export interface ExitViopPositionRequest {
 }
 
 export interface ViopPositionExitSource {
-  exitAllPositions(options?: { signal?: AbortSignal }): Promise<ViopPositionExitResult>
+  exitAllPositions(options?: { signal?: AbortSignal } & IdempotentRequest): Promise<ViopPositionExitResult>
   // Closes one position. Unlike the bulk exit there is no failure list to
   // collect: a single target either submits or throws.
   exitPosition(request: ExitViopPositionRequest): Promise<SubmittedViopPositionExit>

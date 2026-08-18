@@ -1,6 +1,6 @@
 import { defineOperation } from "./graphql.ts"
 
-export interface ScreenerInstrumentValue {
+interface ScreenerInstrumentValue {
   key: string
   value: string | null
   situation: string | null
@@ -69,7 +69,7 @@ export interface InstrumentVariables {
   [key: string]: unknown
 }
 
-export interface AdvancedToolSearchResult {
+interface AdvancedToolSearchResult {
   __typename: string
   uid: string
   type: string | null
@@ -92,14 +92,14 @@ export interface AdvancedToolSearchVariables {
   [key: string]: unknown
 }
 
-export interface FutureDetailItem {
+interface FutureDetailItem {
   key: string
   text: string
   value: string | null
   info: { title: string; url: string } | null
 }
 
-export interface FutureDetailSection {
+interface FutureDetailSection {
   title: string
   description: string | null
   items: FutureDetailItem[]
@@ -117,7 +117,7 @@ export interface FutureDetailVariables {
   [key: string]: unknown
 }
 
-export interface BrokerageDistributionEntry {
+interface BrokerageDistributionEntry {
   brokerage: string
   netShares: number
   // Volume-weighted average price the brokerage traded at over the range.
@@ -166,7 +166,7 @@ export interface BrokerageDistributionVariables {
 // standing positions, and the houses that grew or shrank theirs.
 export type SettlementAnalysisType = "TOTAL" | "UP" | "DOWN"
 
-export interface SettlementAnalysisEntry {
+interface SettlementAnalysisEntry {
   brokerage: string
   percentage: number | null
   percentageChange: number | null
@@ -204,7 +204,7 @@ export interface SettlementAnalysisVariables {
   [key: string]: unknown
 }
 
-export interface AdvancedChartEntry {
+interface AdvancedChartEntry {
   o: number
   h: number
   l: number
@@ -239,7 +239,7 @@ export interface AdvancedChartVariables {
   [key: string]: unknown
 }
 
-export interface CandlestickChartEntry {
+interface CandlestickChartEntry {
   o: number
   h: number
   l: number
@@ -315,12 +315,12 @@ function numberOrNull(value: unknown): number | null {
 export const DEPTH_STREAM_PATH = "/reactive-market-depth-api/v2/depth/stream"
 export const DEPTH_STREAM_TYPE = "DETAIL"
 
-export interface DepthUpdateLevel {
+interface DepthUpdateLevel {
   index: number
   level: { price: number; lots: number; orderCount: number }
 }
 
-export interface DepthUpdateTrade {
+interface DepthUpdateTrade {
   id: string
   price: number
   lots: number

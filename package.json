@@ -7,16 +7,22 @@
     "packages/*"
   ],
   "scripts": {
+    "all": "bun run scripts/all.ts",
     "db:generate": "bun run --filter @trbot/db db:generate",
     "db:migrate": "bun run packages/db/src/migrate.ts",
     "dev": "bun --watch run apps/tui/src/index.ts",
-    "lint": "oxlint apps packages --deny-warnings",
-    "lint:fix": "oxlint apps packages --fix",
+    "lint": "oxlint apps packages scripts --deny-warnings",
+    "lint:fix": "oxlint apps packages scripts --fix",
+    "server": "bun run apps/server/src/index.ts",
+    "server:cert": "bun run apps/server/src/cli.ts cert",
+    "server:dev": "bun --watch run apps/server/src/index.ts",
+    "server:token": "bun run apps/server/src/cli.ts token",
     "start": "bun run apps/tui/src/index.ts",
     "test": "bun test --path-ignore-patterns='tmp/**'",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@trbot/config": "workspace:*",
     "@trbot/tsconfig": "workspace:*",
     "@types/bun": "^1.3.14",
     "oxlint": "^1.77.0",

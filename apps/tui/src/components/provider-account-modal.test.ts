@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
-import type { ChatGptAccount } from "@trbot/ai/chatgpt-account.ts"
-import type { ProviderState } from "@trbot/ai/provider-state.ts"
+import type { AiAccount, AiAccountSummary } from "@trbot/protocol/ai.ts"
 import { ProviderAccountModal } from "./provider-account-modal.ts"
 
 test("connects and disconnects ChatGPT from the provider modal", async () => {
@@ -10,8 +9,8 @@ test("connects and disconnects ChatGPT from the provider modal", async () => {
     height: 24,
     kittyKeyboard: true,
   })
-  let state: ProviderState | null = null
-  const account: ChatGptAccount = {
+  let state: AiAccountSummary | null = null
+  const account: AiAccount = {
     async getState() {
       return state
     },
@@ -45,15 +44,12 @@ test("connects and disconnects ChatGPT from the provider modal", async () => {
   renderer.destroy()
 })
 
-function connectedState(): ProviderState {
+function connectedState(): AiAccountSummary {
   return {
     providerId: "openai",
-    accessToken: "access",
-    refreshToken: "refresh",
-    expiresAt: Date.now() + 3_600_000,
     accountId: "account-1",
     email: "trader@example.com",
-    createdAt: Date.now(),
+    connectedAt: Date.now(),
     updatedAt: Date.now(),
   }
 }

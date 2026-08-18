@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import { resolve } from "node:path"
-import { loadConfig, loadCredentials, loadDatabaseUrl, parseEnvFile, workspaceRoot } from "./index.ts"
+import {
+  EXAMPLE_SERVER_TOKEN,
+  loadClientConfig,
+  loadConfig,
+  loadCredentials,
+  loadDatabaseUrl,
+  loadServerConfig,
+  parseEnvFile,
+  workspaceRoot,
+} from "./index.ts"
 
 describe("workspaceRoot", () => {
   test("finds the manifest that declares the workspaces", () => {
@@ -74,5 +83,63 @@ describe("loadConfig", () => {
       aiModel: "gpt-5.6-sol",
       aiReasoningEffort: "high",
     })
+  })
+})
+
+describe("loadServerConfig", () => {
+  const token = { TRBOT_SERVER_TOKEN: "a-real-token" }
+
+  test("defaults to loopback without TLS", () => {
+    expect(loadServerConfig(token)).toEqual({ host: "127.0.0.1", port: 7717, token: "a-real-token", tls: null })
+  })
+
+  test("refuses to serve a non-loopback interface without TLS", () => {
+    expect(() => loadServerConfig({ ...token, TRBOT_SERVER_HOST: "0.0.0.0" })).toThrow(/without TLS/)
+    expect(() => loadServerConfig({ ...token, TRBOT_SERVER_HOST: "192.168.1.10" })).toThrow(/without TLS/)
+  })
+
+  test("serves a non-loopback interface once TLS is configured", () => {
+    const config = loadServerConfig({
+      ...token,
+      TRBOT_SERVER_HOST: "0.0.0.0",
+      TRBOT_SERVER_TLS_CERT: "/tls/server.crt",
+      TRBOT_SERVER_TLS_KEY: "/tls/server.key",
+    })
+    expect(config.tls).toEqual({ certPath: "/tls/server.crt", keyPath: "/tls/server.key" })
+  })
+
+  test("rejects a half-configured certificate", () => {
+    expect(() => loadServerConfig({ ...token, TRBOT_SERVER_TLS_CERT: "/tls/server.crt" })).toThrow(/together/)
+  })
+
+  test("rejects a missing or placeholder token", () => {
+    expect(() => loadServerConfig({})).toThrow(/required/)
+    expect(() => loadServerConfig({ TRBOT_SERVER_TOKEN: EXAMPLE_SERVER_TOKEN })).toThrow(/example value/)
+  })
+
+  test("rejects a port that is not a port", () => {
+    expect(() => loadServerConfig({ ...token, TRBOT_SERVER_PORT: "abc" })).toThrow(/port number/)
+    expect(() => loadServerConfig({ ...token, TRBOT_SERVER_PORT: "99999" })).toThrow(/port number/)
+  })
+})
+
+describe("loadClientConfig", () => {
+  test("defaults to the local server and trims a trailing slash", () => {
+    expect(loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_SERVER_URL: "https://host:8443/" })).toEqual({
+      url: "https://host:8443",
+      token: "t",
+      caPath: null,
+    })
+    expect(loadClientConfig({ TRBOT_SERVER_TOKEN: "t" }).url).toBe("http://127.0.0.1:7717")
+  })
+
+  // The terminal is started from wherever the trader happens to be, so a
+  // relative authority has to mean the same file regardless.
+  test("anchors a relative certificate authority to the workspace root", () => {
+    const relative = loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_SERVER_CA: "data/tls/ca.crt" })
+    expect(relative.caPath).toBe(resolve(workspaceRoot(), "data/tls/ca.crt"))
+
+    const absolute = loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_SERVER_CA: "/etc/trbot/ca.crt" })
+    expect(absolute.caPath).toBe("/etc/trbot/ca.crt")
   })
 })

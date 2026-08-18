@@ -2,7 +2,7 @@ import type { DepthBook } from "./depth.ts"
 
 // A house's session totals on the trade tape. Bought and sold count the lots
 // the house printed on each side; net is bought minus sold.
-export interface BrokerTradeFlow {
+interface BrokerTradeFlow {
   brokerage: string
   boughtLots: number
   soldLots: number

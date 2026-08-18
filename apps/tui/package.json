@@ -4,14 +4,12 @@
   "type": "module",
   "dependencies": {
     "@opentui/core": "^0.5.1",
-    "@trbot/ai": "workspace:*",
-    "@trbot/api": "workspace:*",
-    "@trbot/auth": "workspace:*",
+    "@trbot/client": "workspace:*",
     "@trbot/config": "workspace:*",
-    "@trbot/db": "workspace:*",
     "@trbot/market": "workspace:*",
     "@trbot/member": "workspace:*",
     "@trbot/preferences": "workspace:*",
+    "@trbot/protocol": "workspace:*",
     "@trbot/trading": "workspace:*"
   },
   "devDependencies": {

@@ -1,14 +1,25 @@
 // Paid entitlements the signed-in member holds. These are subscription tier
 // features, not application settings: the provider decides them per member and
 // the app can only read them.
-export type MemberFeature =
-  | "MARKET_DEPTH"
-  | "BROKERAGE_DISTRIBUTION"
-  | "SETTLEMENT_ANALYSIS"
-  | "SUBSCRIPTION"
+const MEMBER_FEATURES = [
+  "MARKET_DEPTH",
+  "BROKERAGE_DISTRIBUTION",
+  "SETTLEMENT_ANALYSIS",
+  "SUBSCRIPTION",
+] as const
 
+export type MemberFeature = (typeof MEMBER_FEATURES)[number]
+
+/**
+ * What the member is entitled to.
+ *
+ * `list` is not a convenience: a set that only answers `has` cannot survive
+ * being sent to a client, because the answer lives in a closure that does not
+ * serialize. Anything crossing a process boundary is rebuilt from `list`.
+ */
 export interface MemberFeatureSet {
   has(feature: MemberFeature): boolean
+  list(): MemberFeature[]
 }
 
 export interface MemberFeatureSource {
@@ -17,7 +28,12 @@ export interface MemberFeatureSource {
 
 export function memberFeatureSet(features: Iterable<MemberFeature>): MemberFeatureSet {
   const enabled = new Set(features)
-  return { has: (feature) => enabled.has(feature) }
+  return {
+    has: (feature) => enabled.has(feature),
+    list: () => MEMBER_FEATURES.filter((feature) => enabled.has(feature)),
+  }
 }
 
-export const NO_MEMBER_FEATURES: MemberFeatureSet = memberFeatureSet([])
+export function isMemberFeature(value: unknown): value is MemberFeature {
+  return typeof value === "string" && MEMBER_FEATURES.some((feature) => feature === value)
+}

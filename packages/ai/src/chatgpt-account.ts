@@ -1,47 +1,39 @@
-import { openExternalUrl } from "./browser.ts"
-import {
-  ChatGptOAuthClient,
-  chatGptIdentity,
-  type ChatGptOAuth,
-  type ChatGptOAuthLoginOptions,
-} from "./chatgpt-oauth.ts"
+import { chatGptIdentity, ChatGptOAuthClient, type ChatGptOAuth, type ChatGptTokenResponse } from "./chatgpt-oauth.ts"
 import { CHATGPT_PROVIDER_ID, type ProviderState, type ProviderStateStore } from "./provider-state.ts"
 
 const REFRESH_MARGIN_MS = 60_000
 
-export interface ChatGptAccount {
-  getState(): Promise<ProviderState | null>
-  connect(options?: Omit<ChatGptOAuthLoginOptions, "openUrl">): Promise<ProviderState>
-  disconnect(): Promise<void>
-}
-
 interface ChatGptAccountServiceOptions {
   oauth?: ChatGptOAuth
-  openUrl?: (url: string) => Promise<void>
   now?: () => number
 }
 
-export class ChatGptAccountService implements ChatGptAccount {
+/**
+ * Owns the stored ChatGPT tokens and keeps them fresh.
+ *
+ * This runs on the server only. A client learns which account is connected
+ * through the protocol summary; the tokens themselves never leave the process
+ * that talks to ChatGPT.
+ */
+export class ChatGptAccountService {
   private readonly oauth: ChatGptOAuth
-  private readonly openUrl: (url: string) => Promise<void>
   private readonly now: () => number
   private refreshRequest: Promise<ProviderState> | null = null
 
   constructor(
-    private readonly store: ProviderStateStore,
+    private readonly states: ProviderStateStore,
     options: ChatGptAccountServiceOptions = {},
   ) {
     this.oauth = options.oauth ?? new ChatGptOAuthClient()
-    this.openUrl = options.openUrl ?? openExternalUrl
     this.now = options.now ?? Date.now
   }
 
   getState(): Promise<ProviderState | null> {
-    return this.store.get(CHATGPT_PROVIDER_ID)
+    return this.states.get(CHATGPT_PROVIDER_ID)
   }
 
-  async connect(options: Omit<ChatGptOAuthLoginOptions, "openUrl"> = {}): Promise<ProviderState> {
-    const tokens = await this.oauth.login({ ...options, openUrl: this.openUrl })
+  /** Records the tokens a finished authorization produced. */
+  async save(tokens: ChatGptTokenResponse): Promise<ProviderState> {
     const identity = chatGptIdentity(tokens)
     const previous = await this.getState()
     const now = this.now()
@@ -55,12 +47,12 @@ export class ChatGptAccountService implements ChatGptAccount {
       createdAt: previous?.createdAt ?? now,
       updatedAt: now,
     }
-    await this.store.put(state)
+    await this.states.put(state)
     return state
   }
 
   disconnect(): Promise<void> {
-    return this.store.delete(CHATGPT_PROVIDER_ID)
+    return this.states.delete(CHATGPT_PROVIDER_ID)
   }
 
   async validState(): Promise<ProviderState> {
@@ -88,7 +80,7 @@ export class ChatGptAccountService implements ChatGptAccount {
       email: identity.email ?? state.email,
       updatedAt: now,
     }
-    await this.store.put(refreshed)
+    await this.states.put(refreshed)
     return refreshed
   }
 }

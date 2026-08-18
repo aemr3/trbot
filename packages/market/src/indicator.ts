@@ -24,14 +24,14 @@ export const CHART_INDICATOR_COLORS: Record<ChartIndicator, string> = {
   BOLLINGER: "#7a8699",
 }
 
-export const EMA_PERIODS: Record<"EMA_20" | "EMA_50" | "EMA_100", number> = {
+const EMA_PERIODS: Record<"EMA_20" | "EMA_50" | "EMA_100", number> = {
   EMA_20: 20,
   EMA_50: 50,
   EMA_100: 100,
 }
 
-export const BOLLINGER_PERIOD = 20
-export const BOLLINGER_DEVIATIONS = 2
+const BOLLINGER_PERIOD = 20
+const BOLLINGER_DEVIATIONS = 2
 
 const DAY_MS = 86_400_000
 

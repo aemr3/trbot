@@ -1,0 +1,24 @@
+{
+  "name": "@trbot/server",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@peculiar/x509": "^1.12.3",
+    "@trbot/ai": "workspace:*",
+    "@trbot/api": "workspace:*",
+    "@trbot/auth": "workspace:*",
+    "@trbot/config": "workspace:*",
+    "@trbot/db": "workspace:*",
+    "@trbot/market": "workspace:*",
+    "@trbot/member": "workspace:*",
+    "@trbot/preferences": "workspace:*",
+    "@trbot/protocol": "workspace:*",
+    "@trbot/provider": "workspace:*",
+    "@trbot/trading": "workspace:*",
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "@trbot/client": "workspace:*",
+    "@trbot/tsconfig": "workspace:*"
+  }
+}

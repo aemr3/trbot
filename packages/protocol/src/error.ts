@@ -1,0 +1,90 @@
+/**
+ * Failure kinds a client can act on. These replace the provider error helpers a
+ * client used to read directly: a client sees protocol codes, never provider
+ * exceptions.
+ */
+const PROTOCOL_ERROR_CODES = [
+  // The caller's server token is missing or wrong.
+  "unauthorized",
+  // The server has no usable provider session; the client should sign in.
+  "unauthenticated",
+  // Provider login needs the SMS verification code.
+  "otp_required",
+  "invalid_request",
+  "not_found",
+  // The same idempotency key arrived with a different request body.
+  "conflict",
+  // An earlier attempt under this idempotency key never reported an outcome, so
+  // whether it took effect is unknown. Retrying it could repeat it.
+  "outcome_unknown",
+  // The provider is reachable but refused the call.
+  "upstream_error",
+  // A transient upstream condition; retrying is reasonable.
+  "upstream_unavailable",
+  "internal",
+] as const
+
+export type ProtocolErrorCode = (typeof PROTOCOL_ERROR_CODES)[number]
+
+export interface ProtocolErrorBody {
+  error: {
+    code: ProtocolErrorCode
+    message: string
+  }
+}
+
+const STATUS_BY_CODE: Record<ProtocolErrorCode, number> = {
+  unauthorized: 401,
+  unauthenticated: 419,
+  otp_required: 409,
+  invalid_request: 400,
+  not_found: 404,
+  conflict: 409,
+  outcome_unknown: 409,
+  upstream_error: 502,
+  upstream_unavailable: 503,
+  internal: 500,
+}
+
+export function statusForErrorCode(code: ProtocolErrorCode): number {
+  return STATUS_BY_CODE[code]
+}
+
+function isProtocolErrorCode(value: unknown): value is ProtocolErrorCode {
+  return typeof value === "string" && PROTOCOL_ERROR_CODES.some((code) => code === value)
+}
+
+/** An error carrying a protocol code, thrown by clients and by route handlers. */
+export class ProtocolError extends Error {
+  constructor(
+    readonly code: ProtocolErrorCode,
+    message: string,
+    readonly options: { cause?: unknown } = {},
+  ) {
+    super(message, { cause: options.cause })
+    this.name = "ProtocolError"
+  }
+}
+
+export function isProtocolError(error: unknown): error is ProtocolError {
+  return error instanceof ProtocolError
+}
+
+/** True when the server has no usable provider session and the client must sign in. */
+export function requiresAuthentication(error: unknown): boolean {
+  return isProtocolError(error) && (error.code === "unauthenticated" || error.code === "otp_required")
+}
+
+/** True when retrying is reasonable rather than surfacing a failure to the trader. */
+export function isTransientError(error: unknown): boolean {
+  return isProtocolError(error) && error.code === "upstream_unavailable"
+}
+
+export function parseErrorBody(body: unknown): ProtocolError | null {
+  if (!body || typeof body !== "object") return null
+  const error = (body as { error?: unknown }).error
+  if (!error || typeof error !== "object") return null
+  const { code, message } = error as { code?: unknown; message?: unknown }
+  if (!isProtocolErrorCode(code)) return null
+  return new ProtocolError(code, typeof message === "string" ? message : code)
+}

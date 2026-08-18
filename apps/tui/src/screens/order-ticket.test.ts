@@ -213,6 +213,53 @@ test("uses only residual reversal exposure for the collateral check", async () =
   setup.renderer.destroy()
 })
 
+// A resubmit after a failure is the case idempotency keys exist for: the first
+// attempt may have reached the exchange even though the answer never came back.
+test("reuses one idempotency key across retries, and mints a new one once the order changes", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 28 })
+  const placed: PlaceViopOrderRequest[] = []
+  const source = fakeOrderSource(placed)
+  let failures = 2
+  source.placeOrder = async (request) => {
+    placed.push(request)
+    if (failures > 0) {
+      failures -= 1
+      throw new Error("The connection dropped")
+    }
+    return { uid: "order-1", status: "PENDING", description: "Bekliyor" }
+  }
+  const ticket = new ViopOrderTicket(setup.renderer, { source, instrument, side: "BUY", onClose() {} })
+  setup.renderer.root.add(ticket.root)
+  ticket.mount()
+  await setup.waitForFrame((value) => value.includes("Upper limit"))
+
+  ticket.handleKey({ name: "r", sequence: "r" } as KeyEvent)
+  await setup.waitForFrame((value) => value.includes("Review buy order"))
+  ticket.handleKey({ name: "return", sequence: "\r" } as KeyEvent)
+  await setup.waitForFrame((value) => value.includes("The connection dropped"))
+
+  // Same order, pressed again: the server must see the same key.
+  ticket.handleKey({ name: "return", sequence: "\r" } as KeyEvent)
+  await setup.waitForFrame((value) => value.includes("The connection dropped"))
+
+  // A different size is a different order, however it is reached.
+  ticket.handleKey({ name: "escape", sequence: "" } as KeyEvent)
+  ticket.handleKey({ name: "3", sequence: "3" } as KeyEvent)
+  ticket.handleKey({ name: "r", sequence: "r" } as KeyEvent)
+  await setup.waitForFrame((value) => value.includes("Review buy order"))
+  ticket.handleKey({ name: "return", sequence: "\r" } as KeyEvent)
+  await setup.waitForFrame((value) => value.includes("Order submitted"))
+
+  expect(placed).toHaveLength(3)
+  expect(placed[0]?.idempotencyKey).toBeTruthy()
+  expect(placed[1]?.idempotencyKey).toBe(placed[0]?.idempotencyKey as string)
+  expect(placed[2]?.quantity).toBe(3)
+  expect(placed[2]?.idempotencyKey).not.toBe(placed[0]?.idempotencyKey as string)
+
+  ticket.destroy()
+  setup.renderer.destroy()
+})
+
 function fakeOrderSource(placed: PlaceViopOrderRequest[] = []): ViopOrderSource {
   return {
     async prepareOrder({ side }) {

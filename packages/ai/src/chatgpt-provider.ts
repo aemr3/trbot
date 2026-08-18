@@ -11,7 +11,7 @@ interface ChatGptProviderOptions {
 
 type HttpFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-export function createChatGptProvider(
+function createChatGptProvider(
   account: ChatGptAccountService,
   options: ChatGptProviderOptions = {},
 ): OpenAIProvider {

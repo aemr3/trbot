@@ -1,0 +1,103 @@
+import { ProtocolError, parseErrorBody } from "@trbot/protocol/error.ts"
+import { IDEMPOTENCY_HEADER } from "@trbot/protocol/routes.ts"
+
+export interface HttpClientOptions {
+  url: string
+  token: string
+  /** Certificate authority to trust, for a server using a self-signed certificate. */
+  ca?: string | null
+}
+
+export interface RequestOptions {
+  query?: Record<string, string | undefined>
+  body?: unknown
+  signal?: AbortSignal
+  /** Deduplicates a mutation so a retry cannot place a second order. */
+  idempotencyKey?: string
+}
+
+/**
+ * Talks to the trbot server. Every failure surfaces as a ProtocolError, so
+ * callers read protocol codes rather than transport details.
+ */
+export class HttpClient {
+  private readonly tls: { ca: string } | undefined
+
+  constructor(private readonly options: HttpClientOptions) {
+    this.tls = options.ca ? { ca: options.ca } : undefined
+  }
+
+  get<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    return this.send<T>("GET", path, options)
+  }
+
+  post<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    return this.send<T>("POST", path, options)
+  }
+
+  put<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    return this.send<T>("PUT", path, options)
+  }
+
+  delete<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    return this.send<T>("DELETE", path, options)
+  }
+
+  /**
+   * Posts and returns the response body unread, for a route that answers a
+   * piece at a time. The status is still checked first, so a request the server
+   * refuses fails the same way an ordinary one does.
+   */
+  async stream(path: string, options: RequestOptions = {}): Promise<ReadableStream<Uint8Array>> {
+    const response = await this.request("POST", path, options)
+    if (!response.body) throw new ProtocolError("internal", "The server sent an empty stream")
+    return response.body
+  }
+
+  private async send<T>(method: string, path: string, options: RequestOptions): Promise<T> {
+    return (await (await this.request(method, path, options)).json()) as T
+  }
+
+  private async request(method: string, path: string, options: RequestOptions): Promise<Response> {
+    const url = new URL(this.options.url + path)
+    for (const [key, value] of Object.entries(options.query ?? {})) {
+      if (value !== undefined) url.searchParams.set(key, value)
+    }
+
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.options.token}` }
+    if (options.body !== undefined) headers["Content-Type"] = "application/json"
+    if (options.idempotencyKey) headers[IDEMPOTENCY_HEADER] = options.idempotencyKey
+
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        signal: options.signal,
+        ...(this.tls ? { tls: this.tls } : {}),
+      })
+    } catch (error) {
+      // An aborted request is the caller's own doing, so it passes through
+      // rather than being reported as the server being unreachable.
+      if (isAbortError(error)) throw error
+      throw new ProtocolError("upstream_unavailable", `Cannot reach the trbot server at ${this.options.url}`, {
+        cause: error,
+      })
+    }
+
+    if (response.ok) return response
+
+    const body: unknown = await response.json().catch(() => null)
+    throw parseErrorBody(body) ?? new ProtocolError("internal", `Server returned ${response.status}`)
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError"
+}
+
+/** A fresh key per mutation attempt chain; a retry reuses it deliberately. */
+export function idempotencyKey(): string {
+  return crypto.randomUUID()
+}

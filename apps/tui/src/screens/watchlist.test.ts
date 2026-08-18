@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
-import type { ChatGptAccount } from "@trbot/ai/chatgpt-account.ts"
-import type { OverviewGenerateOptions, OverviewGenerator } from "@trbot/ai/overview.ts"
+import type { AiAccount } from "@trbot/protocol/ai.ts"
+import type { OverviewGenerateOptions, OverviewGenerator } from "@trbot/market/overview.ts"
 import type { MarketOverviewDigest } from "@trbot/market/overview.ts"
-import { AuthenticationError } from "@trbot/api"
+import { ProtocolError } from "@trbot/protocol/error.ts"
 import type {
   BrokerageDistribution,
   BrokerageDistributionRequest,
@@ -40,8 +40,11 @@ import type {
   ViopOrderSource,
   ViopPositionExitSource,
 } from "@trbot/trading/order.ts"
-import { createStopRule, type StopRule, type StopRuleStore } from "@trbot/trading/stop.ts"
-import { createPriceAlert, type PriceAlert, type PriceAlertStore } from "@trbot/market/alert.ts"
+import { createStopRule, type StopRule, type StopRuleDraft, type StopRuleStatus } from "@trbot/trading/stop.ts"
+import { createPriceAlert, type PriceAlert, type PriceAlertDraft, type PriceAlertStatus } from "@trbot/market/alert.ts"
+import type { MonitorClient } from "@trbot/client/stream.ts"
+import type { StopRuleView, StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
+import { RemoteAlerts, RemoteStopRules } from "../remote-monitors.ts"
 import { LogsScreen } from "./logs.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 import { WatchlistScreen } from "./watchlist.ts"
@@ -849,6 +852,64 @@ test("requires lowercase x twice before submitting exits for every VIOP position
   renderer.destroy()
 })
 
+/**
+ * A bulk exit whose outcome is unknown is the one case the trader is most
+ * likely to repeat, and repeating it must not send a second set of exits on top
+ * of the first. The key names the exit, so a retry carries the same one and the
+ * server deduplicates it; once an exit has actually been answered, pressing
+ * again is a new exit over whatever is open now.
+ */
+test("retrying a bulk exit reuses its key, and a later one gets its own", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+  const keys: (string | undefined)[] = []
+  let failNext = true
+  const positionExit: ViopPositionExitSource = {
+    async exitAllPositions(options) {
+      keys.push(options?.idempotencyKey)
+      if (failNext) {
+        failNext = false
+        throw new Error("the connection dropped")
+      }
+      return { submitted: [{ instrumentUid: "u1", symbol: "F_XU0300826", quantity: 1, orderUid: "exit-1" }], failures: [] }
+    },
+    async exitPosition(request) {
+      return { instrumentUid: request.instrumentUid, symbol: "F_XU0300826", quantity: 1, orderUid: "exit-1" }
+    },
+  }
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account, positionExit })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("XU030 stock"))
+
+  async function pressExitTwice(): Promise<void> {
+    await mockInput.typeText("x")
+    await waitForFrame((frame) => frame.includes("Press x again to exit all open positions."))
+    await mockInput.typeText("x")
+  }
+
+  // The first attempt fails without saying whether it arrived.
+  await pressExitTwice()
+  await waitForFrame((frame) => frame.includes("Failed to exit positions"))
+
+  // The trader presses again: this is the same exit, retried.
+  await pressExitTwice()
+  await waitForFrame((frame) => frame.includes("Submitted exit orders for 1 VIOP position."))
+
+  expect(keys).toHaveLength(2)
+  expect(keys[0]).toBeTruthy()
+  expect(keys[1]).toBe(keys[0])
+
+  // That exit was answered, so the next one is a new exit rather than a retry.
+  await pressExitTwice()
+  await waitForFrame((frame) => frame.includes("Submitted exit orders for 1 VIOP position."))
+
+  expect(keys).toHaveLength(3)
+  expect(keys[2]).not.toBe(keys[0])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("expires destructive-action confirmation after its timeout", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
   let cancellations = 0
@@ -920,7 +981,7 @@ test("opens the ChatGPT provider modal with capital A", async () => {
     height: 24,
     kittyKeyboard: true,
   })
-  const chatGptAccount: ChatGptAccount = {
+  const aiAccount: AiAccount = {
     async getState() {
       return null
     },
@@ -929,7 +990,7 @@ test("opens the ChatGPT provider modal with capital A", async () => {
     },
     async disconnect() {},
   }
-  const screen = new WatchlistScreen(renderer, { instruments, candles, news, chatGptAccount })
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news, aiAccount })
   renderer.root.add(screen.root)
   screen.mount()
   await waitForFrame((frame) => frame.includes("XU030 stock"))
@@ -1076,7 +1137,7 @@ test("notifies onSessionExpired when device relogin fails", async () => {
   let expired = false
   const failing: ViopInstrumentSource = {
     async listInstruments() {
-      throw new AuthenticationError("Device relogin failed")
+      throw new ProtocolError("unauthenticated", "Device relogin failed")
     },
   }
 
@@ -1834,21 +1895,43 @@ function stopRuleFixture(): StopRule {
   )
 }
 
-class FakeStopRuleStore implements StopRuleStore {
+/**
+ * Stands in for the server's rule editing. The real one sends a draft and gets
+ * back the rule the server built, which is what these record.
+ */
+class FakeStopRules {
   readonly rules = new Map<string, StopRule>()
+  readonly savedDrafts: StopRuleDraft[] = []
 
-  constructor(seed: StopRule[] = []) {
+  constructor(
+    seed: StopRule[] = [],
+    /** Records what the terminal asked the server to do about a fired rule. */
+    readonly decisions: string[] = [],
+  ) {
     for (const rule of seed) this.rules.set(rule.id, rule)
   }
 
   async list(): Promise<StopRule[]> {
     return [...this.rules.values()]
   }
-  async put(rule: StopRule): Promise<void> {
+  async save(draft: StopRuleDraft): Promise<StopRule> {
+    this.savedDrafts.push(draft)
+    const rule = createStopRule(draft, Date.now())
     this.rules.set(rule.id, rule)
+    return rule
   }
   async remove(id: string): Promise<void> {
     this.rules.delete(id)
+  }
+  async setStatus(id: string, status: StopRuleStatus): Promise<void> {
+    const rule = this.rules.get(id)
+    if (rule) this.rules.set(id, { ...rule, status })
+  }
+  /** Set to make a decision fail, as an unreachable server would. */
+  decideFailure: Error | null = null
+  async decide(id: string, decision: string): Promise<void> {
+    this.decisions.push(`stop:${id}:${decision}`)
+    if (this.decideFailure) throw this.decideFailure
   }
 }
 
@@ -1868,46 +1951,6 @@ function fakePositionExit(exits: ExitViopPositionRequest[]): ViopPositionExitSou
     },
   }
 }
-
-/**
- * Waits for a stored rule to reach a status. The harness's own waitFor is tied
- * to render passes, and persisting a rule repaints nothing, so it gives up
- * before the write lands.
- */
-async function waitForStatus(store: FakeStopRuleStore, id: string, status: StopRule["status"]): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (store.rules.get(id)?.status === status) return
-    await Bun.sleep(5)
-  }
-  throw new Error(`${id} never reached ${status}; it is ${store.rules.get(id)?.status}`)
-}
-
-function tick(lastPrice: number): QuoteUpdate {
-  return { symbol: "F_THYAO0826", lastPrice, sessionStatus: null, timestamp: Date.now() }
-}
-
-test("subscribes to the contracts stop rules protect, not only the watchlist", async () => {
-  const { renderer, waitFor } = await createTestRenderer({ width: 120, height: 30 })
-  const quotes = new FakeQuoteStream()
-  const rule = { ...stopRuleFixture(), symbol: "F_UNWATCHED0826" }
-  const screen = new WatchlistScreen(renderer, {
-    instruments,
-    candles,
-    news,
-    account,
-    quotes,
-    stopRules: new FakeStopRuleStore([rule]),
-  })
-  renderer.root.add(screen.root)
-  screen.mount()
-
-  await waitFor(() => quotes.startedSymbols?.includes("F_UNWATCHED0826") === true)
-  expect(quotes.startedSymbols).toContain("F_XU0300826")
-
-  screen.destroy()
-  renderer.destroy()
-})
-
 function priceAlertFixture(): PriceAlert {
   return createPriceAlert(
     {
@@ -1928,8 +1971,9 @@ function priceAlertFixture(): PriceAlert {
   )
 }
 
-class FakePriceAlertStore implements PriceAlertStore {
+class FakeAlerts {
   readonly alerts = new Map<string, PriceAlert>()
+  readonly savedDrafts: PriceAlertDraft[] = []
 
   constructor(seed: PriceAlert[] = []) {
     for (const alert of seed) this.alerts.set(alert.id, alert)
@@ -1938,44 +1982,193 @@ class FakePriceAlertStore implements PriceAlertStore {
   async list(): Promise<PriceAlert[]> {
     return [...this.alerts.values()]
   }
-  async put(alert: PriceAlert): Promise<void> {
+  async save(draft: PriceAlertDraft): Promise<PriceAlert> {
+    this.savedDrafts.push(draft)
+    const alert = createPriceAlert(draft, Date.now())
     this.alerts.set(alert.id, alert)
+    return alert
   }
   async remove(id: string): Promise<void> {
     this.alerts.delete(id)
   }
+  async setStatus(id: string, status: PriceAlertStatus): Promise<void> {
+    const alert = this.alerts.get(id)
+    if (alert) this.alerts.set(id, { ...alert, status })
+  }
 }
 
-test("a reached alert rings and shows a notice, and trades nothing", async () => {
-  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+function stopView(rule: StopRule): StopRuleView {
+  return { rule, level: 305, lastPrice: 310, distancePercent: -1.6, feed: "live", hasPosition: true }
+}
+
+
+function stopTrigger(rule: StopRule): StopTriggerEvent {
+  return {
+    rule,
+    position: {
+      uid: "position-1",
+      symbol: "F_THYAO0826",
+      displayName: "F_THYAO0826",
+      quantity: 2,
+      averageCost: 310,
+      currentPrice: 304,
+      unrealizedProfitLoss: null,
+      currency: "TRY",
+    },
+    price: 304,
+    quantity: 2,
+    side: "SELL",
+    priceAgeMs: 0,
+  }
+}
+
+/** Records what the terminal asks the server to do about a fired rule. */
+function fakeMonitorClient(decisions: string[]): MonitorClient {
+  return {
+    decideAlert: (alertId: string, decision: string) => decisions.push(`alert:${alertId}:${decision}`),
+  } as unknown as MonitorClient
+}
+
+test("subscribes to the contracts the server's stop rules protect, not only the watchlist", async () => {
+  const { renderer, waitFor } = await createTestRenderer({ width: 120, height: 30 })
   const quotes = new FakeQuoteStream()
+  const rule = { ...stopRuleFixture(), symbol: "F_UNWATCHED0826" }
+  const stops = new RemoteStopRules(new FakeStopRules([rule], []))
+  const screen = new WatchlistScreen(renderer, { instruments, candles, news, account, quotes, stops })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  stops.acceptViews([stopView(rule)])
+
+  await waitFor(() => quotes.startedSymbols?.includes("F_UNWATCHED0826") === true)
+  expect(quotes.startedSymbols).toContain("F_XU0300826")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("a stop the server reports as fired asks first and never exits locally", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
   const exits: ExitViopPositionRequest[] = []
-  const cues: string[] = []
-  const store = new FakePriceAlertStore([priceAlertFixture()])
+  const decisions: string[] = []
+  const rule = stopRuleFixture()
+  const stops = new RemoteStopRules(new FakeStopRules([rule], decisions))
   const screen = new WatchlistScreen(renderer, {
     instruments,
     candles,
     news,
     account,
-    quotes,
+    quotes: new FakeQuoteStream(),
     positionExit: fakePositionExit(exits),
-    priceAlerts: store,
+    stops,
+    stopCountdownMs: 60_000,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Collateral"))
+
+  stops.acceptTrigger(stopTrigger(rule), 60_000, false)
+
+  const modal = await waitForFrame((frame) => frame.includes("Stop reached"))
+  expect(modal).toContain("SELL 2 at the exchange limit")
+  // The exit belongs to the server: the terminal must not send one itself.
+  expect(exits).toHaveLength(0)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("confirming a fired stop asks the server to send it", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const exits: ExitViopPositionRequest[] = []
+  const decisions: string[] = []
+  const rule = stopRuleFixture()
+  const stops = new RemoteStopRules(new FakeStopRules([rule], decisions))
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    quotes: new FakeQuoteStream(),
+    positionExit: fakePositionExit(exits),
+    stops,
+    stopCountdownMs: 60_000,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Collateral"))
+  stops.acceptTrigger(stopTrigger(rule), 60_000, false)
+  await waitForFrame((frame) => frame.includes("Stop reached"))
+
+  mockInput.pressEnter()
+
+  expect(decisions).toEqual(["stop:rule-1:confirm"])
+  expect(exits).toHaveLength(0)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("cancelling a fired stop stands it down through the server", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const exits: ExitViopPositionRequest[] = []
+  const decisions: string[] = []
+  const rule = stopRuleFixture()
+  const stops = new RemoteStopRules(new FakeStopRules([rule], decisions))
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    quotes: new FakeQuoteStream(),
+    positionExit: fakePositionExit(exits),
+    stops,
+    stopCountdownMs: 60_000,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Collateral"))
+  stops.acceptTrigger(stopTrigger(rule), 60_000, false)
+  await waitForFrame((frame) => frame.includes("Stop reached"))
+
+  mockInput.pressEscape()
+  // Escape is disambiguated from an escape sequence, so the decision lands once
+  // the modal has actually gone.
+  await waitForFrame((frame) => !frame.includes("Stop reached"))
+
+  expect(decisions).toEqual(["stop:rule-1:cancel"])
+  expect(exits).toHaveLength(0)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("an alert the server reports as fired rings and trades nothing", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const exits: ExitViopPositionRequest[] = []
+  const cues: string[] = []
+  const alert = priceAlertFixture()
+  const alerts = new RemoteAlerts(new FakeAlerts([alert]), fakeMonitorClient([]))
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    quotes: new FakeQuoteStream(),
+    positionExit: fakePositionExit(exits),
+    alerts,
     sound: { play: (cue) => cues.push(cue) },
   })
   renderer.root.add(screen.root)
   screen.mount()
-  await waitFor(() => quotes.startedSymbols?.includes("F_THYAO0826") === true)
+  await waitForFrame((frame) => frame.includes("Collateral"))
 
-  // The level has to be approached from the near side before it counts.
-  quotes.emit(tick(310))
-  quotes.emit(tick(304))
+  alerts.acceptTrigger({ alert, price: 304, priceAgeMs: 0 })
 
   await waitForFrame((value) => value.includes("Nothing was traded"))
   expect(cues).toEqual(["ALERT"])
   expect(exits).toEqual([])
-  expect(store.alerts.get("alert-1")).toMatchObject({ status: "TRIGGERED", triggeredPrice: 304 })
 
-  // Any key dismisses it; still nothing is sent.
   mockInput.pressKey("escape")
   await waitForFrame((value) => !value.includes("Nothing was traded"))
   expect(exits).toEqual([])
@@ -1984,101 +2177,103 @@ test("a reached alert rings and shows a notice, and trades nothing", async () =>
   renderer.destroy()
 })
 
-test("an account that has not answered yet does not end every stop rule", async () => {
-  const { renderer, waitFor } = await createTestRenderer({ width: 120, height: 30 })
-  const store = new FakeStopRuleStore([stopRuleFixture()])
-  let loads = 0
-  // In the real app the account is a network call, so the rules finish loading
-  // first. An empty position list at that moment is "not known yet" — reading
-  // it as "every position closed" ended every rule, on disk, on every restart.
-  const slowAccount: AccountSource = {
-    async loadAccount(options) {
-      await Bun.sleep(20)
-      const snapshot = await account.loadAccount(options)
-      loads += 1
-      return snapshot
-    },
-  }
-  const screen = new WatchlistScreen(renderer, {
-    instruments,
-    candles,
-    news,
-    account: slowAccount,
-    stopRules: store,
-  })
-  renderer.root.add(screen.root)
-  screen.mount()
-
-  await waitFor(() => loads > 0)
-  expect(store.rules.get("rule-1")?.status).toBe("ARMED")
-
-  screen.destroy()
-  renderer.destroy()
-})
-
-test("a breached stop asks first, then exits only that position", async () => {
-  const { renderer, waitFor, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
-  const quotes = new FakeQuoteStream()
-  const exits: ExitViopPositionRequest[] = []
-  const store = new FakeStopRuleStore([stopRuleFixture()])
+/**
+ * The server holds a fired alert as outstanding until a client answers it, and
+ * replays what is outstanding to whoever attaches. Closing only the popup leaves
+ * it outstanding, so the next reconnect — or the next terminal — rings again for
+ * an alert the trader already dealt with.
+ */
+test("dismissing an alert tells the server, so it stops being replayed", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const decisions: string[] = []
+  const alert = priceAlertFixture()
+  const alerts = new RemoteAlerts(new FakeAlerts([alert]), fakeMonitorClient(decisions))
   const screen = new WatchlistScreen(renderer, {
     instruments,
     candles,
     news,
     account,
-    quotes,
-    positionExit: fakePositionExit(exits),
-    stopRules: store,
-    // The countdown is the confirmation; zero means "send as soon as it opens".
-    stopCountdownMs: 0,
+    quotes: new FakeQuoteStream(),
+    alerts,
   })
   renderer.root.add(screen.root)
   screen.mount()
   await waitForFrame((frame) => frame.includes("Collateral"))
 
-  // A tick on the safe side arms the rule, the next one reaches the level.
-  quotes.emit(tick(312))
-  quotes.emit(tick(304))
+  alerts.acceptTrigger({ alert, price: 304, priceAgeMs: 0 })
+  await waitForFrame((frame) => frame.includes("Nothing was traded"))
 
-  await waitFor(() => exits.length === 1)
-  expect(exits[0]).toMatchObject({ instrumentUid: "position-1", quantity: 2 })
-  // The rule is spent, and its order is recorded against it.
-  await waitFor(() => store.rules.get("rule-1")?.status === "DONE")
-  expect(store.rules.get("rule-1")?.exitOrderUid).toBe("exit-1")
+  mockInput.pressKey("escape")
+  await waitForFrame((frame) => !frame.includes("Nothing was traded"))
+
+  expect(decisions).toEqual([`alert:${alert.id}:dismiss`])
 
   screen.destroy()
   renderer.destroy()
 })
 
-test("cancelling a trigger sends nothing and stands the rule down", async () => {
-  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
-  const quotes = new FakeQuoteStream()
-  const exits: ExitViopPositionRequest[] = []
-  const store = new FakeStopRuleStore([stopRuleFixture()])
+/**
+ * The countdown belongs to the server. Saying "no order sent" without being
+ * told so is the worst thing this screen can do: the trader stops watching, and
+ * the exit goes out anyway when the countdown runs out.
+ */
+test("does not claim a stop was stood down until the server says it was", async () => {
+  const { renderer, mockInput, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({
+    width: 120,
+    height: 30,
+  })
+  const rule = stopRuleFixture()
+  const rules = new FakeStopRules([rule])
+  rules.decideFailure = new ProtocolError("upstream_unavailable", "Cannot reach the trbot server")
+  const stops = new RemoteStopRules(rules)
   const screen = new WatchlistScreen(renderer, {
     instruments,
     candles,
     news,
     account,
-    quotes,
-    positionExit: fakePositionExit(exits),
-    stopRules: store,
+    quotes: new FakeQuoteStream(),
+    stops,
     stopCountdownMs: 60_000,
   })
   renderer.root.add(screen.root)
   screen.mount()
   await waitForFrame((frame) => frame.includes("Collateral"))
+  stops.acceptTrigger(stopTrigger(rule), 60_000, false)
+  await waitForFrame((frame) => frame.includes("Stop reached"))
 
-  quotes.emit(tick(312))
-  quotes.emit(tick(304))
-  const modal = await waitForFrame((frame) => frame.includes("Stop reached"))
-  expect(modal).toContain("SELL 2 at the exchange limit")
-
-  // Standing the rule down persists it, and nothing repaints afterwards, so the
-  // wait is on the store settling rather than on another frame arriving.
   mockInput.pressEscape()
-  await waitForStatus(store, "rule-1", "PAUSED")
-  expect(exits).toHaveLength(0)
+  await waitForFrame((frame) => frame.includes("Could not stand down"))
+
+  await renderOnce()
+  const frame = captureCharFrame()
+  expect(frame).not.toContain("no order sent")
+  // And it says the countdown is still going, which is the actionable part.
+  expect(frame).toContain("countdown is still running")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("the rules a fired stop shows come from the server, not local evaluation", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const rule = stopRuleFixture()
+  const stops = new RemoteStopRules(new FakeStopRules([rule], []))
+  const screen = new WatchlistScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    account,
+    quotes: new FakeQuoteStream(),
+    stops,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Collateral"))
+
+  expect(stops.views()).toEqual([])
+  stops.acceptViews([stopView(rule)])
+  expect(stops.views()).toHaveLength(1)
+  expect(stops.symbols()).toEqual(["F_THYAO0826"])
 
   screen.destroy()
   renderer.destroy()

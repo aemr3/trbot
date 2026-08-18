@@ -1,12 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { ChatGptOAuthClient, chatGptIdentity } from "./chatgpt-oauth.ts"
+import { ChatGptOAuthClient, chatGptIdentity, chatGptRedirectUri } from "./chatgpt-oauth.ts"
 
 describe("ChatGPT OAuth", () => {
-  test("completes the browser PKCE callback and exchanges its code", async () => {
-    const port = availablePort()
+  test("builds a PKCE authorization and exchanges the code it produces", async () => {
     let tokenBody = ""
     const client = new ChatGptOAuthClient({
-      callbackPort: port,
       fetch: async (_input, init) => {
         tokenBody = String(init?.body)
         return Response.json({
@@ -18,25 +16,32 @@ describe("ChatGPT OAuth", () => {
       },
     })
 
-    const tokens = await client.login({
-      openUrl: async (authorizationUrl) => {
-        const authorize = new URL(authorizationUrl)
-        expect(authorize.origin).toBe("https://auth.openai.com")
-        expect(authorize.searchParams.get("code_challenge_method")).toBe("S256")
-        expect(authorize.searchParams.get("redirect_uri")).toBe(`http://localhost:${port}/auth/callback`)
-        const callback = new URL(`http://127.0.0.1:${port}/auth/callback`)
-        callback.searchParams.set("code", "authorization-code")
-        callback.searchParams.set("state", authorize.searchParams.get("state") ?? "")
-        const response = await fetch(callback)
-        expect(response.ok).toBe(true)
-      },
-    })
+    const redirectUri = chatGptRedirectUri()
+    const authorization = await client.authorize(redirectUri)
+    const authorize = new URL(authorization.authorizationUrl)
+    expect(authorize.origin).toBe("https://auth.openai.com")
+    expect(authorize.searchParams.get("code_challenge_method")).toBe("S256")
+    expect(authorize.searchParams.get("redirect_uri")).toBe(redirectUri)
+    expect(authorize.searchParams.get("state")).toBe(authorization.state)
+    // The verifier stays here; only its hash is published.
+    expect(authorize.searchParams.get("code_challenge")).not.toBe(authorization.verifier)
 
+    const tokens = await client.exchange("authorization-code", redirectUri, authorization.verifier)
     expect(tokens).toMatchObject({ accessToken: "access-1", refreshToken: "refresh-1", expiresIn: 900 })
     expect(tokenBody).toContain("grant_type=authorization_code")
     expect(tokenBody).toContain("code=authorization-code")
-    expect(tokenBody).toContain("code_verifier=")
+    expect(tokenBody).toContain(`code_verifier=${authorization.verifier}`)
     expect(chatGptIdentity(tokens)).toEqual({ accountId: "account-1", email: "trader@example.com" })
+  })
+
+  test("gives each authorization its own verifier and state", async () => {
+    const client = new ChatGptOAuthClient()
+    const [first, second] = await Promise.all([
+      client.authorize(chatGptRedirectUri()),
+      client.authorize(chatGptRedirectUri()),
+    ])
+    expect(first.verifier).not.toBe(second.verifier)
+    expect(first.state).not.toBe(second.state)
   })
 
   test("keeps the existing refresh token when rotation is omitted", async () => {
@@ -60,14 +65,6 @@ describe("ChatGPT OAuth", () => {
     })).toEqual({ accountId: "account-2", email: null })
   })
 })
-
-function availablePort(): number {
-  const server = Bun.serve({ port: 0, fetch: () => new Response() })
-  const port = server.port
-  server.stop(true)
-  if (port === undefined) throw new Error("Test server did not bind a port")
-  return port
-}
 
 function jwt(payload: object): string {
   return `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`

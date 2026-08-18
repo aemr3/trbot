@@ -18,19 +18,28 @@ export interface StopTriggerConfirmationOptions {
   event: StopTriggerEvent
   countdownMs?: number
   tickMs?: number
+  /** Whether the server already has this stop on hold. */
+  held?: boolean
   onConfirm: () => void
   onCancel: () => void
+  /** Holding pauses the server's countdown, not just this display. */
+  onHoldChange?: (held: boolean) => void
 }
 
 export class StopTriggerConfirmation {
   readonly root: BoxRenderable
+
+  /** The rule this modal is deciding, so a repeat trigger can be recognised. */
+  get ruleId(): string {
+    return this.options.event.rule.id
+  }
 
   private readonly modal: BoxRenderable
   private readonly content: TextRenderable
   private readonly countdownMs: number
   private remainingMs: number
   private timer: ReturnType<typeof setInterval> | null = null
-  private held = false
+  private held: boolean
   private submitting = false
   private lastPrice: number | null
   private destroyed = false
@@ -41,6 +50,7 @@ export class StopTriggerConfirmation {
   ) {
     this.countdownMs = options.countdownMs ?? DEFAULT_COUNTDOWN_MS
     this.remainingMs = this.countdownMs
+    this.held = options.held ?? false
     this.lastPrice = options.event.price
 
     this.root = new BoxRenderable(renderer, {
@@ -108,6 +118,7 @@ export class StopTriggerConfirmation {
     // Holding stops the clock: the exit then needs an explicit Enter.
     if (!key.ctrl && key.name === "p") {
       this.held = !this.held
+      this.options.onHoldChange?.(this.held)
       this.render()
       return true
     }

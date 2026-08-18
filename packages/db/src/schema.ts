@@ -108,3 +108,21 @@ export const watchlistPreferences = sqliteTable("watchlist_preferences", {
   orderKind: text("order_kind").notNull().default("LIMIT"),
   updatedAt: integer("updated_at").notNull(),
 })
+
+// Deduplicates mutating requests. A client retrying after a reconnect presents
+// the same key, and the stored response is replayed instead of a second order
+// reaching the provider.
+export const idempotencyKeys = sqliteTable("idempotency_keys", {
+  key: text("key").primaryKey(),
+  route: text("route").notNull(),
+  requestHash: text("request_hash").notNull(),
+  /**
+   * "COMPLETED" when `responseBody` is the answer to replay, or "IN_DOUBT" when
+   * the attempt never reported one — a dropped connection leaves an order that
+   * may or may not have reached the provider, and running it again could repeat
+   * it. A key in doubt is refused rather than retried.
+   */
+  outcome: text("outcome").notNull().default("COMPLETED"),
+  responseBody: text("response_body").notNull(),
+  createdAt: integer("created_at").notNull(),
+})

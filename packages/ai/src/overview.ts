@@ -1,20 +1,14 @@
 import { streamText, type LanguageModel } from "ai"
-import type { MarketOverviewDigest, OverviewMode } from "@trbot/market/overview.ts"
+import type {
+  MarketOverviewDigest,
+  OverviewGenerateOptions,
+  OverviewGenerator,
+  OverviewMode,
+} from "@trbot/market/overview.ts"
 
 // Turns a deterministic market digest into short English commentary. The digest
 // carries every number the model may cite; the model adds no arithmetic of its
 // own, so a wrong figure here is a digest bug, not a hallucination to chase.
-
-// What the watchlist screen depends on; the model-backed implementation below
-// is wired in by the app so tests can substitute a recording fake.
-export interface OverviewGenerateOptions {
-  signal?: AbortSignal
-  onDelta: (text: string) => void
-}
-
-export interface OverviewGenerator {
-  generate(digest: MarketOverviewDigest, options: OverviewGenerateOptions): Promise<void>
-}
 
 const OVERVIEW_PROMPT_BASE = [
   "You are a market microstructure analyst writing a brief for the trader's own reading.",

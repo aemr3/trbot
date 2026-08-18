@@ -17,7 +17,7 @@ export interface AccountOverviewVariables {
   [key: string]: unknown
 }
 
-export interface ViopProfitLossPoint {
+interface ViopProfitLossPoint {
   // Null on the synthetic points the provider pads short histories with.
   date?: string | null
   startDate?: string | null
@@ -96,7 +96,7 @@ export interface AccountPositionsVariables {
   [key: string]: unknown
 }
 
-export interface AccountOrderDetail {
+interface AccountOrderDetail {
   title?: string | null
   titleDescription?: {
     description?: string | null

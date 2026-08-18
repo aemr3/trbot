@@ -1,6 +1,6 @@
 import { defineOperation } from "./graphql.ts"
 
-export interface MemberFeatureFlag {
+interface MemberFeatureFlag {
   featureName: string
   enabled: boolean
 }

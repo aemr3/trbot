@@ -578,7 +578,7 @@ interface PanelRow {
   item: unknown
 }
 
-export function renderOrders(orders: AccountOrder[]): StyledText | string {
+function renderOrders(orders: AccountOrder[]): StyledText | string {
   if (orders.length === 0) return "No VIOP orders."
   const chunks: TextChunk[] = []
   orders.forEach((order, index) => {
@@ -592,7 +592,7 @@ export function renderOrders(orders: AccountOrder[]): StyledText | string {
   return new StyledText(chunks)
 }
 
-export function renderPositions(
+function renderPositions(
   positions: AccountPosition[],
   stops: StopRuleView[] = [],
 ): StyledText | string {
@@ -605,7 +605,7 @@ export function renderPositions(
   return new StyledText(chunks)
 }
 
-export function renderStops(views: StopRuleView[]): StyledText | string {
+function renderStops(views: StopRuleView[]): StyledText | string {
   if (views.length === 0) return "No stop rules. Press n to add one."
   const chunks: TextChunk[] = []
   views.forEach((view, index) => {
@@ -673,7 +673,7 @@ function feedLabel(feed: StopRuleView["feed"], fromCandles: boolean): string {
   return fromCandles ? "no candles" : "no feed"
 }
 
-export function renderPriceAlerts(views: PriceAlertView[]): StyledText | string {
+function renderPriceAlerts(views: PriceAlertView[]): StyledText | string {
   if (views.length === 0) return "No price alerts. Press n to add one."
   const chunks: TextChunk[] = []
   views.forEach((view, index) => {

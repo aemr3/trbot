@@ -33,7 +33,7 @@ const MAX_CONTEXT_DAILY_CANDLES = 30
 // equity, so its price is the one every comparison here is made against. The
 // contract is carried separately, and only so ideas can be quoted where the
 // trader actually deals.
-export interface OverviewInstrumentInputs {
+interface OverviewInstrumentInputs {
   symbol: string
   displayName: string | null
   lastPrice: number | null
@@ -41,12 +41,12 @@ export interface OverviewInstrumentInputs {
   contractLastPrice: number | null
 }
 
-export interface OverviewInstrument extends OverviewInstrumentInputs {
+interface OverviewInstrument extends OverviewInstrumentInputs {
   // Contract minus underlying: what a level on one is worth on the other.
   basis: number | null
 }
 
-export interface OverviewBook {
+interface OverviewBook {
   bestBid: number | null
   bestAsk: number | null
   spread: number | null
@@ -57,35 +57,35 @@ export interface OverviewBook {
   marketClosed: boolean
 }
 
-export interface OverviewTape {
+interface OverviewTape {
   tradeCount: number
   aggressorBuyLots: number
   aggressorSellLots: number
   brokers: Array<{ brokerage: string; boughtLots: number; soldLots: number; netLots: number }>
 }
 
-export interface OverviewFlowHouse {
+interface OverviewFlowHouse {
   brokerage: string
   netLots: number
   averagePrice: number
   percentage: number
 }
 
-export interface OverviewFlow {
+interface OverviewFlow {
   rangeLabel: string
   live: boolean
   buyers: OverviewFlowHouse[]
   sellers: OverviewFlowHouse[]
 }
 
-export interface OverviewCustodyHouse {
+interface OverviewCustodyHouse {
   brokerage: string
   // Signed: positive lots entered the house's custody, negative left it.
   lotChange: number | null
   percentage: number
 }
 
-export interface OverviewCustody {
+interface OverviewCustody {
   lastUpdate: string | null
   live: boolean
   gainers: OverviewCustodyHouse[]
@@ -96,7 +96,7 @@ export interface OverviewCustody {
 // One house seen across both feeds: what it traded over the range and what its
 // settled custody position did. Flow fields are null when the house only shows
 // up in the register, custody fields when it only shows up in the flow.
-export interface OverviewHouse {
+interface OverviewHouse {
   brokerage: string
   flowBoughtLots: number | null
   flowSoldLots: number | null
@@ -108,7 +108,7 @@ export interface OverviewHouse {
   custodyShare: number | null
 }
 
-export interface OverviewCandle {
+interface OverviewCandle {
   // Exchange-local time, "YYYY-MM-DD HH:mm".
   time: string
   open: number
@@ -118,14 +118,14 @@ export interface OverviewCandle {
   volume: number | null
 }
 
-export interface OverviewCandleSeries {
+interface OverviewCandleSeries {
   interval: string
   candles: OverviewCandle[]
 }
 
 // The instrument's own price history on two timeframes: the intraday series
 // carries the session's structure, the daily one the standing trend.
-export interface OverviewHistory {
+interface OverviewHistory {
   intraday: OverviewCandleSeries | null
   daily: OverviewCandleSeries | null
 }
@@ -159,6 +159,18 @@ export interface StoredOverviewSnapshot extends OverviewSnapshot {
 export interface OverviewSnapshotStore {
   list(): Promise<StoredOverviewSnapshot[]>
   put(snapshot: StoredOverviewSnapshot): Promise<void>
+}
+
+// Turning a digest into commentary is a contract, not an implementation: the
+// model runs on the server, and the screen that displays the words only knows
+// that they arrive a piece at a time.
+export interface OverviewGenerateOptions {
+  signal?: AbortSignal
+  onDelta: (text: string) => void
+}
+
+export interface OverviewGenerator {
+  generate(digest: MarketOverviewDigest, options: OverviewGenerateOptions): Promise<void>
 }
 
 export interface OverviewDigestInputs {

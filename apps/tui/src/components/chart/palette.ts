@@ -15,7 +15,7 @@ export interface ChartPalette {
 }
 
 /** Mixes two "#rrggbb" colors; ratio 0 returns `a`, 1 returns `b`. */
-export function blendHex(a: string, b: string, ratio: number): string {
+function blendHex(a: string, b: string, ratio: number): string {
   const parse = (hex: string) => {
     const h = hex.replace("#", "")
     return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)] as const
@@ -28,9 +28,9 @@ export function blendHex(a: string, b: string, ratio: number): string {
 
 export const UP_COLOR = "#70d7a1"
 export const DOWN_COLOR = "#ff6b6b"
-export const GRID_COLOR = "#303030"
-export const UP_GUIDE_COLOR = "#365747"
-export const DOWN_GUIDE_COLOR = "#59383a"
+const GRID_COLOR = "#303030"
+const UP_GUIDE_COLOR = "#365747"
+const DOWN_GUIDE_COLOR = "#59383a"
 // Bright enough to find at a glance, dim enough that the candle it marks still
 // reads as the subject.
 export const SELECTION_COLOR = "#8b93a8"

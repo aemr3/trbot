@@ -7,10 +7,11 @@ import {
   type KeyEvent,
   type PasteEvent,
 } from "@opentui/core"
-import { createApiClient, OtpRequiredError, type ApiClient, type ApiClientHandle } from "@trbot/api"
-import type { OpenAuthSession } from "@trbot/auth/session.ts"
-import { PasswordInput } from "../components/password-input.ts"
+import type { HttpClient } from "@trbot/client/http.ts"
 import type { AppCredentials } from "@trbot/config"
+import { isProtocolError } from "@trbot/protocol/error.ts"
+import { PasswordInput } from "../components/password-input.ts"
+import { signIn, submitOtp } from "../server-session.ts"
 
 type LoginMode = "username" | "password" | "authenticating" | "otp"
 
@@ -18,7 +19,7 @@ export interface LoginScreenOptions {
   initialStatus?: string
   initialUsername?: string
   credentials?: AppCredentials | null
-  onAuthenticated(api: ApiClientHandle): void
+  onAuthenticated(): void
 }
 
 export class LoginScreen {
@@ -31,7 +32,6 @@ export class LoginScreen {
   private readonly usernameInput: InputRenderable
   private readonly passwordInput: PasswordInput
   private mode: LoginMode = "username"
-  private api: ApiClientHandle | null = null
   private destroyed = false
 
   private readonly handleKeypress = (key: KeyEvent): void => {
@@ -60,7 +60,7 @@ export class LoginScreen {
 
   constructor(
     private readonly renderer: CliRenderer,
-    private readonly openAuthSession: OpenAuthSession,
+    private readonly http: HttpClient,
     private readonly options: LoginScreenOptions,
   ) {
     this.root = new BoxRenderable(renderer, {
@@ -147,8 +147,6 @@ export class LoginScreen {
     this.renderer.keyInput.off("paste", this.handlePaste)
     if (!this.usernameInput.isDestroyed) this.usernameInput.value = ""
     this.passwordInput.clear()
-    this.api?.close()
-    this.api = null
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
 
@@ -188,18 +186,15 @@ export class LoginScreen {
     this.status.fg = "#ffffff"
 
     try {
-      this.api = await createApiClient(this.openAuthSession, { username, password })
-      await this.api.client.authenticate()
+      await signIn(this.http, username, password)
       this.finishAuthentication()
     } catch (error) {
       if (this.destroyed) return
-      if (error instanceof OtpRequiredError && this.api) {
-        this.showOtpInput(this.api.client)
+      if (isProtocolError(error) && error.code === "otp_required") {
+        this.showOtpInput()
         return
       }
 
-      this.api?.close()
-      this.api = null
       this.usernameInput.value = username
       this.passwordInput.clear()
       this.mode = "password"
@@ -209,7 +204,7 @@ export class LoginScreen {
     }
   }
 
-  private showOtpInput(client: ApiClient): void {
+  private showOtpInput(): void {
     this.mode = "otp"
     this.status.content = "Enter the verification code sent by SMS:"
     this.status.fg = "#ffffff"
@@ -234,7 +229,7 @@ export class LoginScreen {
       if (digits !== value) otpInput.value = digits
     })
     otpInput.on(InputRenderableEvents.ENTER, (value: string) => {
-      void this.verifyOtp(client, otpInput, value)
+      void this.verifyOtp(otpInput, value)
     })
     this.panel.remove(this.hint)
     this.panel.add(otpInput)
@@ -242,13 +237,13 @@ export class LoginScreen {
     otpInput.focus()
   }
 
-  private async verifyOtp(client: ApiClient, input: InputRenderable, value: string): Promise<void> {
+  private async verifyOtp(input: InputRenderable, value: string): Promise<void> {
     input.blur()
     this.status.content = "Verifying…"
     this.status.fg = "#ffffff"
 
     try {
-      await client.completeLogin(value)
+      await submitOtp(this.http, value)
       this.finishAuthentication()
     } catch (error) {
       if (this.destroyed) return
@@ -260,10 +255,7 @@ export class LoginScreen {
   }
 
   private finishAuthentication(): void {
-    if (!this.api) return
-    const api = this.api
-    this.api = null
-    this.options.onAuthenticated(api)
+    this.options.onAuthenticated()
   }
 }
 

@@ -6,7 +6,6 @@
     "./*": "./src/*"
   },
   "dependencies": {
-    "@trbot/api": "workspace:*",
     "@trbot/market": "workspace:*"
   },
   "devDependencies": {

@@ -1,8 +1,8 @@
 import { defineOperation } from "./graphql.ts"
 
-export type ProviderOrderSide = "BUY" | "SELL"
-export type ProviderOrderType = "LIMIT"
-export type ProviderPositionIntent = "BUY_TO_OPEN" | "BUY_TO_CLOSE" | "SELL_TO_OPEN" | "SELL_TO_CLOSE"
+type ProviderOrderSide = "BUY" | "SELL"
+type ProviderOrderType = "LIMIT"
+type ProviderPositionIntent = "BUY_TO_OPEN" | "BUY_TO_CLOSE" | "SELL_TO_OPEN" | "SELL_TO_CLOSE"
 
 export interface AssetFutureData {
   assetFuture?: {

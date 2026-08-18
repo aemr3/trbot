@@ -2,7 +2,7 @@
 // W x H cells behaves like a (W*2) x (H*4) framebuffer with per-cell color.
 import { RGBA, type TextChunk } from "@opentui/core"
 
-export interface Pixel {
+interface Pixel {
   color: string
   layer: number
 }
@@ -92,7 +92,7 @@ export function drawLine(
   }
 }
 
-export function fillColumn(buf: PixelBuffer, x: number, y0: number, y1: number, color: string, layer: number): void {
+function fillColumn(buf: PixelBuffer, x: number, y0: number, y1: number, color: string, layer: number): void {
   const start = Math.min(y0, y1)
   const end = Math.max(y0, y1)
   for (let y = start; y <= end; y++) {

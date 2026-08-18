@@ -59,6 +59,11 @@ export class ViopOrderTicket {
   private statusColor = MUTED_COLOR
   private request: AbortController | null = null
   private placedOrder: PlacedViopOrder | null = null
+  // Names the order the trader is trying to place, not the call that carries
+  // it. A resubmit after a failure whose outcome is unknown keeps the same key
+  // and is deduplicated by the server; changing the size or the price makes it
+  // a different order and mints a new one.
+  private submission: { key: string; signature: string } | null = null
   private destroyed = false
   // Quote ticks arrive in bursts; the ticket re-renders once per burst.
   private readonly liveRender = new RenderCoalescer(() => {
@@ -297,6 +302,7 @@ export class ViopOrderTicket {
         side: this.options.side,
         quantity,
         limitPrice: price,
+        idempotencyKey: this.submissionKey(quantity, price),
         signal: request.signal,
       })
       if (this.destroyed || request.signal.aborted || this.request !== request) return
@@ -313,6 +319,15 @@ export class ViopOrderTicket {
       this.options.onError?.(error)
       if (!this.destroyed) this.render()
     }
+  }
+
+  /** The same key for the same order, a new one once its terms change. */
+  private submissionKey(quantity: number, price: number): string {
+    const signature = `${quantity}@${price}`
+    if (this.submission?.signature !== signature) {
+      this.submission = { key: crypto.randomUUID(), signature }
+    }
+    return this.submission.key
   }
 
   private validationError(): string | null {

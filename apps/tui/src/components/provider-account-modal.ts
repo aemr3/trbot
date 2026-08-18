@@ -8,8 +8,7 @@ import {
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
-import type { ChatGptAccount } from "@trbot/ai/chatgpt-account.ts"
-import type { ProviderState } from "@trbot/ai/provider-state.ts"
+import type { AiAccount, AiAccountSummary } from "@trbot/protocol/ai.ts"
 
 const PANEL_BG = "#101010"
 const BORDER_COLOR = "#666666"
@@ -22,7 +21,7 @@ const ERROR_COLOR = "#ff6b6b"
 type ModalStatus = "loading" | "disconnected" | "connecting" | "connected" | "disconnecting" | "error"
 
 export interface ProviderAccountModalOptions {
-  account: ChatGptAccount
+  account: AiAccount
   onClose: () => void
 }
 
@@ -31,7 +30,7 @@ export class ProviderAccountModal {
 
   private readonly modal: BoxRenderable
   private readonly content: TextRenderable
-  private state: ProviderState | null = null
+  private state: AiAccountSummary | null = null
   private status: ModalStatus = "loading"
   private message: string | null = null
   private authorizationUrl: string | null = null

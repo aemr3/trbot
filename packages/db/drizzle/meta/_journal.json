@@ -78,6 +78,20 @@
       "when": 1786990627392,
       "tag": "0010_add_chart_indicators_preference",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1787005168133,
+      "tag": "0011_add_idempotency_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1787051061163,
+      "tag": "0012_add_idempotency_outcome",
+      "breakpoints": true
     }
   ]
 }

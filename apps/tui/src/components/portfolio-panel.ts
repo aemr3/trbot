@@ -209,15 +209,6 @@ export class PortfolioPanel {
     if (!this.root.isDestroyed) this.liveRender.schedule()
   }
 
-  /** Says so plainly rather than leaving a stale figure to be sized against. */
-  showUnavailable(): void {
-    this.portfolio = null
-    this.performance = null
-    this.metrics.content = "Account data is unavailable."
-    this.metrics.fg = MUTED_COLOR
-    this.showBarMessage("")
-  }
-
   private selectRange(range: PortfolioRange): void {
     if (this.range === range) return
     this.range = range
@@ -329,7 +320,7 @@ export class PortfolioPanel {
  * below it. Both halves are scaled by the same worst-case magnitude so a small
  * loss beside a large gain reads as small.
  */
-export function performanceChunks(performance: PortfolioPerformance, width: number): TextChunk[] {
+function performanceChunks(performance: PortfolioPerformance, width: number): TextChunk[] {
   const points = performance.points
   const peak = Math.max(...points.map((point) => Math.abs(point.profitLoss ?? 0)))
   if (points.length === 0 || peak <= 0) return []

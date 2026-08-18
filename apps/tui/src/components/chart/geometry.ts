@@ -2,7 +2,7 @@
 // bitmap pixels).
 
 /** Evenly distributes point `index` across `width` pixels, inset by the paddings. */
-export function getSeriesPosition(
+function getSeriesPosition(
   index: number,
   pointCount: number,
   width: number,

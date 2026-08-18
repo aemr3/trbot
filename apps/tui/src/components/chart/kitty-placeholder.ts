@@ -46,7 +46,7 @@ export function encodeVirtualPlacement(imageId: number, cols: number, rows: numb
 }
 
 /** Deletes the image and its placements. */
-export function encodeDelete(imageId: number): string {
+function encodeDelete(imageId: number): string {
   return `${APC_START}a=d,d=I,i=${imageId},q=2${APC_END}`
 }
 

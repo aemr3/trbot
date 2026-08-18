@@ -41,6 +41,18 @@ const DEFAULT_STALE_PRICE_MS = 20_000
 const STALE_CANDLE_MS = 90_000
 const ATR_PERIOD = 14
 
+/**
+ * How a fired stop ended.
+ *
+ * `UNKNOWN` is not a kind of failure. It means the exit may be live and nobody
+ * can say — a dropped response looks the same as an order that never left, and
+ * calling that "failed" tells a trader their position is still open when it may
+ * not be. It stands the rule down like the others, because re-arming something
+ * that may already have exited is the one thing that must not happen.
+ */
+export const STOP_OUTCOMES = ["SUBMITTED", "CANCELLED", "FAILED", "UNKNOWN"] as const
+export type StopOutcome = (typeof STOP_OUTCOMES)[number]
+
 export interface StopTriggerEvent {
   rule: StopRule
   position: AccountPosition
@@ -293,14 +305,17 @@ export class StopMonitor {
    * levels on that position down — the position it protected is gone. A
    * cancelled one leaves the rule triggered for the trader to decide on.
    */
-  async resolveTrigger(id: string, outcome: "SUBMITTED" | "CANCELLED", exitOrderUid?: string): Promise<void> {
+  async resolveTrigger(id: string, outcome: StopOutcome, exitOrderUid?: string): Promise<void> {
     const rule = this.rules.get(id)
     if (!rule) return
     const now = this.now()
-    if (outcome === "CANCELLED") {
-      const cancelled: StopRule = { ...rule, status: "PAUSED", updatedAt: now }
-      this.rules.set(id, cancelled)
-      await this.persist(cancelled)
+    if (outcome !== "SUBMITTED") {
+      // Stood down, refused, or unknown. The rule stops watching either way:
+      // left armed it would fire again immediately, and left triggered it would
+      // sit doing nothing while still reading as a protected position.
+      const stoodDown: StopRule = { ...rule, status: "PAUSED", updatedAt: now }
+      this.rules.set(id, stoodDown)
+      await this.persist(stoodDown)
       this.options.onChange?.()
       return
     }

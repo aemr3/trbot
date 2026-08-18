@@ -18,6 +18,36 @@ export interface AppConfig {
 const DEFAULT_DATABASE_URL = "./data/db.sqlite"
 const DEFAULT_AI_MODEL = "gpt-5.6-sol"
 const DEFAULT_AI_REASONING_EFFORT = "high"
+const DEFAULT_SERVER_HOST = "127.0.0.1"
+const DEFAULT_SERVER_PORT = 7717
+const DEFAULT_SERVER_URL = `http://${DEFAULT_SERVER_HOST}:${DEFAULT_SERVER_PORT}`
+
+/** The placeholder shipped in .env.example. The server refuses to run with it. */
+export const EXAMPLE_SERVER_TOKEN = "example-token-replace-before-use"
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"])
+
+interface ServerTls {
+  certPath: string
+  keyPath: string
+}
+
+export interface ServerConfig {
+  host: string
+  port: number
+  token: string
+  tls: ServerTls | null
+}
+
+export interface ClientConfig {
+  url: string
+  token: string
+  caPath: string | null
+}
+
+function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.trim().toLowerCase())
+}
 
 export function loadConfig(env: Record<string, string | undefined> = environment()): AppConfig {
   return {
@@ -29,11 +59,11 @@ export function loadConfig(env: Record<string, string | undefined> = environment
 }
 
 // The model behind the AI market overview and the effort hint sent with it.
-export function loadAiModel(env: Record<string, string | undefined> = environment()): string {
+function loadAiModel(env: Record<string, string | undefined> = environment()): string {
   return env.TRBOT_AI_MODEL?.trim() || DEFAULT_AI_MODEL
 }
 
-export function loadAiReasoningEffort(env: Record<string, string | undefined> = environment()): string {
+function loadAiReasoningEffort(env: Record<string, string | undefined> = environment()): string {
   return env.TRBOT_AI_REASONING?.trim() || DEFAULT_AI_REASONING_EFFORT
 }
 
@@ -50,6 +80,67 @@ function resolveDatabaseUrl(value: string): string {
   if (value === ":memory:") return value
   const path = value.startsWith("file:") ? value.slice("file:".length) : value
   return isAbsolute(path) ? path : resolve(workspaceRoot(), path)
+}
+
+function resolveOptionalPath(value: string | undefined): string | null {
+  if (!value) return null
+  return isAbsolute(value) ? value : resolve(workspaceRoot(), value)
+}
+
+/**
+ * How the server binds and authenticates callers.
+ *
+ * Serving a non-loopback interface without TLS is rejected here rather than at
+ * the socket: this API places orders, so plaintext across a network must not be
+ * reachable by forgetting a variable. Loopback needs no certificate.
+ */
+export function loadServerConfig(env: Record<string, string | undefined> = environment()): ServerConfig {
+  const host = env.TRBOT_SERVER_HOST?.trim() || DEFAULT_SERVER_HOST
+  const port = parsePort(env.TRBOT_SERVER_PORT)
+  const token = env.TRBOT_SERVER_TOKEN?.trim() ?? ""
+  const certPath = env.TRBOT_SERVER_TLS_CERT?.trim()
+  const keyPath = env.TRBOT_SERVER_TLS_KEY?.trim()
+  const tls = certPath && keyPath ? { certPath, keyPath } : null
+
+  if (!token) {
+    throw new Error("TRBOT_SERVER_TOKEN is required. Generate one with: bun run server:token")
+  }
+  if (token === EXAMPLE_SERVER_TOKEN) {
+    throw new Error("TRBOT_SERVER_TOKEN still holds the example value. Generate one with: bun run server:token")
+  }
+  if (!tls && !isLoopbackHost(host)) {
+    throw new Error(
+      `Refusing to serve ${host} without TLS. Set TRBOT_SERVER_TLS_CERT and TRBOT_SERVER_TLS_KEY, ` +
+        "or bind a loopback address.",
+    )
+  }
+  if (Boolean(certPath) !== Boolean(keyPath)) {
+    throw new Error("TRBOT_SERVER_TLS_CERT and TRBOT_SERVER_TLS_KEY must be set together")
+  }
+
+  return { host, port, token, tls }
+}
+
+/** How a client reaches the server. */
+export function loadClientConfig(env: Record<string, string | undefined> = environment()): ClientConfig {
+  const token = env.TRBOT_SERVER_TOKEN?.trim() ?? ""
+  if (!token) throw new Error("TRBOT_SERVER_TOKEN is required to reach the server")
+
+  return {
+    url: (env.TRBOT_SERVER_URL?.trim() || DEFAULT_SERVER_URL).replace(/\/+$/, ""),
+    token,
+    // Anchored like the database path, so a terminal started from any directory
+    // trusts the same authority.
+    caPath: resolveOptionalPath(env.TRBOT_SERVER_CA?.trim()),
+  }
+}
+
+function parsePort(value: string | undefined): number {
+  const port = Number(value?.trim() || DEFAULT_SERVER_PORT)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`TRBOT_SERVER_PORT must be a port number, received "${value}"`)
+  }
+  return port
 }
 
 // Optional credentials for unattended re-login. Kept in the environment (a

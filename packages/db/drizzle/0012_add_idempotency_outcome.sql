@@ -1,0 +1,1 @@
+ALTER TABLE `idempotency_keys` ADD `outcome` text DEFAULT 'COMPLETED' NOT NULL;

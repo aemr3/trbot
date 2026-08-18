@@ -1,0 +1,17 @@
+{
+  "name": "@trbot/provider",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@trbot/api": "workspace:*",
+    "@trbot/market": "workspace:*",
+    "@trbot/member": "workspace:*",
+    "@trbot/trading": "workspace:*"
+  },
+  "devDependencies": {
+    "@trbot/tsconfig": "workspace:*"
+  }
+}
