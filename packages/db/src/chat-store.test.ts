@@ -221,7 +221,7 @@ describe("chat session store", () => {
     expect(await chats.records("chat-1")).toEqual([record])
   })
 
-  test("keeps what answered a message and how hard it was thinking", async () => {
+  test("keeps what answered a message, how hard it was thinking, and how long it took", async () => {
     // A session can be pointed at another model, so this is the only record of what
     // wrote a given reply — and the effort it was asked for is not in the harness's
     // own message at all.
@@ -236,6 +236,7 @@ describe("chat session store", () => {
       // What actually answered: a provider can route a request to a dated snapshot.
       responseModel: "gpt-5.6-sol-2026-08-01",
       reasoning: "high",
+      elapsedMs: 4_040,
       usage: {
         input: 10,
         output: 5,
@@ -253,6 +254,7 @@ describe("chat session store", () => {
     const detail = await chats.get("chat-1")
     expect(detail?.messages[0]?.model).toBe("gpt-5.6-sol-2026-08-01")
     expect(detail?.messages[0]?.reasoning).toBe("high")
+    expect(detail?.messages[0]?.elapsedMs).toBe(4_040)
   })
 
   test("orders a conversation by when each message was written, not when it ran", async () => {
@@ -423,6 +425,8 @@ function draftFor(record: unknown, status: ChatMessage["status"] = "COMPLETE"): 
       usage: null,
       model: (value.responseModel as string | undefined) ?? (value.model as string | undefined) ?? null,
       reasoning: (value.reasoning as string | undefined) ?? null,
+      elapsedMs: (value.elapsedMs as number | undefined) ?? null,
+      thinkingMs: (value.thinkingMs as number | undefined) ?? null,
       createdAt: value.timestamp as number,
     },
     record,

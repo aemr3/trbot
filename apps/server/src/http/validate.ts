@@ -38,9 +38,9 @@ import { OVERVIEW_MODES, type OverviewMode, type StoredOverviewSnapshot } from "
 import {
   INSTRUMENT_SORTS,
   SORT_DIRECTIONS,
-  normalizeWatchlistPreferences,
-  type WatchlistPreferences,
-} from "@trbot/preferences/watchlist.ts"
+  normalizeAppPreferences,
+  type AppPreferences,
+} from "@trbot/preferences/app.ts"
 import type { SettlementMode } from "@trbot/market/settlement.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import { isPortfolioRange, type PortfolioRange } from "@trbot/trading/account.ts"
@@ -240,9 +240,9 @@ export function priceAlertStatus(value: unknown): PriceAlertStatus {
  * defaults when it reads something it does not recognise, so an unchecked write
  * would not fail — it would quietly reset the trader's settings on next launch.
  */
-export function watchlistPreferences(body: Record<string, unknown>): WatchlistPreferences {
+export function appPreferences(body: Record<string, unknown>): AppPreferences {
   const candleRange = oneOf(body.candleRange, CANDLE_RANGES, "candleRange")
-  return normalizeWatchlistPreferences({
+  return normalizeAppPreferences({
     instrumentSort: oneOf(body.instrumentSort, INSTRUMENT_SORTS, "instrumentSort"),
     sortDirection: oneOf(body.sortDirection, SORT_DIRECTIONS, "sortDirection"),
     candleRange,
@@ -253,6 +253,9 @@ export function watchlistPreferences(body: Record<string, unknown>): WatchlistPr
       ? null
       : text(body.selectedInstrumentUid, "selectedInstrumentUid"),
     orderKind: oneOf(body.orderKind, VIOP_ORDER_KINDS, "orderKind"),
+    selectedChatSessionId: body.selectedChatSessionId === null || body.selectedChatSessionId === undefined
+      ? null
+      : text(body.selectedChatSessionId, "selectedChatSessionId"),
   })
 }
 

@@ -30,7 +30,7 @@ export function isSortDirection(value: string): value is SortDirection {
   return SORT_DIRECTIONS.some((direction) => direction === value)
 }
 
-export interface WatchlistPreferences {
+export interface AppPreferences {
   instrumentSort: InstrumentSort
   sortDirection: SortDirection
   candleRange: CandleRange
@@ -39,6 +39,8 @@ export interface WatchlistPreferences {
   chartIndicators: ChartIndicator[]
   selectedInstrumentUid: string | null
   orderKind: ViopOrderKind
+  /** The conversation restored when CHAT opens again. */
+  selectedChatSessionId: string | null
 }
 
 /** Reads the stored indicator list, dropping any name the app no longer draws. */
@@ -46,7 +48,7 @@ export function parseChartIndicators(value: string): ChartIndicator[] {
   return value.split(",").map((name) => name.trim()).filter(isChartIndicator)
 }
 
-export const DEFAULT_WATCHLIST_PREFERENCES: WatchlistPreferences = {
+export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   instrumentSort: "volume",
   sortDirection: "desc",
   candleRange: "INTRADAY",
@@ -55,9 +57,10 @@ export const DEFAULT_WATCHLIST_PREFERENCES: WatchlistPreferences = {
   chartIndicators: [],
   selectedInstrumentUid: null,
   orderKind: "LIMIT",
+  selectedChatSessionId: null,
 }
 
-export function normalizeWatchlistPreferences(preferences: WatchlistPreferences): WatchlistPreferences {
+export function normalizeAppPreferences(preferences: AppPreferences): AppPreferences {
   return {
     ...preferences,
     candleInterval: DEFAULT_INTERVALS_BY_RANGE[preferences.candleRange].includes(preferences.candleInterval)

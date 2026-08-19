@@ -176,6 +176,8 @@ export class ChatController {
       usage: null,
       model: null,
       reasoning: null,
+      elapsedMs: null,
+      thinkingMs: null,
       createdAt: this.now(),
     }
     await this.options.store.append(sessionId, { message, record: userRecord(message) })

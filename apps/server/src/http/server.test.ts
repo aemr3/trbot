@@ -337,7 +337,7 @@ describe("server and client over the wire", () => {
       orderKind: "LIMIT",
     }
     const error = await client
-      .put(ROUTES.watchlistPreferences, { body: preferences })
+      .put(ROUTES.appPreferences, { body: preferences })
       .catch((caught: unknown) => caught)
 
     expect(isProtocolError(error) && error.code).toBe("invalid_request")

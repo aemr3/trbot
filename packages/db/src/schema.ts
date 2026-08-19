@@ -117,7 +117,7 @@ export const priceAlerts = sqliteTable("price_alerts", {
   triggeredPrice: real("triggered_price"),
 })
 
-export const watchlistPreferences = sqliteTable("watchlist_preferences", {
+export const appPreferences = sqliteTable("app_preferences", {
   id: integer("id").primaryKey(),
   instrumentSort: text("instrument_sort").notNull(),
   sortDirection: text("sort_direction").notNull(),
@@ -128,6 +128,7 @@ export const watchlistPreferences = sqliteTable("watchlist_preferences", {
   chartIndicators: text("chart_indicators").notNull().default(""),
   selectedInstrumentUid: text("selected_instrument_uid"),
   orderKind: text("order_kind").notNull().default("LIMIT"),
+  selectedChatSessionId: text("selected_chat_session_id"),
   updatedAt: integer("updated_at").notNull(),
 })
 
@@ -177,6 +178,11 @@ export const chatMessages = sqliteTable(
     model: text("model"),
     responseModel: text("response_model"),
     reasoning: text("reasoning"),
+    // How long the model took over this reply, and how much of that went before its
+    // first word. Measured by the agent around the stream, because the timestamps
+    // either side of a queued message describe the wait rather than the thinking.
+    elapsedMs: integer("elapsed_ms"),
+    thinkingMs: integer("thinking_ms"),
     responseId: text("response_id"),
     stopReason: text("stop_reason"),
     errorMessage: text("error_message"),

@@ -2,7 +2,8 @@ import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import { App } from "./app.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
-import { DEFAULT_WATCHLIST_PREFERENCES } from "@trbot/preferences/watchlist.ts"
+import { DEFAULT_APP_PREFERENCES } from "@trbot/preferences/app.ts"
+import { ROUTES } from "@trbot/protocol/routes.ts"
 import { createServerSession, type ServerSession } from "./server-session.ts"
 
 // The terminal reaches an unreachable address here: constructing the app makes
@@ -115,7 +116,11 @@ test("leaves the sign-in screen on its own once the server has a session", async
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: () => Response.json({ authenticated }),
+    fetch: (request) => {
+      const path = new URL(request.url).pathname
+      if (path === ROUTES.chatSessions) return Response.json([])
+      return Response.json({ authenticated })
+    },
   })
   const session = createServerSession({
     config: { url: `http://127.0.0.1:${server.port}`, token: "test-token", caPath: null },
@@ -157,7 +162,7 @@ test("reads the stored settings when the server appears, rather than defaulting 
       sessionPollMs: 10,
       loadPreferences: async () => {
         loads += 1
-        return { ...DEFAULT_WATCHLIST_PREFERENCES, instrumentSort: "name" }
+        return { ...DEFAULT_APP_PREFERENCES, instrumentSort: "name" }
       },
     },
   )

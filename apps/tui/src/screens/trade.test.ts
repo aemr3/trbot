@@ -48,7 +48,7 @@ import { RemoteAlerts, RemoteStopRules } from "../remote-monitors.ts"
 import { LogsScreen } from "./logs.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 import { TradeScreen } from "./trade.ts"
-import type { WatchlistPreferences } from "@trbot/preferences/watchlist.ts"
+import type { AppPreferences } from "@trbot/preferences/app.ts"
 
 // Tab cycles the panels in this order from a freshly mounted screen. Naming the
 // destination keeps the tests readable, and adding a panel only moves this list.
@@ -980,7 +980,7 @@ test("opens the complete shortcut help with question mark and closes it again", 
 
 test("searches tickers with slash and switches only after Enter", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
-  const preferences: WatchlistPreferences[] = []
+  const preferences: AppPreferences[] = []
   const screen = new TradeScreen(renderer, {
     instruments,
     candles,
@@ -1034,6 +1034,7 @@ test("restores and reports list and chart display choices", async () => {
       chartIndicators: [],
       selectedInstrumentUid: "u1",
       orderKind: "LIMIT",
+      selectedChatSessionId: null,
     },
     onPreferencesChange: (preferences) => changes.push(preferences),
   })
@@ -1086,6 +1087,7 @@ test("falls back to an available contract when the saved contract no longer exis
       chartIndicators: [],
       selectedInstrumentUid: "expired-contract",
       orderKind: "LIMIT",
+      selectedChatSessionId: null,
     },
     onPreferencesChange: (preferences) => selectedInstrumentUids.push(preferences.selectedInstrumentUid),
   })

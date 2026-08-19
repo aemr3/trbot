@@ -231,7 +231,7 @@ export class AiModelModal {
     const levels = this.levels
     this.header.content = new StyledText([
       fg(VALUE_COLOR)(`${levels ? `${levels.model.name} — reasoning` : this.options.title}\n`),
-      fg(MUTED_COLOR)(levels ? "How hard it thinks\n" : `${this.models.length} available\n`),
+      ...(levels ? [] : [fg(MUTED_COLOR)(`${this.models.length} available\n`)]),
     ])
 
     if (levels) {

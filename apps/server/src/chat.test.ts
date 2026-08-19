@@ -96,6 +96,8 @@ function reply(text: string): ChatMessageDraft {
       usage: null,
       model: "test-model",
       reasoning: "high",
+      elapsedMs: 1_200,
+      thinkingMs: 400,
       createdAt: Date.now(),
     },
     record: {

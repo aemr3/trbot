@@ -23,7 +23,7 @@ export const ROUTES = {
   cancelOrders: `${API_PREFIX}/orders/cancel`,
   exitPositions: `${API_PREFIX}/positions/exit`,
   exitPosition: (uid: string) => `${API_PREFIX}/positions/${encodeURIComponent(uid)}/exit`,
-  watchlistPreferences: `${API_PREFIX}/preferences/watchlist`,
+  appPreferences: `${API_PREFIX}/preferences/app`,
   alerts: `${API_PREFIX}/alerts`,
   alert: (id: string) => `${API_PREFIX}/alerts/${encodeURIComponent(id)}`,
   alertStatus: (id: string) => `${API_PREFIX}/alerts/${encodeURIComponent(id)}/status`,

@@ -229,3 +229,61 @@ test("stamps a reply with what answered it and the effort it was asked for", asy
   expect(drafts[0]?.message.model).toBe(faux.getModel().id)
   expect(drafts[0]?.message.reasoning).toBe("high")
 })
+
+test("times each reply around the stream, not around the queue", async () => {
+  // The transcript reports how long the model took. A message can wait its turn for
+  // minutes before it is asked, so the clock starts when the request goes out.
+  const { faux, models } = scripted()
+  faux.setResponses([fauxAssistantMessage([fauxText("Thin volumes.")])])
+  // A clock that stands still until the run begins: the first two readings are the
+  // agent building the turn, and the pair around the stream is what gets reported.
+  const readings = [1_000, 1_000, 3_500]
+  const agent = new ChatAgent({ models, now: () => readings.shift() ?? 3_500 })
+
+  const drafts: ChatMessageDraft[] = []
+  await agent.run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Volumes?",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onMessage: async (draft) => {
+        drafts.push(draft)
+      },
+    },
+  })
+
+  expect(drafts[0]?.message.elapsedMs).toBe(2_500)
+  // Nothing was thought, so nothing is claimed to have been.
+  expect(drafts[0]?.message.thinkingMs).toBeNull()
+})
+
+test("reports how much of a reply went on thinking, up to its first word", async () => {
+  // The transcript folds the reasoning away and labels the fold with this, so the
+  // number has to mean the wait before the answer rather than the whole call.
+  const { faux, models } = scripted({ reasoning: true })
+  faux.setResponses([fauxAssistantMessage([fauxThinking("weighing the tape"), fauxText("Thin volumes.")])])
+  // Asked, stream started, first word, stream finished.
+  const readings = [1_000, 1_000, 2_800, 3_500]
+  const agent = new ChatAgent({ models, now: () => readings.shift() ?? 3_500 })
+
+  const drafts: ChatMessageDraft[] = []
+  await agent.run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Volumes?",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onMessage: async (draft) => {
+        drafts.push(draft)
+      },
+    },
+  })
+
+  expect(drafts[0]?.message.thinkingMs).toBe(1_800)
+  expect(drafts[0]?.message.elapsedMs).toBe(2_500)
+})

@@ -11,7 +11,7 @@ import type { NewsArticle, NewsSource } from "@trbot/market/news.ts"
 import type { OverviewSnapshotStore, StoredOverviewSnapshot } from "@trbot/market/overview.ts"
 import type { SettlementAnalysis, SettlementRequest, SettlementSource } from "@trbot/market/settlement.ts"
 import { isMemberFeature, memberFeatureSet, type MemberFeatureSet, type MemberFeatureSource } from "@trbot/member/features.ts"
-import type { WatchlistPreferences } from "@trbot/preferences/watchlist.ts"
+import type { AppPreferences } from "@trbot/preferences/app.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import type { AccountSnapshot, AccountSource, PortfolioRange } from "@trbot/trading/account.ts"
@@ -181,14 +181,14 @@ export class HttpOrderSource implements ViopOrderSource, ViopOrderCancellationSo
   }
 }
 
-export class HttpWatchlistPreferences {
-  private pending: WatchlistPreferences | null = null
+export class HttpAppPreferences {
+  private pending: AppPreferences | null = null
   private writing = false
 
   constructor(private readonly http: HttpClient) {}
 
-  load(): Promise<WatchlistPreferences> {
-    return this.http.get<WatchlistPreferences>(ROUTES.watchlistPreferences)
+  load(): Promise<AppPreferences> {
+    return this.http.get<AppPreferences>(ROUTES.appPreferences)
   }
 
   /**
@@ -200,7 +200,7 @@ export class HttpWatchlistPreferences {
    * since these are last-write-wins and the states in between are not worth a
    * round trip.
    */
-  save(preferences: WatchlistPreferences): void {
+  save(preferences: AppPreferences): void {
     this.pending = preferences
     if (this.writing) return
     this.writing = true
@@ -213,7 +213,7 @@ export class HttpWatchlistPreferences {
         const body = this.pending
         this.pending = null
         // Preferences are cosmetic; a failed save must not interrupt trading.
-        await this.http.put(ROUTES.watchlistPreferences, { body }).catch(() => {})
+        await this.http.put(ROUTES.appPreferences, { body }).catch(() => {})
       }
     } finally {
       this.writing = false

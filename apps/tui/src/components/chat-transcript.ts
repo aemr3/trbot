@@ -10,18 +10,24 @@ import {
 /**
  * One turn as the transcript shows it.
  *
- * The rail is what makes a long conversation readable: every line of a message sits
- * against a colour that says who is speaking, so a reply that wraps over ten lines is
- * still visibly one reply.
+ * A turn is three lines of information at most: what led to it, what it says, and who
+ * said it. Prompts are quiet filled blocks; replies sit directly on the transcript.
+ * A small marker distinguishes the two without adding a full-height rail beside every
+ * wrapped line.
  */
 export interface ChatTranscriptBlock {
   id: string
-  /** Who is speaking. Left out for a note that belongs to nobody, such as an empty state. */
-  name?: string | StyledText
-  /** Applies to a plain name; a styled one carries its own colours. */
-  nameColor?: string
-  railColor: string
+  /** The compact role or state marker at the start of the turn. */
+  marker?: StyledText
+  /** Optional background for turns that need a stronger block treatment. */
+  fill?: string
+  /** Whether the turn gets a blank line above and below its content. */
+  padded?: boolean
+  /** Above the content: what the model thought, or which tool answered. */
+  header?: StyledText
   content: StyledText
+  /** Below the content: which model wrote it, how long it took, what it cost. */
+  footer?: StyledText
 }
 
 export interface ChatTranscriptOptions {
@@ -38,7 +44,13 @@ export interface ChatTranscriptOptions {
 export class ChatTranscript {
   readonly root: ScrollBoxRenderable
 
-  private rows: { box: BoxRenderable; name: TextRenderable; body: TextRenderable }[] = []
+  private rows: {
+    box: BoxRenderable
+    marker: TextRenderable
+    header: TextRenderable
+    body: TextRenderable
+    footer: TextRenderable
+  }[] = []
 
   constructor(
     private readonly renderer: RenderContext,
@@ -53,7 +65,6 @@ export class ChatTranscript {
       backgroundColor: options.backgroundColor,
       contentOptions: {
         flexDirection: "column",
-        paddingRight: 1,
         backgroundColor: options.backgroundColor,
       },
     })
@@ -74,13 +85,23 @@ export class ChatTranscript {
     blocks.forEach((block, index) => {
       const row = this.rows[index]
       if (!row) return
-      row.box.borderColor = block.railColor
-      row.name.visible = block.name !== undefined
-      if (block.name !== undefined) {
-        row.name.content = block.name
-        if (typeof block.name === "string") row.name.fg = block.nameColor ?? block.railColor
-      }
+      const fill = block.fill ?? this.options.backgroundColor
+      row.box.backgroundColor = fill
+      row.box.paddingLeft = block.marker === undefined ? 0 : 2
+      row.marker.visible = block.marker !== undefined
+      if (block.marker !== undefined) row.marker.content = block.marker
+      row.marker.top = block.padded ? 1 : 0
+      row.box.paddingTop = block.padded ? 1 : 0
+      row.box.paddingBottom = block.padded ? 1 : 0
+      row.header.visible = block.header !== undefined
+      if (block.header !== undefined) row.header.content = block.header
+      // A thought or tool label introduces the body; it is not the first line of it.
+      // Likewise, provenance belongs to the reply without running into its last line.
+      row.body.marginTop = block.header !== undefined ? 1 : 0
       row.body.content = block.content
+      row.footer.visible = block.footer !== undefined
+      if (block.footer !== undefined) row.footer.content = block.footer
+      row.footer.marginTop = block.footer !== undefined ? 1 : 0
     })
   }
 
@@ -104,17 +125,29 @@ export class ChatTranscript {
         width: "100%",
         flexDirection: "column",
         flexShrink: 0,
-        border: ["left"],
-        paddingLeft: 1,
+        paddingRight: 1,
         marginBottom: 1,
         backgroundColor: this.options.backgroundColor,
       })
-      const name = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "none" })
+      const marker = new TextRenderable(this.renderer, {
+        content: "",
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: 1,
+        wrapMode: "none",
+      })
+      // Reasoning can be paragraph-long; clipping its first line makes the rest
+      // impossible to reach even when thoughts are expanded.
+      const header = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "word" })
       const body = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "word" })
-      box.add(name)
+      const footer = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "none" })
+      box.add(marker)
+      box.add(header)
       box.add(body)
+      box.add(footer)
       this.root.add(box)
-      this.rows.push({ box, name, body })
+      this.rows.push({ box, marker, header, body, footer })
     }
   }
 }

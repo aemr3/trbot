@@ -8,7 +8,7 @@ import { DrizzlePriceAlertStore } from "@trbot/db/price-alert-store.ts"
 import { DrizzleAiCredentialStore } from "@trbot/db/ai-credential-store.ts"
 import { DrizzleAiPreferencesStore } from "@trbot/db/ai-preferences-store.ts"
 import { DrizzleStopRuleStore } from "@trbot/db/stop-rule-store.ts"
-import { DrizzleWatchlistPreferencesStore } from "@trbot/db/watchlist-preferences-store.ts"
+import { DrizzleAppPreferencesStore } from "@trbot/db/app-preferences-store.ts"
 import { ChatAgent } from "@trbot/ai/chat.ts"
 import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trbot/ai/harness.ts"
 import { noTools } from "@trbot/ai/tool.ts"
@@ -62,7 +62,7 @@ async function startTrbotServer(): Promise<void> {
       session.require().candles.loadCandles(instrumentUid, range, interval, options),
   }
 
-  const preferences = new DrizzleWatchlistPreferencesStore(connection.db)
+  const preferences = new DrizzleAppPreferencesStore(connection.db)
   const alertStore = new DrizzlePriceAlertStore(connection.db)
   const stopStore = new DrizzleStopRuleStore(connection.db)
   const idempotency = new IdempotencyStore(connection.db)

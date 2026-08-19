@@ -116,9 +116,9 @@ export class ChatAgent {
     context.messages.push(asked)
 
     for (;;) {
-      const reply = await this.streamReply(context, turn)
+      const { reply, timing } = await this.streamReply(context, turn)
       context.messages.push(reply)
-      await turn.events.onMessage(assistantDraft(reply, turn.reasoningEffort ?? null))
+      await turn.events.onMessage(assistantDraft(reply, turn.reasoningEffort ?? null, timing))
 
       if (reply.stopReason === "aborted") {
         return { completed: false, aborted: true, errorMessage: null }
@@ -156,7 +156,19 @@ export class ChatAgent {
     }
   }
 
-  private async streamReply(context: Context, turn: ChatTurnOptions): Promise<AssistantMessage> {
+  /**
+   * One call to the model, timed as it goes.
+   *
+   * The clock starts here rather than in `run` so it measures the request and nothing
+   * else: a message can wait its turn for minutes, and that wait is not thinking.
+   */
+  private async streamReply(
+    context: Context,
+    turn: ChatTurnOptions,
+  ): Promise<{ reply: AssistantMessage; timing: ReplyTiming }> {
+    const started = this.now()
+    let thought = false
+    let thinkingMs: number | null = null
     const events = this.options.models.stream(turn.model, context, {
       signal: turn.signal,
       // Named for what the provider calls it; a provider that does not know the
@@ -164,16 +176,32 @@ export class ChatAgent {
       ...(turn.reasoningEffort ? { reasoningEffort: turn.reasoningEffort } : {}),
     })
     for await (const event of events) {
-      if (event.type === "text_delta") turn.events.onText(event.delta)
-      else if (event.type === "thinking_delta") turn.events.onReasoning(event.delta)
+      if (event.type === "text_delta") {
+        // The first word is where thinking ended, whatever the model does afterwards.
+        if (thought && thinkingMs === null) thinkingMs = this.now() - started
+        turn.events.onText(event.delta)
+      } else if (event.type === "thinking_delta") {
+        thought = true
+        turn.events.onReasoning(event.delta)
+      }
     }
     // The final message carries the failure too, so it is read rather than
     // thrown: a reply that errored part way still has content worth keeping.
-    return await events.result()
+    const reply = await events.result()
+    const elapsedMs = this.now() - started
+    // A reply that thought and then said nothing — a tool call, or a run that was
+    // stopped — spent the whole call thinking.
+    return { reply, timing: { elapsedMs, thinkingMs: thought ? thinkingMs ?? elapsedMs : null } }
   }
 }
 
-function assistantDraft(reply: AssistantMessage, reasoning: string | null): ChatMessageDraft {
+/** How long a reply took, and how much of that was spent before its first word. */
+interface ReplyTiming {
+  elapsedMs: number
+  thinkingMs: number | null
+}
+
+function assistantDraft(reply: AssistantMessage, reasoning: string | null, timing: ReplyTiming): ChatMessageDraft {
   const blocks = reply.content.map(replyBlock)
   const message: ChatMessage = {
     id: crypto.randomUUID(),
@@ -188,6 +216,8 @@ function assistantDraft(reply: AssistantMessage, reasoning: string | null): Chat
     usage: usageOf(reply),
     model: reply.responseModel ?? reply.model,
     reasoning,
+    elapsedMs: timing.elapsedMs,
+    thinkingMs: timing.thinkingMs,
     createdAt: reply.timestamp,
   }
   return { message, record: reply }
@@ -207,6 +237,8 @@ function toolResultDraft(result: Message & { role: "toolResult" }, blocks: ChatB
     usage: null,
     model: null,
     reasoning: null,
+    elapsedMs: null,
+    thinkingMs: null,
     createdAt: result.timestamp,
   }
   return { message, record: result }

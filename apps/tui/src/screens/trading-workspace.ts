@@ -11,6 +11,10 @@ export type TradingWorkspaceTab = "trade" | "chat" | "logs"
 interface WorkspacePanel {
   readonly root: BoxRenderable
   mount?(): void
+  /** Restores any panel-local focus after its root is put back on screen. */
+  activate?(): void
+  /** Releases focused controls before the panel root is removed. */
+  deactivate?(): void
   handleKey(key: KeyEvent): unknown
   /**
    * Whether this panel is taking typed text right now — a composer, a search, a
@@ -127,15 +131,18 @@ export class TradingWorkspaceScreen {
     // Every panel is mounted, not only the one on screen: a chat reply keeps
     // arriving while the trader is watching the market, and a log keeps filling.
     for (const tab of TABS) this.options[tab.id].mount?.()
+    this.options[this.activeTab].activate?.()
   }
 
   selectTab(tab: TradingWorkspaceTab): void {
     if (this.destroyed || tab === this.activeTab) return
     const current = this.options[this.activeTab]
+    current.deactivate?.()
     if (!this.content.isDestroyed && !current.root.isDestroyed) this.content.remove(current.root)
     this.activeTab = tab
     const next = this.options[tab]
     if (!this.content.isDestroyed && !next.root.isDestroyed) this.content.add(next.root)
+    next.activate?.()
     this.renderTabs()
     this.renderer.requestRender()
   }

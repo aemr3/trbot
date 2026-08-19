@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import type { HttpClient } from "./http.ts"
-import { DEFAULT_WATCHLIST_PREFERENCES, type WatchlistPreferences } from "@trbot/preferences/watchlist.ts"
-import { HttpWatchlistPreferences } from "./sources.ts"
+import { DEFAULT_APP_PREFERENCES, type AppPreferences } from "@trbot/preferences/app.ts"
+import { HttpAppPreferences } from "./sources.ts"
 
 /**
  * Preference changes arrive as fast as a trader can press a key, and each one is
@@ -10,7 +10,7 @@ import { HttpWatchlistPreferences } from "./sources.ts"
  */
 
 interface Write {
-  body: WatchlistPreferences
+  body: AppPreferences
   settle: () => void
 }
 
@@ -19,19 +19,19 @@ function controllable(writes: Write[]): HttpClient {
   return {
     put(_path: string, options: { body?: unknown }) {
       return new Promise<void>((resolve) => {
-        writes.push({ body: options.body as WatchlistPreferences, settle: resolve })
+        writes.push({ body: options.body as AppPreferences, settle: resolve })
       })
     },
   } as unknown as HttpClient
 }
 
-function preferences(sort: WatchlistPreferences["instrumentSort"]): WatchlistPreferences {
-  return { ...DEFAULT_WATCHLIST_PREFERENCES, instrumentSort: sort }
+function preferences(sort: AppPreferences["instrumentSort"]): AppPreferences {
+  return { ...DEFAULT_APP_PREFERENCES, instrumentSort: sort }
 }
 
 test("a save waits for the one in flight rather than racing it", async () => {
   const writes: Write[] = []
-  const store = new HttpWatchlistPreferences(controllable(writes))
+  const store = new HttpAppPreferences(controllable(writes))
 
   store.save(preferences("name"))
   expect(writes).toHaveLength(1)
@@ -54,14 +54,14 @@ test("a save waits for the one in flight rather than racing it", async () => {
 })
 
 test("a failed save does not wedge the ones after it", async () => {
-  const attempts: WatchlistPreferences[] = []
+  const attempts: AppPreferences[] = []
   const failing = {
     put(_path: string, options: { body?: unknown }) {
-      attempts.push(options.body as WatchlistPreferences)
+      attempts.push(options.body as AppPreferences)
       return Promise.reject(new Error("the server refused"))
     },
   } as unknown as HttpClient
-  const store = new HttpWatchlistPreferences(failing)
+  const store = new HttpAppPreferences(failing)
 
   store.save(preferences("name"))
   await Bun.sleep(1)

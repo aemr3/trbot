@@ -84,13 +84,13 @@ import type {
 import { ViopOrderTicket } from "./order-ticket.ts"
 import {
   DEFAULT_SORT_DIRECTIONS,
-  DEFAULT_WATCHLIST_PREFERENCES,
+  DEFAULT_APP_PREFERENCES,
   INSTRUMENT_SORTS,
-  normalizeWatchlistPreferences,
+  normalizeAppPreferences,
   type InstrumentSort,
   type SortDirection,
-  type WatchlistPreferences,
-} from "@trbot/preferences/watchlist.ts"
+  type AppPreferences,
+} from "@trbot/preferences/app.ts"
 
 const UP_COLOR = "#70d7a1"
 const DOWN_COLOR = "#ff6b6b"
@@ -322,8 +322,8 @@ export interface TradeScreenOptions {
   overviewIntervalMs?: number
   overviewDebounceMs?: number
   destructiveConfirmationTimeoutMs?: number
-  preferences?: WatchlistPreferences
-  onPreferencesChange?: (preferences: WatchlistPreferences) => void
+  preferences?: AppPreferences
+  onPreferencesChange?: (preferences: AppPreferences) => void
   aiAccount?: AiAccount
   logs?: ApplicationLog
   manageInput?: boolean
@@ -445,7 +445,7 @@ export class TradeScreen {
   private connected = false
   private equityConnected = false
   private selectedEquitySymbol: string | null = null
-  private preferences: WatchlistPreferences
+  private preferences: AppPreferences
   private instrumentSort: InstrumentSort
   private sortDirection: SortDirection
 
@@ -580,7 +580,7 @@ export class TradeScreen {
     private readonly renderer: RenderContext,
     private readonly options: TradeScreenOptions,
   ) {
-    this.preferences = normalizeWatchlistPreferences(options.preferences ?? DEFAULT_WATCHLIST_PREFERENCES)
+    this.preferences = normalizeAppPreferences(options.preferences ?? DEFAULT_APP_PREFERENCES)
     this.instrumentSort = this.preferences.instrumentSort
     this.sortDirection = this.preferences.sortDirection
 
@@ -2503,7 +2503,7 @@ export class TradeScreen {
     this.savePreferences({ instrumentSort: this.instrumentSort, sortDirection: this.sortDirection })
   }
 
-  private savePreferences(update: Partial<WatchlistPreferences>): void {
+  private savePreferences(update: Partial<AppPreferences>): void {
     this.preferences = { ...this.preferences, ...update }
     this.options.onPreferencesChange?.({ ...this.preferences })
   }

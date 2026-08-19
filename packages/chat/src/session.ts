@@ -61,6 +61,23 @@ export interface ChatMessage {
    */
   model: string | null
   reasoning: string | null
+  /**
+   * How long the model took to produce this reply, in milliseconds.
+   *
+   * Measured around the stream rather than derived from timestamps, because a message
+   * that waited in the queue was written long before it was asked: the difference
+   * between two `createdAt` would report the wait as thinking. Null on a trader's
+   * message, and on a reply stored before it was measured.
+   */
+  elapsedMs: number | null
+  /**
+   * How much of that went on thinking, in milliseconds: the wait before the first word.
+   *
+   * Null when the model did not think, or did not report it. Kept apart from
+   * `elapsedMs` because the two answer different questions — how long the trader waited,
+   * and how much of the wait bought reasoning.
+   */
+  thinkingMs: number | null
   createdAt: number
 }
 

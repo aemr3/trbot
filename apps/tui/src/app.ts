@@ -11,7 +11,7 @@ import {
   HttpOrderSource,
   HttpOverviewSnapshotStore,
   HttpSettlementSource,
-  HttpWatchlistPreferences,
+  HttpAppPreferences,
 } from "@trbot/client/sources.ts"
 import { HttpAlerts, HttpStopRules } from "@trbot/client/monitors.ts"
 import {
@@ -35,7 +35,7 @@ import { TradingWorkspaceScreen } from "./screens/trading-workspace.ts"
 import { TradeScreen } from "./screens/trade.ts"
 import { RemoteAlerts, RemoteStopRules } from "./remote-monitors.ts"
 import { createServerSession, serverAuthenticated, type ServerSession } from "./server-session.ts"
-import type { WatchlistPreferences } from "@trbot/preferences/watchlist.ts"
+import { DEFAULT_APP_PREFERENCES, type AppPreferences } from "@trbot/preferences/app.ts"
 
 interface Screen {
   readonly root: BoxRenderable
@@ -57,7 +57,7 @@ interface InitialState {
 }
 
 interface AppOptions {
-  preferences?: WatchlistPreferences
+  preferences?: AppPreferences
   /**
    * Fetches the stored settings, for when they were not available at startup.
    *
@@ -65,8 +65,8 @@ interface AppOptions {
    * running on defaults would be a silent downgrade — the first thing the trader
    * changed would write those defaults over what they had.
    */
-  loadPreferences?: () => Promise<WatchlistPreferences>
-  savePreferences?: (preferences: WatchlistPreferences) => void
+  loadPreferences?: () => Promise<AppPreferences>
+  savePreferences?: (preferences: AppPreferences) => void
   closePreferences?: () => void
   exit?: () => void
   aiAccount?: AiAccount
@@ -97,7 +97,7 @@ export async function startApp(): Promise<void> {
 
   try {
     const http = initialState.session.http
-    const preferencesStore = new HttpWatchlistPreferences(http)
+    const preferencesStore = new HttpAppPreferences(http)
     // These are the terminal's own settings, not the provider's, so they load
     // whether or not the server holds a provider session. A terminal that opens
     // on the login screen otherwise starts on defaults and writes them over
@@ -153,11 +153,11 @@ export class App {
   private session: ServerSession
   private disposed = false
   private shuttingDown = false
-  private preferences: WatchlistPreferences | undefined
+  private preferences: AppPreferences | undefined
   /** Whether `preferences` came from the server rather than being unknown. */
   private preferencesLoaded = false
-  private readonly fetchPreferences: (() => Promise<WatchlistPreferences>) | undefined
-  private readonly persistPreferences: ((preferences: WatchlistPreferences) => void) | undefined
+  private readonly fetchPreferences: (() => Promise<AppPreferences>) | undefined
+  private readonly persistPreferences: ((preferences: AppPreferences) => void) | undefined
   private readonly closePreferences: (() => void) | undefined
   private readonly exit: () => void
   private readonly aiAccount: AiAccount | undefined
@@ -321,10 +321,16 @@ export class App {
       memberFeatures: new HttpMemberFeatureSource(http),
       preferences: this.preferences,
       onPreferencesChange: (preferences) => {
-        this.preferences = preferences
+        // Chat owns its selected session. A trade-screen update carries the copy it
+        // opened with, so preserve the newer chat choice rather than reverting it.
+        const next = {
+          ...preferences,
+          selectedChatSessionId: this.preferences?.selectedChatSessionId ?? preferences.selectedChatSessionId,
+        }
+        this.preferences = next
         // Never write settings we could not read: that turns a failed load into
         // a lost configuration the moment the trader adjusts anything.
-        if (this.preferencesLoaded) this.persistPreferences?.(preferences)
+        if (this.preferencesLoaded) this.persistPreferences?.(next)
       },
       onSessionExpired: () => this.showLogin(),
       aiAccount: this.aiAccount,
@@ -344,6 +350,14 @@ export class App {
       chats,
       ...(this.aiAccount ? { account: this.aiAccount } : {}),
       logs: this.logs,
+      initialSessionId: this.preferences?.selectedChatSessionId,
+      onSessionChange: (selectedChatSessionId) => {
+        const current = this.preferences ?? DEFAULT_APP_PREFERENCES
+        if (current.selectedChatSessionId === selectedChatSessionId) return
+        const next = { ...current, selectedChatSessionId }
+        this.preferences = next
+        if (this.preferencesLoaded) this.persistPreferences?.(next)
+      },
     })
     new ChatClient(stream, {
       onSessions: (sessions) => chat.acceptSessions(sessions),

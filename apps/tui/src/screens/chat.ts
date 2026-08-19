@@ -13,56 +13,91 @@ import type { AiAccount } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import { AiConnectionModal } from "../components/ai-connection-modal.ts"
 import { AiModelModal } from "../components/ai-model-modal.ts"
+import { ChatHelpModal } from "../components/chat-help-modal.ts"
 import { ChatSessionModal } from "../components/chat-session-modal.ts"
 import { ChatTranscript, type ChatTranscriptBlock } from "../components/chat-transcript.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
-import { WORKSPACE_CHROME_BACKGROUND, WORKSPACE_CHROME_MUTED } from "../components/workspace-chrome.ts"
 import type { ApplicationLog } from "../logging/application-log.ts"
 
 const BACKGROUND = "#101010"
 const PANEL_BG = "#101010"
 const TEXT_COLOR = "#dddddd"
 const MUTED_COLOR = "#888888"
+const FAINT_COLOR = "#5a5a62"
 const REASONING_COLOR = "#6f6f7a"
+const THOUGHT_COLOR = "#c08a52"
 const QUEUED_COLOR = "#8a8a5a"
 const ERROR_COLOR = "#ff6b6b"
-const TRADER_COLOR = "#70d7a1"
-const MODEL_COLOR = "#7c83ff"
+const MODEL_COLOR = "#d7c58a"
 const TOOL_COLOR = "#4a4a52"
-const RULE_COLOR = "#2c2c34"
+const PROMPT_BG = "#292725"
+const TURN_MARKER_COLOR = "#8b8580"
+/**
+ * The field at the foot of the screen. It shares the prompt fill so the empty field reads
+ * as the next prompt, with the warm marker identifying the insertion point.
+ */
+const COMPOSER_BG = PROMPT_BG
+const COMPOSER_COLOR = "#d0894a"
 
 /**
  * One set of keys: control keys, so they work mid-sentence and there is nothing to
- * switch between.
+ * switch between. They are listed in the help modal rather than along the bottom, and
+ * `^G` is the only one the screen names for itself.
  *
  * The model picker is ^O rather than the ^M its name asks for, because Ctrl+M and
  * Return are the same byte and only a terminal that disambiguates them can tell them
  * apart — where one does not, ^M sends the message instead of opening the picker.
  * ^O is also clear of the field's own editing keys, which take ^A ^E ^F ^B ^W ^K ^U ^D.
  */
-const CHAT_HINT = "^O model · ^S chats · ^N new · ^R reasoning · ^P providers"
+const CHAT_HINT = "^G keys"
+const RUNNING_HINT = "Esc interrupt · ^G keys"
 const CONNECT_HINT = "No model provider connected · ^P to connect one"
 const NO_MODEL_HINT = "No model chosen for this chat · ^O to choose one"
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const SPINNER_INTERVAL_MS = 120
 
-/** The field is this tall empty, and grows with what is typed up to the second. */
-const COMPOSER_MIN_ROWS = 3
+/** One quiet terminal cell around the conversation, matching the Codex transcript. */
+const CHAT_INSET = 1
+
+/**
+ * How far the field grows before it starts scrolling instead.
+ *
+ * It measures its own content, so it is one line at rest — an empty field three lines
+ * tall spends a fifth of a short terminal on nothing, and room for a long question comes
+ * from growing into it. Past this the conversation above needs the rest of the screen.
+ */
 const COMPOSER_MAX_ROWS = 8
 
 type Focus = "transcript" | "composer"
-type Modal = AiConnectionModal | AiModelModal | ChatSessionModal
+type Modal = AiConnectionModal | AiModelModal | ChatSessionModal | ChatHelpModal
 
 export interface ChatScreenOptions {
   chats: ChatSessions
   account?: AiAccount
   logs: ApplicationLog
+  initialSessionId?: string | null
+  onSessionChange?: (sessionId: string | null) => void
 }
 
 /** A reply arriving now, before it has been stored as a message. */
 interface Streaming {
   runId: string
+  /**
+   * When this terminal saw the run start, for the timer beside the spinner.
+   *
+   * Null for a run that was already going when the screen attached to it: how long
+   * this terminal has been watching is not how long the model has been thinking, and
+   * a number that means the wrong thing is worse than no number.
+   */
+  startedAt: number | null
+  /**
+   * How long the model thought before its first word, frozen when that word arrived.
+   *
+   * Measured here as well as on the server so the number does not jump when the stored
+   * message replaces the stream: both count from the same event.
+   */
+  thinkingMs: number | null
   text: string
   reasoning: string
   tools: string[]
@@ -86,22 +121,26 @@ interface Streaming {
 export class ChatScreen {
   readonly root: BoxRenderable
 
-  private readonly title: TextRenderable
-  private readonly meta: TextRenderable
   private readonly transcript: ChatTranscript
   private readonly composerRow: BoxRenderable
-  private readonly marker: TextRenderable
+  private readonly composerMarker: TextRenderable
   private readonly composer: TextareaRenderable
+  private readonly composerMeta: TextRenderable
   private readonly hint: TextRenderable
+  private readonly usage: TextRenderable
   private readonly render = new RenderCoalescer(() => this.paint())
 
   private sessions: ChatSession[] = []
   private messagesBySession = new Map<string, ChatMessage[]>()
   private streamingBySession = new Map<string, Streaming>()
+  /** Context window per `provider/model`, for reading a conversation's usage as a share of it. */
+  private contextWindows = new Map<string, number>()
   private selectedSessionId: string | null = null
   private focus: Focus = "composer"
   private connected: boolean | null = null
   private modal: Modal | null = null
+  /** Whether replies show the reasoning that led to them, or only that there was some. */
+  private showThoughts = true
   private spinner = 0
   private spinnerTimer: ReturnType<typeof setInterval> | null = null
   private destroyed = false
@@ -110,6 +149,7 @@ export class ChatScreen {
     private readonly renderer: RenderContext,
     private readonly options: ChatScreenOptions,
   ) {
+    this.selectedSessionId = options.initialSessionId ?? null
     this.root = new BoxRenderable(renderer, {
       width: "100%",
       height: "100%",
@@ -117,91 +157,110 @@ export class ChatScreen {
       backgroundColor: BACKGROUND,
     })
 
-    // Title on the left, what will answer on the right: both are things a trader
-    // checks before sending, and neither is worth a panel.
-    const headerRow = new BoxRenderable(renderer, {
-      width: "100%",
-      height: 1,
-      flexShrink: 0,
-      flexDirection: "row",
-      paddingLeft: 1,
-      paddingRight: 1,
-      marginBottom: 1,
-      backgroundColor: PANEL_BG,
-    })
-    this.title = new TextRenderable(renderer, { content: "", flexGrow: 1, wrapMode: "none" })
-    this.meta = new TextRenderable(renderer, { content: "", flexShrink: 0, wrapMode: "none" })
-    headerRow.add(this.title)
-    headerRow.add(this.meta)
-
     const body = new BoxRenderable(renderer, {
       width: "100%",
       flexGrow: 1,
       flexDirection: "column",
-      paddingLeft: 1,
-      paddingRight: 1,
+      paddingTop: CHAT_INSET,
+      paddingLeft: CHAT_INSET,
+      paddingRight: CHAT_INSET,
       backgroundColor: PANEL_BG,
     })
     this.transcript = new ChatTranscript(renderer, { backgroundColor: PANEL_BG })
     body.add(this.transcript.root)
 
-    // A rule above the field, so a long reply ending mid-sentence is not mistaken for
-    // something typed.
+    // The next prompt uses the same filled shape as prompts already in the transcript.
     this.composerRow = new BoxRenderable(renderer, {
-      width: "100%",
-      height: COMPOSER_MIN_ROWS + 1,
       flexShrink: 0,
       flexDirection: "row",
-      paddingLeft: 1,
+      paddingLeft: 0,
       paddingRight: 1,
-      border: ["top"],
-      borderColor: RULE_COLOR,
-      backgroundColor: PANEL_BG,
+      paddingTop: 1,
+      paddingBottom: 1,
+      marginTop: 1,
+      marginLeft: CHAT_INSET,
+      marginRight: CHAT_INSET,
+      backgroundColor: COMPOSER_BG,
     })
-    this.marker = new TextRenderable(renderer, {
-      content: "› ",
-      fg: MODEL_COLOR,
+    this.composerMarker = new TextRenderable(renderer, {
+      content: "›",
       width: 2,
       flexShrink: 0,
+      fg: COMPOSER_COLOR,
       wrapMode: "none",
     })
     // A field rather than a single-line input: a question worth asking a model rarely
     // fits in one line, and one that scrolls sideways cannot be read back before it is
     // sent. Return sends it, so Shift+Return is what makes a new line.
+    //
+    // No height, so the layout measures the text and the field is exactly as tall as
+    // what is in it, wrapping included. Setting the height by hand cannot do that: the
+    // field reports the lines it can currently show, so a one-line field measures one
+    // line however much is typed into it, and a paragraph would never open the field it
+    // needs.
     this.composer = new TextareaRenderable(renderer, {
       flexGrow: 1,
-      height: COMPOSER_MIN_ROWS,
+      maxHeight: COMPOSER_MAX_ROWS,
       wrapMode: "word",
       placeholder: "ask something…",
-      backgroundColor: PANEL_BG,
-      focusedBackgroundColor: PANEL_BG,
+      backgroundColor: COMPOSER_BG,
+      focusedBackgroundColor: COMPOSER_BG,
       textColor: TEXT_COLOR,
     })
-    this.composerRow.add(this.marker)
+    this.composerRow.add(this.composerMarker)
     this.composerRow.add(this.composer)
 
-    const footer = new BoxRenderable(renderer, {
+    // Model, keys and usage form one quiet status line below the field, as in Codex.
+    const composerDetails = new BoxRenderable(renderer, {
       width: "100%",
       height: 1,
       flexShrink: 0,
-      backgroundColor: WORKSPACE_CHROME_BACKGROUND,
+      flexDirection: "row",
+      // The model starts under the prompt text, after its inset and marker.
+      paddingLeft: CHAT_INSET + 2,
+      paddingRight: CHAT_INSET,
+      backgroundColor: PANEL_BG,
+    })
+    this.composerMeta = new TextRenderable(renderer, {
+      content: "",
+      flexGrow: 1,
+      wrapMode: "none",
     })
     this.hint = new TextRenderable(renderer, {
       content: CHAT_HINT,
-      fg: WORKSPACE_CHROME_MUTED,
-      width: "100%",
+      fg: MUTED_COLOR,
+      flexShrink: 0,
+      marginRight: 2,
+      wrapMode: "none",
     })
-    footer.add(this.hint)
+    this.usage = new TextRenderable(renderer, {
+      content: "",
+      fg: MUTED_COLOR,
+      flexShrink: 0,
+      wrapMode: "none",
+    })
+    composerDetails.add(this.composerMeta)
+    composerDetails.add(this.hint)
+    composerDetails.add(this.usage)
 
-    this.root.add(headerRow)
     this.root.add(body)
     this.root.add(this.composerRow)
-    this.root.add(footer)
+    this.root.add(composerDetails)
     this.paint()
   }
 
   mount(): void {
     void this.load()
+  }
+
+  /** Restores the place the trader left focused when CHAT becomes visible again. */
+  activate(): void {
+    if (this.typing()) this.composer.focus()
+  }
+
+  /** A hidden textarea must neither draw a cursor nor receive another panel's keys. */
+  deactivate(): void {
+    this.composer.blur()
   }
 
   /**
@@ -244,6 +303,17 @@ export class ChatScreen {
     }
     if (isControl(key, "p")) {
       this.openConnection()
+      return
+    }
+    // One control folds or opens reasoning across the conversation. Thoughts start
+    // open, matching the live Codex transcript; ^T is there when they get in the way.
+    if (isControl(key, "t")) {
+      this.showThoughts = !this.showThoughts
+      this.render.schedule()
+      return
+    }
+    if (isControl(key, "g")) {
+      this.openHelp()
       return
     }
     if (isControl(key, "x")) {
@@ -293,8 +363,10 @@ export class ChatScreen {
     if (this.destroyed) return
     this.sessions = sessions
     if (!this.selectedSessionId || !sessions.some((session) => session.id === this.selectedSessionId)) {
-      this.selectedSessionId = sessions[0]?.id ?? null
-      if (this.selectedSessionId) void this.loadSession(this.selectedSessionId)
+      this.setSelectedSession(this.initialSession(sessions))
+      if (this.selectedSessionId) {
+        void this.loadSession(this.selectedSessionId)
+      }
     }
     this.render.schedule()
   }
@@ -324,17 +396,29 @@ export class ChatScreen {
     const current = this.streamingBySession.get(sessionId)
     const streaming: Streaming = current?.runId === runId
       ? current
-      : { runId, text: "", reasoning: "", tools: [] }
-    if (delta.text) streaming.text += delta.text
+      : { runId, startedAt: Date.now(), thinkingMs: null, text: "", reasoning: "", tools: [] }
+    if (delta.text) {
+      // The first word is where thinking ended, so that is where the count stops.
+      if (streaming.reasoning && !streaming.text && streaming.startedAt !== null) {
+        streaming.thinkingMs = Date.now() - streaming.startedAt
+      }
+      streaming.text += delta.text
+    }
     if (delta.reasoning) streaming.reasoning += delta.reasoning
     if (delta.toolName) streaming.tools.push(delta.toolName)
     this.streamingBySession.set(sessionId, streaming)
     this.render.schedule()
   }
 
-  acceptRun(sessionId: string, _runId: string, status: string, error?: string): void {
+  acceptRun(sessionId: string, runId: string, status: string, error?: string): void {
     if (this.destroyed) return
     if (status !== "running") this.streamingBySession.delete(sessionId)
+    // A run announces itself before its first delta, and a model can think for a long
+    // while before that one arrives: holding the run from here is what makes the
+    // spinner turn from the moment the question went rather than from the answer.
+    else if (this.streamingBySession.get(sessionId)?.runId !== runId) {
+      this.streamingBySession.set(sessionId, { runId, startedAt: Date.now(), thinkingMs: null, text: "", reasoning: "", tools: [] })
+    }
     if (error) this.options.logs.error("Chat", new Error(error))
     this.render.schedule()
   }
@@ -350,8 +434,10 @@ export class ChatScreen {
   private async load(): Promise<void> {
     await this.refreshConnection()
     try {
-      this.sessions = await this.options.chats.list()
-      this.selectedSessionId = this.sessions[0]?.id ?? null
+      const sessions = await this.options.chats.list()
+      if (this.destroyed) return
+      this.sessions = sessions
+      this.setSelectedSession(this.initialSession(sessions))
       if (this.selectedSessionId) await this.loadSession(this.selectedSessionId)
     } catch (error) {
       this.options.logs.error("Chat", error)
@@ -365,8 +451,14 @@ export class ChatScreen {
       if (this.destroyed) return
       this.messagesBySession.set(sessionId, detail.messages)
       if (detail.partial) {
+        const known = this.streamingBySession.get(sessionId)
+        // A partial that already carries words is a run this terminal did not watch
+        // start, so it keeps no start time: see `Streaming.startedAt`.
+        const joined = detail.partial.text.length > 0 || detail.partial.reasoning.length > 0
         this.streamingBySession.set(sessionId, {
           runId: detail.partial.runId,
+          startedAt: joined ? null : (known?.runId === detail.partial.runId ? known.startedAt : Date.now()),
+          thinkingMs: known?.runId === detail.partial.runId ? known.thinkingMs : null,
           text: detail.partial.text,
           reasoning: detail.partial.reasoning,
           tools: [],
@@ -388,11 +480,33 @@ export class ChatScreen {
     try {
       const providers = await this.options.account.providers()
       this.connected = providers.some((provider) => provider.connected)
+      if (this.connected) await this.loadContextWindows()
     } catch (error) {
       this.connected = false
       this.options.logs.error("Model providers", error)
     }
     this.render.schedule()
+  }
+
+  /**
+   * How much room each model has, so the status line can read a conversation's tokens
+   * as a share of the window rather than as a number nobody can place.
+   *
+   * A failure here costs the percentage and nothing else, so it is logged and dropped:
+   * the conversation does not depend on it.
+   */
+  private async loadContextWindows(): Promise<void> {
+    const account = this.options.account
+    if (!account) return
+    try {
+      const models = await account.models()
+      if (this.destroyed) return
+      this.contextWindows = new Map(
+        models.map((model) => [`${model.providerId}/${model.modelId}`, model.contextWindow]),
+      )
+    } catch (error) {
+      this.options.logs.error("Model list", error)
+    }
   }
 
   private handleComposerKey(key: KeyEvent): void {
@@ -448,7 +562,7 @@ export class ChatScreen {
       const session = await this.options.chats.create()
       if (this.destroyed) return null
       this.rememberSession(session)
-      this.selectedSessionId = session.id
+      this.setSelectedSession(session.id)
       this.messagesBySession.set(session.id, [])
       this.render.schedule()
       return session
@@ -465,8 +579,10 @@ export class ChatScreen {
       this.streamingBySession.delete(sessionId)
       this.sessions = this.sessions.filter((session) => session.id !== sessionId)
       if (this.selectedSessionId === sessionId) {
-        this.selectedSessionId = this.sessions[0]?.id ?? null
-        if (this.selectedSessionId) await this.loadSession(this.selectedSessionId)
+        this.setSelectedSession(this.sessions[0]?.id ?? null)
+        if (this.selectedSessionId) {
+          await this.loadSession(this.selectedSessionId)
+        }
       }
       this.render.schedule()
     } catch (error) {
@@ -518,6 +634,12 @@ export class ChatScreen {
     }))
   }
 
+  /** Every key, on ^G: the status line names this instead of listing them. */
+  private openHelp(): void {
+    if (this.modal || this.destroyed) return
+    this.showModal(new ChatHelpModal(this.renderer, { onClose: () => this.closeModal() }))
+  }
+
   private openConnection(): void {
     const account = this.options.account
     if (!account || this.modal || this.destroyed) return
@@ -531,9 +653,10 @@ export class ChatScreen {
   /**
    * Points this chat at a model, or at a different reasoning level.
    *
-   * Per chat rather than globally: a trader comparing two models keeps two chats open,
-   * and each transcript says which model wrote it. Opening the picker with no chat yet
-   * starts one, so choosing a model is never blocked on having something to say.
+   * The current chat changes immediately, while the same choice becomes the default
+   * for chats created later. Other open chats keep their own model, so comparisons do
+   * not move underneath the trader. Opening the picker with no chat yet starts one, so
+   * choosing a model is never blocked on having something to say.
    */
   private async openModelPicker(initial: "model" | "reasoning"): Promise<void> {
     const account = this.options.account
@@ -552,6 +675,8 @@ export class ChatScreen {
         const updated = await this.options.chats.configure(session.id, choice)
         this.rememberSession(updated)
         this.render.schedule()
+        const preferences = await account.preferences()
+        await account.setPreferences({ ...preferences, chat: choice })
       },
       onClose: () => this.closeModal(),
     }))
@@ -593,9 +718,20 @@ export class ChatScreen {
 
   private selectSession(sessionId: string): void {
     if (sessionId === this.selectedSessionId) return
-    this.selectedSessionId = sessionId
+    this.setSelectedSession(sessionId)
     if (!this.messagesBySession.has(sessionId)) void this.loadSession(sessionId)
     this.render.schedule()
+  }
+
+  private initialSession(sessions: ChatSession[]): string | null {
+    const preferred = this.options.initialSessionId
+    return sessions.some((session) => session.id === preferred) ? (preferred ?? null) : (sessions[0]?.id ?? null)
+  }
+
+  private setSelectedSession(sessionId: string | null): void {
+    if (sessionId === this.selectedSessionId) return
+    this.selectedSessionId = sessionId
+    this.options.onSessionChange?.(sessionId)
   }
 
   private selectedSession(): ChatSession | null {
@@ -638,32 +774,26 @@ export class ChatScreen {
   private paint(): void {
     if (this.destroyed) return
     const session = this.selectedSession()
-    this.title.content = new StyledText([fg(TEXT_COLOR)(session?.title ?? "Chat")])
-    this.meta.content = this.metaText(session)
     this.syncSpinner(session)
     this.transcript.setBlocks(this.transcriptBlocks(session))
     this.composerRow.visible = this.composerUsable()
-    // The field grows with what is being written, up to a share of the screen; past
-    // that it scrolls, because the conversation still has to be visible above it.
-    const rows = Math.min(COMPOSER_MAX_ROWS, Math.max(COMPOSER_MIN_ROWS, this.composer.virtualLineCount))
-    this.composer.height = rows
-    this.composerRow.height = rows + 1
-    this.marker.fg = this.typing() ? MODEL_COLOR : MUTED_COLOR
-    this.hint.content = this.hintText()
+    // Nothing here sizes the field: it measures its own text and the block around it
+    // takes exactly the height the prompt needs. Only the active insertion marker is
+    // warm; when the transcript has focus it recedes with the other turn markers.
+    this.composerMarker.fg = this.typing() ? COMPOSER_COLOR : TURN_MARKER_COLOR
+    this.composerMeta.content = this.composerMetaText(session)
+    this.composerMeta.visible = this.composerUsable()
+    this.hint.content = this.hintText(session)
+    this.usage.content = this.usageText(session)
     // The chats list is live while it is open: a reply landing elsewhere shows there.
     if (this.modal instanceof ChatSessionModal) this.modal.setSessions(this.sessions, this.selectedSessionId)
     this.renderer.requestRender()
   }
 
-  /** What will answer, and whether it is busy — the two things worth the header. */
-  private metaText(session: ChatSession | null): StyledText {
-    if (!session) return new StyledText([fg(MUTED_COLOR)("")])
-    const parts: string[] = []
-    if (session.running || this.streamingBySession.has(session.id)) parts.push("answering…")
-    if (session.queued > 0) parts.push(`+${session.queued} queued`)
-    if (session.model) parts.push(session.reasoning ? `${session.model} · ${session.reasoning}` : session.model)
-    else parts.push("no model")
-    return new StyledText([fg(MUTED_COLOR)(parts.join("  ·  "))])
+  /** What will answer what is being typed. */
+  private composerMetaText(session: ChatSession | null): StyledText {
+    if (!session?.model) return new StyledText([fg(QUEUED_COLOR)("no model · ^O chooses one")])
+    return modelLabel(session.model, session.reasoning)
   }
 
   /**
@@ -692,11 +822,43 @@ export class ChatScreen {
     this.spinner = 0
   }
 
-  /** The same keys whatever is happening; only a missing provider or model displaces them. */
-  private hintText(): string {
+  /**
+   * The keys, or what stands in the way of using them.
+   *
+   * While a reply is running the list leads with the key that stops it, because that is
+   * the one being looked for — the model and reasoning cannot change mid-reply anyway.
+   */
+  private hintText(session: ChatSession | null): string {
     if (this.connected === false) return CONNECT_HINT
     if (!this.selectedHasModel()) return NO_MODEL_HINT
+    if (session && this.streamingBySession.has(session.id)) return RUNNING_HINT
     return CHAT_HINT
+  }
+
+  /**
+   * What this conversation has used: the context it is carrying, and what it has cost.
+   *
+   * The context is the last reply's own token count, because a request carries the whole
+   * conversation — that number is the size of the conversation, not of one message. The
+   * cost is every reply added up, and is zero on a subscription, which is why nothing is
+   * shown rather than `$0.00`.
+   */
+  private usageText(session: ChatSession | null): StyledText {
+    if (!session) return new StyledText([fg(MUTED_COLOR)("")])
+    const messages = this.messagesBySession.get(session.id) ?? []
+    const context = messages.reduce<number | null>(
+      (last, message) => (message.usage ? message.usage.totalTokens : last),
+      null,
+    )
+    const cost = messages.reduce((total, message) => total + (message.usage?.costTotal ?? 0), 0)
+    const parts: string[] = []
+    if (context !== null) {
+      const window = this.contextWindows.get(`${session.provider}/${session.model}`)
+      const share = window && window > 0 ? ` (${Math.round((context / window) * 100)}%)` : ""
+      parts.push(`${formatTokens(context)}${share}`)
+    }
+    if (cost > 0) parts.push(formatCost(cost))
+    return new StyledText([fg(MUTED_COLOR)(parts.join(" · "))])
   }
 
   private transcriptBlocks(session: ChatSession | null): ChatTranscriptBlock[] {
@@ -711,67 +873,158 @@ export class ChatScreen {
     }
 
     const current = modelLabel(session.model || "model", session.reasoning)
-    const blocks = (this.messagesBySession.get(session.id) ?? []).map((message) => messageBlock(message, current))
+    const blocks = (this.messagesBySession.get(session.id) ?? [])
+      .map((message) => messageBlock(message, current, this.showThoughts))
     const streaming = this.streamingBySession.get(session.id)
-    if (streaming) blocks.push(streamingBlock(streaming, current, SPINNER_FRAMES[this.spinner] ?? SPINNER_FRAMES[0]!))
+    if (streaming) {
+      blocks.push(streamingBlock(streaming, current, {
+        spinner: SPINNER_FRAMES[this.spinner] ?? SPINNER_FRAMES[0]!,
+        elapsedMs: streaming.startedAt === null ? null : Date.now() - streaming.startedAt,
+        showThoughts: this.showThoughts,
+      }))
+    }
     if (blocks.length === 0) return [note("Nothing said yet.")]
     return blocks
   }
 }
 
-/** A message, railed by who said it. */
-function messageBlock(message: ChatMessage, current: StyledText): ChatTranscriptBlock {
+/**
+ * A message as a turn in the transcript.
+ *
+ * A prompt is a filled block with a chevron. A reply remains on the page with only a
+ * muted bullet, leaving the answer visually lighter than the request that started it.
+ */
+function messageBlock(message: ChatMessage, current: StyledText, showThoughts: boolean): ChatTranscriptBlock {
   if (message.role === "USER") {
     const queued = message.status === "QUEUED"
-    const chunks: TextChunk[] = [fg(queued ? QUEUED_COLOR : TEXT_COLOR)(message.text)]
-    if (queued) chunks.push(fg(QUEUED_COLOR)("\nqueued · ^X cancels it"))
-    if (message.status === "FAILED") chunks.push(fg(ERROR_COLOR)("\nfailed"))
     return {
       id: message.id,
-      name: "you",
-      nameColor: TRADER_COLOR,
-      railColor: queued ? QUEUED_COLOR : TRADER_COLOR,
-      content: new StyledText(chunks),
+      marker: new StyledText([fg(queued ? QUEUED_COLOR : TURN_MARKER_COLOR)("›")]),
+      fill: PROMPT_BG,
+      padded: true,
+      content: new StyledText([fg(queued ? QUEUED_COLOR : TEXT_COLOR)(message.text)]),
+      ...(queued
+        ? { footer: new StyledText([fg(QUEUED_COLOR)("queued · ^X cancels it")]) }
+        : message.status === "FAILED"
+          ? { footer: new StyledText([fg(ERROR_COLOR)("failed")]) }
+          : {}),
     }
   }
   if (message.role === "TOOL_RESULT") {
     return {
       id: message.id,
-      name: message.toolName ?? "tool",
-      nameColor: MUTED_COLOR,
-      railColor: message.isError ? ERROR_COLOR : TOOL_COLOR,
+      marker: new StyledText([fg(message.isError ? ERROR_COLOR : TOOL_COLOR)("•")]),
+      header: new StyledText([fg(MUTED_COLOR)(message.toolName ?? "tool")]),
       content: new StyledText([fg(message.isError ? ERROR_COLOR : MUTED_COLOR)(message.text)]),
     }
   }
   const chunks: TextChunk[] = [fg(TEXT_COLOR)(message.text)]
   if (message.status === "PARTIAL") chunks.push(fg(MUTED_COLOR)("\nstopped"))
   if (message.errorMessage) chunks.push(fg(ERROR_COLOR)(`\n${message.errorMessage}`))
+  const thought = thoughtHeader(reasoningText(message), {
+    showThoughts,
+    thinkingMs: message.thinkingMs,
+  })
   return {
     id: message.id,
-    name: message.model ? modelLabel(message.model, message.reasoning) : current,
-    railColor: MODEL_COLOR,
+    marker: new StyledText([fg(TURN_MARKER_COLOR)("•")]),
+    ...(thought ? { header: thought } : {}),
     content: new StyledText(chunks),
+    footer: signature(message, current),
   }
 }
 
 /**
  * The reply being written.
  *
- * A model can think for a long time before its first word, so the spinner turns from
- * the moment the run starts: a still cursor and a stalled run look identical.
+ * A model can think for a long time before its first word, so the spinner turns and the
+ * timer counts from the moment the run starts: a still cursor and a stalled run look
+ * identical.
  */
-function streamingBlock(streaming: Streaming, current: StyledText, spinner: string): ChatTranscriptBlock {
+function streamingBlock(
+  streaming: Streaming,
+  current: StyledText,
+  live: { spinner: string; elapsedMs: number | null; showThoughts: boolean },
+): ChatTranscriptBlock {
+  // Still thinking: the count runs on, and the tail of the thought is the only thing
+  // there is to read while it does.
+  const thinking = !streaming.text
+  const thinkingMs = thinking && streaming.startedAt !== null && live.elapsedMs !== null
+    ? live.elapsedMs
+    : streaming.thinkingMs
   const chunks: TextChunk[] = []
   if (streaming.text) chunks.push(fg(TEXT_COLOR)(streaming.text), fg(MUTED_COLOR)("▌"))
-  else if (streaming.reasoning) chunks.push(fg(REASONING_COLOR)(lastLine(streaming.reasoning)))
+  // The tail is all a folded thought shows while it is the only thing happening.
+  // Expanded reasoning already lives in the header, so repeating "thinking…" below
+  // it would add noise without adding state.
+  else if (streaming.reasoning) {
+    if (!live.showThoughts) chunks.push(fg(REASONING_COLOR)(lastLine(streaming.reasoning)))
+  }
   else chunks.push(fg(MUTED_COLOR)("thinking…"))
-  for (const tool of streaming.tools) chunks.push(fg(MUTED_COLOR)(`\n· ${tool}`))
+  for (const tool of streaming.tools) chunks.push(fg(MUTED_COLOR)(`\n⚙ ${tool}`))
+  const thought = thoughtHeader(streaming.reasoning, {
+    showThoughts: live.showThoughts,
+    thinkingMs,
+    live: thinking,
+  })
+  const footer: TextChunk[] = [fg(MODEL_COLOR)(`${live.spinner} `), ...current.chunks]
+  if (live.elapsedMs !== null) footer.push(fg(FAINT_COLOR)(` · ${formatDuration(live.elapsedMs)}`))
   return {
     id: `streaming-${streaming.runId}`,
-    name: new StyledText([...current.chunks, fg(MODEL_COLOR)(`  ${spinner}`)]),
-    railColor: MODEL_COLOR,
+    marker: new StyledText([fg(TURN_MARKER_COLOR)("•")]),
+    ...(thought ? { header: thought } : {}),
     content: new StyledText(chunks),
+    footer: new StyledText(footer),
   }
+}
+
+/**
+ * Which model wrote a reply, how hard it thought, how long it took and what it cost.
+ *
+ * Underneath the words rather than above them: the answer is what a trader came to
+ * read, and its provenance is what they check afterwards.
+ */
+function signature(message: ChatMessage, current: StyledText): StyledText {
+  const label = message.model ? modelLabel(message.model, message.reasoning) : current
+  const parts: string[] = []
+  if (message.elapsedMs !== null) parts.push(formatDuration(message.elapsedMs))
+  if (message.usage) {
+    parts.push(formatTokens(message.usage.totalTokens))
+    if (message.usage.costTotal > 0) parts.push(formatCost(message.usage.costTotal))
+  }
+  return new StyledText([
+    fg(FAINT_COLOR)("▪ "),
+    ...label.chunks,
+    ...(parts.length > 0 ? [fg(FAINT_COLOR)(` · ${parts.join(" · ")}`)] : []),
+  ])
+}
+
+/**
+ * That the model thought, how long it took over it, and what it thought when asked to
+ * show it.
+ *
+ * Visible by default, matching the live Codex transcript. `^T` folds every thought when
+ * reasoning gets in the way. The duration stays either way, because how long a model sat
+ * thinking is worth knowing even when the thoughts themselves are hidden.
+ */
+function thoughtHeader(
+  reasoning: string,
+  options: { showThoughts: boolean; thinkingMs: number | null; live?: boolean },
+): StyledText | null {
+  const text = reasoning.trim()
+  if (!text) return null
+  const label = options.live ? "thinking" : "thought"
+  const spent = options.thinkingMs === null ? "" : `: ${formatDuration(options.thinkingMs)}`
+  if (!options.showThoughts) return new StyledText([fg(THOUGHT_COLOR)(`+ ${label}${spent}`)])
+  return new StyledText([fg(THOUGHT_COLOR)(`− ${label}${spent}\n`), fg(REASONING_COLOR)(text)])
+}
+
+/** What a stored reply thought, gathered from the blocks that hold it. */
+function reasoningText(message: ChatMessage): string {
+  return message.blocks
+    .filter((block) => block.kind === "THINKING")
+    .map((block) => block.text ?? "")
+    .join("")
 }
 
 /**
@@ -782,19 +1035,37 @@ function streamingBlock(streaming: Streaming, current: StyledText, spinner: stri
  */
 function modelLabel(model: string, reasoning: string | null): StyledText {
   const chunks: TextChunk[] = [fg(MODEL_COLOR)(model)]
-  if (reasoning) chunks.push(fg(MUTED_COLOR)(`  ${reasoning}`))
+  if (reasoning) chunks.push(fg(FAINT_COLOR)(` · ${reasoning}`))
   return new StyledText(chunks)
 }
 
-/** Something the screen is saying itself, so it carries no name and no rail. */
+/** Something the screen is saying itself, so it carries no signature or role marker. */
 function note(text: string): ChatTranscriptBlock {
-  return { id: "note", railColor: PANEL_BG, content: new StyledText([fg(MUTED_COLOR)(text)]) }
+  return { id: "note", content: new StyledText([fg(MUTED_COLOR)(text)]) }
 }
 
 /** Reasoning is long and only its tail is worth the room while it streams. */
 function lastLine(reasoning: string): string {
   const lines = reasoning.split("\n").filter((line) => line.trim().length > 0)
   return lines[lines.length - 1] ?? ""
+}
+
+/** Rounded to what a trader would say out loud: "half a second", "four seconds", "a minute". */
+function formatDuration(elapsedMs: number): string {
+  if (elapsedMs < 1000) return `${Math.max(0, Math.round(elapsedMs))}ms`
+  if (elapsedMs < 60_000) return `${(elapsedMs / 1000).toFixed(1)}s`
+  const seconds = Math.round(elapsedMs / 1000)
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
+
+function formatTokens(tokens: number): string {
+  if (tokens < 1000) return `${tokens}`
+  return `${(tokens / 1000).toFixed(1)}K`
+}
+
+/** Fractions of a cent are the normal case for one reply, so they are not rounded away. */
+function formatCost(cost: number): string {
+  return `$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`
 }
 
 function isControl(key: KeyEvent, letter: string): boolean {

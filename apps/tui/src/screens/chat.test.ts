@@ -90,6 +90,8 @@ function userMessage(text: string, status: ChatMessage["status"]): ChatMessage {
     usage: null,
     model: null,
     reasoning: null,
+    elapsedMs: null,
+    thinkingMs: null,
     createdAt: 1_000,
   }
 }
@@ -110,9 +112,14 @@ function replyMessage(text: string, status: ChatMessage["status"] = "COMPLETE"):
  * `connected` decides whether the screen offers a composer at all, which is the
  * gate these tests are mostly about.
  */
-function account(options: { connected?: boolean; models?: AiModelSummary[] } = {}): AiAccount {
+function account(options: {
+  connected?: boolean
+  models?: AiModelSummary[]
+  preferences?: AiPreferences
+  onSetPreferences?: (preferences: AiPreferences) => void
+} = {}): AiAccount {
   let joined = options.connected ?? false
-  let preferences: AiPreferences = { overview: null, chat: null }
+  let preferences: AiPreferences = options.preferences ?? { overview: null, chat: null }
   const summary = (): AiProviderSummary => ({
     providerId: "test-provider",
     name: "Test Provider",
@@ -151,6 +158,7 @@ function account(options: { connected?: boolean; models?: AiModelSummary[] } = {
     },
     async setPreferences(next) {
       preferences = next
+      options.onSetPreferences?.(preferences)
       return preferences
     },
   }
@@ -256,7 +264,13 @@ test("keeps one transcript per session and switches between them", async () => {
   const chats = fakeChats()
   const first = await chats.create()
   const second = await chats.create()
-  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  const selections: Array<string | null> = []
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    onSessionChange: (sessionId) => selections.push(sessionId),
+  })
   renderer.root.add(screen.root)
   screen.mount()
   renderer.keyInput.on("keypress", (key) => screen.handleKey(key))
@@ -268,7 +282,8 @@ test("keeps one transcript per session and switches between them", async () => {
   ])
   screen.acceptMessage(first.id, replyMessage("about ASELS"))
   screen.acceptMessage(second.id, replyMessage("about risk"))
-  await waitForFrame((frame) => frame.includes("about ASELS") && !frame.includes("about risk"))
+  const firstTranscript = await waitForFrame((frame) => frame.includes("about ASELS") && !frame.includes("about risk"))
+  expect(firstTranscript).not.toContain("ASELS setup")
 
   // The chats live in a modal, on a control key so it opens mid-sentence.
   mockInput.pressKey("s", { ctrl: true })
@@ -276,6 +291,53 @@ test("keeps one transcript per session and switches between them", async () => {
   mockInput.pressArrow("down")
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("about risk") && !frame.includes("about ASELS"))
+  expect(selections.at(-1)).toBe(second.id)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("reopens the chat session that was selected last", async () => {
+  const chats = fakeChats()
+  const first = await chats.create()
+  const second = await chats.create()
+  await chats.send(first.id, "first conversation")
+  await chats.send(second.id, "conversation to restore")
+
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    initialSessionId: second.id,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const restored = await waitForFrame((frame) => frame.includes("conversation to restore"))
+  expect(restored).not.toContain("first conversation")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("replaces a saved selection after that chat no longer exists", async () => {
+  const chats = fakeChats()
+  const remaining = await chats.create()
+  const changes: Array<string | null> = []
+  const { renderer, waitFor } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    initialSessionId: "deleted-chat",
+    onSessionChange: (sessionId) => changes.push(sessionId),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitFor(() => changes.length > 0)
+  expect(changes.at(-1)).toBe(remaining.id)
 
   screen.destroy()
   renderer.destroy()
@@ -323,10 +385,9 @@ test("deleting a chat takes two presses of d, in the chats modal", async () => {
   renderer.keyInput.on("keypress", (key) => screen.handleKey(key))
   await waitForFrame((frame) => frame.includes("ask something"))
   screen.acceptSessions([{ ...chats.sessions[0]!, title: "ASELS setup" }])
-  await waitForFrame((frame) => frame.includes("ASELS setup"))
 
   mockInput.pressKey("s", { ctrl: true })
-  await waitForFrame((frame) => frame.includes("Chats"))
+  await waitForFrame((frame) => frame.includes("Chats") && frame.includes("ASELS setup"))
   await mockInput.typeText("d")
   // The screen coalesces its repaints, so the frame is captured after that has run
   // rather than waiting on a new one: nothing else moves while a prompt is up.
@@ -372,6 +433,36 @@ test("typing in the composer never changes tab", async () => {
   mockInput.pressTab()
   mockInput.pressKey("t", { shift: true })
   await waitForFrame((content) => content.includes("TRADE PANEL"))
+
+  workspace.destroy()
+  renderer.destroy()
+})
+
+test("a hidden chat releases its input focus and cannot receive another panel's keys", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
+  const chats = fakeChats()
+  const chat = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  const trade = labelledPanel(renderer, "TRADE PANEL")
+  const logs = labelledPanel(renderer, "LOG PANEL")
+  const workspace = new TradingWorkspaceScreen(renderer, { trade, chat, logs })
+  renderer.root.add(workspace.root)
+  workspace.mount()
+  await waitForFrame((frame) => frame.includes("TRADE PANEL"))
+
+  mockInput.pressKey("c", { shift: true })
+  await waitForFrame((frame) => frame.includes("ask something"))
+  expect(renderer.currentFocusedRenderable).not.toBeNull()
+
+  // Backwards from CHAT reaches TRADE. The textarea used to remain the renderer's
+  // global focus here, drawing its cursor over the chart and accepting these letters.
+  mockInput.pressKey("a", { ctrl: true, shift: true })
+  await waitForFrame((frame) => frame.includes("TRADE PANEL"))
+  expect(renderer.currentFocusedRenderable).toBeNull()
+  await mockInput.typeText("not chat text")
+
+  mockInput.pressKey("a", { ctrl: true })
+  const returned = await waitForFrame((frame) => frame.includes("ask something"))
+  expect(returned).not.toContain("not chat text")
 
   workspace.destroy()
   renderer.destroy()
@@ -446,6 +537,43 @@ test("^O and ^S reach the pickers mid-sentence, without disturbing what is typed
   // What was half typed is still there: a picker is not a reason to lose a question.
   const back = await waitForFrame((frame) => !frame.includes("Chats"))
   expect(back).toContain("half a question")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("a chosen model and reasoning become the default for new chats", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  await chats.create()
+  const overview: AiModelChoice = { providerId: "groq", modelId: "llama-4", reasoning: null }
+  const saved: AiPreferences[] = []
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account({
+      connected: true,
+      preferences: { overview, chat: null },
+      onSetPreferences: (preferences) => saved.push(preferences),
+    }),
+    logs: new ApplicationLog(),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  mockInput.pressKey("o", { ctrl: true })
+  await waitForFrame((frame) => frame.includes("Model for this chat"))
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Test Model — reasoning") && frame.includes("low") && frame.includes("high"))
+  mockInput.pressArrow("down")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => saved.length === 1 && !frame.includes("Model for this chat"))
+
+  expect(saved).toEqual([{
+    overview,
+    chat: { providerId: "test-provider", modelId: "test-model", reasoning: "high" },
+  }])
 
   screen.destroy()
   renderer.destroy()
@@ -547,3 +675,255 @@ test("turns a spinner while a model is thinking, and stops once it has answered"
 function spinnerFrame(frame: string): string | undefined {
   return [...frame].find((character) => "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".includes(character))
 }
+
+test("signs a reply underneath with the model, the time it took and what it cost", async () => {
+  // The answer is what a trader came to read; where it came from is what they check
+  // afterwards, so it goes below the words rather than above them.
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptMessage(session.id, {
+    ...replyMessage("Thin. 12M against a 20M average."),
+    elapsedMs: 4_040,
+    usage: { inputTokens: 17_200, outputTokens: 1_400, totalTokens: 18_600, costTotal: 0.0412 },
+  })
+  const frame = await waitForFrame((content) => content.includes("Thin. 12M against a 20M average."))
+
+  const lines = frame.split("\n")
+  const said = lines.findIndex((line) => line.includes("Thin. 12M against a 20M average."))
+  // The signature is visually attached to the answer, but gets one clear row of air.
+  const signature = lines[said + 2] ?? ""
+  expect(signature).toContain("test-model")
+  expect(signature).toContain("high")
+  expect(signature).toContain("4.0s")
+  expect(signature).toContain("18.6K")
+  expect(signature).toContain("$0.04")
+
+  // And the same conversation's totals stand under the composer, where they say when
+  // it is time to start a new chat.
+  const status = lines.findLast((line) => line.includes("18.6K")) ?? ""
+  expect(status).toContain("(15%)")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("keeps the conversation one cell from the top and both terminal edges", async () => {
+  const { renderer, waitForFrame, captureSpans } = await createTestRenderer({ width: 60, height: 18, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptMessage(session.id, userMessage("one-cell prompt", "SENT"))
+  await waitForFrame((frame) => frame.includes("one-cell prompt"))
+
+  const renderedLines = captureSpans().lines
+  const promptFillLineIndex = renderedLines.findIndex((candidate) =>
+    candidate.spans.some((span) => {
+      const [red, green, blue] = span.bg.toInts()
+      return red === 41 && green === 39 && blue === 37
+    }),
+  )
+  const lineIndex = renderedLines.findIndex((candidate) =>
+    candidate.spans.some((span) => span.text.includes("one-cell prompt")),
+  )
+  const line = renderedLines[lineIndex]
+  expect(line).toBeDefined()
+  expect(promptFillLineIndex).toBe(1)
+  expect(lineIndex).toBe(promptFillLineIndex + 1)
+
+  let column = 0
+  const filled: number[] = []
+  for (const span of line?.spans ?? []) {
+    const [red, green, blue] = span.bg.toInts()
+    if (red === 41 && green === 39 && blue === 37) {
+      for (let offset = 0; offset < span.width; offset++) filled.push(column + offset)
+    }
+    column += span.width
+  }
+  expect(filled[0]).toBe(1)
+  expect(filled.at(-1)).toBe(58)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("shows what a model thought, and folds every thought on ^T", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  const reply = replyMessage("Higher while it holds 318.")
+  screen.acceptMessage(session.id, {
+    ...reply,
+    thinkingMs: 1_800,
+    blocks: [
+      { kind: "THINKING", text: "buyers stepped in at 318 twice", toolName: null, toolCallId: null, toolArguments: null },
+      ...reply.blocks,
+    ],
+  })
+  // Codex-style reasoning is visible without first discovering a shortcut.
+  const expanded = await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
+  expect(expanded).toContain("− thought: 1.8s")
+
+  mockInput.pressKey("t", { ctrl: true })
+  const folded = await waitForFrame((frame) => frame.includes("+ thought: 1.8s"))
+  expect(folded).not.toContain("buyers stepped in at 318 twice")
+
+  mockInput.pressKey("t", { ctrl: true })
+  await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("keeps the complete thought visible while reasoning streams", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 60, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptRun(session.id, "run-1", "running")
+  screen.acceptDelta(session.id, "run-1", { reasoning: "checking the higher timeframe\n" })
+  screen.acceptDelta(session.id, "run-1", { reasoning: "then comparing current volume" })
+
+  const thinking = await waitForFrame((frame) => frame.includes("then comparing current volume"))
+  expect(thinking).toContain("checking the higher timeframe")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("starts turning the moment a run is announced, before any of it has arrived", async () => {
+  // The wait before the first word is the longest part of a reasoning reply. A screen
+  // that waited for a delta would sit still through exactly the part worth reporting.
+  const { renderer, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptRun(session.id, "run-1", "running")
+  const waiting = await waitForFrame((frame) => frame.includes("thinking…"))
+  expect(spinnerFrame(waiting)).toBeDefined()
+  // Esc leads the keys while a reply runs, because that is the one being looked for.
+  expect(waiting).toContain("Esc interrupt")
+
+  // The deltas of that same run join what is already on screen rather than restarting it.
+  screen.acceptDelta(session.id, "run-1", { text: "Thin." })
+  const answering = await waitForFrame((frame) => frame.includes("Thin."))
+  expect(answering.split("Thin.").length - 1).toBe(1)
+
+  screen.acceptRun(session.id, "run-1", "done")
+  await Bun.sleep(20)
+  await renderOnce()
+  const done = captureCharFrame()
+  expect(done).not.toContain("Esc interrupt")
+  expect(done).toContain("^G keys")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("counts the thinking while it happens, and stops counting at the first word", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptRun(session.id, "run-1", "running")
+  screen.acceptDelta(session.id, "run-1", { reasoning: "weighing the tape" })
+  // Still going, so the label is the verb and the number is still moving.
+  await waitForFrame((frame) => frame.includes("− thinking:"))
+
+  screen.acceptDelta(session.id, "run-1", { text: "Thin." })
+  // The first word ends the thinking, so the label settles and the number stops.
+  const answering = await waitForFrame((frame) => frame.includes("− thought:"))
+  expect(answering).not.toContain("− thinking:")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("names the model under the field, and the help modal instead of a row of keys", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+
+  // What will answer is read while a question is being typed, so it sits under the
+  // field rather than in the header.
+  const idle = await waitForFrame((frame) => frame.includes("test-model"))
+  const lines = idle.split("\n")
+  const asked = lines.findIndex((line) => line.includes("ask something"))
+  const named = lines.findIndex((line) => line.includes("test-model"))
+  expect(named).toBeGreaterThan(asked)
+  // The Codex-like status line keeps model and help together beneath the field.
+  expect(lines[named]).toContain("^G keys")
+  expect(lines[asked]).toContain("›")
+  expect(idle).not.toContain("^S chats")
+
+  mockInput.pressKey("g", { ctrl: true })
+  const help = await waitForFrame((frame) => frame.includes("Keys"))
+  expect(help).toContain("which model answers this chat")
+  expect(help).toContain("take back the last queued message")
+
+  // Anything closes it, since it is a thing to read rather than to operate.
+  mockInput.pressEscape()
+  await waitForFrame((frame) => !frame.includes("which model answers this chat"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("the field opens up for a question that wraps, not only for one with new lines in it", async () => {
+  // The field measures its own text. Sizing it by hand looked right for a question typed
+  // across explicit lines and failed for the ordinary case — a long paragraph, which
+  // wraps — leaving a one-line field scrolling sideways through what was written.
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 60, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  const empty = await waitForFrame((frame) => frame.includes("ask something"))
+  // One line at rest: an empty field taller than that is a fifth of a short terminal
+  // spent on nothing.
+  expect(empty.split("\n").filter((line) => line.includes("ask something")).length).toBe(1)
+
+  await mockInput.typeText("where is ASELS heading over the next two sessions, and what invalidates the idea?")
+  const grown = await waitForFrame((frame) => frame.includes("invalidates the idea?"))
+  // Both ends of the question are on screen, on lines of their own.
+  const started = grown.split("\n").findIndex((line) => line.includes("where is ASELS heading"))
+  const ended = grown.split("\n").findIndex((line) => line.includes("invalidates the idea?"))
+  expect(started).toBeGreaterThanOrEqual(0)
+  expect(ended).toBeGreaterThan(started)
+
+  screen.destroy()
+  renderer.destroy()
+})

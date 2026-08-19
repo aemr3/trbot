@@ -1,5 +1,5 @@
 import type { MarketOverviewDigest, OverviewSnapshotStore } from "@trbot/market/overview.ts"
-import type { WatchlistPreferences } from "@trbot/preferences/watchlist.ts"
+import type { AppPreferences } from "@trbot/preferences/app.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import { IDEMPOTENCY_HEADER, ROUTES, type SessionState } from "@trbot/protocol/routes.ts"
 import type { AiService } from "../ai.ts"
@@ -11,15 +11,15 @@ import { AttemptLimiter, json, ndjson, readJsonObject, readJsonObjectOrEmpty } f
 import type { ProviderSession } from "../session.ts"
 import * as check from "./validate.ts"
 
-interface WatchlistPreferencesStore {
-  get(): WatchlistPreferences
-  put(preferences: WatchlistPreferences): void
+interface AppPreferencesStore {
+  get(): AppPreferences
+  put(preferences: AppPreferences): void
 }
 
 export interface RouteContext {
   session: ProviderSession
   idempotency: IdempotencyStore
-  preferences: WatchlistPreferencesStore
+  preferences: AppPreferencesStore
   /** The controllers, not their stores: see the alert and stop routes below. */
   alerts: AlertController
   stops: StopController
@@ -201,10 +201,10 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
       ),
   },
 
-  [ROUTES.watchlistPreferences]: {
+  [ROUTES.appPreferences]: {
     GET: async (_request, { preferences }) => json(preferences.get()),
     PUT: async (request, { preferences }) => {
-      preferences.put(check.watchlistPreferences(await readJsonObject(request)))
+      preferences.put(check.appPreferences(await readJsonObject(request)))
       return json(preferences.get())
     },
   },
