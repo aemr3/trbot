@@ -69,6 +69,19 @@ describe("server frames the terminal will act on", () => {
       { type: "stops", views: [{ rule: {} }] as never },
       { type: "alertTriggered", event: { alert: {} } as never },
       { type: "alerts", views: [{ alert: {} }] as never },
+      {
+        type: "chatQuestionAsked",
+        request: {
+          id: "question-1",
+          sessionId: "chat-1",
+          questions: [{
+            header: "Strategy",
+            question: "Which setup?",
+            options: [{ label: "Breakout", description: "Wait for resistance" }],
+          }],
+        },
+      },
+      { type: "chatQuestionResolved", requestId: "question-1", sessionId: "chat-1" },
       { type: "error", message: "something went wrong" },
       { type: "error", channel: "depth", message: "no book for this symbol" },
     ]
@@ -92,6 +105,8 @@ describe("server frames the terminal will act on", () => {
       { type: "stops" },
       { type: "alerts", views: {} },
       { type: "alertTriggered" },
+      { type: "chatQuestionAsked", request: { id: "question-1", sessionId: "chat-1", questions: [{}] } },
+      { type: "chatQuestionResolved", requestId: "question-1" },
       { type: "error" },
       { type: "chatter", message: "hello" },
       {},

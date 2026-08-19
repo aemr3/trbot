@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { chatBlockText, type ChatMessage, type ChatSession, type ChatSessionDetail } from "@trbot/chat/session.ts"
+import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { AiAccount, AiModelChoice, AiModelSummary, AiPreferences, AiProviderSummary } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import { ApplicationLog } from "../logging/application-log.ts"
@@ -9,18 +10,29 @@ import { ChatScreen } from "./chat.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 
 /** A server-side chat, near enough for a screen to be driven against. */
-function fakeChats(): ChatSessions & { sessions: ChatSession[]; sent: string[]; cancelled: string[]; aborted: string[] } {
+function fakeChats(): ChatSessions & {
+  sessions: ChatSession[]
+  sent: string[]
+  cancelled: string[]
+  aborted: string[]
+  answered: Array<{ requestId: string; answers: ChatQuestionAnswer[] }>
+  rejected: string[]
+} {
   const sessions: ChatSession[] = []
   const messages = new Map<string, ChatMessage[]>()
   const sent: string[] = []
   const cancelled: string[] = []
   const aborted: string[] = []
+  const answered: Array<{ requestId: string; answers: ChatQuestionAnswer[] }> = []
+  const rejected: string[] = []
 
   return {
     sessions,
     sent,
     cancelled,
     aborted,
+    answered,
+    rejected,
     async list() {
       // A copy, as a real client's answer would be: handing out the live array
       // would let the screen and the fake share state no server ever shares.
@@ -77,6 +89,15 @@ function fakeChats(): ChatSessions & { sessions: ChatSession[]; sent: string[]; 
     },
     async abort(sessionId) {
       aborted.push(sessionId)
+    },
+    async questions() {
+      return []
+    },
+    async answerQuestion(requestId, answers) {
+      answered.push({ requestId, answers })
+    },
+    async rejectQuestion(requestId) {
+      rejected.push(requestId)
     },
   }
 }
@@ -240,6 +261,66 @@ test("sends what is typed and shows it waiting its turn", async () => {
   const queued = await waitForFrame((frame) => frame.includes("queued"))
   expect(queued).toContain("^X cancels it")
 
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("answers an agent question and returns to the composer", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  const request: ChatQuestionRequest = {
+    id: "question-1",
+    sessionId: session.id,
+    questions: [{
+      header: "Strategy",
+      question: "Which setup should I watch?",
+      options: [
+        { label: "Breakout", description: "Wait for resistance to break" },
+        { label: "Pullback", description: "Wait for a retracement" },
+      ],
+    }],
+  }
+  screen.acceptQuestion(request)
+  await waitForFrame((frame) => frame.includes("Which setup should I watch?"))
+
+  mockInput.pressArrow("down")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("ask something") && !frame.includes("Which setup should I watch?"))
+
+  expect(chats.answered).toEqual([{ requestId: "question-1", answers: [["Pullback"]] }])
+  expect(chats.rejected).toEqual([])
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("dismisses an agent question without sending it as chat text", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptQuestion({
+    id: "question-2",
+    sessionId: session.id,
+    questions: [{ header: "Confirm", question: "Continue?", options: [] }],
+  })
+  await waitForFrame((frame) => frame.includes("Continue?"))
+  mockInput.pressEscape()
+  await waitForFrame((frame) => frame.includes("ask something") && !frame.includes("Continue?"))
+
+  expect(chats.rejected).toEqual(["question-2"])
+  expect(chats.sent).toEqual([])
   screen.destroy()
   renderer.destroy()
 })

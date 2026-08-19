@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatRunStatus, ChatSession } from "@trbot/chat/session.ts"
+import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { AlertTriggerEvent, PriceAlertView } from "@trbot/market/alert-monitor.ts"
 import { DEPTH_STATUSES } from "@trbot/market/depth.ts"
 import type { DepthBook, DepthStatus } from "@trbot/market/depth.ts"
@@ -58,6 +59,8 @@ export type ChatFrame =
   | { type: "chatMessageRemoved"; sessionId: string; messageId: string }
   | { type: "chatDelta"; sessionId: string; runId: string; seq: number; text?: string; reasoning?: string; toolName?: string }
   | { type: "chatRun"; sessionId: string; runId: string; status: ChatRunStatus; message?: ChatMessage; error?: string }
+  | { type: "chatQuestionAsked"; request: ChatQuestionRequest }
+  | { type: "chatQuestionResolved"; requestId: string; sessionId: string }
 
 // Owned by the trading package: how a stop ended is a trading fact, and this
 // package already depends on it.
@@ -178,6 +181,10 @@ function isServerFrame(value: unknown): value is ServerFrame {
     case "chatRun":
       return typeof frame.sessionId === "string" && typeof frame.runId === "string"
         && isOneOf(frame.status, CHAT_RUN_STATUSES)
+    case "chatQuestionAsked":
+      return isChatQuestionRequest(frame.request)
+    case "chatQuestionResolved":
+      return typeof frame.requestId === "string" && typeof frame.sessionId === "string"
     case "error":
       return typeof frame.message === "string" && (frame.channel === undefined || isChannel(frame.channel))
     default:
@@ -198,6 +205,20 @@ function hasSymbol(value: unknown): boolean {
 
 function isTrigger(value: unknown): boolean {
   return isObject(field(value, "rule")) && isObject(field(value, "position"))
+}
+
+function isChatQuestionRequest(value: unknown): boolean {
+  return typeof field(value, "id") === "string"
+    && typeof field(value, "sessionId") === "string"
+    && isListOf(field(value, "questions"), (question) => (
+      typeof field(question, "question") === "string"
+      && typeof field(question, "header") === "string"
+      && (field(question, "multiple") === undefined || typeof field(question, "multiple") === "boolean")
+      && isListOf(field(question, "options"), (option) => (
+        typeof field(option, "label") === "string"
+        && typeof field(option, "description") === "string"
+      ))
+    ))
 }
 
 function field(value: unknown, name: string): unknown {

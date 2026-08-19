@@ -4,6 +4,7 @@ import { ProtocolError } from "@trbot/protocol/error.ts"
 import { IDEMPOTENCY_HEADER, ROUTES, type SessionState } from "@trbot/protocol/routes.ts"
 import type { AiService } from "../ai.ts"
 import type { ChatController } from "../chat.ts"
+import type { ChatQuestionController } from "../chat-question.ts"
 import type { AlertController } from "../monitors/alert.ts"
 import type { StopController } from "../monitors/stop.ts"
 import { hashRequest, type IdempotencyStore } from "./idempotency.ts"
@@ -26,6 +27,7 @@ export interface RouteContext {
   overviewSnapshots: OverviewSnapshotStore
   ai: AiService
   chat: ChatController
+  questions: ChatQuestionController
 }
 
 type Handler = (request: Request, context: RouteContext) => Promise<Response>
@@ -247,6 +249,10 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
     },
   },
 
+  [ROUTES.chatQuestions]: {
+    GET: async (_request, { questions }) => json(questions.list()),
+  },
+
   // The commentary streams because the trader reads it as it arrives. Whether a
   // model is chosen and reachable is checked first, so "no model chosen" is an
   // ordinary error response rather than a stream that yields nothing.
@@ -276,6 +282,23 @@ export const PARAMETERIZED: {
   method: string
   handle: (match: RegExpMatchArray, request: Request, context: RouteContext) => Promise<Response>
 }[] = [
+  {
+    pattern: /^\/v1\/ai\/chat\/questions\/([^/]+)\/reply$/,
+    method: "POST",
+    handle: async (match, request, { questions }) => {
+      const body = await readJsonObject(request)
+      questions.reply(decodeURIComponent(match[1] ?? ""), check.chatQuestionAnswers(body.answers))
+      return json({ ok: true })
+    },
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/questions\/([^/]+)$/,
+    method: "DELETE",
+    handle: async (match, _request, { questions }) => {
+      questions.reject(decodeURIComponent(match[1] ?? ""))
+      return json({ ok: true })
+    },
+  },
   {
     pattern: /^\/v1\/instruments\/([^/]+)\/contract$/,
     method: "GET",

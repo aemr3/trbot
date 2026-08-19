@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatModelChoice, ChatRunStatus, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
+import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import type { HttpClient } from "./http.ts"
@@ -42,6 +43,18 @@ export class HttpChatSessions implements ChatSessions {
   async abort(sessionId: string): Promise<void> {
     await this.http.post(ROUTES.chatAbort(sessionId))
   }
+
+  questions(): Promise<ChatQuestionRequest[]> {
+    return this.http.get<ChatQuestionRequest[]>(ROUTES.chatQuestions)
+  }
+
+  async answerQuestion(requestId: string, answers: ChatQuestionAnswer[]): Promise<void> {
+    await this.http.post(ROUTES.chatQuestionReply(requestId), { body: { answers } })
+  }
+
+  async rejectQuestion(requestId: string): Promise<void> {
+    await this.http.delete(ROUTES.chatQuestion(requestId))
+  }
 }
 
 export interface ChatEvents {
@@ -50,6 +63,8 @@ export interface ChatEvents {
   onMessageRemoved?: (sessionId: string, messageId: string) => void
   onDelta?: (sessionId: string, runId: string, delta: ChatDelta) => void
   onRun?: (sessionId: string, runId: string, status: ChatRunStatus, error?: string) => void
+  onQuestionAsked?: (request: ChatQuestionRequest) => void
+  onQuestionResolved?: (sessionId: string, requestId: string) => void
   /**
    * Asked when this client can tell it is not seeing the whole run: a delta
    * arrived out of order, or a run is reported that it holds no partial for. The
@@ -109,6 +124,12 @@ export class ChatClient {
           }
           if (frame.status !== "running") this.seqByRun.delete(frame.runId)
           events.onRun?.(frame.sessionId, frame.runId, frame.status, frame.error)
+          return
+        case "chatQuestionAsked":
+          events.onQuestionAsked?.(frame.request)
+          return
+        case "chatQuestionResolved":
+          events.onQuestionResolved?.(frame.sessionId, frame.requestId)
           return
         default:
           return

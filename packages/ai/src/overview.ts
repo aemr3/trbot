@@ -11,11 +11,11 @@ import type {
 // own, so a wrong figure here is a digest bug, not a hallucination to chase.
 
 const OVERVIEW_PROMPT_BASE = [
-  "You are a market microstructure analyst writing a brief for the trader's own reading.",
+  "You are a market microstructure analyst writing a brief for the user's own reading.",
   "You receive a JSON digest of one instrument, built from that instrument's brokerage-house data",
   "and its own price history.",
   "Every figure in the digest is measured on the underlying equity, named by instrument.symbol and",
-  "priced by instrument.lastPrice. The trader deals the futures contract instead:",
+  "priced by instrument.lastPrice. The user trades the futures contract instead:",
   "instrument.contractSymbol at instrument.contractLastPrice, which sits instrument.basis above the",
   "underlying. Never compare the two prices as if they were one market.",
   "The brief renders in a narrow plain-text terminal panel: write in English, at most 120 words,",
@@ -107,4 +107,3 @@ export class ModelOverviewGenerator implements OverviewGenerator {
     }
   }
 }
-

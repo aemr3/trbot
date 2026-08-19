@@ -16,6 +16,7 @@ import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trb
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { AiService } from "./ai.ts"
 import { ChatController } from "./chat.ts"
+import { ChatQuestionController } from "./chat-question.ts"
 import { priceAlertApplicationEvent } from "./chat-price-alert-event.ts"
 import { certificateExpiry } from "./tls.ts"
 import { AlertController } from "./monitors/alert.ts"
@@ -81,6 +82,7 @@ async function startTrbotServer(): Promise<void> {
 
   const ai = new AiService({ models, credentials, preferences: aiPreferences })
   let hub: StreamHub | null = null
+  const questions = new ChatQuestionController({ broadcast: (frame) => hub?.broadcast(frame) })
 
   const stops = new StopController({
     store: stopStore,
@@ -142,6 +144,7 @@ async function startTrbotServer(): Promise<void> {
             remove: (id) => alerts.remove(id),
           },
         },
+        questions,
         subagentSessions: {
           start: (input) => chat.subagentSessions.start(input),
         },
@@ -237,9 +240,11 @@ async function startTrbotServer(): Promise<void> {
     overviewSnapshots: new DrizzleOverviewSnapshotStore(connection.db),
     ai,
     chat,
+    questions,
     hub,
     backlog: () => [
       ...chat.backlog(),
+      ...questions.backlog(),
       ...stops.outstanding().map((event) =>
         event.type === "triggered"
           ? { type: "stopTriggered", event: event.event, remainingMs: event.remainingMs, held: event.held }
@@ -263,6 +268,7 @@ async function startTrbotServer(): Promise<void> {
     clearInterval(candleTimer)
     if (positionRefreshTimer) clearTimeout(positionRefreshTimer)
     chat.destroy()
+    questions.destroy()
     closeHarness()
     stops.destroy()
     alerts.destroy()

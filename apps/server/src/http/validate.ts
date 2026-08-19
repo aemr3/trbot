@@ -8,6 +8,7 @@ import {
   type PriceAlertStatus,
 } from "@trbot/market/alert.ts"
 import type { AiModelChoice, AiPreferences } from "@trbot/protocol/ai.ts"
+import type { ChatQuestionAnswer } from "@trbot/chat/question.ts"
 import type { BrokerageDateRange } from "@trbot/market/broker-calendar.ts"
 import type { BrokerageSide } from "@trbot/market/brokerage.ts"
 import { LEVEL_DIRECTIONS } from "@trbot/market/price-level.ts"
@@ -84,6 +85,12 @@ export function stringList(value: unknown, field: string): string[] {
     throw invalid(field, "must be an array of strings")
   }
   return value as string[]
+}
+
+/** Answers to an interactive agent request, kept in question order. */
+export function chatQuestionAnswers(value: unknown): ChatQuestionAnswer[] {
+  if (!Array.isArray(value)) throw invalid("answers", "must be an array")
+  return value.map((answer, index) => stringList(answer, `answers.${index}`))
 }
 
 export function dateRange(value: unknown, field = "range"): BrokerageDateRange {

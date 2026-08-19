@@ -9,12 +9,14 @@ import {
   type TextChunk,
 } from "@opentui/core"
 import type { ChatMessage, ChatSession } from "@trbot/chat/session.ts"
+import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import { AiConnectionModal } from "../components/ai-connection-modal.ts"
 import { AiModelModal } from "../components/ai-model-modal.ts"
 import { ChatCommandMenu, type ChatCommand } from "../components/chat-command-menu.ts"
 import { ChatHelpModal } from "../components/chat-help-modal.ts"
+import { ChatQuestionModal } from "../components/chat-question-modal.ts"
 import { ChatSessionModal } from "../components/chat-session-modal.ts"
 import { ChatTranscript, type ChatTranscriptBlock } from "../components/chat-transcript.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
@@ -84,7 +86,7 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
 ]
 
 type Focus = "transcript" | "composer"
-type Modal = AiConnectionModal | AiModelModal | ChatSessionModal | ChatHelpModal | SubagentSessionModal
+type Modal = AiConnectionModal | AiModelModal | ChatSessionModal | ChatHelpModal | SubagentSessionModal | ChatQuestionModal
 
 export interface ChatScreenOptions {
   chats: ChatSessions
@@ -150,6 +152,7 @@ export class ChatScreen {
   private sessions: ChatSession[] = []
   private messagesBySession = new Map<string, ChatMessage[]>()
   private streamingBySession = new Map<string, Streaming>()
+  private pendingQuestions = new Map<string, ChatQuestionRequest>()
   /** Context window per `provider/model`, for reading a conversation's usage as a share of it. */
   private contextWindows = new Map<string, number>()
   private selectedSessionId: string | null = null
@@ -465,6 +468,17 @@ export class ChatScreen {
     this.render.schedule()
   }
 
+  acceptQuestion(request: ChatQuestionRequest): void {
+    if (this.destroyed) return
+    this.pendingQuestions.set(request.id, request)
+    this.openPendingQuestion()
+  }
+
+  acceptQuestionResolved(_sessionId: string, requestId: string): void {
+    if (this.destroyed) return
+    this.finishQuestion(requestId)
+  }
+
   /** Re-reads a session after a missed frame, so no transcript keeps a hole. */
   resync(sessionId: string): void {
     if (this.destroyed) return
@@ -476,9 +490,13 @@ export class ChatScreen {
   private async load(): Promise<void> {
     await this.refreshConnection()
     try {
-      const sessions = await this.options.chats.list()
+      const [sessions, questions] = await Promise.all([
+        this.options.chats.list(),
+        this.options.chats.questions(),
+      ])
       if (this.destroyed) return
       this.sessions = sessions
+      this.pendingQuestions = new Map(questions.map((request) => [request.id, request]))
       const preferred = this.options.initialSessionId
       if (preferred && !sessions.some((session) => session.id === preferred)) {
         try {
@@ -489,6 +507,7 @@ export class ChatScreen {
       }
       this.setSelectedSession(this.initialSession(this.sessions))
       if (this.selectedSessionId) await this.loadSession(this.selectedSessionId)
+      this.openPendingQuestion()
     } catch (error) {
       this.options.logs.error("Chat", error)
     }
@@ -871,6 +890,35 @@ export class ChatScreen {
     // offered at all depends on it.
     void this.refreshConnection()
     this.renderer.requestRender()
+    this.openPendingQuestion()
+  }
+
+  /** Questions take the next modal slot and keep their agent turn paused until answered. */
+  private openPendingQuestion(): void {
+    if (this.modal || this.destroyed) return
+    const request = this.pendingQuestions.values().next().value as ChatQuestionRequest | undefined
+    if (!request) return
+    this.showModal(new ChatQuestionModal(this.renderer, {
+      request,
+      onAnswer: async (answers) => {
+        await this.options.chats.answerQuestion(request.id, answers)
+        this.finishQuestion(request.id)
+      },
+      onReject: async () => {
+        await this.options.chats.rejectQuestion(request.id)
+        this.finishQuestion(request.id)
+      },
+    }))
+  }
+
+  private finishQuestion(requestId: string): void {
+    this.pendingQuestions.delete(requestId)
+    if (this.modal instanceof ChatQuestionModal && this.modal.requestId === requestId) {
+      this.closeModal()
+    } else {
+      this.render.schedule()
+      this.openPendingQuestion()
+    }
   }
 
   // --- state --------------------------------------------------------------------

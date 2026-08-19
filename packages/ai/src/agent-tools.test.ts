@@ -43,6 +43,24 @@ test("adds the durable price watch when the server provides it", () => {
   ])
 })
 
+test("adds interactive questions to the complete parent and subagent toolset", () => {
+  const faux = fauxProvider({ models: [{ id: "chat-model" }] })
+  const models = createModels()
+  models.setProvider(faux.provider)
+
+  const tools = createAgentTools({
+    models,
+    questions: { ask: async () => [] },
+  })
+
+  expect(tools.list().map((tool) => tool.name)).toEqual([
+    "web_search",
+    "fetch_content",
+    "ask_question",
+    "subagent",
+  ])
+})
+
 test("adds every read-only market tool when the server provides its clients", () => {
   const faux = fauxProvider({ models: [{ id: "chat-model" }] })
   const models = createModels()

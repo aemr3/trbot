@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatModelChoice, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
+import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 
 /**
  * The chat as a client drives it.
@@ -23,4 +24,8 @@ export interface ChatSessions {
   cancel(sessionId: string, messageId: string): Promise<void>
   /** Stops the reply being generated now, keeping whatever it produced. */
   abort(sessionId: string): Promise<void>
+  /** Questions currently blocking an agent tool call. */
+  questions(): Promise<ChatQuestionRequest[]>
+  answerQuestion(requestId: string, answers: ChatQuestionAnswer[]): Promise<void>
+  rejectQuestion(requestId: string): Promise<void>
 }

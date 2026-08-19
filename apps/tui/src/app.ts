@@ -374,6 +374,8 @@ export class App {
       onMessageRemoved: (sessionId, messageId) => chat.acceptMessageRemoved(sessionId, messageId),
       onDelta: (sessionId, runId, delta) => chat.acceptDelta(sessionId, runId, delta),
       onRun: (sessionId, runId, status, error) => chat.acceptRun(sessionId, runId, status, error),
+      onQuestionAsked: (request) => chat.acceptQuestion(request),
+      onQuestionResolved: (sessionId, requestId) => chat.acceptQuestionResolved(sessionId, requestId),
       onResync: (sessionId) => chat.resync(sessionId),
     })
     const logs = new LogsScreen(this.renderer, {

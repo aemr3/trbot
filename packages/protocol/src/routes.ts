@@ -55,6 +55,9 @@ export const ROUTES = {
   chatMessage: (sessionId: string, messageId: string) =>
     `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`,
   chatAbort: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/abort`,
+  chatQuestions: `${API_PREFIX}/ai/chat/questions`,
+  chatQuestionReply: (id: string) => `${API_PREFIX}/ai/chat/questions/${encodeURIComponent(id)}/reply`,
+  chatQuestion: (id: string) => `${API_PREFIX}/ai/chat/questions/${encodeURIComponent(id)}`,
   overviewSnapshots: `${API_PREFIX}/overview-snapshots`,
   streamTicket: `${API_PREFIX}/stream/ticket`,
   stream: `${API_PREFIX}/stream`,
