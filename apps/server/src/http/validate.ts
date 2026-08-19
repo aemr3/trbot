@@ -7,6 +7,7 @@ import {
   type PriceAlertDraft,
   type PriceAlertStatus,
 } from "@trbot/market/alert.ts"
+import type { AiModelChoice, AiPreferences } from "@trbot/protocol/ai.ts"
 import type { BrokerageDateRange } from "@trbot/market/broker-calendar.ts"
 import type { BrokerageSide } from "@trbot/market/brokerage.ts"
 import { LEVEL_DIRECTIONS } from "@trbot/market/price-level.ts"
@@ -273,4 +274,46 @@ export function overviewSnapshot(body: Record<string, unknown>): StoredOverviewS
     commentary: typeof body.commentary === "string" ? body.commentary : "",
     generatedAt: positiveNumber(body.generatedAt, "generatedAt"),
   }
+}
+
+/**
+ * A credential a login produced.
+ *
+ * Only the kind is checked. What is inside belongs to the model harness — its fields
+ * differ per provider and grow with its versions — so re-describing it here would mean
+ * refusing a credential this build simply has not heard about yet.
+ */
+export function aiCredential(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid("credential", "is required")
+  const kind = (value as { type?: unknown }).type
+  if (kind !== "oauth" && kind !== "api_key") throw invalid("credential.type", 'must be "oauth" or "api_key"')
+  return value as Record<string, unknown>
+}
+
+/** Which model answers. The ids stay free-form: they are the harness's vocabulary. */
+export function aiModelChoice(body: Record<string, unknown>): AiModelChoice {
+  return {
+    providerId: text(body.providerId, "providerId"),
+    modelId: text(body.modelId, "modelId"),
+    reasoning: body.reasoning === null || body.reasoning === undefined ? null : text(body.reasoning, "reasoning"),
+  }
+}
+
+/**
+ * The chosen models, either of which may be unset.
+ *
+ * Null is a real value here — it is how a trader clears a choice — so it is accepted
+ * rather than treated as a missing field.
+ */
+export function aiPreferences(body: Record<string, unknown>): AiPreferences {
+  return {
+    overview: choiceOrNull(body.overview, "overview"),
+    chat: choiceOrNull(body.chat, "chat"),
+  }
+}
+
+function choiceOrNull(value: unknown, field: string): AiModelChoice | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== "object" || Array.isArray(value)) throw invalid(field, "must be an object or null")
+  return aiModelChoice(value as Record<string, unknown>)
 }

@@ -4,13 +4,13 @@ import type { AuthSession } from "@trbot/auth/session.ts"
 import type { AuthState } from "@trbot/auth/state.ts"
 import type { AuthStore } from "@trbot/auth/store.ts"
 import { createHarness } from "@trbot/ai/harness.ts"
-import type { ProviderState, ProviderStateStore } from "@trbot/ai/provider-state.ts"
+import type { AiCredentialRecord, AiCredentialStore, AiPreferencesRecord, AiPreferencesStore } from "@trbot/ai/credential-store.ts"
 import { HttpAiAccount, HttpOverviewGenerator } from "@trbot/client/ai.ts"
 import { HttpClient } from "@trbot/client/http.ts"
 import { HttpInstrumentSource, HttpMemberFeatureSource, HttpOrderSource } from "@trbot/client/sources.ts"
 import type { MarketOverviewDigest } from "@trbot/market/overview.ts"
 import { memberFeatureSet, type MemberFeatureSet } from "@trbot/member/features.ts"
-import type { AiAccountSummary } from "@trbot/protocol/ai.ts"
+import type { AiPreferences, AiProviderSummary } from "@trbot/protocol/ai.ts"
 import { isProtocolError, requiresAuthentication } from "@trbot/protocol/error.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import { openDatabase, type DatabaseConnection } from "@trbot/db/client.ts"
@@ -42,17 +42,33 @@ const notUsed = new Proxy({}, { get: () => () => { throw new Error("not used in 
 /** A digest is opaque to the server, so the smallest one that names a mode does. */
 const DIGEST = { mode: "DAILY" } as unknown as MarketOverviewDigest
 
-function memoryStates(): ProviderStateStore {
-  let state: ProviderState | null = null
+function memoryCredentials(): AiCredentialStore {
+  const records = new Map<string, AiCredentialRecord>()
   return {
     async get(providerId) {
-      return state?.providerId === providerId ? state : null
+      return records.get(providerId) ?? null
     },
-    async put(value) {
-      state = value
+    async list() {
+      return [...records.values()]
     },
-    async delete() {
-      state = null
+    async put(record) {
+      records.set(record.providerId, record)
+    },
+    async delete(providerId) {
+      records.delete(providerId)
+    },
+  }
+}
+
+function memoryPreferences(): AiPreferencesStore {
+  let stored: AiPreferencesRecord | null = null
+  return {
+    async get() {
+      return stored
+    },
+    async put(preferences) {
+      stored = { ...preferences, updatedAt: Date.now() }
+      return stored
     },
   }
 }
@@ -69,11 +85,11 @@ describe("server and client over the wire", () => {
     connection = await openDatabase(":memory:")
     session = new ProviderSession({ openAuthSession: emptyAuthSession, credentials: null })
     const hub = new StreamHub(session)
-    const states = memoryStates()
+    const credentials = memoryCredentials()
     const ai = new AiService({
-      states,
-      models: createHarness(states),
-      model: "test-model",
+      models: createHarness(credentials),
+      credentials,
+      preferences: memoryPreferences(),
       generator: {
         async generate(_digest, options) {
           options.onDelta("Flow is ")
@@ -182,54 +198,73 @@ describe("server and client over the wire", () => {
     expect(isProtocolError(refused) && refused.message).toContain("Too many attempts")
   })
 
-  test("takes on a connection the terminal logged in and never hands a token back", async () => {
+  test("takes on a credential the terminal logged in and never hands one back", async () => {
     const account = new HttpAiAccount(client)
-    expect(await account.getState()).toBeNull()
+    const before = await account.providers()
+    // Every provider the harness ships with is offered, not a chosen one.
+    expect(before.length).toBeGreaterThan(10)
+    expect(before.every((provider) => !provider.connected)).toBe(true)
 
-    // The login itself runs on the trader's machine, because the provider only
-    // redirects to localhost and it is their browser that has to open. What crosses
-    // the wire is the result, inward — the same direction as the provider password.
-    const summary = await client.post<AiAccountSummary>(ROUTES.aiAccount, {
-      body: {
-        accessToken: "access-1",
-        refreshToken: "refresh-1",
-        expiresAt: Date.now() + 3_600_000,
-        accountId: "account-1",
-      },
+    // The login itself runs on the trader's machine, because a provider only
+    // redirects to localhost, it is their browser that has to open, and an API key is
+    // theirs to type. What crosses the wire is the result, inward — the same
+    // direction as the provider password.
+    const summary = await client.post<AiProviderSummary>(ROUTES.aiProvider("groq"), {
+      body: { providerId: "groq", credential: { type: "api_key", key: "gsk-not-a-real-key" } },
     })
 
-    expect(summary).toMatchObject({ providerId: "openai-codex", accountId: "account-1" })
-    // Nothing hands a credential back out, which is the half of the rule that
-    // still holds absolutely.
-    expect(Object.keys(summary)).not.toContain("accessToken")
-    expect(Object.keys(summary)).not.toContain("refreshToken")
-    expect(await account.getState()).toMatchObject({ accountId: "account-1" })
+    expect(summary).toMatchObject({ providerId: "groq", connected: true })
+    // Nothing hands a credential back out, which is the half of the rule that still
+    // holds absolutely.
+    expect(JSON.stringify(summary)).not.toContain("gsk-not-a-real-key")
 
-    await account.disconnect()
-    expect(await account.getState()).toBeNull()
+    const models = await account.models()
+    expect(models.length).toBeGreaterThan(0)
+    expect(models.every((model) => model.providerId === "groq")).toBe(true)
+    // The levels are resolved server-side, so a picker never works them out itself.
+    expect(models.every((model) => model.thinkingLevels.length > 0)).toBe(true)
 
-    // Left connected: the overview tests below share this server, and a route that
-    // refuses without a connection is exactly what they would trip over.
-    await client.post(ROUTES.aiAccount, {
-      body: {
-        accessToken: "access-1",
-        refreshToken: "refresh-1",
-        expiresAt: Date.now() + 3_600_000,
-        accountId: "account-1",
-      },
-    })
+    await account.disconnect("groq")
+    expect((await account.providers()).every((provider) => !provider.connected)).toBe(true)
   })
 
-  test("credentials missing a token are refused rather than stored", async () => {
+  test("a credential of no known kind is refused rather than stored", async () => {
     const error = await client
-      .post(ROUTES.aiAccount, { body: { accessToken: "access-1", expiresAt: Date.now() } })
+      .post(ROUTES.aiProvider("groq"), { body: { providerId: "groq", credential: { key: "no-type" } } })
       .catch((caught: unknown) => caught)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
 
+  test("the chosen models round-trip, and clearing one is a real answer", async () => {
+    const account = new HttpAiAccount(client)
+    expect(await account.preferences()).toEqual({ overview: null, chat: null })
+
+    const saved = await account.setPreferences({
+      overview: { providerId: "groq", modelId: "llama-4", reasoning: "high" },
+      chat: null,
+    })
+    expect(saved).toEqual({ overview: { providerId: "groq", modelId: "llama-4", reasoning: "high" }, chat: null })
+    expect(await account.preferences()).toEqual(saved)
+
+    const cleared: AiPreferences = { overview: null, chat: null }
+    expect(await account.setPreferences(cleared)).toEqual(cleared)
+  })
+
   // Every stream opens with a heartbeat, so this also proves the client passes
   // only real commentary to the panel and never renders a keep-alive frame.
+  //
+  // A model has to be chosen and reachable first, because that is what the route
+  // checks before it opens a stream at all.
   test("the overview streams from the server a piece at a time", async () => {
+    const account = new HttpAiAccount(client)
+    await client.post(ROUTES.aiProvider("groq"), {
+      body: { providerId: "groq", credential: { type: "api_key", key: "gsk-not-a-real-key" } },
+    })
+    await account.setPreferences({
+      overview: { providerId: "groq", modelId: "llama-4", reasoning: null },
+      chat: null,
+    })
+
     const deltas: string[] = []
     await new HttpOverviewGenerator(client).generate(DIGEST, { onDelta: (text) => deltas.push(text) })
     expect(deltas).toEqual(["Flow is ", "one-sided."])
@@ -257,15 +292,32 @@ describe("server and client over the wire", () => {
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
 
-  // Runs last: it leaves ChatGPT disconnected.
-  test("the overview is refused outright when ChatGPT is not connected", async () => {
-    await new HttpAiAccount(client).disconnect()
+  /**
+   * Two ways an overview has nowhere to come from, and both are refused before a
+   * stream opens rather than reported inside one. They read differently on purpose:
+   * one is fixed by picking a model, the other by reconnecting a provider.
+   */
+  test("the overview is refused outright when it has no model to run on", async () => {
+    const account = new HttpAiAccount(client)
 
-    const error = await new HttpOverviewGenerator(client)
+    await account.setPreferences({ overview: null, chat: null })
+    const unchosen = await new HttpOverviewGenerator(client)
       .generate(DIGEST, { onDelta: () => {} })
       .catch((caught: unknown) => caught)
-    expect(isProtocolError(error) && error.code).toBe("invalid_request")
-    expect(isProtocolError(error) && error.message).toContain("not connected")
+    expect(isProtocolError(unchosen) && unchosen.code).toBe("invalid_request")
+    expect(isProtocolError(unchosen) && unchosen.message).toContain("No model chosen")
+
+    // Chosen, but its provider has been disconnected since.
+    await account.setPreferences({
+      overview: { providerId: "groq", modelId: "llama-4", reasoning: null },
+      chat: null,
+    })
+    await account.disconnect("groq")
+    const gone = await new HttpOverviewGenerator(client)
+      .generate(DIGEST, { onDelta: () => {} })
+      .catch((caught: unknown) => caught)
+    expect(isProtocolError(gone) && gone.code).toBe("invalid_request")
+    expect(isProtocolError(gone) && gone.message).toContain("not connected")
   })
 
   // The preferences store falls back to defaults for anything it does not

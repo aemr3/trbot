@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core"
+import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { chatBlockText, type ChatMessage, type ChatSession, type ChatSessionDetail } from "@trbot/chat/session.ts"
-import type { AiAccount, AiAccountSummary } from "@trbot/protocol/ai.ts"
+import type { AiAccount, AiModelChoice, AiModelSummary, AiPreferences, AiProviderSummary } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import { ApplicationLog } from "../logging/application-log.ts"
-import { AiScreen } from "./ai.ts"
+import { ChatScreen } from "./chat.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 
 /** A server-side chat, near enough for a screen to be driven against. */
@@ -26,11 +26,13 @@ function fakeChats(): ChatSessions & { sessions: ChatSession[]; sent: string[]; 
       // would let the screen and the fake share state no server ever shares.
       return [...sessions]
     },
-    async create() {
+    async create(choice?: AiModelChoice) {
       const session: ChatSession = {
         id: `chat-${sessions.length + 1}`,
         title: "New chat",
-        model: "test-model",
+        model: choice?.modelId ?? "test-model",
+        provider: choice?.providerId ?? "test-provider",
+        reasoning: choice?.reasoning ?? null,
         createdAt: 1_000,
         updatedAt: 1_000,
         messageCount: 0,
@@ -40,6 +42,14 @@ function fakeChats(): ChatSessions & { sessions: ChatSession[]; sent: string[]; 
       sessions.push(session)
       messages.set(session.id, [])
       return session
+    },
+    async configure(sessionId, choice) {
+      const session = sessions.find((entry) => entry.id === sessionId)
+      if (!session) throw new Error(`no session ${sessionId}`)
+      session.provider = choice.providerId
+      session.model = choice.modelId
+      session.reasoning = choice.reasoning
+      return { ...session }
     },
     async get(sessionId): Promise<ChatSessionDetail> {
       const session = sessions.find((entry) => entry.id === sessionId)
@@ -86,45 +96,94 @@ function replyMessage(text: string, status: ChatMessage["status"] = "COMPLETE"):
   return { ...userMessage(text, status), id: `reply-${text}`, role: "ASSISTANT" }
 }
 
-function account(state: AiAccountSummary | null): AiAccount {
-  let current = state
+/**
+ * The providers as a server would report them.
+ *
+ * `connected` decides whether the screen offers a composer at all, which is the
+ * gate these tests are mostly about.
+ */
+function account(options: { connected?: boolean; models?: AiModelSummary[] } = {}): AiAccount {
+  let joined = options.connected ?? false
+  let preferences: AiPreferences = { overview: null, chat: null }
+  const summary = (): AiProviderSummary => ({
+    providerId: "test-provider",
+    name: "Test Provider",
+    authTypes: ["api_key"],
+    isSubscription: false,
+    connected: joined,
+    source: joined ? "stored credential" : null,
+    accountId: null,
+    connectedAt: joined ? 1 : null,
+    updatedAt: joined ? 1 : null,
+  })
   return {
-    async getState() {
-      return current
+    async providers() {
+      return [summary()]
+    },
+    async models() {
+      return options.models ?? [{
+        providerId: "test-provider",
+        providerName: "Test Provider",
+        modelId: "test-model",
+        name: "Test Model",
+        reasoning: true,
+        thinkingLevels: ["low", "high"],
+        contextWindow: 128_000,
+      }]
     },
     async connect() {
-      current = { providerId: "openai", accountId: "account-1", connectedAt: 1, updatedAt: 1 }
-      return current
+      joined = true
+      return summary()
     },
     async disconnect() {
-      current = null
+      joined = false
+    },
+    async preferences() {
+      return preferences
+    },
+    async setPreferences(next) {
+      preferences = next
+      return preferences
     },
   }
 }
 
-const connected: AiAccountSummary = {
-  providerId: "openai",
-  accountId: "account-1",
-  connectedAt: 1,
-  updatedAt: 1,
+/** Shorthand for the common case: something connected and usable. */
+const connected = { connected: true }
+
+/**
+ * Keys as the terminal really delivers them.
+ *
+ * A live renderer hands a key to the screen and then to whichever renderable holds
+ * focus, unless the screen marks it handled. The test renderer keeps those two paths on
+ * separate emitters, so a screen that lets a focused field see the key twice looks fine
+ * under the plain wiring and doubles every character in a terminal.
+ */
+function routeKeys(renderer: RenderContext & { keyInput: { on(event: "keypress", handler: (key: KeyEvent) => void): void } }, screen: { handleKey(key: KeyEvent): void }): void {
+  renderer.keyInput.on("keypress", (key: KeyEvent) => {
+    screen.handleKey(key)
+    const focused = renderer.currentFocusedRenderable
+    if (!key.defaultPrevented) focused?.handleKeyPress?.(key)
+  })
 }
 
-test("asks the trader to connect ChatGPT before offering a composer", async () => {
+test("asks the trader to connect a provider before offering a composer", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
-  const screen = new AiScreen(renderer, { chats: fakeChats(), account: account(null), logs: new ApplicationLog() })
+  const screen = new ChatScreen(renderer, { chats: fakeChats(), account: account(), logs: new ApplicationLog() })
   renderer.root.add(screen.root)
   screen.mount()
   renderer.keyInput.on("keypress", (key) => screen.handleKey(key))
 
-  // Nothing to type into while there is no connection: the instruction is the
-  // only thing on offer.
-  const gate = await waitForFrame((frame) => frame.includes("ChatGPT is not connected"))
+  // Nothing to type into while nothing is connected: the instruction is the only
+  // thing on offer.
+  const gate = await waitForFrame((frame) => frame.includes("No model provider connected"))
   expect(gate).not.toContain("ask something")
 
   mockInput.pressEnter()
-  await waitForFrame((frame) => frame.includes("AI provider"))
+  // Every provider the harness offers is listed, connected or not.
+  await waitForFrame((frame) => frame.includes("Model providers"))
   mockInput.pressEnter()
-  await waitForFrame((frame) => frame.includes("Connected"))
+  await waitForFrame((frame) => frame.includes("connected."))
   mockInput.pressEscape()
   // Connecting in the modal is what opens the chat, without leaving the tab.
   await waitForFrame((frame) => frame.includes("ask something"))
@@ -136,7 +195,7 @@ test("asks the trader to connect ChatGPT before offering a composer", async () =
 test("sends what is typed and shows it waiting its turn", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
-  const screen = new AiScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
   renderer.root.add(screen.root)
   screen.mount()
   renderer.keyInput.on("keypress", (key) => screen.handleKey(key))
@@ -160,7 +219,7 @@ test("renders a reply as it streams and replaces it with the stored message", as
   const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const session = await chats.create()
-  const screen = new AiScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
   renderer.root.add(screen.root)
   screen.mount()
   await waitForFrame((frame) => frame.includes("ask something"))
@@ -189,7 +248,7 @@ test("keeps one transcript per session and switches between them", async () => {
   const chats = fakeChats()
   const first = await chats.create()
   const second = await chats.create()
-  const screen = new AiScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
   renderer.root.add(screen.root)
   screen.mount()
   renderer.keyInput.on("keypress", (key) => screen.handleKey(key))
@@ -216,7 +275,7 @@ test("takes back the message still waiting, and stops the reply that is running"
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const session = await chats.create()
-  const screen = new AiScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
   renderer.root.add(screen.root)
   screen.mount()
   renderer.keyInput.on("keypress", (key) => screen.handleKey(key))
@@ -249,7 +308,7 @@ test("deleting a session takes two presses of d", async () => {
   })
   const chats = fakeChats()
   await chats.create()
-  const screen = new AiScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
   renderer.root.add(screen.root)
   screen.mount()
   renderer.keyInput.on("keypress", (key) => screen.handleKey(key))
@@ -281,15 +340,15 @@ test("deleting a session takes two presses of d", async () => {
 test("typing in the composer never changes tab", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
   const chats = fakeChats()
-  const ai = new AiScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  const ai = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
   const trade = labelledPanel(renderer, "TRADE PANEL")
   const logs = labelledPanel(renderer, "LOG PANEL")
-  const workspace = new TradingWorkspaceScreen(renderer, { trade, ai, logs })
+  const workspace = new TradingWorkspaceScreen(renderer, { trade, chat: ai, logs })
   renderer.root.add(workspace.root)
   workspace.mount()
   await waitForFrame((frame) => frame.includes("TRADE PANEL"))
 
-  mockInput.pressKey("a", { shift: true })
+  mockInput.pressKey("c", { shift: true })
   await waitForFrame((frame) => frame.includes("ask something"))
 
   // "Tomorrow" holds a T and an L: without the composer claiming its keys, typing
@@ -323,3 +382,30 @@ function labelledPanel(renderer: RenderContext, label: string): {
     },
   }
 }
+
+test("types one character per keypress once the field has really taken focus", async () => {
+  // Tabbing back to the composer focuses the field itself, and from then on the terminal
+  // delivers keys to it as well as to this screen. Without the screen claiming each key,
+  // every character lands twice — "hheelllloo".
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  // Around the panels and back: sessions, transcript, composer.
+  mockInput.pressTab()
+  mockInput.pressTab()
+  mockInput.pressTab()
+
+  await mockInput.typeText("hello")
+  mockInput.pressEnter()
+
+  await waitForFrame((frame) => frame.includes("hello"))
+  expect(chats.sent).toEqual(["hello"])
+
+  screen.destroy()
+  renderer.destroy()
+})

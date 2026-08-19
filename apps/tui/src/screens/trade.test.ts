@@ -343,7 +343,7 @@ test("opens application logs and returns to the watchlist", async () => {
   const logScreen = new LogsScreen(renderer, { logs, onClose: () => workspace?.selectTab("trade") })
   workspace = new TradingWorkspaceScreen(renderer, {
     trade: screen,
-    ai: idlePanel(renderer),
+    chat: idlePanel(renderer),
     logs: logScreen,
   })
   renderer.root.add(workspace.root)
@@ -600,14 +600,14 @@ test("sorts VIOP stocks by change or volume and preserves the selected stock", a
   await renderOnce()
   expect(captureCharFrame()).toContain("Volume ↓")
 
-  mockInput.pressKey("c", { shift: true })
+  await mockInput.typeText("%")
   const changeDescFrame = await waitForFrame((frame) => frame.includes("Change ↓"))
   expect(changeDescFrame.indexOf("+3.00%")).toBeLessThan(changeDescFrame.indexOf("+1.00%"))
   expect(changeDescFrame.indexOf("+1.00%")).toBeLessThan(changeDescFrame.indexOf("-2.00%"))
   expect(changeDescFrame).toContain("AAA stock")
   expect(changeDescFrame).toMatch(/▶ AAA/)
 
-  mockInput.pressKey("c", { shift: true })
+  await mockInput.typeText("%")
   const changeAscFrame = await waitForFrame((frame) => frame.includes("Change ↑"))
   expect(changeAscFrame.indexOf("-2.00%")).toBeLessThan(changeAscFrame.indexOf("+1.00%"))
   expect(changeAscFrame.indexOf("+1.00%")).toBeLessThan(changeAscFrame.indexOf("+3.00%"))
@@ -794,7 +794,7 @@ test("requires lowercase c twice before cancelling every pending VIOP order", as
   screen.mount()
   await waitForFrame((frame) => frame.includes("XU030 stock"))
 
-  mockInput.pressKey("c", { shift: true })
+  await mockInput.typeText("%")
   await waitForFrame((frame) => frame.includes("Change ↓"))
   expect(cancelled).toHaveLength(0)
   await mockInput.typeText("c")
@@ -1047,7 +1047,7 @@ test("restores and reports list and chart display choices", async () => {
   await waitForFrame((frame) => frame.includes("THYAO stock"))
   expect(changes.at(-1)).toMatchObject({ selectedInstrumentUid: "u2" })
 
-  mockInput.pressKey("c", { shift: true })
+  await mockInput.typeText("%")
   await waitForFrame((frame) => frame.includes("Change ↓"))
   expect(changes.at(-1)).toMatchObject({ instrumentSort: "change", sortDirection: "desc" })
 

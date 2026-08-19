@@ -64,6 +64,15 @@ export class SelectableList {
     return true
   }
 
+  /**
+   * Replaces the rows.
+   *
+   * `selectedId` names the row to select, for a caller that owns the selection itself
+   * and re-asserts it on every paint. Without it, a repaint — the same number of rows —
+   * keeps the cursor where it is, and a list of a different shape starts at the top.
+   * A caller that lets the list own the cursor must pass nothing: naming a row on every
+   * repaint drags the cursor back to it on every keypress.
+   */
   setRows(rows: SelectableListRow[], selectedId?: string, options: SelectableListSetRowsOptions = {}): void {
     if (rows.length > 0 && rows.length === this.rowBoxes.length) {
       const previous = this.selected
@@ -71,10 +80,17 @@ export class SelectableList {
         this.contents[index]!.content = row.content
         this.contents[index]!.fg = row.color
       })
-      const selectedIndex = selectedId ? rows.findIndex((row) => row.id === selectedId) : -1
-      this.selected = Math.max(0, selectedIndex)
+      this.selected = this.resolveSelection(rows, selectedId, previous)
       this.paint(previous)
-      if (selectedId && !options.preserveScroll) this.root.scrollChildIntoView(`row-${this.selected}`)
+      if (!options.preserveScroll) {
+        if (selectedId) this.root.scrollChildIntoView(`row-${this.selected}`)
+      } else if (this.selected !== previous && !this.rowVisible(this.selected)) {
+        // A reorder moved the selected row out of the window. Manual scroll is worth
+        // preserving, but not at the price of the cursor disappearing: a watchlist
+        // sorted by change reorders on every tick, and an absolute scroll offset would
+        // leave the trader watching rows with no idea which stock is selected.
+        this.root.scrollChildIntoView(`row-${this.selected}`)
+      }
       return
     }
 
@@ -124,8 +140,7 @@ export class SelectableList {
       this.contents.push(content)
     })
 
-    const selectedIndex = selectedId ? rows.findIndex((row) => row.id === selectedId) : -1
-    this.selected = rows.length > 0 ? Math.max(0, selectedIndex) : -1
+    this.selected = rows.length > 0 ? this.resolveSelection(rows, selectedId, -1) : -1
     this.paint(-1)
     if (options.preserveScroll) this.root.scrollTop = scrollTop
     else if (selectedId && this.selected >= 0) this.root.scrollChildIntoView(`row-${this.selected}`)
@@ -168,6 +183,23 @@ export class SelectableList {
 
   destroy(): void {
     if (!this.root.isDestroyed) this.root.destroyRecursively()
+  }
+
+  /** Whether a row sits inside the visible window, by the last layout's geometry. */
+  private rowVisible(index: number): boolean {
+    const row = this.rowBoxes[index]
+    if (!row) return false
+    const viewport = this.root.viewport
+    return row.y >= viewport.y && row.y + row.height <= viewport.y + viewport.height
+  }
+
+  /** Which row a fresh set of rows leaves selected. `previous` is -1 when rebuilding. */
+  private resolveSelection(rows: SelectableListRow[], selectedId: string | undefined, previous: number): number {
+    if (selectedId !== undefined) {
+      const named = rows.findIndex((row) => row.id === selectedId)
+      return named >= 0 ? named : 0
+    }
+    return previous >= 0 && previous < rows.length ? previous : 0
   }
 
   private select(index: number): void {

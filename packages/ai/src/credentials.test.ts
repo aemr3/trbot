@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import type { AiCredentialRecord, AiCredentialStore } from "./credential-store.ts"
 import { StoredCredentials } from "./credentials.ts"
-import { CHATGPT_PROVIDER_ID, type ProviderState, type ProviderStateStore } from "./provider-state.ts"
 
 /**
  * The one part of credential handling that stays ours: where a credential lives.
@@ -11,7 +11,7 @@ describe("the stored credential", () => {
   test("reads the connection the harness asks for", async () => {
     const credentials = new StoredCredentials(memoryStore(connection()))
 
-    expect(await credentials.read(CHATGPT_PROVIDER_ID)).toEqual({
+    expect(await credentials.read(PROVIDER)).toEqual({
       type: "oauth",
       access: "access-1",
       refresh: "refresh-1",
@@ -23,21 +23,21 @@ describe("the stored credential", () => {
   test("lists the connection under the id the harness asked about", async () => {
     const credentials = new StoredCredentials(memoryStore(connection()))
 
-    expect(await credentials.list()).toEqual([{ providerId: CHATGPT_PROVIDER_ID, type: "oauth" }])
+    expect(await credentials.list()).toEqual([{ providerId: PROVIDER, type: "oauth" }])
   })
 
   test("knows nothing about a provider nothing is stored for", async () => {
     const credentials = new StoredCredentials(memoryStore(connection()))
 
     expect(await credentials.read("anthropic")).toBeUndefined()
-    expect(await credentials.read(CHATGPT_PROVIDER_ID)).not.toBeUndefined()
+    expect(await credentials.read(PROVIDER)).not.toBeUndefined()
   })
 
   test("writes a refreshed credential and keeps the connection date", async () => {
     const store = memoryStore(connection())
     const credentials = new StoredCredentials(store, { now: () => 5_000 })
 
-    const written = await credentials.modify(CHATGPT_PROVIDER_ID, async (current) => ({
+    const written = await credentials.modify(PROVIDER, async (current) => ({
       type: "oauth",
       access: "access-2",
       refresh: "refresh-2",
@@ -46,11 +46,11 @@ describe("the stored credential", () => {
     }))
 
     expect((written as { access: string }).access).toBe("access-2")
-    const state = await store.get(CHATGPT_PROVIDER_ID)
-    expect(state?.accessToken).toBe("access-2")
-    expect(state?.refreshToken).toBe("refresh-2")
-    expect(state?.createdAt).toBe(1_000)
-    expect(state?.updatedAt).toBe(5_000)
+    const stored = await credentialIn(store)
+    expect(stored?.access).toBe("access-2")
+    expect(stored?.refresh).toBe("refresh-2")
+    expect((await store.get(PROVIDER))?.createdAt).toBe(1_000)
+    expect((await store.get(PROVIDER))?.updatedAt).toBe(5_000)
   })
 
   test("serializes writes, so two refreshes cannot lose a rotated token", async () => {
@@ -62,7 +62,7 @@ describe("the stored credential", () => {
     const order: string[] = []
 
     const rotate = (name: string) =>
-      credentials.modify(CHATGPT_PROVIDER_ID, async (current) => {
+      credentials.modify(PROVIDER, async (current) => {
         order.push(`${name}:read`)
         const previous = (current as { refresh: string }).refresh
         await Bun.sleep(5)
@@ -75,7 +75,7 @@ describe("the stored credential", () => {
     // Interleaved reads would show read, read, write, write.
     expect(order).toEqual(["first:read", "first:write", "second:read", "second:write"])
     // Each rotation saw the one before it, so nothing was overwritten blind.
-    expect((await store.get(CHATGPT_PROVIDER_ID))?.refreshToken).toBe("refresh-1+first+second")
+    expect((await credentialIn(store))?.refresh).toBe("refresh-1+first+second")
   })
 
   test("leaves the stored credential alone when a refresh declines to replace it", async () => {
@@ -84,10 +84,10 @@ describe("the stored credential", () => {
     const store = memoryStore(connection())
     const credentials = new StoredCredentials(store)
 
-    const kept = await credentials.modify(CHATGPT_PROVIDER_ID, async () => undefined)
+    const kept = await credentials.modify(PROVIDER, async () => undefined)
 
     expect((kept as { access: string }).access).toBe("access-1")
-    expect((await store.get(CHATGPT_PROVIDER_ID))?.accessToken).toBe("access-1")
+    expect((await credentialIn(store))?.access).toBe("access-1")
   })
 
   test("a failed write does not block the next one", async () => {
@@ -95,10 +95,10 @@ describe("the stored credential", () => {
     const credentials = new StoredCredentials(store)
 
     await credentials
-      .modify(CHATGPT_PROVIDER_ID, () => Promise.reject(new Error("the exchange failed")))
+      .modify(PROVIDER, () => Promise.reject(new Error("the exchange failed")))
       .catch(() => undefined)
 
-    const after = await credentials.modify(CHATGPT_PROVIDER_ID, async () => ({
+    const after = await credentials.modify(PROVIDER, async () => ({
       type: "oauth",
       access: "access-2",
       refresh: "refresh-2",
@@ -111,16 +111,16 @@ describe("the stored credential", () => {
     const store = memoryStore(connection())
     const credentials = new StoredCredentials(store)
 
-    await credentials.delete(CHATGPT_PROVIDER_ID)
+    await credentials.delete(PROVIDER)
 
-    expect(await credentials.read(CHATGPT_PROVIDER_ID)).toBeUndefined()
+    expect(await credentials.read(PROVIDER)).toBeUndefined()
     expect(await credentials.list()).toEqual([])
   })
 
   test("reports a connection with no account id without inventing one", async () => {
-    const credentials = new StoredCredentials(memoryStore({ ...connection(), accountId: null }))
+    const credentials = new StoredCredentials(memoryStore({ ...connection(), credential: { type: "oauth", access: "access-1", refresh: "refresh-1", expires: 601_000 } }))
 
-    expect(await credentials.read(CHATGPT_PROVIDER_ID)).toEqual({
+    expect(await credentials.read(PROVIDER)).toEqual({
       type: "oauth",
       access: "access-1",
       refresh: "refresh-1",
@@ -129,27 +129,40 @@ describe("the stored credential", () => {
   })
 })
 
-function connection(): ProviderState {
+/** A provider that authenticates with a subscription grant. */
+const PROVIDER = "openai-codex"
+
+function connection(): AiCredentialRecord {
   return {
-    providerId: CHATGPT_PROVIDER_ID,
-    accessToken: "access-1",
-    refreshToken: "refresh-1",
-    expiresAt: 601_000,
-    accountId: "account-1",
+    providerId: PROVIDER,
+    credential: {
+      type: "oauth",
+      access: "access-1",
+      refresh: "refresh-1",
+      expires: 601_000,
+      accountId: "account-1",
+    },
     createdAt: 1_000,
     updatedAt: 1_000,
   }
 }
 
-function memoryStore(initial: ProviderState | null = null): ProviderStateStore {
-  let state = initial
+/** What is actually written, read straight back off the record. */
+async function credentialIn(store: AiCredentialStore): Promise<{ access: string; refresh: string } | null> {
+  const record = await store.get(PROVIDER)
+  return record ? (record.credential as { access: string; refresh: string }) : null
+}
+
+function memoryStore(...initial: AiCredentialRecord[]): AiCredentialStore {
+  const records = new Map(initial.map((record) => [record.providerId, record]))
   return {
-    get: async (providerId) => (state?.providerId === providerId ? state : null),
-    put: async (next) => {
-      state = next
+    get: async (providerId) => records.get(providerId) ?? null,
+    list: async () => [...records.values()],
+    put: async (record) => {
+      records.set(record.providerId, record)
     },
-    delete: async () => {
-      state = null
+    delete: async (providerId) => {
+      records.delete(providerId)
     },
   }
 }

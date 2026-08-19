@@ -133,7 +133,10 @@ export class BrokerageDateModal {
     }))
     rows.push({ id: SINGLE_DAY_ID, content: row("Single day…", `${this.options.availableDates.length} days`, false) })
     rows.push({ id: CUSTOM_RANGE_ID, content: row("Custom range…", "", false) })
-    this.list.setRows(rows)
+    // Each step names its first row, because a step is a new list even when it happens
+    // to have as many rows as the one before it — where the cursor stood in that one
+    // means nothing here.
+    this.list.setRows(rows, rows[0]?.id)
     this.renderer.requestRender()
   }
 
@@ -145,10 +148,11 @@ export class BrokerageDateModal {
         ? "Range · pick the first day"
         : `Range · pick the last day (from ${formatDay(this.rangeFrom ?? "")})`
     this.hint.content = "Enter select · Esc back"
-    this.list.setRows(this.selectableDays(step).map((date) => ({
-      id: `day:${date}`,
-      content: row(formatDay(date), date, false),
-    })))
+    const days = this.selectableDays(step)
+    this.list.setRows(
+      days.map((date) => ({ id: `day:${date}`, content: row(formatDay(date), date, false) })),
+      days[0] ? `day:${days[0]}` : undefined,
+    )
     this.renderer.requestRender()
   }
 

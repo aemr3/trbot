@@ -6,7 +6,7 @@ import {
   WORKSPACE_CHROME_TEXT,
 } from "../components/workspace-chrome.ts"
 
-export type TradingWorkspaceTab = "trade" | "ai" | "logs"
+export type TradingWorkspaceTab = "trade" | "chat" | "logs"
 
 interface WorkspacePanel {
   readonly root: BoxRenderable
@@ -26,14 +26,14 @@ interface WorkspacePanel {
 
 interface TradingWorkspaceScreenOptions {
   trade: WorkspacePanel
-  ai: WorkspacePanel
+  chat: WorkspacePanel
   logs: WorkspacePanel
 }
 
 // Each tab answers to its own initial, so the shortcut is the label.
 const TABS: { id: TradingWorkspaceTab; label: string; key: string }[] = [
   { id: "trade", label: "TRADE", key: "t" },
-  { id: "ai", label: "AI", key: "a" },
+  { id: "chat", label: "CHAT", key: "c" },
   { id: "logs", label: "LOGS", key: "l" },
 ]
 

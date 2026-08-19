@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatRunStatus, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
+import type { ChatMessage, ChatModelChoice, ChatRunStatus, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import type { HttpClient } from "./http.ts"
@@ -11,8 +11,12 @@ export class HttpChatSessions implements ChatSessions {
     return this.http.get<ChatSession[]>(ROUTES.chatSessions)
   }
 
-  create(): Promise<ChatSession> {
-    return this.http.post<ChatSession>(ROUTES.chatSessions)
+  create(choice?: ChatModelChoice): Promise<ChatSession> {
+    return this.http.post<ChatSession>(ROUTES.chatSessions, choice ? { body: choice } : {})
+  }
+
+  configure(sessionId: string, choice: ChatModelChoice): Promise<ChatSession> {
+    return this.http.patch<ChatSession>(ROUTES.chatSession(sessionId), { body: choice })
   }
 
   get(sessionId: string): Promise<ChatSessionDetail> {

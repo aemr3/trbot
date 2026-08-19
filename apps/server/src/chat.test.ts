@@ -55,9 +55,15 @@ async function harness(options: { connected?: boolean; auto?: boolean } = {}): P
   const chat = new ChatController({
     store,
     agent: runner,
-    model: "test-model",
-    requireConnected: async () => {
-      if (options.connected === false) throw new Error("ChatGPT is not connected")
+    defaultChoice: async () => ({ providerId: "test-provider", modelId: "test-model", reasoning: "high" }),
+    // The controller only needs something a turn can run on; which model that is
+    // belongs to the harness, and none of this is about the model.
+    resolveModel: async (choice) => ({
+      model: { id: choice.modelId, provider: choice.providerId } as never,
+      reasoningEffort: choice.reasoning,
+    }),
+    requireModel: async () => {
+      if (options.connected === false) throw new Error("test-provider is not connected")
     },
     broadcast: (frame) => frames.push(frame),
     onError: (error) => errors.push(error),
@@ -255,8 +261,12 @@ test("a queue survives a restart of the server", async () => {
         return { completed: true, aborted: false, errorMessage: null }
       },
     },
-    model: "test-model",
-    requireConnected: async () => {},
+    defaultChoice: async () => ({ providerId: "test-provider", modelId: "test-model", reasoning: "high" }),
+    resolveModel: async (choice) => ({
+      model: { id: choice.modelId, provider: choice.providerId } as never,
+      reasoningEffort: choice.reasoning,
+    }),
+    requireModel: async () => {},
     broadcast: () => {},
     onError: () => {},
   })
@@ -266,6 +276,52 @@ test("a queue survives a restart of the server", async () => {
   expect(turns.map((turn) => turn.prompt)).toEqual(["waiting"])
   restarted.destroy()
   first.chat.destroy()
+})
+
+test("each session runs on its own model", async () => {
+  // Two sessions on two providers is the point of choosing per session: a trader
+  // comparing them must not have one answer for the other.
+  const { chat, turns } = await harness()
+  const first = await chat.create({ providerId: "anthropic", modelId: "claude-fable-5", reasoning: "max" })
+  const second = await chat.create({ providerId: "groq", modelId: "llama-4", reasoning: null })
+
+  await chat.send(first.id, "for the first")
+  await chat.send(second.id, "for the second")
+  await settle()
+
+  expect(turns.map((turn) => [turn.prompt, turn.model.id, turn.reasoningEffort])).toEqual([
+    ["for the first", "claude-fable-5", "max"],
+    ["for the second", "llama-4", null],
+  ])
+})
+
+test("changing the model applies from the next turn, not to the one already answered", async () => {
+  const { chat, turns } = await harness()
+  const session = await chat.create({ providerId: "groq", modelId: "llama-4", reasoning: null })
+  await chat.send(session.id, "first")
+  await settle()
+
+  await chat.configure(session.id, { providerId: "anthropic", modelId: "claude-fable-5", reasoning: "high" })
+  await chat.send(session.id, "second")
+  await settle()
+
+  expect(turns.map((turn) => turn.model.id)).toEqual(["llama-4", "claude-fable-5"])
+})
+
+test("a session with no model keeps its question until one is chosen", async () => {
+  // Nothing is configured on a fresh install, so this is the first thing a trader
+  // does. The question has to wait rather than fail and be lost.
+  const { chat, store, frames, turns } = await harness({ connected: false })
+  const session = await chat.create()
+  await chat.send(session.id, "where is ASELS heading?")
+  await settle()
+
+  expect(turns).toEqual([])
+  const detail = await store.get(session.id)
+  expect(detail?.messages.map((message) => message.status)).toEqual(["QUEUED"])
+  // And the reason reaches the trader rather than being swallowed.
+  const failure = frames.find((frame) => frame.type === "chatRun" && frame.status === "failed")
+  expect(failure && "error" in failure && failure.error).toContain("not connected")
 })
 
 test("different sessions answer at the same time", async () => {

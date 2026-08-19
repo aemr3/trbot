@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ChatMessageDraft,
   ChatMessageStatus,
+  ChatModelChoice,
   ChatRole,
   ChatSession,
   ChatSessionDetail,
@@ -109,6 +110,8 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
         id: session.id,
         title: session.title,
         model: session.model,
+        provider: session.provider,
+        reasoning: session.reasoning,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         messageCount: Number(count?.total ?? 0),
@@ -131,6 +134,8 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
         id: session.id,
         title: session.title,
         model: session.model,
+        provider: session.provider,
+        reasoning: session.reasoning,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         messageCount: messages.length,
@@ -159,6 +164,8 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
       id: session.id,
       title: session.title,
       model: session.model,
+      provider: session.provider,
+      reasoning: session.reasoning,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
     })
@@ -166,6 +173,18 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
 
   async rename(sessionId: string, title: string): Promise<void> {
     await this.db.update(chatSessions).set({ title }).where(eq(chatSessions.id, sessionId))
+  }
+
+  async configure(sessionId: string, choice: ChatModelChoice): Promise<void> {
+    await this.db
+      .update(chatSessions)
+      .set({
+        provider: choice.providerId,
+        model: choice.modelId,
+        reasoning: choice.reasoning,
+        updatedAt: Date.now(),
+      })
+      .where(eq(chatSessions.id, sessionId))
   }
 
   async delete(sessionId: string): Promise<void> {

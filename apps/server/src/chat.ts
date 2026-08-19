@@ -1,7 +1,8 @@
-import type { ChatRecord, ChatTurnOptions, ChatTurnResult } from "@trbot/ai/chat.ts"
+import type { ChatRecord, ChatTurnModel, ChatTurnOptions, ChatTurnResult } from "@trbot/ai/chat.ts"
 import {
   chatBlockText,
   chatSessionTitle,
+  type ChatModelChoice,
   type ChatMessage,
   type ChatMessageDraft,
   type ChatPartial,
@@ -24,10 +25,17 @@ export interface ChatTurnRunner {
 export interface ChatControllerOptions {
   store: ChatSessionStore
   agent: ChatTurnRunner
-  /** The model this server is configured to use, recorded on each new session. */
-  model: string
-  /** Refused before a run starts, so "not connected" is an ordinary error. */
-  requireConnected: () => Promise<void>
+  /**
+   * The model a new session starts on, or null when nobody has chosen one.
+   *
+   * Read per session rather than held, because a trader can change it between one
+   * session and the next.
+   */
+  defaultChoice: () => Promise<ChatModelChoice | null>
+  /** Resolves a stored choice into something a turn can run on. */
+  resolveModel: (choice: ChatModelChoice) => Promise<ChatTurnModel>
+  /** Refused before a run starts, so an unusable model is an ordinary error. */
+  requireModel: (choice: ChatModelChoice | null) => Promise<void>
   broadcast: (frame: ChatFrame) => void
   onError: (error: unknown) => void
   now?: () => number
@@ -90,12 +98,18 @@ export class ChatController {
     return this.sessions.map((session) => this.withRunState(session))
   }
 
-  async create(): Promise<ChatSession> {
+  async create(choice?: ChatModelChoice): Promise<ChatSession> {
     const now = this.now()
+    // A session records the model it was started on, so a transcript still says what
+    // wrote it after the default moves on. With nothing chosen it records nothing and
+    // asks for a choice when the trader first sends.
+    const chosen = choice ?? (await this.options.defaultChoice())
     const session: ChatSession = {
       id: crypto.randomUUID(),
       title: chatSessionTitle(""),
-      model: this.options.model,
+      model: chosen?.modelId ?? "",
+      provider: chosen?.providerId ?? null,
+      reasoning: chosen?.reasoning ?? null,
       createdAt: now,
       updatedAt: now,
       messageCount: 0,
@@ -105,6 +119,20 @@ export class ChatController {
     await this.options.store.create(session)
     await this.announceSessions()
     return session
+  }
+
+  /**
+   * Points a session at a different model.
+   *
+   * Takes effect from the next turn: a reply being generated now keeps the model it
+   * started on, because switching mid-answer would leave half a message from each.
+   */
+  async configure(sessionId: string, choice: ChatModelChoice): Promise<ChatSession> {
+    await this.options.store.configure(sessionId, choice)
+    await this.announceSessions()
+    const session = this.sessions.find((candidate) => candidate.id === sessionId)
+    if (!session) throw new ProtocolError("not_found", "No such chat session")
+    return this.withRunState(session)
   }
 
   async detail(sessionId: string): Promise<ChatSessionDetail> {
@@ -233,11 +261,13 @@ export class ChatController {
       const next = detail.messages.find((message) => message.status === "QUEUED")
       if (!next) return
 
+      const choice = choiceOf(detail.session)
       try {
-        await this.options.requireConnected()
+        await this.options.requireModel(choice)
       } catch (error) {
-        // Not connected is not a failure of the message: it waits where it is and
-        // runs when a login arrives, rather than being marked failed and lost.
+        // A model that cannot be reached — none chosen, or a provider disconnected —
+        // is not a failure of the message: it waits where it is and runs once that is
+        // fixed, rather than being marked failed and lost.
         this.options.broadcast({
           type: "chatRun",
           sessionId,
@@ -248,11 +278,11 @@ export class ChatController {
         return
       }
 
-      await this.runTurn(sessionId, next)
+      await this.runTurn(sessionId, next, choice as ChatModelChoice)
     }
   }
 
-  private async runTurn(sessionId: string, asked: ChatMessage): Promise<void> {
+  private async runTurn(sessionId: string, asked: ChatMessage, choice: ChatModelChoice): Promise<void> {
     // Read while the question is still queued, so the history is what came before
     // it and the model is not handed the same question twice.
     const history = (await this.options.store.records(sessionId)) as ChatRecord[]
@@ -275,7 +305,10 @@ export class ChatController {
 
     let result: { completed: boolean; aborted: boolean; errorMessage: string | null }
     try {
+      const turnModel = await this.options.resolveModel(choice)
       result = await this.options.agent.run({
+        model: turnModel.model,
+        reasoningEffort: turnModel.reasoningEffort,
         history,
         prompt: asked.text,
         signal: run.controller.signal,
@@ -372,6 +405,12 @@ export class ChatController {
 
 function userRecord(message: ChatMessage): ChatRecord {
   return { role: "user", content: message.text, timestamp: message.createdAt }
+}
+
+/** The model a session runs on, or null when it names none. */
+function choiceOf(session: ChatSession): ChatModelChoice | null {
+  if (!session.provider || !session.model) return null
+  return { providerId: session.provider, modelId: session.model, reasoning: session.reasoning }
 }
 
 function errorMessage(error: unknown): string {

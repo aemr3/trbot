@@ -39,6 +39,10 @@ export class HttpClient {
     return this.send<T>("PUT", path, options)
   }
 
+  patch<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    return this.send<T>("PATCH", path, options)
+  }
+
   delete<T>(path: string, options: RequestOptions = {}): Promise<T> {
     return this.send<T>("DELETE", path, options)
   }

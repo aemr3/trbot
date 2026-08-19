@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
+import type { ChatMessage, ChatModelChoice, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
 
 /**
  * The chat as a client drives it.
@@ -10,7 +10,10 @@ import type { ChatMessage, ChatSession, ChatSessionDetail } from "@trbot/chat/se
  */
 export interface ChatSessions {
   list(): Promise<ChatSession[]>
-  create(): Promise<ChatSession>
+  /** Started on a chosen model, or on whatever is the current default. */
+  create(choice?: ChatModelChoice): Promise<ChatSession>
+  /** Points a session at a different model, from its next turn onwards. */
+  configure(sessionId: string, choice: ChatModelChoice): Promise<ChatSession>
   get(sessionId: string): Promise<ChatSessionDetail>
   delete(sessionId: string): Promise<void>
   send(sessionId: string, text: string): Promise<ChatMessage>

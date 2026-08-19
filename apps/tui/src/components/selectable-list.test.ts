@@ -95,11 +95,39 @@ test("preserves manual scroll while live data reorders existing rows", async () 
   const scrollTop = list.root.scrollTop
   expect(scrollTop).toBeGreaterThan(0)
 
-  list.setRows([...rows].reverse(), "row-0", { preserveScroll: true })
+  // The selected row moves but stays in the window, so where the trader scrolled to
+  // is left alone.
+  const shuffled = [...rows]
+  shuffled[9] = rows[10]!
+  shuffled[10] = rows[9]!
+  list.setRows(shuffled, "row-9", { preserveScroll: true })
   await renderOnce()
 
   expect(list.root.scrollTop).toBe(scrollTop)
+  expect(list.selectedIndex).toBe(10)
+
+  list.destroy()
+  renderer.destroy()
+})
+
+test("follows the selected row when a reorder pushes it out of the window", async () => {
+  // A watchlist sorted by change reorders on every tick. Holding the scroll offset
+  // come what may would carry the cursor off screen, leaving arrow keys moving a
+  // selection the trader cannot see — which reads as the list refusing to pick.
+  const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 40, height: 6 })
+  const list = new SelectableList(renderer)
+  renderer.root.add(list.root)
+  const rows = Array.from({ length: 20 }, (_, index) => ({ id: `row-${index}`, content: `row ${index}` }))
+  list.setRows(rows, "row-0")
+  await renderOnce()
+  expect(captureCharFrame()).toContain("▶ row 0")
+
+  // The same row, now last of twenty: far outside the six the window shows.
+  list.setRows([...rows].reverse(), "row-0", { preserveScroll: true })
+  await renderOnce()
+
   expect(list.selectedIndex).toBe(19)
+  expect(captureCharFrame()).toContain("▶ row 0")
 
   list.destroy()
   renderer.destroy()
@@ -138,6 +166,29 @@ test("returns false when there are no rows", async () => {
   const list = new SelectableList(renderer)
   expect(list.handleKey(key("down"))).toBe(false)
   expect(list.selectedIndex).toBe(-1)
+  list.destroy()
+  renderer.destroy()
+})
+
+test("a repaint that names no row leaves the cursor where the trader put it", async () => {
+  // A caller that lets the list own the cursor repaints rows on every keypress; if
+  // that reset the selection, arrow keys would scroll the list without moving it.
+  const { renderer } = await createTestRenderer({ width: 40, height: 6 })
+  const list = new SelectableList(renderer)
+  const rows = Array.from({ length: 5 }, (_, index) => ({ id: `row-${index}`, content: `row ${index}` }))
+  list.setRows(rows)
+
+  list.handleKey(key("down"))
+  list.handleKey(key("down"))
+  expect(list.selectedIndex).toBe(2)
+
+  list.setRows(rows.map((row) => ({ ...row, content: `${row.content} *` })))
+  expect(list.selectedIndex).toBe(2)
+
+  // A list of a different shape is a different list, so it starts at the top.
+  list.setRows(rows.slice(0, 3))
+  expect(list.selectedIndex).toBe(0)
+
   list.destroy()
   renderer.destroy()
 })

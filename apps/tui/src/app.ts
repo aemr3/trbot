@@ -29,7 +29,7 @@ import { ApplicationLog } from "./logging/application-log.ts"
 import type { OverviewGenerator, OverviewSnapshotStore } from "@trbot/market/overview.ts"
 import { ConnectingScreen } from "./screens/connecting.ts"
 import { LoginScreen } from "./screens/login.ts"
-import { AiScreen } from "./screens/ai.ts"
+import { ChatScreen } from "./screens/chat.ts"
 import { LogsScreen } from "./screens/logs.ts"
 import { TradingWorkspaceScreen } from "./screens/trading-workspace.ts"
 import { TradeScreen } from "./screens/trade.ts"
@@ -340,24 +340,24 @@ export class App {
     // other tabs: a reply the server is generating has to keep arriving while the
     // trader is watching the market.
     const chats = new HttpChatSessions(http)
-    const ai = new AiScreen(this.renderer, {
+    const chat = new ChatScreen(this.renderer, {
       chats,
       ...(this.aiAccount ? { account: this.aiAccount } : {}),
       logs: this.logs,
     })
     new ChatClient(stream, {
-      onSessions: (sessions) => ai.acceptSessions(sessions),
-      onMessage: (sessionId, message) => ai.acceptMessage(sessionId, message),
-      onMessageRemoved: (sessionId, messageId) => ai.acceptMessageRemoved(sessionId, messageId),
-      onDelta: (sessionId, runId, delta) => ai.acceptDelta(sessionId, runId, delta),
-      onRun: (sessionId, runId, status, error) => ai.acceptRun(sessionId, runId, status, error),
-      onResync: (sessionId) => ai.resync(sessionId),
+      onSessions: (sessions) => chat.acceptSessions(sessions),
+      onMessage: (sessionId, message) => chat.acceptMessage(sessionId, message),
+      onMessageRemoved: (sessionId, messageId) => chat.acceptMessageRemoved(sessionId, messageId),
+      onDelta: (sessionId, runId, delta) => chat.acceptDelta(sessionId, runId, delta),
+      onRun: (sessionId, runId, status, error) => chat.acceptRun(sessionId, runId, status, error),
+      onResync: (sessionId) => chat.resync(sessionId),
     })
     const logs = new LogsScreen(this.renderer, {
       logs: this.logs,
       onClose: () => workspace?.selectTab("trade"),
     })
-    workspace = new TradingWorkspaceScreen(this.renderer, { trade, ai, logs })
+    workspace = new TradingWorkspaceScreen(this.renderer, { trade, chat, logs })
     return workspace
   }
 

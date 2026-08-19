@@ -35,11 +35,18 @@ export const ROUTES = {
   login: `${API_PREFIX}/auth/login`,
   otp: `${API_PREFIX}/auth/otp`,
   session: `${API_PREFIX}/auth/session`,
+  /** Every model provider the harness offers, connected or not. */
+  aiProviders: `${API_PREFIX}/ai/providers`,
   /**
-   * The ChatGPT connection. `POST` takes the credentials a terminal's login
-   * produced; `GET` answers with a summary that never carries one back.
+   * One provider's connection. `POST` takes the credential a terminal's login
+   * produced — the only message that carries a secret, and only inward — and
+   * `DELETE` forgets it. Nothing hands a credential back out.
    */
-  aiAccount: `${API_PREFIX}/ai/account`,
+  aiProvider: (providerId: string) => `${API_PREFIX}/ai/providers/${encodeURIComponent(providerId)}`,
+  /** The models usable right now, across every connected provider. */
+  aiModels: `${API_PREFIX}/ai/models`,
+  /** Which model answers the overview, and which a new chat session starts on. */
+  aiPreferences: `${API_PREFIX}/ai/preferences`,
   overview: `${API_PREFIX}/ai/overview`,
   chatSessions: `${API_PREFIX}/ai/chat/sessions`,
   chatSession: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}`,

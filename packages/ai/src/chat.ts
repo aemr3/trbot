@@ -37,8 +37,6 @@ export interface ChatAgentOptions {
    * problem to solve, and it already does.
    */
   models: Models
-  model: Model<Api>
-  reasoningEffort?: string
   tools?: ChatToolRegistry
   systemPrompt?: string
   now?: () => number
@@ -59,6 +57,15 @@ export interface ChatTurnEvents {
 }
 
 export interface ChatTurnOptions {
+  /**
+   * Which model answers this turn, and how hard it thinks.
+   *
+   * Per turn rather than per agent because two sessions on two different providers
+   * run through the same agent, and because a session that changes its model mid
+   * conversation must answer the next question with the new one.
+   */
+  model: Model<Api>
+  reasoningEffort?: string | null
   /** The session's history, oldest first, as the records a store handed back. */
   history: ChatRecord[]
   /** What the trader just asked. */
@@ -66,6 +73,14 @@ export interface ChatTurnOptions {
   events: ChatTurnEvents
   signal?: AbortSignal
 }
+
+/**
+ * A stored choice resolved into something a turn can run on.
+ *
+ * Named so a caller outside this package can hold one without importing the harness:
+ * looking a model up is this package's job.
+ */
+export type ChatTurnModel = Pick<ChatTurnOptions, "model" | "reasoningEffort">
 
 export interface ChatTurnResult {
   /** True when the turn ran to a natural end rather than being stopped. */
@@ -142,11 +157,11 @@ export class ChatAgent {
   }
 
   private async streamReply(context: Context, turn: ChatTurnOptions): Promise<AssistantMessage> {
-    const events = this.options.models.stream(this.options.model, context, {
+    const events = this.options.models.stream(turn.model, context, {
       signal: turn.signal,
-      // Named for what the provider calls it; one that does not know the option
-      // ignores it.
-      ...(this.options.reasoningEffort ? { reasoningEffort: this.options.reasoningEffort } : {}),
+      // Named for what the provider calls it; a provider that does not know the
+      // option ignores it, and the harness maps a level the model renames.
+      ...(turn.reasoningEffort ? { reasoningEffort: turn.reasoningEffort } : {}),
     })
     for await (const event of events) {
       if (event.type === "text_delta") turn.events.onText(event.delta)

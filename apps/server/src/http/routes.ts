@@ -7,7 +7,7 @@ import type { ChatController } from "../chat.ts"
 import type { AlertController } from "../monitors/alert.ts"
 import type { StopController } from "../monitors/stop.ts"
 import { hashRequest, type IdempotencyStore } from "./idempotency.ts"
-import { AttemptLimiter, json, ndjson, readJsonObject } from "./request.ts"
+import { AttemptLimiter, json, ndjson, readJsonObject, readJsonObjectOrEmpty } from "./request.ts"
 import type { ProviderSession } from "../session.ts"
 import * as check from "./validate.ts"
 
@@ -225,48 +225,36 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
     },
   },
 
-  [ROUTES.aiAccount]: {
-    GET: async (_request, { ai }) => json(await ai.summary()),
-    /**
-     * Takes on the connection a terminal's login produced.
-     *
-     * The provider only redirects an authorization to a loopback address, which is
-     * the trader's machine and not necessarily this one, so the login runs there
-     * and its result arrives here. This is the only route that accepts a token, and
-     * it only ever travels this way — nothing hands one back.
-     */
-    POST: async (request, { ai }) => {
-      const body = await readJsonObject(request)
-      return json(
-        await ai.connect({
-          accessToken: check.text(body.accessToken, "accessToken"),
-          refreshToken: check.text(body.refreshToken, "refreshToken"),
-          expiresAt: check.positiveNumber(body.expiresAt, "expiresAt"),
-          accountId: body.accountId === null || body.accountId === undefined
-            ? null
-            : check.text(body.accountId, "accountId"),
-        }),
-      )
-    },
-    DELETE: async (_request, { ai }) => {
-      await ai.disconnect()
-      return json({ ok: true })
-    },
+  [ROUTES.aiProviders]: {
+    GET: async (_request, { ai }) => json(await ai.providers()),
+  },
+
+  [ROUTES.aiModels]: {
+    GET: async (_request, { ai }) => json(await ai.models()),
+  },
+
+  [ROUTES.aiPreferences]: {
+    GET: async (_request, { ai }) => json(await ai.preferences()),
+    PUT: async (request, { ai }) => json(await ai.setPreferences(check.aiPreferences(await readJsonObject(request)))),
   },
 
   [ROUTES.chatSessions]: {
     GET: async (_request, { chat }) => json(await chat.list()),
-    POST: async (_request, { chat }) => json(await chat.create()),
+    /** A session can be started on a chosen model, or on the current default. */
+    POST: async (request, { chat }) => {
+      const body = await readJsonObjectOrEmpty(request)
+      return json(await chat.create(body ? check.aiModelChoice(body) : undefined))
+    },
   },
 
-  // The commentary streams because the trader reads it as it arrives. The
-  // connection is checked first so a missing ChatGPT account is an ordinary
-  // error response rather than a stream that yields nothing.
+  // The commentary streams because the trader reads it as it arrives. Whether a
+  // model is chosen and reachable is checked first, so "no model chosen" is an
+  // ordinary error response rather than a stream that yields nothing.
   [ROUTES.overview]: {
     POST: async (request, { ai }) => {
       const digest = (await readJsonObject(request)) as unknown as MarketOverviewDigest
       check.overviewMode(digest.mode)
-      await ai.requireConnected()
+      await ai.requireOverviewModel()
       return ndjson((emit) =>
         ai.generate(digest, {
           signal: request.signal,
@@ -369,10 +357,48 @@ export const PARAMETERIZED: {
       return json(stops.list())
     },
   },
+  /**
+   * One provider's connection.
+   *
+   * A login runs on the trader's machine — a provider only redirects an
+   * authorization to a loopback address, and an API key is typed by hand — so its
+   * result arrives here. This is the only route that accepts a secret, and it only
+   * ever travels this way.
+   */
+  {
+    pattern: /^\/v1\/ai\/providers\/([^/]+)$/,
+    method: "POST",
+    handle: async (match, request, { ai }) => {
+      const body = await readJsonObject(request)
+      return json(
+        await ai.connect({
+          providerId: decodeURIComponent(match[1] ?? ""),
+          credential: check.aiCredential(body.credential),
+        }),
+      )
+    },
+  },
+  {
+    pattern: /^\/v1\/ai\/providers\/([^/]+)$/,
+    method: "DELETE",
+    handle: async (match, _request, { ai }) => {
+      await ai.disconnect(decodeURIComponent(match[1] ?? ""))
+      return json({ ok: true })
+    },
+  },
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,
     method: "GET",
     handle: async (match, _request, { chat }) => json(await chat.detail(decodeURIComponent(match[1] ?? ""))),
+  },
+  /** Points a session at a different model, from its next turn onwards. */
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,
+    method: "PATCH",
+    handle: async (match, request, { chat }) => {
+      const body = await readJsonObject(request)
+      return json(await chat.configure(decodeURIComponent(match[1] ?? ""), check.aiModelChoice(body)))
+    },
   },
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,

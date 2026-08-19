@@ -11,13 +11,9 @@ export interface AppCredentials {
 export interface AppConfig {
   databaseUrl: string
   credentials: AppCredentials | null
-  aiModel: string
-  aiReasoningEffort: string
 }
 
 const DEFAULT_DATABASE_URL = "./data/db.sqlite"
-const DEFAULT_AI_MODEL = "gpt-5.6-sol"
-const DEFAULT_AI_REASONING_EFFORT = "high"
 const DEFAULT_SERVER_HOST = "127.0.0.1"
 const DEFAULT_SERVER_PORT = 7717
 const DEFAULT_SERVER_URL = `http://${DEFAULT_SERVER_HOST}:${DEFAULT_SERVER_PORT}`
@@ -53,18 +49,7 @@ export function loadConfig(env: Record<string, string | undefined> = environment
   return {
     databaseUrl: loadDatabaseUrl(env),
     credentials: loadCredentials(env),
-    aiModel: loadAiModel(env),
-    aiReasoningEffort: loadAiReasoningEffort(env),
   }
-}
-
-// The model behind the AI market overview and the effort hint sent with it.
-function loadAiModel(env: Record<string, string | undefined> = environment()): string {
-  return env.TRBOT_AI_MODEL?.trim() || DEFAULT_AI_MODEL
-}
-
-function loadAiReasoningEffort(env: Record<string, string | undefined> = environment()): string {
-  return env.TRBOT_AI_REASONING?.trim() || DEFAULT_AI_REASONING_EFFORT
 }
 
 /**

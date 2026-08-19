@@ -1,60 +1,60 @@
-import { InMemoryCredentialStore, createModels, type Credential, type OAuthAuth } from "@earendil-works/pi-ai"
-import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex"
+import {
+  InMemoryCredentialStore,
+  createModels,
+  type AuthInteraction,
+  type Credential,
+} from "@earendil-works/pi-ai"
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all"
 import type {
   MarketOverviewDigest,
   OverviewGenerateOptions,
   OverviewGenerator,
 } from "@trbot/market/overview.ts"
-import type { AiAccount, AiAccountSummary, AiCredentials, AiLoginOptions } from "@trbot/protocol/ai.ts"
+import type {
+  AiAccount,
+  AiAuthType,
+  AiCredentials,
+  AiLoginOptions,
+  AiModelSummary,
+  AiPreferences,
+  AiProviderSummary,
+} from "@trbot/protocol/ai.ts"
 import { ProtocolError, parseErrorBody } from "@trbot/protocol/error.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import { openExternalUrl } from "./browser.ts"
 import type { HttpClient } from "./http.ts"
 
 /**
- * The authorization method this application answers with.
+ * Running a provider's authorization flow on this machine.
  *
- * The harness offers a browser flow and a headless device-code flow, and asks
- * which to use. The terminal answers for the trader rather than passing the
- * question on: the connection modal is built around the browser flow, and its
- * pasted-code field already covers the machine whose browser never opens.
- */
-const BROWSER_LOGIN_METHOD = "browser"
-
-/**
- * Running the provider's authorization flow on this machine.
- *
- * Named as a seam because it reaches well outside the process — it binds a
- * loopback listener and exchanges a single-use code — so a test can drive the
+ * Named as a seam because it reaches well outside the process — it binds a loopback
+ * listener, opens a browser, exchanges a single-use code — so a test can drive the
  * mapping around it without performing a real authorization.
  */
-export type ChatGptLogin = OAuthAuth["login"]
+export type HarnessLogin = (
+  providerId: string,
+  authType: AiAuthType,
+  interaction: AuthInteraction,
+) => Promise<Credential>
 
 /**
  * The harness's own login, run through a credential store that forgets.
  *
- * The harness persists what a login produced, which is exactly what this side
- * must not do — so the store it writes to is in memory and dies with the process.
- * What survives is the credential it returns, which goes straight to the server.
+ * The harness persists what a login produced, which is exactly what this side must
+ * not do — so the store it writes to is in memory and dies with the process. What
+ * survives is the credential it returns, which goes straight to the server.
+ *
+ * Every provider it ships with is registered, because which one a trader is
+ * connecting is their choice, not a build-time decision.
  */
-function harnessLogin(): ChatGptLogin {
+function harnessLogin(): HarnessLogin {
   const models = createModels({ credentials: new InMemoryCredentialStore() })
-  models.setProvider(openaiCodexProvider())
-  return async (interaction) => asOAuthCredential(await models.login(CHATGPT_PROVIDER, "oauth", interaction))
-}
-
-/** The harness's id for the ChatGPT-subscription provider. */
-const CHATGPT_PROVIDER = "openai-codex"
-
-function asOAuthCredential(credential: Credential): Awaited<ReturnType<ChatGptLogin>> {
-  if (credential.type !== "oauth") {
-    throw new Error("The ChatGPT login produced an API key, which this application cannot use")
-  }
-  return credential
+  for (const provider of builtinProviders()) models.setProvider(provider)
+  return (providerId, authType, interaction) => models.login(providerId, authType, interaction)
 }
 
 export interface HttpAiAccountOptions {
-  login?: ChatGptLogin
+  login?: HarnessLogin
   /**
    * Opening the authorization page. Injectable because it reaches outside the
    * process: a test that drove a login would otherwise open a real browser.
@@ -63,17 +63,17 @@ export interface HttpAiAccountOptions {
 }
 
 /**
- * The ChatGPT connection: logged in here, owned by the server.
+ * The model providers: connected here, owned by the server.
  *
- * The whole login runs on this machine because that is where it has to: the
- * provider will only redirect an authorization to `localhost`, and it is the
- * trader's browser that has to be opened. What crosses the wire afterwards is the
+ * A login runs on this machine because that is where it has to: a provider will only
+ * redirect an authorization to `localhost`, it is the trader's browser that has to be
+ * opened, and an API key is theirs to type. What crosses the wire afterwards is the
  * result — travelling inward, the same direction as the provider password on the
  * sign-in route — and the server stores it, refreshes it, and never hands it back.
  * Nothing is kept here.
  */
 export class HttpAiAccount implements AiAccount {
-  private readonly login: ChatGptLogin
+  private readonly login: HarnessLogin
   private readonly openUrl: (url: string) => Promise<void>
 
   constructor(
@@ -84,53 +84,86 @@ export class HttpAiAccount implements AiAccount {
     this.openUrl = options.openUrl ?? openExternalUrl
   }
 
-  getState(): Promise<AiAccountSummary | null> {
-    return this.http.get<AiAccountSummary | null>(ROUTES.aiAccount)
+  providers(): Promise<AiProviderSummary[]> {
+    return this.http.get<AiProviderSummary[]>(ROUTES.aiProviders)
   }
 
-  async connect(options: AiLoginOptions = {}): Promise<AiAccountSummary> {
-    const credentials = await this.login({
-      // Required by the harness, which cancels the whole flow through it. Without
-      // one from the caller there is nothing to cancel, so an unused signal
-      // stands in rather than the flow becoming uncancellable.
+  models(): Promise<AiModelSummary[]> {
+    return this.http.get<AiModelSummary[]>(ROUTES.aiModels)
+  }
+
+  preferences(): Promise<AiPreferences> {
+    return this.http.get<AiPreferences>(ROUTES.aiPreferences)
+  }
+
+  setPreferences(preferences: AiPreferences): Promise<AiPreferences> {
+    return this.http.put<AiPreferences>(ROUTES.aiPreferences, { body: preferences })
+  }
+
+  /**
+   * Connects one provider, answering whatever its flow asks for.
+   *
+   * The branches below are the harness's whole vocabulary, not one provider's: a
+   * secret to type, a choice to make, an address to open, a code to paste. That is
+   * why an API key and a subscription login are the same code path here.
+   */
+  async connect(
+    providerId: string,
+    authType: AiAuthType,
+    options: AiLoginOptions = {},
+  ): Promise<AiProviderSummary> {
+    const credential = await this.login(providerId, authType, {
+      // Required by the harness, which cancels the whole flow through it. Without one
+      // from the caller there is nothing to cancel, so an unused signal stands in
+      // rather than the flow becoming uncancellable.
       signal: options.signal ?? new AbortController().signal,
       notify: (event) => {
-        if (event.type !== "auth_url") return
-        options.onAuthorizationUrl?.(event.url)
-        // The harness only reports the address; opening it is this side's job.
-        // A machine with no browser is not a failure: the modal shows the link,
-        // and the prompt below takes a code pasted back by hand.
-        void this.openUrl(event.url).catch((error: unknown) => options.onBrowserError?.(error))
+        if (event.type === "auth_url") {
+          options.onAuthorizationUrl?.(event.url)
+          // The harness only reports the address; opening it is this side's job. A
+          // machine with no browser is not a failure: the modal shows the link, and
+          // the prompt below takes a code pasted back by hand.
+          void this.openUrl(event.url).catch((error: unknown) => options.onBrowserError?.(error))
+          if (event.instructions) options.onInfo?.(event.instructions)
+          return
+        }
+        if (event.type === "device_code") {
+          options.onDeviceCode?.({
+            userCode: event.userCode,
+            verificationUri: event.verificationUri,
+            ...(event.expiresInSeconds === undefined ? {} : { expiresInSeconds: event.expiresInSeconds }),
+          })
+          return
+        }
+        options.onInfo?.(event.message)
       },
       prompt: async (prompt) => {
-        // Answered here rather than shown to the trader: see BROWSER_LOGIN_METHOD.
-        // Matched by id so a reordered list cannot silently pick the other flow.
         if (prompt.type === "select") {
-          const browser = prompt.options.find((option) => option.id === BROWSER_LOGIN_METHOD)
-          if (!browser) throw new Error("The harness no longer offers a browser login")
-          return browser.id
+          if (!options.onSelect) throw abortError()
+          const chosen = await options.onSelect(prompt.message, [...prompt.options])
+          if (!chosen) throw abortError()
+          return chosen
         }
-        if (!options.onManualCode) throw abortError()
-        const code = await options.onManualCode(prompt.message)
-        if (!code) throw abortError()
-        return code
+        // A secret and a pasted code are typed the same way but mean different
+        // things, so they are offered as different callbacks: one is a credential
+        // the trader holds, the other is a step in a flow already underway.
+        const ask = prompt.type === "manual_code" ? options.onManualCode : options.onSecret
+        if (!ask) throw abortError()
+        const answer = await ask(prompt.message)
+        if (!answer) throw abortError()
+        return answer
       },
     })
 
-    const stored: AiCredentials = {
-      accessToken: credentials.access,
-      refreshToken: credentials.refresh,
-      expiresAt: credentials.expires,
-      accountId: typeof credentials.accountId === "string" ? credentials.accountId : null,
-    }
-    return await this.http.post<AiAccountSummary>(ROUTES.aiAccount, {
-      body: stored,
+    const credentials: AiCredentials = { providerId, credential: credential as unknown as Record<string, unknown> }
+    return await this.http.post<AiProviderSummary>(ROUTES.aiProvider(providerId), {
+      body: credentials,
       ...(options.signal ? { signal: options.signal } : {}),
     })
   }
 
-  async disconnect(): Promise<void> {
-    await this.http.delete(ROUTES.aiAccount)
+  async disconnect(providerId: string): Promise<void> {
+    await this.http.delete(ROUTES.aiProvider(providerId))
   }
 }
 

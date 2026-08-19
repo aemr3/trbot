@@ -81,6 +81,27 @@ export function bearerToken(request: Request): string | null {
   return scheme?.toLowerCase() === "bearer" && value ? value : null
 }
 
+/**
+ * A body that may not be there at all.
+ *
+ * For requests where sending nothing is meaningful — starting a chat session on the
+ * current default rather than a named model — so an absent body is not an error.
+ */
+export async function readJsonObjectOrEmpty(request: Request): Promise<Record<string, unknown> | null> {
+  const raw = await request.text()
+  if (raw.trim().length === 0) return null
+  let decoded: unknown
+  try {
+    decoded = JSON.parse(raw)
+  } catch {
+    throw new ProtocolError("invalid_request", "Expected a JSON body")
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    throw new ProtocolError("invalid_request", "Expected a JSON object")
+  }
+  return decoded as Record<string, unknown>
+}
+
 export async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
   let decoded: unknown
   try {

@@ -14,6 +14,7 @@ import type { StopOutcome } from "@trbot/protocol/stream.ts"
 import { RemoteAlerts, RemoteStopRules } from "../remote-monitors.ts"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
 import { AccountPanel } from "../components/account-panel.ts"
+import { AiModelModal } from "../components/ai-model-modal.ts"
 import { BrokerageDateModal } from "../components/brokerage-date-modal.ts"
 import { BrokeragePanel, brokerageSideOf, settlementModeOf } from "../components/brokerage-panel.ts"
 import { CandlestickChart } from "../components/candlestick-chart.ts"
@@ -145,7 +146,7 @@ const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
 type DestructiveAction = "cancel-orders" | "exit-positions" | "delete-stop" | "delete-alert"
 const NEWS_FEED_LABELS: Record<NewsFeed, string> = { instrument: "Stock", index: "Index" }
-const TRADE_HINT = "B/S trade · A chat · L logs · / ticker · ? help · Ctrl+C quit"
+const TRADE_HINT = "B/S trade · C chat · L logs · M overview model · / ticker · ? help · Ctrl+C quit"
 const TRADE_SHORTCUTS: ShortcutHelpSection[] = [
   {
     title: "Global",
@@ -176,7 +177,7 @@ const TRADE_SHORTCUTS: ShortcutHelpSection[] = [
     bindings: [
       { keys: "↑/↓ or j/k", description: "Move selection" },
       { keys: "Home / End", description: "Select first / last contract" },
-      { keys: "C", description: "Sort by price change" },
+      { keys: "%", description: "Sort by price change" },
       { keys: "V", description: "Sort by volume" },
       { keys: "N", description: "Sort by ticker" },
     ],
@@ -406,6 +407,8 @@ export class TradeScreen {
   private brokerageDates: string[] = []
   private brokerageLive = false
   private brokerageDateModal: BrokerageDateModal | null = null
+  /** Open while picking which model writes the overview. */
+  private modelModal: AiModelModal | null = null
   // The AI overview joins the live book and tape with the broker feeds; every
   // finished run is cached per instrument so revisiting a ticker is free. The
   // cache is seeded from, and written through to, the snapshot store, so the
@@ -490,6 +493,10 @@ export class TradeScreen {
       this.brokerageDateModal.handleKey(key)
       return
     }
+    if (this.modelModal) {
+      this.modelModal.handleKey(key)
+      return
+    }
     if (isShortcutHelpKey(key)) {
       this.openShortcutHelp()
       return
@@ -511,6 +518,10 @@ export class TradeScreen {
     if (isCapitalShortcut(key, "o")) {
       this.setFocus("overview")
       void this.generateOverview({ force: true })
+      return
+    }
+    if (isCapitalShortcut(key, "m")) {
+      this.openOverviewModelPicker()
       return
     }
     if (!key.ctrl && (key.name === "b" || key.name === "s")) {
@@ -559,7 +570,7 @@ export class TradeScreen {
     }
     else if (this.focus === "account") this.accountPanel.handleKey(key)
     else if (this.focus === "chart") this.chart.handleKey(key)
-    else if (isCapitalShortcut(key, "c")) this.selectInstrumentSort("change")
+    else if (key.sequence === "%") this.selectInstrumentSort("change")
     else if (isCapitalShortcut(key, "v")) this.selectInstrumentSort("volume")
     else if (isCapitalShortcut(key, "n")) this.selectInstrumentSort("name")
     else this.instrumentList.handleKey(key)
@@ -909,6 +920,7 @@ export class TradeScreen {
     this.overviewRequest = null
     this.overviewPanel.destroy()
     this.closeBrokerageDateModal()
+    this.closeOverviewModelPicker()
     if (this.brokerageTimer) {
       clearInterval(this.brokerageTimer)
       this.brokerageTimer = null
@@ -951,6 +963,7 @@ export class TradeScreen {
       || this.orderTicket !== null
       || this.shortcutHelp !== null
       || this.brokerageDateModal !== null
+      || this.modelModal !== null
       || this.stopRuleEditor !== null
       || this.stopTrigger !== null
       || this.alertEditor !== null
@@ -1103,6 +1116,7 @@ export class TradeScreen {
       range: this.brokerageRange,
       onSelect: (range) => {
         this.closeBrokerageDateModal()
+    this.closeOverviewModelPicker()
         this.selectBrokerageRange(range)
       },
       onClose: () => this.closeBrokerageDateModal(),
@@ -1813,15 +1827,66 @@ export class TradeScreen {
     this.tradeFlow.ingest(book)
   }
 
+  /**
+   * Whether an overview can be generated at all.
+   *
+   * Two things have to hold: a model is chosen, and the provider behind it is
+   * connected. Either missing renders the panel as unavailable rather than letting a
+   * run fail once the trader asks for one.
+   */
   private async refreshOverviewConnection(): Promise<void> {
     const account = this.options.aiAccount
     if (!account || !this.options.overview) return
     try {
-      const state = await account.getState()
-      if (!this.destroyed) this.overviewPanel.setConnected(state !== null)
+      const [preferences, providers] = await Promise.all([account.preferences(), account.providers()])
+      const chosen = preferences.overview
+      const ready = Boolean(
+        chosen && providers.some((provider) => provider.providerId === chosen.providerId && provider.connected),
+      )
+      if (!this.destroyed) this.overviewPanel.setConnected(ready)
     } catch {
-      // Unknown connection state renders as idle; the first run will surface it.
+      // Unknown state renders as idle; the first run will surface it.
     }
+  }
+
+  /**
+   * Picks the model behind the overview.
+   *
+   * Chosen here, where the commentary is read, rather than in the chat tab: this is
+   * the panel whose output changes, and the choice is a global one — every overview
+   * comes from it.
+   */
+  private openOverviewModelPicker(): void {
+    const account = this.options.aiAccount
+    if (!account || this.modelModal || this.destroyed) return
+    void (async () => {
+      const current = (await account.preferences().catch(() => null))?.overview ?? null
+      if (this.destroyed || this.modelModal) return
+      const modal = new AiModelModal(this.renderer, {
+        load: () => account.models(),
+        current,
+        title: "Model for the market overview",
+        onChoose: async (choice) => {
+          const preferences = await account.preferences()
+          await account.setPreferences({ ...preferences, overview: choice })
+          await this.refreshOverviewConnection()
+        },
+        onClose: () => this.closeOverviewModelPicker(),
+      })
+      this.modelModal = modal
+      this.root.add(modal.root)
+      modal.mount()
+      this.renderer.requestRender()
+    })()
+  }
+
+  private closeOverviewModelPicker(): void {
+    const modal = this.modelModal
+    if (!modal) return
+    this.modelModal = null
+    if (!this.root.isDestroyed && !modal.root.isDestroyed) this.root.remove(modal.root)
+    modal.destroy()
+    this.renderer.requestRender()
   }
 
   // One overview run: read both flow sides and both custody readings for the
@@ -2235,12 +2300,19 @@ export class TradeScreen {
   }
 
   private renderNews(articles: NewsArticle[], label: string): void {
+    // A refresh keeps the cursor on the story it is on, since a new headline arriving
+    // shifts every row down; a story that is gone, or another symbol's feed, starts at
+    // the newest.
+    const highlighted = this.newsArticles[this.newsList.selectedIndex]?.uid
     this.newsArticles = articles
     if (articles.length === 0) {
       this.setMessage(`No recent news for ${label}.`, "#777777")
       return
     }
-    this.newsList.setRows(articles.map((article) => ({ id: article.uid, content: newsRowContent(article) })))
+    this.newsList.setRows(
+      articles.map((article) => ({ id: article.uid, content: newsRowContent(article) })),
+      highlighted ?? articles[0]?.uid,
+    )
     this.setNewsContent(this.newsList.root)
   }
 
@@ -2548,7 +2620,7 @@ function overviewCacheKey(instrumentUid: string, mode: OverviewMode): string {
   return `${instrumentUid}:${mode}`
 }
 
-function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "g" | "n" | "o" | "t" | "v"): boolean {
+function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "g" | "m" | "n" | "o" | "t" | "v"): boolean {
   if (key.ctrl || key.meta || key.option) return false
   return key.sequence === letter.toUpperCase() || (key.shift && key.name === letter)
 }

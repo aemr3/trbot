@@ -15,13 +15,36 @@ export const authState = sqliteTable("auth_state", {
   updatedAt: integer("updated_at").notNull(),
 })
 
-export const providerState = sqliteTable("provider_state", {
+/**
+ * One row per connected model provider.
+ *
+ * The credential is the harness's own record, kept as JSON rather than spread over
+ * columns: it is a union — an API key for most providers, an OAuth grant for the
+ * subscription ones — with an open field set, so a column per field would mean a
+ * migration per credential kind. Nothing but the harness reads inside it.
+ */
+export const aiCredentials = sqliteTable("ai_credentials", {
   providerId: text("provider_id").primaryKey(),
-  accessToken: text("access_token").notNull(),
-  refreshToken: text("refresh_token").notNull(),
-  expiresAt: integer("expires_at").notNull(),
-  accountId: text("account_id"),
+  credential: text("credential").notNull(),
   createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+})
+
+/**
+ * Which model answers, for each of the two places one is asked.
+ *
+ * A single row. Every column is nullable and nothing stands behind them: null means
+ * nobody has chosen yet, which the overview panel and the composer say out loud
+ * rather than guessing a model on the trader's behalf.
+ */
+export const aiPreferences = sqliteTable("ai_preferences", {
+  id: text("id").primaryKey(),
+  overviewProvider: text("overview_provider"),
+  overviewModel: text("overview_model"),
+  overviewReasoning: text("overview_reasoning"),
+  chatProvider: text("chat_provider"),
+  chatModel: text("chat_model"),
+  chatReasoning: text("chat_reasoning"),
   updatedAt: integer("updated_at").notNull(),
 })
 
@@ -114,8 +137,12 @@ export const chatSessions = sqliteTable("chat_sessions", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
   // Recorded per session so an old transcript still says what wrote it, even
-  // after the configured model changes.
+  // after the chosen model changes. The provider and the reasoning level are
+  // nullable because a session written before they existed names neither; such a
+  // session takes the current default the next time it runs.
   model: text("model").notNull(),
+  provider: text("provider"),
+  reasoning: text("reasoning"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 })

@@ -80,8 +80,6 @@ describe("loadConfig", () => {
     expect(loadConfig({})).toEqual({
       databaseUrl: resolve(workspaceRoot(), "data/db.sqlite"),
       credentials: null,
-      aiModel: "gpt-5.6-sol",
-      aiReasoningEffort: "high",
     })
   })
 })

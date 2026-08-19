@@ -27,9 +27,10 @@ The rule is checked, not trusted:
 - A test in `apps/tui` walks its own dependency closure and fails if `@trbot/api`
   or `@trbot/provider` appears.
 - A second test widens that to every package holding a credential — `@trbot/ai`
-  for the ChatGPT tokens, `@trbot/auth`, and `@trbot/db`, which stores both.
-  `@trbot/client` is not on that list and must not join it: it *runs* the ChatGPT
-  login and hands the result inward, so it holds a token in flight and stores none.
+  for the model providers, `@trbot/auth`, and `@trbot/db`, which stores both.
+  `@trbot/client` is not on that list and must not join it: it *runs* a provider
+  login and hands the result inward, so it holds a credential in flight and stores
+  none.
 - Both run in CI, so a regression fails a pull request rather than reaching
   `main`.
 
@@ -319,26 +320,40 @@ retries that exit instead of sending a second set of orders, and drops it once
 the server has answered — because pressing again after that means the positions
 open now.
 
-## The AI overview and the ChatGPT login
+## The AI overview and the model providers
 
-A ChatGPT token is a credential, so it belongs where the provider credentials are.
-`packages/ai` is a server-only package: the model runs there, the tokens are
-stored there, and `apps/tui` does not depend on it at all.
+A model-provider credential is a credential, so it belongs where the trading
+provider's credentials are. `packages/ai` is a server-only package: the models run
+there, the credentials are stored there, and `apps/tui` does not depend on it at all.
 
-Keeping a token usable is the harness's own work, not ours. It is handed a store
-backed by `provider_state` and from then on decides when a token is close enough to
-lapsing to exchange, does the exchange, and serializes writes so two requests
-cannot both refresh and lose a rotated token between them. What this application
-keeps is the part the harness has no opinion about: which row that credential lives
-in, which account it belongs to, and when the connection was made. The harness also
-owns the model catalogue, so a model is looked up by id rather than described here —
-an id it does not know is refused at startup, naming the ones that work, instead of
-being guessed at.
+**No provider is built in.** The harness ships around forty of them — some behind a
+subscription sign-in, most behind an API key — and trbot registers all of them rather
+than choosing. Which ones a trader can use is decided by which credentials they have
+given us, and the harness answers that question itself: `getAvailable()` reports only
+the models whose provider is authenticated, so a picker cannot offer something that
+would fail on send. A provider added by a harness upgrade appears in the terminal with
+no change here.
+
+Keeping a credential usable is the harness's own work, not ours. It is handed a store
+backed by `ai_credentials` — one row per provider, holding the harness's own record as
+JSON because an API key and an OAuth grant are different shapes — and from then on
+decides when a token is close to lapsing, exchanges it, and serializes writes so two
+requests cannot both refresh and lose a rotated token between them. What this
+application keeps is the part the harness has no opinion about: where a credential
+lives, which account it belongs to, and when it was connected.
+
+Which model answers is a trader's choice, recorded in `ai_preferences` — one for the
+market overview, one for a new chat session — and each chat session then records its
+own, so a transcript still says what wrote it after the default moves on. **Nothing
+stands behind those choices.** There is no environment variable naming a model any
+more: with nothing chosen, the overview and a chat send each refuse with a named
+reason and the terminal says which key fixes it. A model named in two places, one of
+which quietly wins at startup, makes "which model answered this?" unanswerable.
 
 The terminal still builds the digest, because every figure in it comes from data
 already on its screen. It posts that digest to `POST /v1/ai/overview` and renders
-the words as they stream back. The prompt, the model, and the effort setting are
-the server's.
+the words as they stream back. The prompt is the server's; the model and the effort
+are whatever the trader picked.
 
 ### Why the login runs on the trader's machine
 
@@ -349,15 +364,17 @@ what it produced:
 
 1. The terminal runs the authorization — PKCE, the browser, the loopback listener,
    the code exchange — through the model harness, which is where that flow lives.
-2. It posts the resulting credentials to `POST /v1/ai/account`.
-3. The server stores them, refreshes them from then on, and answers with a summary.
+2. It posts the resulting credential to `POST /v1/ai/providers/{id}`.
+3. The server stores it, refreshes it from then on, and answers with a summary.
 
 This is the direction the wire already carries a credential: the trader's provider
 password travels terminal→server on `POST /v1/auth/login`, over the same
-bearer-authenticated, TLS-required connection. A ChatGPT token going the same way is
-the same trust. The rule that matters is the other direction, and it still holds
-absolutely: **the server stores every credential and no stored credential ever
-travels outward.** `GET /v1/ai/account` answers with an account id, never a token.
+bearer-authenticated, TLS-required connection. A model-provider credential going the
+same way is the same trust — and an API key never had anywhere else to be typed. The
+rule that matters is the other direction, and it still holds absolutely: **the server
+stores every credential and no stored credential ever travels outward.**
+`GET /v1/ai/providers` answers with names, account ids and connection dates, never a
+key or a token.
 
 The login was once split across the two — the server building the URL and holding
 the verifier, the terminal catching the redirect and posting a code back. That
@@ -399,8 +416,8 @@ The server refuses to start while `TRBOT_SERVER_TOKEN` still holds the example
 value from `.env.example`, so an unconfigured deployment fails loudly instead of
 running with a published secret.
 
-Provider credentials live only on the server, and so do the ChatGPT tokens.
-Clients authenticate to the server, never to the provider.
+Provider credentials live only on the server, and so do the model-provider ones.
+Clients authenticate to the server, never to a provider.
 
 ## Certificates
 

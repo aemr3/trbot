@@ -13,7 +13,8 @@ import {
 import type { ChatMessage, ChatSession } from "@trbot/chat/session.ts"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
-import { AiAccountModal } from "../components/ai-account-modal.ts"
+import { AiConnectionModal } from "../components/ai-connection-modal.ts"
+import { AiModelModal } from "../components/ai-model-modal.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
 import { SelectableList } from "../components/selectable-list.ts"
 import { WORKSPACE_CHROME_BACKGROUND, WORKSPACE_CHROME_MUTED } from "../components/workspace-chrome.ts"
@@ -34,12 +35,13 @@ const TRADER_COLOR = "#70d7a1"
 const MODEL_COLOR = "#7c83ff"
 const SESSIONS_WIDTH = 30
 
-const AI_HINT = "Tab focus · n new · d d delete · x cancel · Esc stop · c connection"
-const CONNECT_HINT = "ChatGPT is not connected · Enter to connect"
+const CHAT_HINT = "Tab focus · n new · d d delete · x cancel · m model · r reasoning · p providers · Esc stop"
+const CONNECT_HINT = "No model provider connected · p to connect one"
+const NO_MODEL_HINT = "No model chosen for this chat · m to choose one"
 
 type Focus = "sessions" | "transcript" | "composer"
 
-export interface AiScreenOptions {
+export interface ChatScreenOptions {
   chats: ChatSessions
   account?: AiAccount
   logs: ApplicationLog
@@ -54,14 +56,14 @@ interface Streaming {
 }
 
 /**
- * The AI tab: the ChatGPT connection and a conversation per session.
+ * The CHAT tab: model providers, and a conversation per session.
  *
  * The server owns every run, so this screen never generates anything — it shows
  * what the server reports and forwards what the trader types. That is why a reply
  * carries on while the trader is watching the market, and why it is complete when
  * they come back.
  */
-export class AiScreen {
+export class ChatScreen {
   readonly root: BoxRenderable
 
   private readonly sessionList: SelectableList
@@ -80,14 +82,14 @@ export class AiScreen {
   private selectedSessionId: string | null = null
   private focus: Focus = "composer"
   private connected: boolean | null = null
-  private modal: AiAccountModal | null = null
+  private modal: AiConnectionModal | AiModelModal | null = null
   private pendingDelete: string | null = null
   private deleteTimer: ReturnType<typeof setTimeout> | null = null
   private destroyed = false
 
   constructor(
     private readonly renderer: RenderContext,
-    private readonly options: AiScreenOptions,
+    private readonly options: ChatScreenOptions,
   ) {
     this.root = new BoxRenderable(renderer, {
       width: "100%",
@@ -171,7 +173,7 @@ export class AiScreen {
       backgroundColor: WORKSPACE_CHROME_BACKGROUND,
     })
     this.hint = new TextRenderable(renderer, {
-      content: AI_HINT,
+      content: CHAT_HINT,
       fg: WORKSPACE_CHROME_MUTED,
       width: "100%",
     })
@@ -197,6 +199,13 @@ export class AiScreen {
 
   handleKey(key: KeyEvent): void {
     if (this.destroyed) return
+    // This screen routes every key itself, including the ones it hands to the composer.
+    // The composer is a focused renderable, so the terminal would deliver the same key
+    // to the field a second time and every character would land twice — marking it
+    // handled here is what keeps the field's own delivery from doubling ours. The same
+    // holds while a modal is up: the composer keeps focus behind it, so an API key typed
+    // into the modal would otherwise be typed into the chat as well.
+    key.preventDefault()
     if (this.modal) {
       this.modal.handleKey(key)
       return
@@ -209,8 +218,16 @@ export class AiScreen {
       this.moveFocus(key.shift || key.name === "backtab" ? -1 : 1)
       return
     }
-    if (isLowercase(key, "c")) {
+    if (isLowercase(key, "p")) {
       this.openConnection()
+      return
+    }
+    if (isLowercase(key, "m")) {
+      this.openModelPicker("model")
+      return
+    }
+    if (isLowercase(key, "r")) {
+      this.openModelPicker("reasoning")
       return
     }
     if (isLowercase(key, "n")) {
@@ -344,10 +361,11 @@ export class AiScreen {
       return
     }
     try {
-      this.connected = (await this.options.account.getState()) !== null
+      const providers = await this.options.account.providers()
+      this.connected = providers.some((provider) => provider.connected)
     } catch (error) {
       this.connected = false
-      this.options.logs.error("ChatGPT", error)
+      this.options.logs.error("Model providers", error)
     }
     this.render.schedule()
   }
@@ -366,6 +384,10 @@ export class AiScreen {
     }
     if (this.connected === false) {
       if (key.name === "return" || key.name === "enter") this.openConnection()
+      return
+    }
+    if (!this.selectedHasModel()) {
+      if (key.name === "return" || key.name === "enter") this.openModelPicker("model")
       return
     }
     if (key.name === "return" || key.name === "enter") {
@@ -491,14 +513,63 @@ export class AiScreen {
   private openConnection(): void {
     const account = this.options.account
     if (!account || this.modal || this.destroyed) return
-    const modal = new AiAccountModal(this.renderer, {
+    const modal = new AiConnectionModal(this.renderer, {
       account,
+      onChanged: () => this.render.schedule(),
       onClose: () => this.closeConnection(),
     })
     this.modal = modal
     this.root.add(modal.root)
     modal.mount()
     this.renderer.requestRender()
+  }
+
+  /**
+   * Points this session at a model, or at a different reasoning level.
+   *
+   * Per session rather than globally: a trader comparing two models keeps two
+   * sessions open, and the transcript of each says which model wrote it.
+   */
+  private openModelPicker(initial: "model" | "reasoning"): void {
+    const account = this.options.account
+    const session = this.selectedSession()
+    if (!account || !session || this.modal || this.destroyed) return
+    const current = session.provider && session.model
+      ? { providerId: session.provider, modelId: session.model, reasoning: session.reasoning }
+      : null
+    const modal = new AiModelModal(this.renderer, {
+      load: () => account.models(),
+      current,
+      initial,
+      title: "Model for this chat",
+      onChoose: async (choice) => {
+        const updated = await this.options.chats.configure(session.id, choice)
+        this.rememberSession(updated)
+        this.render.schedule()
+      },
+      onClose: () => this.closeConnection(),
+    })
+    this.modal = modal
+    this.root.add(modal.root)
+    modal.mount()
+    this.renderer.requestRender()
+  }
+
+  private selectedSession(): ChatSession | null {
+    return this.sessions.find((session) => session.id === this.selectedSessionId) ?? null
+  }
+
+  /**
+   * Whether the selected session knows which model should answer it.
+   *
+   * True when no session is selected yet: the first message creates one, and it is
+   * the server that decides what a new session starts on. Only a session that exists
+   * and names no model is a dead end worth blocking the composer for.
+   */
+  private selectedHasModel(): boolean {
+    const session = this.selectedSession()
+    if (!session) return true
+    return Boolean(session.provider && session.model)
   }
 
   private closeConnection(): void {
@@ -563,7 +634,7 @@ export class AiScreen {
       this.selectedSessionId ?? undefined,
     )
     this.transcriptBody.content = this.transcriptContent()
-    this.composerRow.visible = this.connected !== false
+    this.composerRow.visible = this.connected !== false && this.selectedHasModel()
     this.hint.content = this.hintText()
     this.hint.fg = this.pendingDelete ? CONFIRM_COLOR : WORKSPACE_CHROME_MUTED
     this.renderer.requestRender()
@@ -574,7 +645,9 @@ export class AiScreen {
       const session = this.sessions.find((entry) => entry.id === this.pendingDelete)
       return `Press d again to delete "${session?.title ?? "this chat"}".`
     }
-    return this.connected === false ? CONNECT_HINT : AI_HINT
+    if (this.connected === false) return CONNECT_HINT
+    if (!this.selectedHasModel()) return NO_MODEL_HINT
+    return CHAT_HINT
   }
 
   private sessionRow(session: ChatSession): StyledText {

@@ -7,8 +7,6 @@ The application reads configuration through `@trbot/config`, which overlays the 
 | `DATABASE_URL` | no | `./data/db.sqlite` | SQLite database path used for application state |
 | `TRBOT_USERNAME` | no | none | Provider phone number/username for unattended session recovery |
 | `TRBOT_PASSWORD` | no | none | Provider password for unattended session recovery |
-| `TRBOT_AI_MODEL` | no | `gpt-5.6-sol` | Model id behind the AI market overview; read by the server |
-| `TRBOT_AI_REASONING` | no | `high` | Reasoning effort hint sent with overview requests; read by the server |
 | `TRBOT_SERVER_HOST` | no | `127.0.0.1` | Interface the server binds |
 | `TRBOT_SERVER_PORT` | no | `7717` | Port the server binds |
 | `TRBOT_SERVER_TOKEN` | yes | none | Bearer token every client presents |
@@ -61,13 +59,26 @@ back in unattended, which is what keeps stop rules running overnight.
 
 The password remains environment-only. Authentication state such as device keys and rotated tokens is stored in the application database. Protect both the `.env` file and database as sensitive local state.
 
-## AI overview
+## Models and providers
 
-`TRBOT_AI_MODEL` and `TRBOT_AI_REASONING` select the model and reasoning effort
-used by the AI market overview. Both are read by the **server**: the model runs
-there, and so does the ChatGPT connection.
+**Nothing about models is configured here.** There is no environment variable
+naming a provider, a model, or a reasoning effort: those are chosen in the
+terminal and recorded by the server, so what answered a question is always the
+thing that was picked rather than whatever a file said at startup.
 
-Requests go through the connected ChatGPT account rather than an API key, so
-nothing is configured here for authentication. Connect the account with `A` in
-the watchlist: the terminal opens the browser and catches the redirect, and the
-server does the exchange and keeps the tokens. The terminal never holds one.
+Connect providers with `p` in the `CHAT` tab. Every provider the model harness
+offers is listed — a few behind a subscription sign-in, most behind an API key —
+and the same screen runs whichever flow the chosen one uses: it opens a browser and
+catches the redirect, shows a device code, or takes a key you type. The server
+stores the credential and refreshes it from then on; the terminal keeps nothing.
+
+Then pick what answers:
+
+- `m` in the `CHAT` tab sets the model for that chat session, and `r` its
+  reasoning effort. Each session records its own, so two sessions can run on two
+  providers at once.
+- `M` on the trade screen, with the overview panel focused, sets the model behind
+  the market overview.
+
+Until something is picked, the overview and the composer say so and name the key
+that fixes it.

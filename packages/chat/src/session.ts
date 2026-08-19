@@ -57,7 +57,17 @@ export interface ChatMessage {
 export interface ChatSession {
   id: string
   title: string
+  /**
+   * Which model answers this session, and how hard it thinks.
+   *
+   * Recorded per session, not read from a setting at send time, so a transcript
+   * still says what wrote it after the default changes — and so two sessions can
+   * run on two different providers at once. Null on a session written before
+   * either was chosen; such a session takes the current default when it next runs.
+   */
   model: string
+  provider: string | null
+  reasoning: string | null
   createdAt: number
   updatedAt: number
   messageCount: number
@@ -94,6 +104,20 @@ export interface ChatMessageDraft {
   record: unknown
 }
 
+/**
+ * Which model a session runs on.
+ *
+ * The provider is named alongside the model because the same model id can be served
+ * by more than one provider — the same GPT sits behind a subscription, an API key, and
+ * a gateway — and they are not interchangeable: they authenticate differently and bill
+ * differently.
+ */
+export interface ChatModelChoice {
+  providerId: string
+  modelId: string
+  reasoning: string | null
+}
+
 export interface ChatSessionStore {
   list(): Promise<ChatSession[]>
   get(sessionId: string): Promise<ChatSessionDetail | null>
@@ -101,6 +125,8 @@ export interface ChatSessionStore {
   records(sessionId: string): Promise<unknown[]>
   create(session: ChatSession): Promise<void>
   rename(sessionId: string, title: string): Promise<void>
+  /** Points a session at a different model, from the next turn onwards. */
+  configure(sessionId: string, choice: ChatModelChoice): Promise<void>
   delete(sessionId: string): Promise<void>
   append(sessionId: string, draft: ChatMessageDraft): Promise<void>
   update(messageId: string, draft: ChatMessageDraft): Promise<void>

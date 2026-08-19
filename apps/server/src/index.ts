@@ -5,7 +5,8 @@ import { openAuthSession } from "@trbot/db/auth-store.ts"
 import { openDatabase } from "@trbot/db/client.ts"
 import { DrizzleOverviewSnapshotStore } from "@trbot/db/overview-snapshot-store.ts"
 import { DrizzlePriceAlertStore } from "@trbot/db/price-alert-store.ts"
-import { DrizzleProviderStateStore } from "@trbot/db/provider-state-store.ts"
+import { DrizzleAiCredentialStore } from "@trbot/db/ai-credential-store.ts"
+import { DrizzleAiPreferencesStore } from "@trbot/db/ai-preferences-store.ts"
 import { DrizzleStopRuleStore } from "@trbot/db/stop-rule-store.ts"
 import { DrizzleWatchlistPreferencesStore } from "@trbot/db/watchlist-preferences-store.ts"
 import { ChatAgent } from "@trbot/ai/chat.ts"
@@ -67,32 +68,29 @@ async function startTrbotServer(): Promise<void> {
   const idempotency = new IdempotencyStore(connection.db)
   await idempotency.sweep()
 
-  // The ChatGPT connection lives here for the same reason the provider session
-  // does: its tokens are a credential, and a client must never hold one. One
-  // harness serves the process, holding the model catalogue and resolving every
-  // credential against that stored connection, refreshing when a request needs it.
-  const states = new DrizzleProviderStateStore(connection.db)
-  const models = createHarness(states)
+  // Model-provider credentials live here for the same reason the provider session
+  // does: they are credentials, and a client must never hold one. One harness serves
+  // the process, holding the catalogue of every provider it ships with and resolving
+  // each credential against the store below, refreshing when a request needs it.
+  const credentials = new DrizzleAiCredentialStore(connection.db)
+  const aiPreferences = new DrizzleAiPreferencesStore(connection.db)
+  const models = createHarness(credentials)
 
-  const ai = new AiService({
-    states,
-    models,
-    model: config.aiModel,
-    reasoningEffort: config.aiReasoningEffort,
-  })
+  const ai = new AiService({ models, credentials, preferences: aiPreferences })
 
   // Chat runs belong to the server for the same reason the monitors do: a reply
   // has to survive the terminal that asked for it closing its tab or quitting.
   const chat = new ChatController({
     store: new DrizzleChatSessionStore(connection.db, { harnessVersion: HARNESS_VERSION }),
-    agent: new ChatAgent({
-      models,
-      model: harnessModel(models, config.aiModel),
-      reasoningEffort: config.aiReasoningEffort,
-      tools: noTools(),
+    agent: new ChatAgent({ models, tools: noTools() }),
+    // A session runs on the model it records, so these read the stored choice per
+    // turn rather than closing over one from startup.
+    defaultChoice: () => ai.chatDefault(),
+    resolveModel: async (choice) => ({
+      model: harnessModel(models, choice.providerId, choice.modelId),
+      reasoningEffort: choice.reasoning,
     }),
-    model: config.aiModel,
-    requireConnected: () => ai.requireConnected(),
+    requireModel: (choice) => ai.requireModel("chat", choice?.providerId, choice?.modelId),
     broadcast: (frame) => hub?.broadcast(frame),
     onError: (error) => log("Chat", error),
   })

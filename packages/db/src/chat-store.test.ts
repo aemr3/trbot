@@ -309,6 +309,22 @@ describe("chat session store", () => {
     expect(await chats.records("chat-1")).toEqual([])
   })
 
+  test("points a session at a different model without touching what was said in it", async () => {
+    // The transcript records which model wrote each reply, so changing the session's
+    // model must not rewrite history — only what answers next.
+    const chats = await store()
+    await chats.create(session())
+    await chats.append("chat-1", draftFor({ role: "user", content: "Where is ASELS heading?", timestamp: 1_000 }))
+
+    await chats.configure("chat-1", { providerId: "anthropic", modelId: "claude-fable-5", reasoning: "max" })
+
+    const detail = await chats.get("chat-1")
+    expect(detail?.session.provider).toBe("anthropic")
+    expect(detail?.session.model).toBe("claude-fable-5")
+    expect(detail?.session.reasoning).toBe("max")
+    expect(detail?.messages.map((message) => message.text)).toEqual(["Where is ASELS heading?"])
+  })
+
   test("renames a session without touching what was said in it", async () => {
     const chats = await store()
     await chats.create(session())
@@ -327,6 +343,8 @@ function session(): ChatSession {
     id: "chat-1",
     title: "New chat",
     model: "gpt-5.6-sol",
+    provider: "openai-codex",
+    reasoning: "high",
     createdAt: 1_000,
     updatedAt: 1_000,
     messageCount: 0,

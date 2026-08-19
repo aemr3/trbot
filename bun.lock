@@ -58,6 +58,7 @@
         "@earendil-works/pi-ai": "0.84.2",
         "@trbot/chat": "workspace:*",
         "@trbot/market": "workspace:*",
+        "@trbot/protocol": "workspace:*",
       },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",

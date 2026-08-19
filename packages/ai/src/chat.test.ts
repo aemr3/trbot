@@ -23,12 +23,13 @@ function scripted(options: { reasoning?: boolean } = {}) {
 test("streams a reply and hands over the message it produced", async () => {
   const { faux, models } = scripted({ reasoning: true })
   faux.setResponses([fauxAssistantMessage([fauxThinking("thinking it over"), fauxText("Ankara.")])])
-  const agent = new ChatAgent({ models, model: faux.getModel() })
+  const agent = new ChatAgent({ models })
 
   const text: string[] = []
   const reasoning: string[] = []
   const drafts: ChatMessageDraft[] = []
   const result = await agent.run({
+    model: faux.getModel(),
     history: [],
     prompt: "Capital of Turkey?",
     events: {
@@ -62,7 +63,7 @@ test("replays the stored history rather than only the new question", async () =>
       return fauxAssistantMessage("Still Ankara.")
     },
   ])
-  const agent = new ChatAgent({ models, model: faux.getModel() })
+  const agent = new ChatAgent({ models })
   const history: ChatRecord[] = [
     { role: "user", content: "Capital of Turkey?", timestamp: 1 },
     {
@@ -78,6 +79,7 @@ test("replays the stored history rather than only the new question", async () =>
   ]
 
   await agent.run({
+    model: faux.getModel(),
     history,
     prompt: "Are you sure?",
     events: { onText: () => {}, onReasoning: () => {}, onToolCall: () => {}, onMessage: async () => {} },
@@ -102,15 +104,12 @@ test("runs the tools a reply asks for and answers with their results", async () 
     fauxAssistantMessage([fauxToolCall("quote", { symbol: "ASELS" })], { stopReason: "toolUse" }),
     fauxAssistantMessage("ASELS last traded at 390.00."),
   ])
-  const agent = new ChatAgent({
-    models,
-    model: faux.getModel(),
-    tools: new ChatTools([quote]),
-  })
+  const agent = new ChatAgent({ models, tools: new ChatTools([quote]) })
 
   const called: string[] = []
   const drafts: ChatMessageDraft[] = []
   const result = await agent.run({
+    model: faux.getModel(),
     history: [],
     prompt: "What is ASELS trading at?",
     events: {
@@ -180,10 +179,11 @@ test("keeps a reply that failed part way and reports why", async () => {
   faux.setResponses([
     fauxAssistantMessage([fauxText("Partial")], { stopReason: "error", errorMessage: "stream lost" }),
   ])
-  const agent = new ChatAgent({ models, model: faux.getModel() })
+  const agent = new ChatAgent({ models })
 
   const drafts: ChatMessageDraft[] = []
   const result = await agent.run({
+    model: faux.getModel(),
     history: [],
     prompt: "Capital of Turkey?",
     events: {
