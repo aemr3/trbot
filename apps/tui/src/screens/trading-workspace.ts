@@ -54,9 +54,10 @@ export class TradingWorkspaceScreen {
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     const panel = this.options[this.activeTab]
-    // A panel that is taking text owns every key: switching tabs mid-word is worse
-    // than making the trader leave the field first.
-    const tab = panel.capturesInput?.() ? null : tabShortcut(key)
+    // A panel that is taking text owns every letter: switching tabs mid-word is worse
+    // than making the trader leave the field first. A control key is nobody's letter,
+    // so the cycle holds whatever the panel is doing.
+    const tab = cycleTab(key, this.activeTab) ?? (panel.capturesInput?.() ? null : tabShortcut(key))
     if (tab) {
       key.preventDefault()
       key.stopPropagation()
@@ -169,4 +170,21 @@ function tabShortcut(key: KeyEvent): TradingWorkspaceTab | null {
   const value = key.sequence || (key.shift ? key.name.toUpperCase() : key.name)
   const tab = TABS.find((candidate) => value === candidate.key.toUpperCase())
   return tab?.id ?? null
+}
+
+/**
+ * Along the tabs on ^A, and back on ^⇧A.
+ *
+ * A control key rather than a letter, because a letter belongs to whatever is taking
+ * text — and a letter rather than a digit, because Ctrl with a digit is a key only a
+ * terminal speaking the kitty keyboard protocol reports at all. Reverse needs that same
+ * protocol to be seen: without it Ctrl+Shift+A is the same byte as ^A and cycles
+ * forward, which is the harmless way for it to fail. Taking ^A also takes it from the
+ * chat composer, where it moved to the start of the line; Home still does that.
+ */
+function cycleTab(key: KeyEvent, active: TradingWorkspaceTab): TradingWorkspaceTab | null {
+  if (!key.ctrl || key.meta || key.option || key.name !== "a") return null
+  const position = TABS.findIndex((candidate) => candidate.id === active)
+  const step = key.shift ? -1 : 1
+  return TABS[(position + step + TABS.length) % TABS.length]!.id
 }
