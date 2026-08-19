@@ -118,7 +118,7 @@ export class ChatAgent {
     for (;;) {
       const reply = await this.streamReply(context, turn)
       context.messages.push(reply)
-      await turn.events.onMessage(assistantDraft(reply))
+      await turn.events.onMessage(assistantDraft(reply, turn.reasoningEffort ?? null))
 
       if (reply.stopReason === "aborted") {
         return { completed: false, aborted: true, errorMessage: null }
@@ -173,7 +173,7 @@ export class ChatAgent {
   }
 }
 
-function assistantDraft(reply: AssistantMessage): ChatMessageDraft {
+function assistantDraft(reply: AssistantMessage, reasoning: string | null): ChatMessageDraft {
   const blocks = reply.content.map(replyBlock)
   const message: ChatMessage = {
     id: crypto.randomUUID(),
@@ -186,6 +186,8 @@ function assistantDraft(reply: AssistantMessage): ChatMessageDraft {
     isError: reply.stopReason === "error",
     errorMessage: reply.errorMessage ?? null,
     usage: usageOf(reply),
+    model: reply.responseModel ?? reply.model,
+    reasoning,
     createdAt: reply.timestamp,
   }
   return { message, record: reply }
@@ -203,6 +205,8 @@ function toolResultDraft(result: Message & { role: "toolResult" }, blocks: ChatB
     isError: result.isError,
     errorMessage: null,
     usage: null,
+    model: null,
+    reasoning: null,
     createdAt: result.timestamp,
   }
   return { message, record: result }

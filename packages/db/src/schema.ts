@@ -176,6 +176,7 @@ export const chatMessages = sqliteTable(
     provider: text("provider"),
     model: text("model"),
     responseModel: text("response_model"),
+    reasoning: text("reasoning"),
     responseId: text("response_id"),
     stopReason: text("stop_reason"),
     errorMessage: text("error_message"),

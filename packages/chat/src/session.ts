@@ -51,6 +51,16 @@ export interface ChatMessage {
   isError: boolean
   errorMessage: string | null
   usage: ChatUsage | null
+  /**
+   * Which model wrote this reply, and how hard it was thinking.
+   *
+   * Recorded per message rather than read from the session, because a session can be
+   * pointed at another model: a transcript that took its labels from the session would
+   * relabel every past reply and claim a model wrote words it never saw. Null on a
+   * trader's message, and on a reply stored before either was recorded.
+   */
+  model: string | null
+  reasoning: string | null
   createdAt: number
 }
 

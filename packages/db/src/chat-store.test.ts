@@ -221,6 +221,40 @@ describe("chat session store", () => {
     expect(await chats.records("chat-1")).toEqual([record])
   })
 
+  test("keeps what answered a message and how hard it was thinking", async () => {
+    // A session can be pointed at another model, so this is the only record of what
+    // wrote a given reply — and the effort it was asked for is not in the harness's
+    // own message at all.
+    const chats = await store()
+    await chats.create(session())
+    const record = {
+      role: "assistant",
+      content: [{ type: "text", text: "Thin volumes into the print." }],
+      api: "openai-codex-responses",
+      provider: "openai-codex",
+      model: "gpt-5.6-sol",
+      // What actually answered: a provider can route a request to a dated snapshot.
+      responseModel: "gpt-5.6-sol-2026-08-01",
+      reasoning: "high",
+      usage: {
+        input: 10,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 15,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: 1_000,
+    }
+
+    await chats.append("chat-1", draftFor(record))
+
+    const detail = await chats.get("chat-1")
+    expect(detail?.messages[0]?.model).toBe("gpt-5.6-sol-2026-08-01")
+    expect(detail?.messages[0]?.reasoning).toBe("high")
+  })
+
   test("orders a conversation by when each message was written, not when it ran", async () => {
     const chats = await store()
     await chats.create(session())
@@ -387,6 +421,8 @@ function draftFor(record: unknown, status: ChatMessage["status"] = "COMPLETE"): 
       isError: value.isError === true,
       errorMessage: (value.errorMessage as string | undefined) ?? null,
       usage: null,
+      model: (value.responseModel as string | undefined) ?? (value.model as string | undefined) ?? null,
+      reasoning: (value.reasoning as string | undefined) ?? null,
       createdAt: value.timestamp as number,
     },
     record,

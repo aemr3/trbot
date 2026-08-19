@@ -88,12 +88,20 @@ function userMessage(text: string, status: ChatMessage["status"]): ChatMessage {
     isError: false,
     errorMessage: null,
     usage: null,
+    model: null,
+    reasoning: null,
     createdAt: 1_000,
   }
 }
 
 function replyMessage(text: string, status: ChatMessage["status"] = "COMPLETE"): ChatMessage {
-  return { ...userMessage(text, status), id: `reply-${text}`, role: "ASSISTANT" }
+  return {
+    ...userMessage(text, status),
+    id: `reply-${text}`,
+    role: "ASSISTANT",
+    model: "test-model",
+    reasoning: "high",
+  }
 }
 
 /**
@@ -209,7 +217,7 @@ test("sends what is typed and shows it waiting its turn", async () => {
   // Queued is shown, not hidden: a trader can see what the model has not reached
   // yet, and that it can still be taken back.
   const queued = await waitForFrame((frame) => frame.includes("queued"))
-  expect(queued).toContain("x to take back")
+  expect(queued).toContain("^X cancels it")
 
   screen.destroy()
   renderer.destroy()
@@ -262,9 +270,11 @@ test("keeps one transcript per session and switches between them", async () => {
   screen.acceptMessage(second.id, replyMessage("about risk"))
   await waitForFrame((frame) => frame.includes("about ASELS") && !frame.includes("about risk"))
 
-  // Tab out of the composer first: while it holds focus, letters are text.
-  mockInput.pressTab()
-  await mockInput.typeText("j")
+  // The chats live in a modal, on a control key so it opens mid-sentence.
+  mockInput.pressKey("s", { ctrl: true })
+  await waitForFrame((frame) => frame.includes("Chats") && frame.includes("Risk sizing"))
+  mockInput.pressArrow("down")
+  mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("about risk") && !frame.includes("about ASELS"))
 
   screen.destroy()
@@ -285,8 +295,7 @@ test("takes back the message still waiting, and stops the reply that is running"
   screen.acceptDelta(session.id, "run-1", { text: "answering" })
   await waitForFrame((frame) => frame.includes("waiting") && frame.includes("answering"))
 
-  mockInput.pressTab()
-  await mockInput.typeText("x")
+  mockInput.pressKey("x", { ctrl: true })
   await waitForFrame(() => chats.cancelled.length > 0)
   expect(chats.cancelled).toEqual(["message-waiting"])
 
@@ -300,7 +309,7 @@ test("takes back the message still waiting, and stops the reply that is running"
   renderer.destroy()
 })
 
-test("deleting a session takes two presses of d", async () => {
+test("deleting a chat takes two presses of d, in the chats modal", async () => {
   const { renderer, mockInput, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({
     width: 100,
     height: 24,
@@ -316,7 +325,8 @@ test("deleting a session takes two presses of d", async () => {
   screen.acceptSessions([{ ...chats.sessions[0]!, title: "ASELS setup" }])
   await waitForFrame((frame) => frame.includes("ASELS setup"))
 
-  mockInput.pressTab()
+  mockInput.pressKey("s", { ctrl: true })
+  await waitForFrame((frame) => frame.includes("Chats"))
   await mockInput.typeText("d")
   // The screen coalesces its repaints, so the frame is captured after that has run
   // rather than waiting on a new one: nothing else moves while a prompt is up.
@@ -395,8 +405,7 @@ test("types one character per keypress once the field has really taken focus", a
   routeKeys(renderer, screen)
   await waitForFrame((frame) => frame.includes("ask something"))
 
-  // Around the panels and back: sessions, transcript, composer.
-  mockInput.pressTab()
+  // Out to the transcript and back, which is what focuses the field itself.
   mockInput.pressTab()
   mockInput.pressTab()
 
@@ -409,3 +418,132 @@ test("types one character per keypress once the field has really taken focus", a
   screen.destroy()
   renderer.destroy()
 })
+
+test("^O and ^S reach the pickers mid-sentence, without disturbing what is typed", async () => {
+  // One spelling for every shortcut, and it works while the field holds the letters —
+  // which is the whole reason they are control keys.
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("half a question")
+  await waitForFrame((frame) => frame.includes("half a question"))
+
+  mockInput.pressKey("o", { ctrl: true })
+  await waitForFrame((frame) => frame.includes("Model for this chat"))
+  mockInput.pressEscape()
+  await waitForFrame((frame) => !frame.includes("Model for this chat"))
+
+  mockInput.pressKey("s", { ctrl: true })
+  await waitForFrame((frame) => frame.includes("Chats"))
+  mockInput.pressEscape()
+
+  // What was half typed is still there: a picker is not a reason to lose a question.
+  const back = await waitForFrame((frame) => !frame.includes("Chats"))
+  expect(back).toContain("half a question")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("takes a question of several lines, and sends the whole of it", async () => {
+  // A question worth asking a model rarely fits on one line, and one that scrolled
+  // sideways could not be read back before being sent.
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("first thought")
+  mockInput.pressEnter({ shift: true })
+  await mockInput.typeText("second thought")
+  // Both lines are on screen at once, rather than one scrolled out of sight.
+  await waitForFrame((frame) => frame.includes("first thought") && frame.includes("second thought"))
+
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length > 0)
+  expect(chats.sent).toEqual(["first thought\nsecond thought"])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("a reply keeps the model that wrote it after the chat is pointed elsewhere", async () => {
+  // Changing which model answers must not rewrite history: a label taken from the
+  // session would claim the new model wrote every older reply.
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptMessage(session.id, {
+    ...replyMessage("the older answer"),
+    model: "gpt-5.6-terra",
+    reasoning: "high",
+  })
+  // The reasoning sits beside the model, because "which model" and "how hard" are one
+  // answer to the question of what wrote this.
+  await waitForFrame((frame) => frame.includes("gpt-5.6-terra") && frame.includes("high"))
+
+  screen.acceptSessions([{ ...session, model: "claude-fable-5", reasoning: "medium" }])
+  const frame = await waitForFrame((content) => content.includes("claude-fable-5"))
+
+  const labelled = frame.split("\n").find((line) => line.includes("gpt-5.6-terra"))
+  expect(labelled).toContain("high")
+  expect(frame).toContain("the older answer")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("turns a spinner while a model is thinking, and stops once it has answered", async () => {
+  // A model can think for a long time before its first word. A still cursor and a hung
+  // run look identical, so something has to move.
+  const { renderer, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptDelta(session.id, "run-1", {})
+  const waiting = await waitForFrame((frame) => frame.includes("thinking…"))
+  const first = spinnerFrame(waiting)
+  expect(first).toBeDefined()
+
+  // It turns rather than sitting on one frame. The test renderer only draws when asked,
+  // so the wait is for the screen's own timer rather than for a frame.
+  await Bun.sleep(200)
+  await renderOnce()
+  const second = spinnerFrame(captureCharFrame())
+  expect(second).toBeDefined()
+  expect(second).not.toBe(first)
+
+  screen.acceptMessage(session.id, replyMessage("Thin volumes."))
+  await Bun.sleep(50)
+  await renderOnce()
+  const answered = captureCharFrame()
+  expect(answered).toContain("Thin volumes.")
+  // Nothing is being waited on any more, so nothing turns.
+  expect(spinnerFrame(answered)).toBeUndefined()
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+/** Which spinner frame is on screen, if any. */
+function spinnerFrame(frame: string): string | undefined {
+  return [...frame].find((character) => "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".includes(character))
+}

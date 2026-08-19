@@ -113,6 +113,13 @@
       "when": 1787088472300,
       "tag": "0015_drop_provider_state",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1787128742982,
+      "tag": "0016_chat_message_reasoning",
+      "breakpoints": true
     }
   ]
 }

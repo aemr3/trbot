@@ -340,6 +340,7 @@ function toRows(
       provider: stringOrNull(record?.provider),
       model: stringOrNull(record?.model),
       responseModel: stringOrNull(record?.responseModel),
+      reasoning: message.reasoning,
       responseId: stringOrNull(record?.responseId),
       stopReason: stringOrNull(record?.stopReason),
       errorMessage: stringOrNull(record?.errorMessage) ?? message.errorMessage,
@@ -484,6 +485,8 @@ function toMessage(row: MessageRow, blocks: BlockRow[]): ChatMessage {
     toolCallId: row.toolCallId,
     isError: row.isError === 1,
     errorMessage: row.errorMessage,
+    model: row.responseModel ?? row.model,
+    reasoning: row.reasoning,
     usage: row.totalTokens === null
       ? null
       : {

@@ -202,3 +202,30 @@ test("keeps a reply that failed part way and reports why", async () => {
   expect(drafts[0]?.message.text).toBe("Partial")
   expect(drafts[0]?.message.status).toBe("FAILED")
 })
+
+test("stamps a reply with what answered it and the effort it was asked for", async () => {
+  // The transcript labels each reply from this, not from the session, so a chat
+  // pointed at another model does not relabel what came before.
+  const { faux, models } = scripted({ reasoning: true })
+  faux.setResponses([fauxAssistantMessage([fauxText("Thin volumes.")])])
+  const agent = new ChatAgent({ models })
+
+  const drafts: ChatMessageDraft[] = []
+  await agent.run({
+    model: faux.getModel(),
+    reasoningEffort: "high",
+    history: [],
+    prompt: "Volumes?",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onMessage: async (draft) => {
+        drafts.push(draft)
+      },
+    },
+  })
+
+  expect(drafts[0]?.message.model).toBe(faux.getModel().id)
+  expect(drafts[0]?.message.reasoning).toBe("high")
+})
