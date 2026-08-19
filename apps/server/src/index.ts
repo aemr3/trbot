@@ -9,9 +9,9 @@ import { DrizzleAiCredentialStore } from "@trbot/db/ai-credential-store.ts"
 import { DrizzleAiPreferencesStore } from "@trbot/db/ai-preferences-store.ts"
 import { DrizzleStopRuleStore } from "@trbot/db/stop-rule-store.ts"
 import { DrizzleAppPreferencesStore } from "@trbot/db/app-preferences-store.ts"
+import { createAgentTools } from "@trbot/ai/agent-tools.ts"
 import { ChatAgent } from "@trbot/ai/chat.ts"
 import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trbot/ai/harness.ts"
-import { noTools } from "@trbot/ai/tool.ts"
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { AiService } from "./ai.ts"
 import { ChatController } from "./chat.ts"
@@ -82,7 +82,7 @@ async function startTrbotServer(): Promise<void> {
   // has to survive the terminal that asked for it closing its tab or quitting.
   const chat = new ChatController({
     store: new DrizzleChatSessionStore(connection.db, { harnessVersion: HARNESS_VERSION }),
-    agent: new ChatAgent({ models, tools: noTools() }),
+    agent: new ChatAgent({ models, tools: createAgentTools({ models }) }),
     // A session runs on the model it records, so these read the stored choice per
     // turn rather than closing over one from startup.
     defaultChoice: () => ai.chatDefault(),

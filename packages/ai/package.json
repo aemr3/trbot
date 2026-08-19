@@ -7,9 +7,12 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.2",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@mozilla/readability": "^0.6.0",
     "@trbot/chat": "workspace:*",
     "@trbot/market": "workspace:*",
-    "@trbot/protocol": "workspace:*"
+    "@trbot/protocol": "workspace:*",
+    "linkedom": "^0.18.13"
   },
   "devDependencies": {
     "@trbot/tsconfig": "workspace:*"

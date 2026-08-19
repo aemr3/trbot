@@ -94,15 +94,28 @@ test("runs the tools a reply asks for and answers with their results", async () 
       parameters: Type.Object({ symbol: Type.String() }),
     },
     run: async (args) => ({
-      blocks: [toolText(`${(args as { symbol: string }).symbol} 390.00`)],
+      blocks: [toolText(`Fetched ${(args as { symbol: string }).symbol} quote.`)],
+      modelBlocks: [toolText(`${(args as { symbol: string }).symbol} 390.00`)],
       details: { last: 390 },
       isError: false,
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costTotal: 0.01 },
     }),
   }
   const { faux, models } = scripted()
   faux.setResponses([
     fauxAssistantMessage([fauxToolCall("quote", { symbol: "ASELS" })], { stopReason: "toolUse" }),
-    fauxAssistantMessage("ASELS last traded at 390.00."),
+    (context) => {
+      const result = context.messages.at(-1)
+      expect(result?.role).toBe("toolResult")
+      if (result?.role === "toolResult") {
+        const content = result.content[0]
+        expect(content?.type).toBe("text")
+        if (content?.type === "text") expect(content.text).toBe("ASELS 390.00")
+        expect(result.usage?.totalTokens).toBe(15)
+        expect(result.usage?.cost.total).toBe(0.01)
+      }
+      return fauxAssistantMessage("ASELS last traded at 390.00.")
+    },
   ])
   const agent = new ChatAgent({ models, tools: new ChatTools([quote]) })
 
@@ -127,7 +140,8 @@ test("runs the tools a reply asks for and answers with their results", async () 
   // The reply asking for the tool, the tool's answer, and the reply that follows —
   // each persisted as it finished, so a run that died mid-way kept what it had.
   expect(drafts.map((draft) => draft.message.role)).toEqual(["ASSISTANT", "TOOL_RESULT", "ASSISTANT"])
-  expect(drafts[1]?.message.text).toBe("ASELS 390.00")
+  expect(drafts[1]?.message.text).toBe("Fetched ASELS quote.")
+  expect(drafts[1]?.message.usage).toEqual({ inputTokens: 10, outputTokens: 5, totalTokens: 15, costTotal: 0.01 })
   expect(drafts[2]?.message.text).toBe("ASELS last traded at 390.00.")
 })
 

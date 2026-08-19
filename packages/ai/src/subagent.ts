@@ -1,0 +1,300 @@
+import { Type, type Api, type Model, type Models } from "@earendil-works/pi-ai"
+import type { ChatMessageDraft, ChatUsage } from "@trbot/chat/session.ts"
+import { ChatAgent } from "./chat.ts"
+import { toolText, type ChatTool, type ChatToolRegistry } from "./tool.ts"
+
+const MAX_PARALLEL_TASKS = 8
+const MAX_CONCURRENCY = 4
+const PER_TASK_OUTPUT_CAP = 50 * 1_024
+
+const TaskItem = Type.Object({
+  agent: Type.String({ description: 'Name of the agent to invoke. Available agent: "worker".' }),
+  task: Type.String({ description: "Task to delegate to the agent", minLength: 1, maxLength: 10_000 }),
+})
+
+const ChainItem = Type.Object({
+  agent: Type.String({ description: 'Name of the agent to invoke. Available agent: "worker".' }),
+  task: Type.String({
+    description: "Task with an optional {previous} placeholder for the prior step's output",
+    minLength: 1,
+    maxLength: 10_000,
+  }),
+})
+
+const SubagentParameters = Type.Object({
+  agent: Type.Optional(Type.String({ description: 'Agent to invoke in single mode. Available agent: "worker".' })),
+  task: Type.Optional(Type.String({ description: "Task to delegate in single mode", minLength: 1, maxLength: 10_000 })),
+  tasks: Type.Optional(Type.Array(TaskItem, { description: "Tasks for parallel execution" })),
+  chain: Type.Optional(Type.Array(ChainItem, { description: "Tasks for sequential execution" })),
+})
+
+const WORKER_PROMPT = [
+  "You are a general-purpose subagent working in an isolated context.",
+  "Complete only the delegated task and return a clear, self-contained result to the parent agent.",
+  "Use any available tool when it helps, including further subagents for work that genuinely benefits from delegation.",
+  "When using web sources, include the URLs you relied on.",
+].join(" ")
+
+type SubagentMode = "single" | "parallel" | "chain"
+
+interface SubagentResult {
+  agent: string
+  task: string
+  answer: string
+  error: string | null
+  usage: ChatUsage | null
+  step?: number
+}
+
+interface SubagentDetails {
+  mode: SubagentMode
+  results: SubagentResult[]
+}
+
+/** Pi-style isolated delegation with single, bounded-parallel, and chained execution. */
+export function subagentTool(models: Models, tools: ChatToolRegistry): ChatTool<typeof SubagentParameters> {
+  return {
+    definition: {
+      name: "subagent",
+      description: [
+        "Delegate work to a full-capability worker in an isolated context.",
+        "Provide exactly one mode: single (agent + task), parallel (tasks), or chain (sequential tasks using {previous}).",
+        `Parallel mode accepts at most ${MAX_PARALLEL_TASKS} tasks and runs ${MAX_CONCURRENCY} at once.`,
+        'The available agent is "worker".',
+      ].join(" "),
+      parameters: SubagentParameters,
+    },
+    run: async (params, options) => {
+      if (!options.model) throw new Error("The active chat model was not available to the subagent")
+
+      const hasChain = (params.chain?.length ?? 0) > 0
+      const hasTasks = (params.tasks?.length ?? 0) > 0
+      const hasSingle = Boolean(params.agent && params.task)
+      const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle)
+      if (modeCount !== 1) return invalidModeOutcome()
+
+      const runOptions: RunTaskOptions = {
+        model: options.model,
+        reasoningEffort: options.reasoningEffort,
+        signal: options.signal,
+      }
+
+      if (params.chain?.length) {
+        return runChain(models, tools, params.chain, runOptions)
+      }
+
+      if (params.tasks?.length) {
+        if (params.tasks.length > MAX_PARALLEL_TASKS) {
+          return {
+            blocks: [toolText(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`)],
+            details: { mode: "parallel", results: [] } satisfies SubagentDetails,
+            isError: true,
+          }
+        }
+        return runParallel(models, tools, params.tasks, runOptions)
+      }
+
+      return runSingle(models, tools, params.agent ?? "", params.task ?? "", runOptions)
+    },
+  }
+}
+
+interface RunTaskOptions {
+  model: Model<Api>
+  reasoningEffort?: string | null
+  signal?: AbortSignal
+}
+
+async function runSingle(
+  models: Models,
+  tools: ChatToolRegistry,
+  agentName: string,
+  task: string,
+  options: RunTaskOptions,
+) {
+  const result = await runTask(models, tools, agentName, task, options)
+  const text = result.error ? `Agent failed: ${result.error}` : result.answer || "(no output)"
+  return {
+    blocks: [toolText(result.error ? text : `Subagent ${agentName} completed.`)],
+    modelBlocks: [toolText(text)],
+    details: { mode: "single", results: [result] } satisfies SubagentDetails,
+    isError: result.error !== null,
+    usage: result.usage ?? undefined,
+  }
+}
+
+async function runParallel(
+  models: Models,
+  tools: ChatToolRegistry,
+  tasks: Array<{ agent: string; task: string }>,
+  options: RunTaskOptions,
+) {
+  const results = await mapWithConcurrencyLimit(tasks, MAX_CONCURRENCY, (item) => (
+    runTask(models, tools, item.agent, item.task, options)
+  ))
+  const successes = results.filter((result) => result.error === null).length
+  const summaries = results.map((result) => {
+    const status = result.error ? "failed" : "completed"
+    const output = truncateOutput((result.error ?? result.answer) || "(no output)")
+    return `### [${result.agent}] ${status}\n\n${output}`
+  })
+  return {
+    blocks: [toolText(`Parallel: ${successes}/${results.length} succeeded`)],
+    modelBlocks: [toolText(`Parallel: ${successes}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}`)],
+    details: { mode: "parallel", results } satisfies SubagentDetails,
+    isError: false,
+    usage: combinedUsage(results),
+  }
+}
+
+async function runChain(
+  models: Models,
+  tools: ChatToolRegistry,
+  chain: Array<{ agent: string; task: string }>,
+  options: RunTaskOptions,
+) {
+  const results: SubagentResult[] = []
+  let previous = ""
+
+  for (let index = 0; index < chain.length; index++) {
+    const item = chain[index]
+    const task = item.task.replaceAll("{previous}", previous)
+    const result = await runTask(models, tools, item.agent, task, options, index + 1)
+    results.push(result)
+    if (result.error) {
+      const text = `Chain stopped at step ${index + 1} (${item.agent}): ${result.error}`
+      return {
+        blocks: [toolText(text)],
+        modelBlocks: [toolText(text)],
+        details: { mode: "chain", results } satisfies SubagentDetails,
+        isError: true,
+        usage: combinedUsage(results),
+      }
+    }
+    previous = result.answer
+  }
+
+  return {
+    blocks: [toolText(`Chain completed ${results.length} step${results.length === 1 ? "" : "s"}.`)],
+    modelBlocks: [toolText(previous || "(no output)")],
+    details: { mode: "chain", results } satisfies SubagentDetails,
+    isError: false,
+    usage: combinedUsage(results),
+  }
+}
+
+async function runTask(
+  models: Models,
+  tools: ChatToolRegistry,
+  agentName: string,
+  task: string,
+  options: RunTaskOptions,
+  step?: number,
+): Promise<SubagentResult> {
+  if (agentName !== "worker") {
+    return {
+      agent: agentName,
+      task,
+      answer: "",
+      error: `Unknown agent: "${agentName}". Available agent: "worker".`,
+      usage: null,
+      ...(step === undefined ? {} : { step }),
+    }
+  }
+
+  const drafts: ChatMessageDraft[] = []
+  const agent = new ChatAgent({ models, tools, systemPrompt: WORKER_PROMPT })
+  try {
+    const result = await agent.run({
+      model: options.model,
+      reasoningEffort: options.reasoningEffort,
+      history: [],
+      prompt: task,
+      signal: options.signal,
+      events: {
+        onText: () => {},
+        onReasoning: () => {},
+        onToolCall: () => {},
+        onMessage: async (draft) => {
+          drafts.push(draft)
+        },
+      },
+    })
+    const answer = drafts
+      .filter((draft) => draft.message.role === "ASSISTANT" && draft.message.text.trim())
+      .at(-1)?.message.text.trim() ?? ""
+    const error = result.errorMessage ?? (result.aborted ? "Stopped" : answer ? null : "No answer returned")
+    return {
+      agent: agentName,
+      task,
+      answer,
+      error,
+      usage: draftUsage(drafts),
+      ...(step === undefined ? {} : { step }),
+    }
+  } catch (error) {
+    return {
+      agent: agentName,
+      task,
+      answer: "",
+      error: error instanceof Error ? error.message : String(error),
+      usage: draftUsage(drafts),
+      ...(step === undefined ? {} : { step }),
+    }
+  }
+}
+
+async function mapWithConcurrencyLimit<TInput, TOutput>(
+  items: TInput[],
+  concurrency: number,
+  fn: (item: TInput, index: number) => Promise<TOutput>,
+): Promise<TOutput[]> {
+  const results = Array.from<TOutput>({ length: items.length })
+  let nextIndex = 0
+  const workerCount = Math.min(Math.max(1, concurrency), items.length)
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      const index = nextIndex++
+      if (index >= items.length) return
+      results[index] = await fn(items[index], index)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+function truncateOutput(output: string): string {
+  const encoded = new TextEncoder().encode(output)
+  if (encoded.byteLength <= PER_TASK_OUTPUT_CAP) return output
+  const truncated = new TextDecoder().decode(encoded.slice(0, PER_TASK_OUTPUT_CAP))
+  return `${truncated}\n\n[Output truncated: ${encoded.byteLength - PER_TASK_OUTPUT_CAP} bytes omitted. Full output preserved in tool details.]`
+}
+
+function invalidModeOutcome() {
+  return {
+    blocks: [toolText('Invalid parameters. Provide exactly one mode. Available agent: "worker".')],
+    details: { mode: "single", results: [] } satisfies SubagentDetails,
+    isError: true,
+  }
+}
+
+function draftUsage(drafts: ChatMessageDraft[]): ChatUsage | null {
+  return sumUsage(drafts.map((draft) => draft.message.usage))
+}
+
+function combinedUsage(results: SubagentResult[]): ChatUsage | undefined {
+  return sumUsage(results.map((result) => result.usage)) ?? undefined
+}
+
+function sumUsage(values: Array<ChatUsage | null>): ChatUsage | null {
+  let total: ChatUsage | null = null
+  for (const usage of values) {
+    if (!usage) continue
+    total ??= { inputTokens: 0, outputTokens: 0, totalTokens: 0, costTotal: 0 }
+    total.inputTokens += usage.inputTokens
+    total.outputTokens += usage.outputTokens
+    total.totalTokens += usage.totalTokens
+    total.costTotal += usage.costTotal
+  }
+  return total
+}

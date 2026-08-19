@@ -21,10 +21,6 @@ export const CHAT_SYSTEM_PROMPT = [
   "The trader deals Borsa Istanbul equities and their VIOP futures contracts.",
   "Answer in plain text for a narrow terminal panel: no markdown headers, no tables, short",
   "paragraphs. Be direct and brief — a trader is reading this between quotes.",
-  "When you give a trade idea, name the direction, the entry, the level to take profit at, and",
-  "the level that invalidates it. An idea that says where to get in but not where to get out is",
-  "not an idea. Say which figures you were given and which you are assuming; never invent a",
-  "price, a level, or a position the trader has not shown you.",
 ].join(" ")
 
 /** The harness message shape a store keeps so a later turn replays exactly. */
@@ -93,9 +89,8 @@ export interface ChatTurnResult {
  * Runs one exchange with the model, tools included.
  *
  * This is a loop, not a single call: while a reply asks for tools it runs them,
- * appends their results, and asks again. Nothing registers a tool yet, so today
- * the loop turns once — but the shape means turning tools on adds a registry
- * rather than rewriting how a turn works.
+ * appends their results, and asks again. A tool can itself run model work, so the
+ * loop also carries nested usage back into the conversation record.
  */
 export class ChatAgent {
   private readonly now: () => number
@@ -138,20 +133,25 @@ export class ChatAgent {
 
       for (const call of calls) {
         turn.events.onToolCall(call.name)
-        const outcome = await tools.call(call, { signal: turn.signal })
+        const outcome = await tools.call(call, {
+          signal: turn.signal,
+          model: turn.model,
+          reasoningEffort: turn.reasoningEffort,
+        })
         const result: Message = {
           role: "toolResult",
           toolCallId: call.id,
           toolName: call.name,
-          content: outcome.blocks
+          content: (outcome.modelBlocks ?? outcome.blocks)
             .filter((block) => block.kind === "TEXT")
             .map((block) => ({ type: "text" as const, text: block.text ?? "" })),
           details: outcome.details,
+          ...(outcome.usage ? { usage: harnessUsage(outcome.usage) } : {}),
           isError: outcome.isError,
           timestamp: this.now(),
         }
         context.messages.push(result)
-        await turn.events.onMessage(toolResultDraft(result, outcome.blocks))
+        await turn.events.onMessage(toolResultDraft(result, outcome.blocks, outcome.usage ?? null))
       }
     }
   }
@@ -223,7 +223,11 @@ function assistantDraft(reply: AssistantMessage, reasoning: string | null, timin
   return { message, record: reply }
 }
 
-function toolResultDraft(result: Message & { role: "toolResult" }, blocks: ChatBlock[]): ChatMessageDraft {
+function toolResultDraft(
+  result: Message & { role: "toolResult" },
+  blocks: ChatBlock[],
+  usage: ChatUsage | null,
+): ChatMessageDraft {
   const message: ChatMessage = {
     id: crypto.randomUUID(),
     role: "TOOL_RESULT",
@@ -234,7 +238,7 @@ function toolResultDraft(result: Message & { role: "toolResult" }, blocks: ChatB
     toolCallId: result.toolCallId,
     isError: result.isError,
     errorMessage: null,
-    usage: null,
+    usage,
     model: null,
     reasoning: null,
     elapsedMs: null,
@@ -274,5 +278,22 @@ function usageOf(reply: AssistantMessage): ChatUsage {
     outputTokens: reply.usage.output,
     totalTokens: reply.usage.totalTokens,
     costTotal: reply.usage.cost.total,
+  }
+}
+
+function harnessUsage(usage: ChatUsage): AssistantMessage["usage"] {
+  return {
+    input: usage.inputTokens,
+    output: usage.outputTokens,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: usage.totalTokens,
+    cost: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: usage.costTotal,
+    },
   }
 }

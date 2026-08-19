@@ -847,7 +847,7 @@ export class ChatScreen {
     if (!session) return new StyledText([fg(MUTED_COLOR)("")])
     const messages = this.messagesBySession.get(session.id) ?? []
     const context = messages.reduce<number | null>(
-      (last, message) => (message.usage ? message.usage.totalTokens : last),
+      (last, message) => (message.role === "ASSISTANT" && message.usage ? message.usage.totalTokens : last),
       null,
     )
     const cost = messages.reduce((total, message) => total + (message.usage?.costTotal ?? 0), 0)
