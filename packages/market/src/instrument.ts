@@ -27,6 +27,21 @@ export interface ViopInstrumentSource {
   loadContractDetails?(instrumentUid: string, options?: { signal?: AbortSignal }): Promise<ViopContractDetails>
 }
 
+/** Resolves either a contract symbol or its underlying alias from an active instrument list. */
+export function resolveViopInstrument(instruments: ViopInstrument[], rawSymbol: string): ViopInstrument {
+  const wanted = rawSymbol.trim().toUpperCase()
+  const matches = instruments.filter((instrument) => [
+    instrument.symbol,
+    instrument.displayName,
+    instrument.underlyingSymbol,
+  ].some((name) => name?.toUpperCase() === wanted))
+  if (matches.length === 0) throw new Error(`No active VIOP contract found for ${rawSymbol}`)
+  if (matches.length > 1) {
+    throw new Error(`More than one contract matched ${rawSymbol}: ${matches.map((item) => item.symbol).join(", ")}`)
+  }
+  return matches[0]!
+}
+
 // What one contract costs to hold: the notional it controls and the collateral
 // it ties up. Both are wanted in more than one place, and the notional moves
 // with every tick, so the arithmetic lives here rather than in a renderer.

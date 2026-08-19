@@ -387,6 +387,11 @@ export const PARAMETERIZED: {
     },
   },
   {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/children$/,
+    method: "GET",
+    handle: async (match, _request, { chat }) => json(await chat.children(decodeURIComponent(match[1] ?? ""))),
+  },
+  {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,
     method: "GET",
     handle: async (match, _request, { chat }) => json(await chat.detail(decodeURIComponent(match[1] ?? ""))),

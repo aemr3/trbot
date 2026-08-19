@@ -115,6 +115,9 @@ export const priceAlerts = sqliteTable("price_alerts", {
   updatedAt: integer("updated_at").notNull(),
   triggeredAt: integer("triggered_at"),
   triggeredPrice: real("triggered_price"),
+  chatSessionId: text("chat_session_id"),
+  onTrigger: text("on_trigger"),
+  triggerId: text("trigger_id"),
 })
 
 export const appPreferences = sqliteTable("app_preferences", {
@@ -129,6 +132,7 @@ export const appPreferences = sqliteTable("app_preferences", {
   selectedInstrumentUid: text("selected_instrument_uid"),
   orderKind: text("order_kind").notNull().default("LIMIT"),
   selectedChatSessionId: text("selected_chat_session_id"),
+  showChatThoughts: integer("show_chat_thoughts", { mode: "boolean" }).notNull().default(true),
   updatedAt: integer("updated_at").notNull(),
 })
 
@@ -137,6 +141,8 @@ export const appPreferences = sqliteTable("app_preferences", {
 export const chatSessions = sqliteTable("chat_sessions", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
+  parentSessionId: text("parent_session_id"),
+  agent: text("agent"),
   // Recorded per session so an old transcript still says what wrote it, even
   // after the chosen model changes. The provider and the reasoning level are
   // nullable because a session written before they existed names neither; such a
@@ -173,6 +179,12 @@ export const chatMessages = sqliteTable(
     // The readable text of the message: what a transcript shows, and what makes a
     // conversation searchable in SQL. The blocks are what a turn is rebuilt from.
     text: text("text").notNull(),
+    // Application events can show a compact fact in the transcript while giving
+    // the model their full structured continuation.
+    modelContent: text("model_content"),
+    // A producer may retry after a crash; this keeps one durable event from
+    // waking the same conversation twice.
+    eventKey: text("event_key").unique(),
     api: text("api"),
     provider: text("provider"),
     model: text("model"),

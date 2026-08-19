@@ -282,6 +282,44 @@ describe("chat session store", () => {
     expect(detail?.session.queued).toBe(1)
   })
 
+  test("stores one application event key while keeping its model prompt private", async () => {
+    const chats = await store()
+    await chats.create(session())
+    const visible = "ASELS crossed above 420 at 421."
+    const prompt = "<price_alert_triggered>continue the setup</price_alert_triggered>"
+    const draft: ChatMessageDraft = {
+      message: {
+        id: "event-1",
+        role: "APP_EVENT",
+        status: "QUEUED",
+        text: visible,
+        blocks: [chatBlockText(visible)],
+        toolName: null,
+        toolCallId: null,
+        isError: false,
+        errorMessage: null,
+        usage: null,
+        model: null,
+        reasoning: null,
+        elapsedMs: null,
+        thinkingMs: null,
+        createdAt: 2_000,
+      },
+      record: { role: "user", content: prompt, timestamp: 2_000 },
+    }
+
+    expect(await chats.appendEvent("chat-1", draft, "price-alert:trigger-1")).toBe(true)
+    expect(await chats.appendEvent("chat-1", {
+      ...draft,
+      message: { ...draft.message, id: "event-duplicate" },
+    }, "price-alert:trigger-1")).toBe(false)
+    expect(await chats.inputText("event-1")).toBe(prompt)
+    expect((await chats.get("chat-1"))?.messages).toMatchObject([{ role: "APP_EVENT", text: visible }])
+
+    await chats.markSent("event-1")
+    expect(await chats.records("chat-1")).toEqual([{ role: "user", content: prompt, timestamp: 2_000 }])
+  })
+
   test("a question queued behind another lands after that one's answer", async () => {
     // A message takes its place in the queue when written, but its place in the
     // conversation only when asked. Without the move, the model would be replayed
@@ -361,7 +399,7 @@ describe("chat session store", () => {
     expect(detail?.messages.map((message) => message.text)).toEqual(["Where is ASELS heading?"])
   })
 
-  test("renames a session without touching what was said in it", async () => {
+test("renames a session without touching what was said in it", async () => {
     const chats = await store()
     await chats.create(session())
     await chats.append("chat-1", draftFor({ role: "user", content: "asked", timestamp: 1_000 }, "SENT"))
@@ -372,12 +410,41 @@ describe("chat session store", () => {
     expect(detail?.session.title).toBe("ASELS setup")
     expect(detail?.messages).toHaveLength(1)
   })
+
+test("keeps child sessions out of the root list and finds them through their parent", async () => {
+  const chats = await store()
+  const parent = session()
+  const child: ChatSession = {
+    ...session(),
+    id: "child-1",
+    title: "Inspect ASELS",
+    parentSessionId: parent.id,
+    agent: "worker",
+    createdAt: 2_000,
+    updatedAt: 2_000,
+  }
+  await chats.create(parent)
+  await chats.create(child)
+
+  expect((await chats.list()).map((entry) => entry.id)).toEqual([parent.id])
+  expect(await chats.listChildren(parent.id)).toMatchObject([{
+    id: child.id,
+    parentSessionId: parent.id,
+    agent: "worker",
+  }])
+
+  await chats.append(child.id, draftFor({ role: "user", content: "delegated task", timestamp: 2_000 }, "SENT"))
+  await chats.delete(parent.id)
+  expect(await chats.get(child.id)).toBeNull()
+})
 })
 
 function session(): ChatSession {
   return {
     id: "chat-1",
     title: "New chat",
+    parentSessionId: null,
+    agent: null,
     model: "gpt-5.6-sol",
     provider: "openai-codex",
     reasoning: "high",

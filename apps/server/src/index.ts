@@ -15,6 +15,7 @@ import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trb
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { AiService } from "./ai.ts"
 import { ChatController } from "./chat.ts"
+import { priceAlertApplicationEvent } from "./chat-price-alert-event.ts"
 import { certificateExpiry } from "./tls.ts"
 import { AlertController } from "./monitors/alert.ts"
 import { isDefiniteRefusal, toProtocolError } from "./errors.ts"
@@ -77,24 +78,6 @@ async function startTrbotServer(): Promise<void> {
   const models = createHarness(credentials)
 
   const ai = new AiService({ models, credentials, preferences: aiPreferences })
-
-  // Chat runs belong to the server for the same reason the monitors do: a reply
-  // has to survive the terminal that asked for it closing its tab or quitting.
-  const chat = new ChatController({
-    store: new DrizzleChatSessionStore(connection.db, { harnessVersion: HARNESS_VERSION }),
-    agent: new ChatAgent({ models, tools: createAgentTools({ models }) }),
-    // A session runs on the model it records, so these read the stored choice per
-    // turn rather than closing over one from startup.
-    defaultChoice: () => ai.chatDefault(),
-    resolveModel: async (choice) => ({
-      model: harnessModel(models, choice.providerId, choice.modelId),
-      reasoningEffort: choice.reasoning,
-    }),
-    requireModel: (choice) => ai.requireModel("chat", choice?.providerId, choice?.modelId),
-    broadcast: (frame) => hub?.broadcast(frame),
-    onError: (error) => log("Chat", error),
-  })
-
   let hub: StreamHub | null = null
 
   const stops = new StopController({
@@ -119,6 +102,10 @@ async function startTrbotServer(): Promise<void> {
     store: alertStore,
     candles,
     onError: (error) => log("Price alerts", error),
+    onAgentTrigger: async (event) => {
+      const queued = priceAlertApplicationEvent(event)
+      if (queued) await chat.enqueueEvent(queued.sessionId, queued.event)
+    },
     broadcast: (event) => {
       if (event.type === "triggered") hub?.broadcast({ type: "alertTriggered", event: event.event })
       else {
@@ -126,6 +113,48 @@ async function startTrbotServer(): Promise<void> {
         hub?.refresh()
       }
     },
+  })
+
+  // Chat runs belong to the server for the same reason the monitors do: a reply
+  // has to survive the terminal that asked for it closing its tab or quitting.
+  let chat!: ChatController
+  chat = new ChatController({
+    store: new DrizzleChatSessionStore(connection.db, { harnessVersion: HARNESS_VERSION }),
+    agent: new ChatAgent({
+      models,
+      tools: createAgentTools({
+        models,
+        marketData: {
+          sources: () => session.require(),
+          stops: { list: async () => stops.list() },
+        },
+        priceAlerts: {
+          instruments: {
+            listInstruments: (options) => session.require().instruments.listInstruments(options),
+          },
+          candles,
+          alerts: {
+            list: async () => alerts.list(),
+            save: (draft) => alerts.save(draft),
+            setStatus: (id, status) => alerts.setStatus(id, status),
+            remove: (id) => alerts.remove(id),
+          },
+        },
+        subagentSessions: {
+          start: (input) => chat.subagentSessions.start(input),
+        },
+      }),
+    }),
+    // A session runs on the model it records, so these read the stored choice per
+    // turn rather than closing over one from startup.
+    defaultChoice: () => ai.chatDefault(),
+    resolveModel: async (choice) => ({
+      model: harnessModel(models, choice.providerId, choice.modelId),
+      reasoningEffort: choice.reasoning,
+    }),
+    requireModel: (choice) => ai.requireModel("chat", choice?.providerId, choice?.modelId),
+    broadcast: (frame) => hub?.broadcast(frame),
+    onError: (error) => log("Chat", error),
   })
 
   hub = new StreamHub(session, {
@@ -147,8 +176,8 @@ async function startTrbotServer(): Promise<void> {
   })
 
   await stops.rules.load()
-  await alerts.alerts.load()
   await chat.start()
+  await alerts.load()
 
   const resumed = await session.resume()
   console.log(resumed ? "Provider session resumed" : "No provider session; waiting for a client to sign in")

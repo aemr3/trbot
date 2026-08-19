@@ -41,6 +41,8 @@ export interface AppPreferences {
   orderKind: ViopOrderKind
   /** The conversation restored when CHAT opens again. */
   selectedChatSessionId: string | null
+  /** Whether CHAT expands model reasoning instead of showing only its summary line. */
+  showChatThoughts: boolean
 }
 
 /** Reads the stored indicator list, dropping any name the app no longer draws. */
@@ -58,6 +60,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   selectedInstrumentUid: null,
   orderKind: "LIMIT",
   selectedChatSessionId: null,
+  showChatThoughts: true,
 }
 
 export function normalizeAppPreferences(preferences: AppPreferences): AppPreferences {

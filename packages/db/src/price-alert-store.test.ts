@@ -48,6 +48,9 @@ describe("price alert store", () => {
       extremePrice: 430,
       triggerPrice: 422,
       atrValue: 4,
+      chatSessionId: "chat-1",
+      onTrigger: "Reassess the trail.",
+      triggerId: "trigger-1",
     })
 
     expect(await store.list()).toEqual([])

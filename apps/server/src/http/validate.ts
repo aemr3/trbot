@@ -256,7 +256,15 @@ export function appPreferences(body: Record<string, unknown>): AppPreferences {
     selectedChatSessionId: body.selectedChatSessionId === null || body.selectedChatSessionId === undefined
       ? null
       : text(body.selectedChatSessionId, "selectedChatSessionId"),
+    showChatThoughts: body.showChatThoughts === undefined
+      ? true
+      : boolean(body.showChatThoughts, "showChatThoughts"),
   })
+}
+
+function boolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") throw invalid(field, "must be true or false")
+  return value
 }
 
 function indicatorList(value: unknown): ChartIndicator[] {

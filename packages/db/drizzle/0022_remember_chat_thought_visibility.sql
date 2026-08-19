@@ -1,0 +1,1 @@
+ALTER TABLE `app_preferences` ADD `show_chat_thoughts` integer DEFAULT true NOT NULL;

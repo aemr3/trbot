@@ -321,11 +321,12 @@ export class App {
       memberFeatures: new HttpMemberFeatureSource(http),
       preferences: this.preferences,
       onPreferencesChange: (preferences) => {
-        // Chat owns its selected session. A trade-screen update carries the copy it
-        // opened with, so preserve the newer chat choice rather than reverting it.
+        // Chat owns its session and thought visibility. A trade-screen update carries
+        // the copy it opened with, so preserve newer chat choices rather than reverting them.
         const next = {
           ...preferences,
           selectedChatSessionId: this.preferences?.selectedChatSessionId ?? preferences.selectedChatSessionId,
+          showChatThoughts: this.preferences?.showChatThoughts ?? preferences.showChatThoughts,
         }
         this.preferences = next
         // Never write settings we could not read: that turns a failed load into
@@ -351,10 +352,18 @@ export class App {
       ...(this.aiAccount ? { account: this.aiAccount } : {}),
       logs: this.logs,
       initialSessionId: this.preferences?.selectedChatSessionId,
+      initialShowThoughts: this.preferences?.showChatThoughts,
       onSessionChange: (selectedChatSessionId) => {
         const current = this.preferences ?? DEFAULT_APP_PREFERENCES
         if (current.selectedChatSessionId === selectedChatSessionId) return
         const next = { ...current, selectedChatSessionId }
+        this.preferences = next
+        if (this.preferencesLoaded) this.persistPreferences?.(next)
+      },
+      onShowThoughtsChange: (showChatThoughts) => {
+        const current = this.preferences ?? DEFAULT_APP_PREFERENCES
+        if (current.showChatThoughts === showChatThoughts) return
+        const next = { ...current, showChatThoughts }
         this.preferences = next
         if (this.preferencesLoaded) this.persistPreferences?.(next)
       },

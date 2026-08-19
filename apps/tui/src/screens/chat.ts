@@ -13,10 +13,12 @@ import type { AiAccount } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import { AiConnectionModal } from "../components/ai-connection-modal.ts"
 import { AiModelModal } from "../components/ai-model-modal.ts"
+import { ChatCommandMenu, type ChatCommand } from "../components/chat-command-menu.ts"
 import { ChatHelpModal } from "../components/chat-help-modal.ts"
 import { ChatSessionModal } from "../components/chat-session-modal.ts"
 import { ChatTranscript, type ChatTranscriptBlock } from "../components/chat-transcript.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
+import { SubagentSessionModal } from "../components/subagent-session-modal.ts"
 import type { ApplicationLog } from "../logging/application-log.ts"
 
 const BACKGROUND = "#101010"
@@ -69,15 +71,29 @@ const CHAT_INSET = 1
  */
 const COMPOSER_MAX_ROWS = 8
 
+const CHAT_COMMANDS: readonly ChatCommand[] = [
+  { name: "/model", description: "choose which model answers this chat" },
+  { name: "/reasoning", description: "choose the model's reasoning effort" },
+  { name: "/thoughts", description: "show or hide model reasoning" },
+  { name: "/subagents", description: "open this chat's worker sessions" },
+  { name: "/parent", description: "return from a worker transcript" },
+  { name: "/chats", description: "open another chat" },
+  { name: "/new", description: "start a new chat" },
+  { name: "/connect", description: "manage model providers" },
+  { name: "/help", description: "show every chat key" },
+]
+
 type Focus = "transcript" | "composer"
-type Modal = AiConnectionModal | AiModelModal | ChatSessionModal | ChatHelpModal
+type Modal = AiConnectionModal | AiModelModal | ChatSessionModal | ChatHelpModal | SubagentSessionModal
 
 export interface ChatScreenOptions {
   chats: ChatSessions
   account?: AiAccount
   logs: ApplicationLog
   initialSessionId?: string | null
+  initialShowThoughts?: boolean
   onSessionChange?: (sessionId: string | null) => void
+  onShowThoughtsChange?: (showThoughts: boolean) => void
 }
 
 /** A reply arriving now, before it has been stored as a message. */
@@ -110,8 +126,8 @@ interface Streaming {
  * conversation is the thing being read and a list of conversations is wanted for a
  * moment.
  *
- * Every shortcut is a control key, so one spelling serves whether or not something is
- * being typed: a plain letter cannot be a shortcut while a field is taking letters.
+ * Every shortcut uses a modifier, so one spelling serves whether or not something is
+ * being typed: a plain key cannot be a shortcut while a field is taking letters.
  *
  * The server owns every run, so this screen never generates anything: it shows what
  * the server reports and forwards what the trader types. That is why a reply carries
@@ -122,6 +138,7 @@ export class ChatScreen {
   readonly root: BoxRenderable
 
   private readonly transcript: ChatTranscript
+  private readonly commandMenu: ChatCommandMenu
   private readonly composerRow: BoxRenderable
   private readonly composerMarker: TextRenderable
   private readonly composer: TextareaRenderable
@@ -140,7 +157,7 @@ export class ChatScreen {
   private connected: boolean | null = null
   private modal: Modal | null = null
   /** Whether replies show the reasoning that led to them, or only that there was some. */
-  private showThoughts = true
+  private showThoughts: boolean
   private spinner = 0
   private spinnerTimer: ReturnType<typeof setInterval> | null = null
   private destroyed = false
@@ -150,6 +167,7 @@ export class ChatScreen {
     private readonly options: ChatScreenOptions,
   ) {
     this.selectedSessionId = options.initialSessionId ?? null
+    this.showThoughts = options.initialShowThoughts ?? true
     this.root = new BoxRenderable(renderer, {
       width: "100%",
       height: "100%",
@@ -168,6 +186,7 @@ export class ChatScreen {
     })
     this.transcript = new ChatTranscript(renderer, { backgroundColor: PANEL_BG })
     body.add(this.transcript.root)
+    this.commandMenu = new ChatCommandMenu(renderer, CHAT_COMMANDS)
 
     // The next prompt uses the same filled shape as prompts already in the transcript.
     this.composerRow = new BoxRenderable(renderer, {
@@ -245,6 +264,9 @@ export class ChatScreen {
 
     this.root.add(body)
     this.root.add(this.composerRow)
+    // As in Codex, slash commands unfold below the prompt instead of covering the
+    // conversation or floating over the field being edited.
+    this.root.add(this.commandMenu.root)
     this.root.add(composerDetails)
     this.paint()
   }
@@ -284,6 +306,20 @@ export class ChatScreen {
       this.modal.handleKey(key)
       return
     }
+    if (this.typing() && this.handleCommandMenuKey(key)) return
+    if (isAltArrow(key, "right")) {
+      void this.cycleSubagent(1)
+      return
+    }
+    if (isAltArrow(key, "left")) {
+      void this.cycleSubagent(-1)
+      return
+    }
+    if (isAltArrow(key, "up")) {
+      const parentId = this.selectedSession()?.parentSessionId
+      if (parentId) this.selectSession(parentId)
+      return
+    }
     // Control keys, so every one of them works mid-sentence.
     if (isControl(key, "s")) {
       this.openSessions()
@@ -308,8 +344,7 @@ export class ChatScreen {
     // One control folds or opens reasoning across the conversation. Thoughts start
     // open, matching the live Codex transcript; ^T is there when they get in the way.
     if (isControl(key, "t")) {
-      this.showThoughts = !this.showThoughts
-      this.render.schedule()
+      this.toggleThoughts()
       return
     }
     if (isControl(key, "g")) {
@@ -361,8 +396,12 @@ export class ChatScreen {
 
   acceptSessions(sessions: ChatSession[]): void {
     if (this.destroyed) return
-    this.sessions = sessions
-    if (!this.selectedSessionId || !sessions.some((session) => session.id === this.selectedSessionId)) {
+    const knownChildren = this.sessions.filter((session) => session.parentSessionId !== null)
+    this.sessions = [
+      ...sessions,
+      ...knownChildren.filter((child) => !sessions.some((session) => session.id === child.id)),
+    ]
+    if (!this.selectedSessionId || !this.sessions.some((session) => session.id === this.selectedSessionId)) {
       this.setSelectedSession(this.initialSession(sessions))
       if (this.selectedSessionId) {
         void this.loadSession(this.selectedSessionId)
@@ -420,6 +459,9 @@ export class ChatScreen {
       this.streamingBySession.set(sessionId, { runId, startedAt: Date.now(), thinkingMs: null, text: "", reasoning: "", tools: [] })
     }
     if (error) this.options.logs.error("Chat", new Error(error))
+    this.sessions = this.sessions.map((session) => (
+      session.id === sessionId ? { ...session, running: status === "running" } : session
+    ))
     this.render.schedule()
   }
 
@@ -437,7 +479,15 @@ export class ChatScreen {
       const sessions = await this.options.chats.list()
       if (this.destroyed) return
       this.sessions = sessions
-      this.setSelectedSession(this.initialSession(sessions))
+      const preferred = this.options.initialSessionId
+      if (preferred && !sessions.some((session) => session.id === preferred)) {
+        try {
+          this.rememberSession((await this.options.chats.get(preferred)).session)
+        } catch {
+          // The saved child may have been deleted with its parent; the root fallback below is valid.
+        }
+      }
+      this.setSelectedSession(this.initialSession(this.sessions))
       if (this.selectedSessionId) await this.loadSession(this.selectedSessionId)
     } catch (error) {
       this.options.logs.error("Chat", error)
@@ -449,6 +499,7 @@ export class ChatScreen {
     try {
       const detail = await this.options.chats.get(sessionId)
       if (this.destroyed) return
+      this.rememberSession(detail.session)
       this.messagesBySession.set(sessionId, detail.messages)
       if (detail.partial) {
         const known = this.streamingBySession.get(sessionId)
@@ -519,7 +570,35 @@ export class ChatScreen {
       return
     }
     this.composer.handleKeyPress(key)
+    this.commandMenu.setQuery(this.composer.plainText)
     this.render.schedule()
+  }
+
+  /** Routes command discovery keys while the textarea keeps terminal focus. */
+  private handleCommandMenuKey(key: KeyEvent): boolean {
+    if (!this.commandMenu.visible) return false
+    if (key.name === "escape" || key.name === "esc") {
+      this.commandMenu.close()
+      this.render.schedule()
+      return true
+    }
+    if (this.commandMenu.handleKey(key)) return true
+    if (key.name === "tab") {
+      const command = this.commandMenu.selectedCommand()
+      if (!command) return false
+      this.composer.setText(command.name)
+      this.commandMenu.setQuery(command.name)
+      this.render.schedule()
+      return true
+    }
+    if (isEnter(key) && !key.shift) {
+      const command = this.commandMenu.selectedCommand()
+      if (!command) return false
+      this.composer.setText(command.name)
+      void this.sendComposed()
+      return true
+    }
+    return false
   }
 
   /**
@@ -531,10 +610,13 @@ export class ChatScreen {
   private async sendComposed(): Promise<void> {
     const text = this.composer.plainText.trim()
     if (!text) return
+    if (await this.runCommand(text)) return
+    if (this.selectedSession()?.parentSessionId) return
     const session = this.selectedSession() ?? await this.startSession()
     if (!session || this.destroyed) return
     try {
       this.composer.setText("")
+      this.commandMenu.close()
       this.render.schedule()
       // Shown from what the server answered rather than waiting for the frame that
       // announces it: the message is already stored by the time this returns, and a
@@ -546,6 +628,50 @@ export class ChatScreen {
       this.composer.setText(text)
       this.render.schedule()
     }
+  }
+
+  /** Local navigation commands never become trader messages or consume model tokens. */
+  private async runCommand(text: string): Promise<boolean> {
+    const command = text.toLowerCase()
+    if (!CHAT_COMMANDS.some((entry) => entry.name === command)) return false
+
+    this.composer.setText("")
+    this.commandMenu.close()
+    this.render.schedule()
+
+    switch (command) {
+      case "/model":
+        await this.openModelPicker("model")
+        break
+      case "/reasoning":
+        await this.openModelPicker("reasoning")
+        break
+      case "/thoughts":
+        this.toggleThoughts()
+        break
+      case "/subagents":
+        await this.openSubagents()
+        break
+      case "/parent": {
+        const parentId = this.selectedSession()?.parentSessionId
+        if (parentId) this.selectSession(parentId)
+        break
+      }
+      case "/chats":
+        this.openSessions()
+        break
+      case "/new":
+        await this.createSession()
+        break
+      case "/connect":
+        this.openConnection()
+        break
+      case "/help":
+        this.openHelp()
+        break
+    }
+    this.render.schedule()
+    return true
   }
 
   private async createSession(): Promise<void> {
@@ -620,7 +746,7 @@ export class ChatScreen {
   private openSessions(): void {
     if (this.modal || this.destroyed) return
     this.showModal(new ChatSessionModal(this.renderer, {
-      sessions: this.sessions,
+      sessions: this.sessions.filter((session) => session.parentSessionId === null),
       currentId: this.selectedSessionId,
       onSelect: (sessionId) => {
         this.selectSession(sessionId)
@@ -632,6 +758,52 @@ export class ChatScreen {
       onDelete: (sessionId) => void this.deleteSession(sessionId),
       onClose: () => this.closeModal(),
     }))
+  }
+
+  private async openSubagents(): Promise<void> {
+    if (this.modal || this.destroyed) return
+    const selected = this.selectedSession()
+    const parentId = selected?.id ?? null
+    let sessions: ChatSession[] = []
+    if (parentId) {
+      try {
+        sessions = await this.options.chats.children(parentId)
+        if (this.destroyed || this.modal) return
+        for (const session of sessions) this.rememberSession(session)
+      } catch (error) {
+        this.options.logs.error("Subagent sessions", error)
+        if (this.destroyed || this.modal) return
+      }
+    }
+    this.showModal(new SubagentSessionModal(this.renderer, {
+      sessions,
+      currentId: null,
+      onSelect: (sessionId) => {
+        this.selectSession(sessionId)
+        this.closeModal()
+      },
+      onClose: () => this.closeModal(),
+    }))
+  }
+
+  /** Moves between a parent's worker transcripts without opening the worker picker. */
+  private async cycleSubagent(direction: -1 | 1): Promise<void> {
+    const selected = this.selectedSession()
+    if (!selected) return
+    const parentId = selected.parentSessionId ?? selected.id
+    try {
+      const children = await this.options.chats.children(parentId)
+      if (this.destroyed || children.length === 0) return
+      for (const child of children) this.rememberSession(child)
+
+      const current = children.findIndex((child) => child.id === selected.id)
+      const next = current < 0
+        ? (direction === 1 ? children[0] : children.at(-1))
+        : children[(current + direction + children.length) % children.length]
+      if (next) this.selectSession(next.id)
+    } catch (error) {
+      this.options.logs.error("Subagent sessions", error)
+    }
   }
 
   /** Every key, on ^G: the status line names this instead of listing them. */
@@ -734,6 +906,12 @@ export class ChatScreen {
     this.options.onSessionChange?.(sessionId)
   }
 
+  private toggleThoughts(): void {
+    this.showThoughts = !this.showThoughts
+    this.options.onShowThoughtsChange?.(this.showThoughts)
+    this.render.schedule()
+  }
+
   private selectedSession(): ChatSession | null {
     return this.sessions.find((session) => session.id === this.selectedSessionId) ?? null
   }
@@ -785,14 +963,33 @@ export class ChatScreen {
     this.composerMeta.visible = this.composerUsable()
     this.hint.content = this.hintText(session)
     this.usage.content = this.usageText(session)
-    // The chats list is live while it is open: a reply landing elsewhere shows there.
-    if (this.modal instanceof ChatSessionModal) this.modal.setSessions(this.sessions, this.selectedSessionId)
+    // Session pickers stay live while a reply lands or a worker finishes.
+    if (this.modal instanceof ChatSessionModal) {
+      this.modal.setSessions(
+        this.sessions.filter((candidate) => candidate.parentSessionId === null),
+        this.selectedSessionId,
+      )
+    }
+    if (this.modal instanceof SubagentSessionModal) {
+      const parentId = session?.id
+      this.modal.setSessions(
+        this.sessions.filter((candidate) => candidate.parentSessionId === parentId),
+        null,
+      )
+    }
     this.renderer.requestRender()
   }
 
   /** What will answer what is being typed. */
   private composerMetaText(session: ChatSession | null): StyledText {
     if (!session?.model) return new StyledText([fg(QUEUED_COLOR)("no model · ^O chooses one")])
+    if (session.parentSessionId) {
+      return new StyledText([
+        fg(MODEL_COLOR)(session.agent ?? "worker"),
+        fg(FAINT_COLOR)(" · "),
+        ...modelLabel(session.model, session.reasoning).chunks,
+      ])
+    }
     return modelLabel(session.model, session.reasoning)
   }
 
@@ -825,12 +1022,17 @@ export class ChatScreen {
   /**
    * The keys, or what stands in the way of using them.
    *
-   * While a reply is running the list leads with the key that stops it, because that is
-   * the one being looked for — the model and reasoning cannot change mid-reply anyway.
+   * While a root reply is running the list leads with the key that stops it. A child
+   * transcript instead keeps its navigation commands visible because its lifetime is
+   * owned by the parent's tool call.
    */
   private hintText(session: ChatSession | null): string {
     if (this.connected === false) return CONNECT_HINT
     if (!this.selectedHasModel()) return NO_MODEL_HINT
+    if (session?.parentSessionId) {
+      const state = this.streamingBySession.has(session.id) ? "Subagent running" : "Subagent transcript"
+      return `${state} · ⌥←/→ workers · ⌥↑ parent`
+    }
     if (session && this.streamingBySession.has(session.id)) return RUNNING_HINT
     return CHAT_HINT
   }
@@ -895,6 +1097,19 @@ export class ChatScreen {
  * muted bullet, leaving the answer visually lighter than the request that started it.
  */
 function messageBlock(message: ChatMessage, current: StyledText, showThoughts: boolean): ChatTranscriptBlock {
+  if (message.role === "APP_EVENT") {
+    return {
+      id: message.id,
+      marker: new StyledText([fg(COMPOSER_COLOR)("◆")]),
+      header: new StyledText([fg(COMPOSER_COLOR)("price alert")]),
+      content: new StyledText([fg(MUTED_COLOR)(message.text)]),
+      ...(message.status === "QUEUED"
+        ? { footer: new StyledText([fg(QUEUED_COLOR)("waiting for agent")]) }
+        : message.status === "FAILED"
+          ? { footer: new StyledText([fg(ERROR_COLOR)("agent wake-up failed")]) }
+          : {}),
+    }
+  }
   if (message.role === "USER") {
     const queued = message.status === "QUEUED"
     return {
@@ -918,9 +1133,10 @@ function messageBlock(message: ChatMessage, current: StyledText, showThoughts: b
       content: new StyledText([fg(message.isError ? ERROR_COLOR : MUTED_COLOR)(message.text)]),
     }
   }
-  const chunks: TextChunk[] = [fg(TEXT_COLOR)(message.text)]
-  if (message.status === "PARTIAL") chunks.push(fg(MUTED_COLOR)("\nstopped"))
-  if (message.errorMessage) chunks.push(fg(ERROR_COLOR)(`\n${message.errorMessage}`))
+  const chunks: TextChunk[] = []
+  if (message.text) chunks.push(fg(TEXT_COLOR)(message.text))
+  if (message.status === "PARTIAL") chunks.push(fg(MUTED_COLOR)(`${chunks.length > 0 ? "\n" : ""}stopped`))
+  if (message.errorMessage) chunks.push(fg(ERROR_COLOR)(`${chunks.length > 0 ? "\n" : ""}${message.errorMessage}`))
   const thought = thoughtHeader(reasoningText(message), {
     showThoughts,
     thinkingMs: message.thinkingMs,
@@ -929,6 +1145,7 @@ function messageBlock(message: ChatMessage, current: StyledText, showThoughts: b
     id: message.id,
     marker: new StyledText([fg(TURN_MARKER_COLOR)("•")]),
     ...(thought ? { header: thought } : {}),
+    bodyVisible: chunks.length > 0,
     content: new StyledText(chunks),
     footer: signature(message, current),
   }
@@ -961,7 +1178,9 @@ function streamingBlock(
     if (!live.showThoughts) chunks.push(fg(REASONING_COLOR)(lastLine(streaming.reasoning)))
   }
   else chunks.push(fg(MUTED_COLOR)("thinking…"))
-  for (const tool of streaming.tools) chunks.push(fg(MUTED_COLOR)(`\n⚙ ${tool}`))
+  for (const tool of streaming.tools) {
+    chunks.push(fg(MUTED_COLOR)(`${chunks.length > 0 ? "\n" : ""}⚙ ${tool}`))
+  }
   const thought = thoughtHeader(streaming.reasoning, {
     showThoughts: live.showThoughts,
     thinkingMs,
@@ -973,6 +1192,7 @@ function streamingBlock(
     id: `streaming-${streaming.runId}`,
     marker: new StyledText([fg(TURN_MARKER_COLOR)("•")]),
     ...(thought ? { header: thought } : {}),
+    bodyVisible: chunks.length > 0,
     content: new StyledText(chunks),
     footer: new StyledText(footer),
   }
@@ -1070,6 +1290,10 @@ function formatCost(cost: number): string {
 
 function isControl(key: KeyEvent, letter: string): boolean {
   return Boolean(key.ctrl) && !key.meta && !key.option && key.name === letter
+}
+
+function isAltArrow(key: KeyEvent, direction: "left" | "right" | "up"): boolean {
+  return Boolean(key.meta || key.option) && !key.ctrl && key.name === direction
 }
 
 function isEnter(key: KeyEvent): boolean {

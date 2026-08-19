@@ -1,4 +1,4 @@
-import { asc, eq, inArray, max, sql } from "drizzle-orm"
+import { asc, eq, inArray, isNull, max, sql } from "drizzle-orm"
 import type {
   ChatBlock,
   ChatMessage,
@@ -76,6 +76,7 @@ const MAPPED_BLOCK_KEYS = new Set([
 
 type MessageRow = typeof chatMessages.$inferSelect
 type BlockRow = typeof chatMessageBlocks.$inferSelect
+type SessionRow = typeof chatSessions.$inferSelect
 type MessageInsert = typeof chatMessages.$inferInsert
 type BlockInsert = typeof chatMessageBlocks.$inferInsert
 
@@ -91,7 +92,24 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
   ) {}
 
   async list(): Promise<ChatSession[]> {
-    const sessions = await this.db.select().from(chatSessions).orderBy(asc(chatSessions.createdAt))
+    const sessions = await this.db
+      .select()
+      .from(chatSessions)
+      .where(isNull(chatSessions.parentSessionId))
+      .orderBy(asc(chatSessions.createdAt))
+    return this.sessionsWithCounts(sessions)
+  }
+
+  async listChildren(parentSessionId: string): Promise<ChatSession[]> {
+    const sessions = await this.db
+      .select()
+      .from(chatSessions)
+      .where(eq(chatSessions.parentSessionId, parentSessionId))
+      .orderBy(asc(chatSessions.createdAt))
+    return this.sessionsWithCounts(sessions)
+  }
+
+  private async sessionsWithCounts(sessions: SessionRow[]): Promise<ChatSession[]> {
     if (sessions.length === 0) return []
     const counts = await this.db
       .select({
@@ -109,6 +127,8 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
       return {
         id: session.id,
         title: session.title,
+        parentSessionId: session.parentSessionId,
+        agent: session.agent,
         model: session.model,
         provider: session.provider,
         reasoning: session.reasoning,
@@ -133,6 +153,8 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
       session: {
         id: session.id,
         title: session.title,
+        parentSessionId: session.parentSessionId,
+        agent: session.agent,
         model: session.model,
         provider: session.provider,
         reasoning: session.reasoning,
@@ -159,10 +181,22 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
     return rows.map((row) => toRecord(row, blocks.get(row.id) ?? []))
   }
 
+  async inputText(messageId: string): Promise<string | null> {
+    const row = this.db
+      .select({ text: chatMessages.text, modelContent: chatMessages.modelContent })
+      .from(chatMessages)
+      .where(eq(chatMessages.id, messageId))
+      .limit(1)
+      .get()
+    return row ? row.modelContent ?? row.text : null
+  }
+
   async create(session: ChatSession): Promise<void> {
     await this.db.insert(chatSessions).values({
       id: session.id,
       title: session.title,
+      parentSessionId: session.parentSessionId,
+      agent: session.agent,
       model: session.model,
       provider: session.provider,
       reasoning: session.reasoning,
@@ -188,17 +222,32 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
   }
 
   async delete(sessionId: string): Promise<void> {
+    const sessionIds = await this.sessionTreeIds(sessionId)
     const rows = await this.db
       .select({ id: chatMessages.id })
       .from(chatMessages)
-      .where(eq(chatMessages.sessionId, sessionId))
+      .where(inArray(chatMessages.sessionId, sessionIds))
     this.db.transaction((tx) => {
       if (rows.length > 0) {
         tx.delete(chatMessageBlocks).where(inArray(chatMessageBlocks.messageId, rows.map((row) => row.id))).run()
       }
-      tx.delete(chatMessages).where(eq(chatMessages.sessionId, sessionId)).run()
-      tx.delete(chatSessions).where(eq(chatSessions.id, sessionId)).run()
+      tx.delete(chatMessages).where(inArray(chatMessages.sessionId, sessionIds)).run()
+      tx.delete(chatSessions).where(inArray(chatSessions.id, sessionIds)).run()
     })
+  }
+
+  private async sessionTreeIds(sessionId: string): Promise<string[]> {
+    const ids = [sessionId]
+    let parents = [sessionId]
+    while (parents.length > 0) {
+      const children = await this.db
+        .select({ id: chatSessions.id })
+        .from(chatSessions)
+        .where(inArray(chatSessions.parentSessionId, parents))
+      parents = children.map((row) => row.id).filter((id) => !ids.includes(id))
+      ids.push(...parents)
+    }
+    return ids
   }
 
   /**
@@ -221,6 +270,32 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
         .set({ updatedAt: draft.message.createdAt })
         .where(eq(chatSessions.id, sessionId))
         .run()
+    })
+  }
+
+  async appendEvent(sessionId: string, draft: ChatMessageDraft, eventKey: string): Promise<boolean> {
+    return this.db.transaction((tx) => {
+      const existing = tx
+        .select({ id: chatMessages.id })
+        .from(chatMessages)
+        .where(eq(chatMessages.eventKey, eventKey))
+        .limit(1)
+        .get()
+      if (existing) return false
+
+      const next = tx
+        .select({ seq: max(chatMessages.seq) })
+        .from(chatMessages)
+        .where(eq(chatMessages.sessionId, sessionId))
+        .get()
+      const message = toRows(sessionId, (next?.seq ?? -1) + 1, draft, this.options.harnessVersion)
+      tx.insert(chatMessages).values({ ...message.row, eventKey }).run()
+      for (const block of message.blocks) tx.insert(chatMessageBlocks).values(block).run()
+      tx.update(chatSessions)
+        .set({ updatedAt: draft.message.createdAt })
+        .where(eq(chatSessions.id, sessionId))
+        .run()
+      return true
     })
   }
 
@@ -336,6 +411,9 @@ function toRows(
       role: message.role,
       status: message.status,
       text: message.text,
+      modelContent: message.role === "APP_EVENT" && typeof record?.content === "string"
+        ? record.content
+        : null,
       api: stringOrNull(record?.api),
       provider: stringOrNull(record?.provider),
       model: stringOrNull(record?.model),
@@ -395,12 +473,16 @@ function toBlockRow(messageId: string, idx: number, value: unknown): BlockInsert
  * has to produce the same object, not an equivalent-looking one.
  */
 function toRecord(row: MessageRow, blocks: BlockRow[]): unknown {
-  const role = row.role === "USER" ? "user" : row.role === "TOOL_RESULT" ? "toolResult" : "assistant"
+  const role = row.role === "USER" || row.role === "APP_EVENT"
+    ? "user"
+    : row.role === "TOOL_RESULT"
+      ? "toolResult"
+      : "assistant"
   const record: Record<string, unknown> = { role, timestamp: row.createdAt }
 
   if (role === "user") {
     // A trader's message is text, which the harness accepts as a plain string.
-    record.content = row.text
+    record.content = row.modelContent ?? row.text
   } else if (role === "toolResult") {
     record.content = blocks.map(toContentBlock)
     record.toolCallId = row.toolCallId

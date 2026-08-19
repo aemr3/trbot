@@ -32,6 +32,8 @@ export interface ChatToolRunOptions {
   /** Present when a tool is called by ChatAgent; optional for direct registry use in tests. */
   model?: Model<Api>
   reasoningEffort?: string | null
+  /** Originating conversation, inherited by nested subagents. */
+  chatSessionId?: string
 }
 
 /**

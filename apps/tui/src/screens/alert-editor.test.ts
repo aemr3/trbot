@@ -157,7 +157,7 @@ test("refuses a level the market has already passed", async () => {
   await renderOnce()
 
   expect(saved).toHaveLength(0)
-  expect(captureCharFrame()).toContain("A level above the market is required")
+  expect(captureCharFrame()).toContain("ABOVE trigger 380 must be above the current F_ASELS0826 price of 400")
 
   editor.destroy()
   renderer.destroy()

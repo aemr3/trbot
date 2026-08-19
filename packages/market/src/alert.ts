@@ -1,7 +1,7 @@
-// Price levels the trader wants to hear about. An alert is the same shape of
+// Price levels the trader or agent wants watched. An alert is the same shape of
 // rule as a protective stop — a level, how it is measured, and what counts as
-// reaching it — but it is not attached to a position and it never trades. When
-// one fires the app says so, out loud, and that is the whole of it.
+// reaching it — but it is not attached to a position and it never trades. The
+// app announces every trigger; an agent-owned alert also resumes its chat.
 import type { Candle, CandleInterval } from "./candle.ts"
 import {
   isLevelReached,
@@ -64,9 +64,15 @@ export interface PriceAlert {
   triggeredAt: number | null
   // The price that reached the level, so a fired alert still says what it saw.
   triggeredPrice: number | null
+  // Present when a chat agent created the alert. The continuation belongs to
+  // that conversation and is handed back to it when this particular crossing
+  // fires; the unique trigger id makes retrying that handoff safe.
+  chatSessionId: string | null
+  onTrigger: string | null
+  triggerId: string | null
 }
 
-// What the editor collects; everything else is derived by `createPriceAlert`.
+// What an alert client collects; everything else is derived by `createPriceAlert`.
 export interface PriceAlertDraft {
   id?: string
   instrumentUid: string
@@ -80,6 +86,9 @@ export interface PriceAlertDraft {
   repeat: PriceAlertRepeat
   referencePrice: number | null
   atrValue: number | null
+  /** Agent-owned continuation metadata; omitted by the ordinary alert editor. */
+  chatSessionId?: string | null
+  onTrigger?: string | null
 }
 
 // Persistence contract; the implementation lives in @trbot/db and stays out of
@@ -87,6 +96,14 @@ export interface PriceAlertDraft {
 export interface PriceAlertStore {
   list(): Promise<PriceAlert[]>
   put(alert: PriceAlert): Promise<void>
+  remove(id: string): Promise<void>
+}
+
+/** Transport-neutral alert operations used by terminal and agent clients alike. */
+export interface PriceAlertActions {
+  list(): Promise<PriceAlert[]>
+  save(draft: PriceAlertDraft): Promise<PriceAlert>
+  setStatus(id: string, status: PriceAlertStatus): Promise<void>
   remove(id: string): Promise<void>
 }
 
@@ -188,6 +205,9 @@ export function createPriceAlert(draft: PriceAlertDraft, now: number): PriceAler
     updatedAt: now,
     triggeredAt: null,
     triggeredPrice: null,
+    chatSessionId: draft.chatSessionId ?? null,
+    onTrigger: draft.onTrigger ?? null,
+    triggerId: null,
   }
 }
 
@@ -207,8 +227,12 @@ export function validatePriceAlert(draft: PriceAlertDraft, lastPrice: number | n
   // A level the market has already passed would fire the moment it is saved,
   // which is never what the trader meant to type.
   if (lastPrice !== null && Number.isFinite(lastPrice)) {
-    if (draft.direction === "BELOW" && level >= lastPrice) return "A level below the market is required"
-    if (draft.direction === "ABOVE" && level <= lastPrice) return "A level above the market is required"
+    if (draft.direction === "BELOW" && level >= lastPrice) {
+      return `BELOW trigger ${level} must be below the current ${draft.symbol} price of ${lastPrice}`
+    }
+    if (draft.direction === "ABOVE" && level <= lastPrice) {
+      return `ABOVE trigger ${level} must be above the current ${draft.symbol} price of ${lastPrice}`
+    }
   }
   return null
 }

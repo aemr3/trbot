@@ -25,6 +25,8 @@ export interface ChatTranscriptBlock {
   padded?: boolean
   /** Above the content: what the model thought, or which tool answered. */
   header?: StyledText
+  /** False for a tool-call turn that has reasoning and provenance but no spoken text. */
+  bodyVisible?: boolean
   content: StyledText
   /** Below the content: which model wrote it, how long it took, what it cost. */
   footer?: StyledText
@@ -95,13 +97,15 @@ export class ChatTranscript {
       row.box.paddingBottom = block.padded ? 1 : 0
       row.header.visible = block.header !== undefined
       if (block.header !== undefined) row.header.content = block.header
+      const bodyVisible = block.bodyVisible !== false
       // A thought or tool label introduces the body; it is not the first line of it.
       // Likewise, provenance belongs to the reply without running into its last line.
-      row.body.marginTop = block.header !== undefined ? 1 : 0
+      row.body.visible = bodyVisible
+      row.body.marginTop = bodyVisible && block.header !== undefined ? 1 : 0
       row.body.content = block.content
       row.footer.visible = block.footer !== undefined
       if (block.footer !== undefined) row.footer.content = block.footer
-      row.footer.marginTop = block.footer !== undefined ? 1 : 0
+      row.footer.marginTop = block.footer !== undefined && bodyVisible ? 1 : 0
     })
   }
 

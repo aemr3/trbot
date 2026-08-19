@@ -11,6 +11,10 @@ export class HttpChatSessions implements ChatSessions {
     return this.http.get<ChatSession[]>(ROUTES.chatSessions)
   }
 
+  children(sessionId: string): Promise<ChatSession[]> {
+    return this.http.get<ChatSession[]>(ROUTES.chatSessionChildren(sessionId))
+  }
+
   create(choice?: ChatModelChoice): Promise<ChatSession> {
     return this.http.post<ChatSession>(ROUTES.chatSessions, choice ? { body: choice } : {})
   }

@@ -146,8 +146,8 @@ test("resolves and caches BIST index instruments for advanced charts", async () 
   }
   const source = new ApiCandleSource(client as never)
 
-  const first = await source.loadCandles("future-1", "INTRADAY", "MIN_10", { target: "BIST_100" })
-  await source.loadCandles("future-2", "WEEK", "HOUR_1", { target: "BIST_100" })
+  const first = await source.loadCandles("XU100", "INTRADAY", "MIN_10", { target: "BIST_100" })
+  await source.loadCandles("XU100", "WEEK", "HOUR_1", { target: "BIST_100" })
 
   expect(first.instrumentUid).toBe("index-100")
   expect(calls).toEqual([

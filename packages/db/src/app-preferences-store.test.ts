@@ -35,6 +35,7 @@ describe("app preferences store", () => {
       selectedInstrumentUid: "future-2",
       orderKind: "MARKETABLE_LIMIT",
       selectedChatSessionId: "chat-2",
+      showChatThoughts: false,
     })
     connection.close()
     connection = null
@@ -50,6 +51,7 @@ describe("app preferences store", () => {
       selectedInstrumentUid: "future-2",
       orderKind: "MARKETABLE_LIMIT",
       selectedChatSessionId: "chat-2",
+      showChatThoughts: false,
     })
   })
 })

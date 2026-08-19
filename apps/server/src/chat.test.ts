@@ -165,6 +165,34 @@ test("the second question sees the first exchange as history", async () => {
   ])
 })
 
+test("an application event wakes its chat once with private model context", async () => {
+  const { chat, store, turns } = await harness()
+  const session = await chat.create()
+  const event = {
+    key: "price-alert:trigger-1",
+    text: "ASELS crossed above 420 at 421.",
+    prompt: "<price_alert_triggered>continue the breakout review</price_alert_triggered>",
+  }
+
+  const queued = await chat.enqueueEvent(session.id, event)
+  await settle()
+  const duplicate = await chat.enqueueEvent(session.id, event)
+  await settle()
+
+  expect(queued?.role).toBe("APP_EVENT")
+  expect(duplicate).toBeNull()
+  expect(turns.map((turn) => turn.prompt)).toEqual([event.prompt])
+  const detail = await chat.detail(session.id)
+  expect(detail.messages.map((message) => `${message.role}:${message.text}`)).toEqual([
+    `APP_EVENT:${event.text}`,
+    `ASSISTANT:answer to ${event.prompt}`,
+  ])
+  expect((await store.records(session.id))[0]).toMatchObject({
+    role: "user",
+    content: event.prompt,
+  })
+})
+
 test("a queued message can be taken back before its turn starts", async () => {
   const { chat, turns, frames, finish } = await harness({ auto: false })
   const session = await chat.create()
@@ -378,6 +406,53 @@ test("tells a client that attaches what is running, so it can catch up", async (
   expect(detail.partial?.runId).toEqual(expect.any(String))
   finish()
   await settle()
+})
+
+test("records subagents as live child sessions with their complete transcript", async () => {
+  const { chat, frames } = await harness()
+  const parent = await chat.create()
+  const worker = await chat.subagentSessions.start({
+    parentSessionId: parent.id,
+    agent: "worker",
+    task: "Inspect the XU100 trend",
+    providerId: "test-provider",
+    modelId: "test-model",
+    reasoning: "high",
+  })
+
+  worker.onReasoning("Reading candles.")
+  worker.onToolCall("get_candles")
+  worker.onText("Trend is constructive.")
+  await worker.onMessage(reply("Trend is constructive."))
+
+  const running = await chat.children(parent.id)
+  expect(running).toMatchObject([{
+    id: worker.sessionId,
+    parentSessionId: parent.id,
+    agent: "worker",
+    title: "Inspect the XU100 trend",
+    running: true,
+  }])
+  const detail = await chat.detail(worker.sessionId)
+  expect(detail.messages.map((message) => `${message.role}:${message.text}`)).toEqual([
+    "USER:Inspect the XU100 trend",
+    "ASSISTANT:Trend is constructive.",
+  ])
+  expect(detail.partial).toMatchObject({ text: "Trend is constructive.", reasoning: "Reading candles." })
+
+  await worker.finish(null)
+  expect((await chat.children(parent.id))[0]?.running).toBe(false)
+  expect(frames).toContainEqual(expect.objectContaining({
+    type: "chatDelta",
+    sessionId: worker.sessionId,
+    toolName: "get_candles",
+  }))
+
+  const failure = await chat.send(worker.sessionId, "continue").then(
+    () => null,
+    (error: unknown) => error,
+  )
+  expect(isProtocolError(failure) && failure.code).toBe("invalid_request")
 })
 
 test("deleting a session stops the reply it was generating", async () => {

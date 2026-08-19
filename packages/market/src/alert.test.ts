@@ -87,8 +87,10 @@ test("a touch reads the tick and a close reads the finished candle", () => {
 
 test("refuses a level the market has already passed", () => {
   // Saved as written, it would fire on the very next tick and say nothing.
-  expect(validatePriceAlert(draft({ value: 390 }), 400)).toBe("A level above the market is required")
-  expect(validatePriceAlert(draft({ direction: "BELOW", value: 410 }), 400)).toBe("A level below the market is required")
+  expect(validatePriceAlert(draft({ value: 390 }), 400))
+    .toBe("ABOVE trigger 390 must be above the current F_ASELS0826 price of 400")
+  expect(validatePriceAlert(draft({ direction: "BELOW", value: 410 }), 400))
+    .toBe("BELOW trigger 410 must be below the current F_ASELS0826 price of 400")
   expect(validatePriceAlert(draft(), 400)).toBeNull()
 })
 

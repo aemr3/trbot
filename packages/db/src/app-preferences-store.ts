@@ -42,6 +42,7 @@ export class DrizzleAppPreferencesStore {
       selectedInstrumentUid: row.selectedInstrumentUid,
       orderKind: row.orderKind,
       selectedChatSessionId: row.selectedChatSessionId,
+      showChatThoughts: row.showChatThoughts,
     })
   }
 

@@ -2,14 +2,14 @@
 // knows about HTTP, the database, the terminal, or the model harness — a client
 // renders these shapes and the server stores them.
 
-export type ChatRole = "USER" | "ASSISTANT" | "TOOL_RESULT"
+export type ChatRole = "USER" | "APP_EVENT" | "ASSISTANT" | "TOOL_RESULT"
 
 /**
  * Where a message stands.
  *
- * `QUEUED` and `SENT` describe something the trader wrote: a message waits its
- * turn and is marked sent once the turn it belongs to has run. The rest describe
- * a reply — `PARTIAL` is an answer that was stopped part way and kept.
+ * `QUEUED` and `SENT` describe an input, whether it came from the trader or the
+ * application: it waits its turn and is marked sent once that turn has run. The
+ * rest describe a reply — `PARTIAL` is an answer that was stopped part way and kept.
  */
 export type ChatMessageStatus = "QUEUED" | "SENT" | "COMPLETE" | "PARTIAL" | "FAILED"
 
@@ -84,6 +84,10 @@ export interface ChatMessage {
 export interface ChatSession {
   id: string
   title: string
+  /** Null for a trader chat; set for an isolated worker spawned from another session. */
+  parentSessionId: string | null
+  /** The delegated agent name for a child session. Null on trader chats. */
+  agent: string | null
   /**
    * Which model answers this session, and how hard it thinks.
    *
@@ -131,6 +135,16 @@ export interface ChatMessageDraft {
   record: unknown
 }
 
+/** An application event that wakes a conversation exactly once. */
+export interface ChatApplicationEvent {
+  /** Stable across retries of the same external event. */
+  key: string
+  /** Compact fact shown in the transcript. */
+  text: string
+  /** Full event and stored continuation handed to the model. */
+  prompt: string
+}
+
 /**
  * Which model a session runs on.
  *
@@ -146,16 +160,22 @@ export interface ChatModelChoice {
 }
 
 export interface ChatSessionStore {
+  /** Trader-owned root conversations only; child sessions have their own picker. */
   list(): Promise<ChatSession[]>
+  listChildren(parentSessionId: string): Promise<ChatSession[]>
   get(sessionId: string): Promise<ChatSessionDetail | null>
   /** The harness records of a session's messages, in order, for replay. */
   records(sessionId: string): Promise<unknown[]>
+  /** Model-facing text for one queued input; application events may hide detail from the transcript. */
+  inputText(messageId: string): Promise<string | null>
   create(session: ChatSession): Promise<void>
   rename(sessionId: string, title: string): Promise<void>
   /** Points a session at a different model, from the next turn onwards. */
   configure(sessionId: string, choice: ChatModelChoice): Promise<void>
   delete(sessionId: string): Promise<void>
   append(sessionId: string, draft: ChatMessageDraft): Promise<void>
+  /** Appends a retryable application event unless its key was already stored. */
+  appendEvent(sessionId: string, draft: ChatMessageDraft, eventKey: string): Promise<boolean>
   update(messageId: string, draft: ChatMessageDraft): Promise<void>
   setStatus(messageId: string, status: ChatMessageStatus): Promise<void>
   /**

@@ -10,6 +10,8 @@ import type { ChatMessage, ChatModelChoice, ChatSession, ChatSessionDetail } fro
  */
 export interface ChatSessions {
   list(): Promise<ChatSession[]>
+  /** Isolated worker sessions spawned directly from this conversation. */
+  children(sessionId: string): Promise<ChatSession[]>
   /** Started on a chosen model, or on whatever is the current default. */
   create(choice?: ChatModelChoice): Promise<ChatSession>
   /** Points a session at a different model, from its next turn onwards. */

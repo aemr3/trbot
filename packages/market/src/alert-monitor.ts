@@ -1,4 +1,4 @@
-// Watches live prices against the levels a trader asked to be told about. It
+// Watches live prices against the levels a trader or agent asked to watch. It
 // owns nothing but attention: when a level is reached it says so once, and the
 // screen decides how loudly. Nothing here trades, and no alert depends on a
 // position existing.
@@ -58,6 +58,8 @@ export interface AlertMonitorOptions {
   store: PriceAlertStore
   candles?: CandleSource
   onTrigger: (event: AlertTriggerEvent) => void
+  /** Called only after the fired state is durable; suitable for retryable downstream work. */
+  onTriggerPersisted?: (event: AlertTriggerEvent) => void
   onChange?: () => void
   onError?: (error: unknown) => void
   stalePriceMs?: number
@@ -222,7 +224,16 @@ export class AlertMonitor {
 
   async saveAlert(draft: PriceAlertDraft): Promise<PriceAlert> {
     const existing = draft.id ? this.alerts.get(draft.id) : undefined
-    const alert = { ...createPriceAlert(draft, this.now()), ...(existing ? { createdAt: existing.createdAt } : {}) }
+    const alert = {
+      ...createPriceAlert(draft, this.now()),
+      ...(existing
+        ? {
+            createdAt: existing.createdAt,
+            chatSessionId: draft.chatSessionId === undefined ? existing.chatSessionId : draft.chatSessionId,
+            onTrigger: draft.onTrigger === undefined ? existing.onTrigger : draft.onTrigger,
+          }
+        : {}),
+    }
     this.alerts.set(alert.id, alert)
     // An edited alert earns its near-side latch again: its level moved.
     this.approaching.delete(alert.id)
@@ -251,7 +262,7 @@ export class AlertMonitor {
     const updated: PriceAlert = {
       ...alert,
       status,
-      ...(status === "ARMED" ? { triggeredAt: null, triggeredPrice: null } : {}),
+      ...(status === "ARMED" ? { triggeredAt: null, triggeredPrice: null, triggerId: null } : {}),
       updatedAt: this.now(),
     }
     this.alerts.set(id, updated)
@@ -312,16 +323,23 @@ export class AlertMonitor {
       status: repeats ? "ARMED" : "TRIGGERED",
       triggeredAt: now,
       triggeredPrice: price,
+      triggerId: crypto.randomUUID(),
       updatedAt: now,
     }
     if (repeats) this.approaching.delete(alert.id)
     this.alerts.set(alert.id, triggered)
-    void this.persist(triggered)
-    this.options.onTrigger({
+    const event = {
       alert: triggered,
       price,
       priceAgeMs: Math.max(0, now - (this.quotes.get(alert.symbol)?.timestamp ?? now)),
-    })
+    }
+    const persistence = this.persist(triggered)
+    this.options.onTrigger(event)
+    if (this.options.onTriggerPersisted) {
+      void persistence.then((stored) => {
+        if (stored && !this.destroyed) this.options.onTriggerPersisted?.(event)
+      })
+    }
     return true
   }
 
@@ -334,11 +352,13 @@ export class AlertMonitor {
     return this.options.stalePriceMs ?? DEFAULT_STALE_PRICE_MS
   }
 
-  private async persist(alert: PriceAlert): Promise<void> {
+  private async persist(alert: PriceAlert): Promise<boolean> {
     try {
       await this.options.store.put(alert)
+      return true
     } catch (error) {
       this.report(error)
+      return false
     }
   }
 

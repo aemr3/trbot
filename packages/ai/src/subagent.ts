@@ -40,6 +40,7 @@ type SubagentMode = "single" | "parallel" | "chain"
 interface SubagentResult {
   agent: string
   task: string
+  sessionId: string | null
   answer: string
   error: string | null
   usage: ChatUsage | null
@@ -51,8 +52,32 @@ interface SubagentDetails {
   results: SubagentResult[]
 }
 
+export interface SubagentSessionRun {
+  sessionId: string
+  onText(delta: string): void
+  onReasoning(delta: string): void
+  onToolCall(name: string): void
+  onMessage(draft: ChatMessageDraft): Promise<void>
+  finish(error: string | null): Promise<void>
+}
+
+export interface SubagentSessionRecorder {
+  start(input: {
+    parentSessionId: string
+    agent: string
+    task: string
+    providerId: string
+    modelId: string
+    reasoning: string | null
+  }): Promise<SubagentSessionRun>
+}
+
 /** Pi-style isolated delegation with single, bounded-parallel, and chained execution. */
-export function subagentTool(models: Models, tools: ChatToolRegistry): ChatTool<typeof SubagentParameters> {
+export function subagentTool(
+  models: Models,
+  tools: ChatToolRegistry,
+  sessions?: SubagentSessionRecorder,
+): ChatTool<typeof SubagentParameters> {
   return {
     definition: {
       name: "subagent",
@@ -77,10 +102,11 @@ export function subagentTool(models: Models, tools: ChatToolRegistry): ChatTool<
         model: options.model,
         reasoningEffort: options.reasoningEffort,
         signal: options.signal,
+        chatSessionId: options.chatSessionId,
       }
 
       if (params.chain?.length) {
-        return runChain(models, tools, params.chain, runOptions)
+        return runChain(models, tools, params.chain, runOptions, sessions)
       }
 
       if (params.tasks?.length) {
@@ -91,10 +117,10 @@ export function subagentTool(models: Models, tools: ChatToolRegistry): ChatTool<
             isError: true,
           }
         }
-        return runParallel(models, tools, params.tasks, runOptions)
+        return runParallel(models, tools, params.tasks, runOptions, sessions)
       }
 
-      return runSingle(models, tools, params.agent ?? "", params.task ?? "", runOptions)
+      return runSingle(models, tools, params.agent ?? "", params.task ?? "", runOptions, sessions)
     },
   }
 }
@@ -103,6 +129,7 @@ interface RunTaskOptions {
   model: Model<Api>
   reasoningEffort?: string | null
   signal?: AbortSignal
+  chatSessionId?: string
 }
 
 async function runSingle(
@@ -111,8 +138,9 @@ async function runSingle(
   agentName: string,
   task: string,
   options: RunTaskOptions,
+  sessions?: SubagentSessionRecorder,
 ) {
-  const result = await runTask(models, tools, agentName, task, options)
+  const result = await runTask(models, tools, agentName, task, options, undefined, sessions)
   const text = result.error ? `Agent failed: ${result.error}` : result.answer || "(no output)"
   return {
     blocks: [toolText(result.error ? text : `Subagent ${agentName} completed.`)],
@@ -128,9 +156,10 @@ async function runParallel(
   tools: ChatToolRegistry,
   tasks: Array<{ agent: string; task: string }>,
   options: RunTaskOptions,
+  sessions?: SubagentSessionRecorder,
 ) {
   const results = await mapWithConcurrencyLimit(tasks, MAX_CONCURRENCY, (item) => (
-    runTask(models, tools, item.agent, item.task, options)
+    runTask(models, tools, item.agent, item.task, options, undefined, sessions)
   ))
   const successes = results.filter((result) => result.error === null).length
   const summaries = results.map((result) => {
@@ -152,6 +181,7 @@ async function runChain(
   tools: ChatToolRegistry,
   chain: Array<{ agent: string; task: string }>,
   options: RunTaskOptions,
+  sessions?: SubagentSessionRecorder,
 ) {
   const results: SubagentResult[] = []
   let previous = ""
@@ -159,7 +189,7 @@ async function runChain(
   for (let index = 0; index < chain.length; index++) {
     const item = chain[index]
     const task = item.task.replaceAll("{previous}", previous)
-    const result = await runTask(models, tools, item.agent, task, options, index + 1)
+    const result = await runTask(models, tools, item.agent, task, options, index + 1, sessions)
     results.push(result)
     if (result.error) {
       const text = `Chain stopped at step ${index + 1} (${item.agent}): ${result.error}`
@@ -190,11 +220,13 @@ async function runTask(
   task: string,
   options: RunTaskOptions,
   step?: number,
+  sessions?: SubagentSessionRecorder,
 ): Promise<SubagentResult> {
   if (agentName !== "worker") {
     return {
       agent: agentName,
       task,
+      sessionId: null,
       answer: "",
       error: `Unknown agent: "${agentName}". Available agent: "worker".`,
       usage: null,
@@ -203,20 +235,33 @@ async function runTask(
   }
 
   const drafts: ChatMessageDraft[] = []
+  const session = sessions && options.chatSessionId
+    ? await sessions.start({
+        parentSessionId: options.chatSessionId,
+        agent: agentName,
+        task,
+        providerId: options.model.provider,
+        modelId: options.model.id,
+        reasoning: options.reasoningEffort ?? null,
+      })
+    : null
   const agent = new ChatAgent({ models, tools, systemPrompt: WORKER_PROMPT })
+  let taskResult: SubagentResult
   try {
     const result = await agent.run({
       model: options.model,
       reasoningEffort: options.reasoningEffort,
       history: [],
       prompt: task,
+      chatSessionId: session?.sessionId ?? options.chatSessionId,
       signal: options.signal,
       events: {
-        onText: () => {},
-        onReasoning: () => {},
-        onToolCall: () => {},
+        onText: (delta) => session?.onText(delta),
+        onReasoning: (delta) => session?.onReasoning(delta),
+        onToolCall: (name) => session?.onToolCall(name),
         onMessage: async (draft) => {
           drafts.push(draft)
+          await session?.onMessage(draft)
         },
       },
     })
@@ -224,24 +269,28 @@ async function runTask(
       .filter((draft) => draft.message.role === "ASSISTANT" && draft.message.text.trim())
       .at(-1)?.message.text.trim() ?? ""
     const error = result.errorMessage ?? (result.aborted ? "Stopped" : answer ? null : "No answer returned")
-    return {
+    taskResult = {
       agent: agentName,
       task,
+      sessionId: session?.sessionId ?? null,
       answer,
       error,
       usage: draftUsage(drafts),
       ...(step === undefined ? {} : { step }),
     }
   } catch (error) {
-    return {
+    taskResult = {
       agent: agentName,
       task,
+      sessionId: session?.sessionId ?? null,
       answer: "",
       error: error instanceof Error ? error.message : String(error),
       usage: draftUsage(drafts),
       ...(step === undefined ? {} : { step }),
     }
   }
+  await session?.finish(taskResult.error)
+  return taskResult
 }
 
 async function mapWithConcurrencyLimit<TInput, TOutput>(

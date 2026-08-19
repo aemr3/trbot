@@ -1,7 +1,9 @@
 import type { ChatRecord, ChatTurnModel, ChatTurnOptions, ChatTurnResult } from "@trbot/ai/chat.ts"
+import type { SubagentSessionRecorder, SubagentSessionRun } from "@trbot/ai/subagent.ts"
 import {
   chatBlockText,
   chatSessionTitle,
+  type ChatApplicationEvent,
   type ChatModelChoice,
   type ChatMessage,
   type ChatMessageDraft,
@@ -47,7 +49,8 @@ interface ChatRun {
   seq: number
   text: string
   reasoning: string
-  controller: AbortController
+  /** Child runs inherit their parent's signal and have no independent controller. */
+  controller?: AbortController
 }
 
 /**
@@ -71,6 +74,8 @@ export class ChatController {
   private sessions: ChatSession[] = []
   /** Sessions whose queue is being worked through, so a second send does not start a race. */
   private readonly draining = new Set<string>()
+  /** Prevents a just-aborted parent or child from writing after its rows were removed. */
+  private readonly removedSessionIds = new Set<string>()
   private readonly now: () => number
   private destroyed = false
 
@@ -107,6 +112,8 @@ export class ChatController {
     const session: ChatSession = {
       id: crypto.randomUUID(),
       title: chatSessionTitle(""),
+      parentSessionId: null,
+      agent: null,
       model: chosen?.modelId ?? "",
       provider: chosen?.providerId ?? null,
       reasoning: chosen?.reasoning ?? null,
@@ -121,6 +128,21 @@ export class ChatController {
     return session
   }
 
+  async children(parentSessionId: string): Promise<ChatSession[]> {
+    await this.detail(parentSessionId)
+    return (await this.options.store.listChildren(parentSessionId)).map((session) => this.withRunState(session))
+  }
+
+  /**
+   * Opens a durable child transcript before a worker starts producing output.
+   *
+   * The worker still runs inside the parent's tool call; this recorder only gives
+   * that isolated context the same persistence and live stream as a normal chat.
+   */
+  readonly subagentSessions: SubagentSessionRecorder = {
+    start: (input) => this.startSubagentSession(input),
+  }
+
   /**
    * Points a session at a different model.
    *
@@ -130,9 +152,9 @@ export class ChatController {
   async configure(sessionId: string, choice: ChatModelChoice): Promise<ChatSession> {
     await this.options.store.configure(sessionId, choice)
     await this.announceSessions()
-    const session = this.sessions.find((candidate) => candidate.id === sessionId)
-    if (!session) throw new ProtocolError("not_found", "No such chat session")
-    return this.withRunState(session)
+    const detail = await this.options.store.get(sessionId)
+    if (!detail) throw new ProtocolError("not_found", "No such chat session")
+    return this.withRunState(detail.session)
   }
 
   async detail(sessionId: string): Promise<ChatSessionDetail> {
@@ -149,7 +171,12 @@ export class ChatController {
     await this.detail(sessionId)
     // A session being deleted under a running reply would leave the run writing
     // to rows that are gone, so the run is stopped first.
-    this.abortRun(sessionId)
+    const removed = await this.sessionTreeIds(sessionId)
+    for (const id of removed) {
+      this.removedSessionIds.add(id)
+      this.abortRun(id)
+      this.runs.delete(id)
+    }
     await this.options.store.delete(sessionId)
     await this.announceSessions()
   }
@@ -163,6 +190,9 @@ export class ChatController {
    */
   async send(sessionId: string, text: string): Promise<ChatMessage> {
     const detail = await this.detail(sessionId)
+    if (detail.session.parentSessionId) {
+      throw new ProtocolError("invalid_request", "Subagent sessions are read-only")
+    }
     const message: ChatMessage = {
       id: crypto.randomUUID(),
       role: "USER",
@@ -187,6 +217,45 @@ export class ChatController {
     if (detail.messages.length === 0) {
       await this.options.store.rename(sessionId, chatSessionTitle(text))
     }
+
+    this.options.broadcast({ type: "chatMessage", sessionId, message })
+    await this.announceSessions()
+    this.drain(sessionId)
+    return message
+  }
+
+  /**
+   * Wakes a conversation with an application-owned event.
+   *
+   * The visible fact stays separate from the model prompt, which also carries
+   * the continuation the agent stored when it created the watch. `key` is the
+   * durable boundary: recovery may retry this call, but one crossing gets one turn.
+   */
+  async enqueueEvent(sessionId: string, event: ChatApplicationEvent): Promise<ChatMessage | null> {
+    await this.detail(sessionId)
+    const createdAt = this.now()
+    const message: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "APP_EVENT",
+      status: "QUEUED",
+      text: event.text,
+      blocks: [chatBlockText(event.text)],
+      toolName: null,
+      toolCallId: null,
+      isError: false,
+      errorMessage: null,
+      usage: null,
+      model: null,
+      reasoning: null,
+      elapsedMs: null,
+      thinkingMs: null,
+      createdAt,
+    }
+    const appended = await this.options.store.appendEvent(sessionId, {
+      message,
+      record: { role: "user", content: event.prompt, timestamp: createdAt },
+    }, event.key)
+    if (!appended) return null
 
     this.options.broadcast({ type: "chatMessage", sessionId, message })
     await this.announceSessions()
@@ -220,7 +289,7 @@ export class ChatController {
 
   destroy(): void {
     this.destroyed = true
-    for (const run of this.runs.values()) run.controller.abort()
+    for (const run of this.runs.values()) run.controller?.abort()
     this.runs.clear()
   }
 
@@ -242,8 +311,91 @@ export class ChatController {
     return frames
   }
 
+  private async startSubagentSession(
+    input: Parameters<SubagentSessionRecorder["start"]>[0],
+  ): Promise<SubagentSessionRun> {
+    await this.detail(input.parentSessionId)
+    const now = this.now()
+    const session: ChatSession = {
+      id: crypto.randomUUID(),
+      title: chatSessionTitle(input.task),
+      parentSessionId: input.parentSessionId,
+      agent: input.agent,
+      model: input.modelId,
+      provider: input.providerId,
+      reasoning: input.reasoning,
+      createdAt: now,
+      updatedAt: now,
+      messageCount: 1,
+      queued: 0,
+      running: true,
+    }
+    const task: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "USER",
+      status: "SENT",
+      text: input.task,
+      blocks: [chatBlockText(input.task)],
+      toolName: null,
+      toolCallId: null,
+      isError: false,
+      errorMessage: null,
+      usage: null,
+      model: null,
+      reasoning: null,
+      elapsedMs: null,
+      thinkingMs: null,
+      createdAt: now,
+    }
+    const runId = crypto.randomUUID()
+    const run: ChatRun = { runId, seq: 0, text: "", reasoning: "" }
+
+    await this.options.store.create(session)
+    await this.options.store.append(session.id, { message: task, record: userRecord(task) })
+    this.runs.set(session.id, run)
+    this.options.broadcast({ type: "chatMessage", sessionId: session.id, message: task })
+    this.options.broadcast({ type: "chatRun", sessionId: session.id, runId, status: "running" })
+
+    return {
+      sessionId: session.id,
+      onText: (delta) => this.recordSubagentDelta(session.id, runId, { text: delta }),
+      onReasoning: (delta) => this.recordSubagentDelta(session.id, runId, { reasoning: delta }),
+      onToolCall: (toolName) => this.recordSubagentDelta(session.id, runId, { toolName }),
+      onMessage: (draft) => this.persist(session.id, draft),
+      finish: async (error) => {
+        if (this.runs.get(session.id)?.runId === runId) this.runs.delete(session.id)
+        this.options.broadcast({
+          type: "chatRun",
+          sessionId: session.id,
+          runId,
+          status: error ? "failed" : "done",
+          ...(error ? { error } : {}),
+        })
+      },
+    }
+  }
+
+  private recordSubagentDelta(
+    sessionId: string,
+    runId: string,
+    delta: { text?: string; reasoning?: string; toolName?: string },
+  ): void {
+    const run = this.runs.get(sessionId)
+    if (!run || run.runId !== runId) return
+    if (delta.text) run.text += delta.text
+    if (delta.reasoning) run.reasoning += delta.reasoning
+    run.seq += 1
+    this.options.broadcast({
+      type: "chatDelta",
+      sessionId,
+      runId,
+      seq: run.seq,
+      ...delta,
+    })
+  }
+
   private abortRun(sessionId: string): void {
-    this.runs.get(sessionId)?.controller.abort()
+    this.runs.get(sessionId)?.controller?.abort()
   }
 
   /**
@@ -310,12 +462,14 @@ export class ChatController {
     let result: { completed: boolean; aborted: boolean; errorMessage: string | null }
     try {
       const turnModel = await this.options.resolveModel(choice)
+      const prompt = await this.options.store.inputText(asked.id) ?? asked.text
       result = await this.options.agent.run({
         model: turnModel.model,
         reasoningEffort: turnModel.reasoningEffort,
         history,
-        prompt: asked.text,
-        signal: run.controller.signal,
+        prompt,
+        chatSessionId: sessionId,
+        signal: run.controller!.signal,
         events: {
           onText: (delta) => {
             run.text += delta
@@ -384,8 +538,20 @@ export class ChatController {
   }
 
   private async persist(sessionId: string, draft: ChatMessageDraft): Promise<void> {
+    if (this.removedSessionIds.has(sessionId)) return
     await this.options.store.append(sessionId, draft)
     this.options.broadcast({ type: "chatMessage", sessionId, message: draft.message })
+  }
+
+  private async sessionTreeIds(sessionId: string): Promise<string[]> {
+    const ids = [sessionId]
+    let parents = [sessionId]
+    while (parents.length > 0) {
+      const children = (await Promise.all(parents.map((parent) => this.options.store.listChildren(parent)))).flat()
+      parents = children.map((child) => child.id).filter((id) => !ids.includes(id))
+      ids.push(...parents)
+    }
+    return ids
   }
 
   private partialOf(sessionId: string): ChatPartial | null {

@@ -141,6 +141,27 @@
       "when": 1787148018339,
       "tag": "0019_rename_app_preferences_and_remember_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1787152140097,
+      "tag": "0020_agent_price_alert_continuations",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1787173763565,
+      "tag": "0021_chat_subagent_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1787177296873,
+      "tag": "0022_remember_chat_thought_visibility",
+      "breakpoints": true
     }
   ]
 }

@@ -1035,6 +1035,7 @@ test("restores and reports list and chart display choices", async () => {
       selectedInstrumentUid: "u1",
       orderKind: "LIMIT",
       selectedChatSessionId: null,
+      showChatThoughts: true,
     },
     onPreferencesChange: (preferences) => changes.push(preferences),
   })
@@ -1088,6 +1089,7 @@ test("falls back to an available contract when the saved contract no longer exis
       selectedInstrumentUid: "expired-contract",
       orderKind: "LIMIT",
       selectedChatSessionId: null,
+      showChatThoughts: true,
     },
     onPreferencesChange: (preferences) => selectedInstrumentUids.push(preferences.selectedInstrumentUid),
   })

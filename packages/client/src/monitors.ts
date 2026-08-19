@@ -1,4 +1,4 @@
-import type { PriceAlert, PriceAlertDraft, PriceAlertStatus } from "@trbot/market/alert.ts"
+import type { PriceAlert, PriceAlertActions, PriceAlertDraft, PriceAlertStatus } from "@trbot/market/alert.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import type { StopRule, StopRuleDraft, StopRuleStatus } from "@trbot/trading/stop.ts"
 import type { HttpClient } from "./http.ts"
@@ -25,12 +25,7 @@ export interface StopRuleClient {
   decide(id: string, decision: StopDecision): Promise<void>
 }
 
-export interface AlertClient {
-  list(): Promise<PriceAlert[]>
-  save(draft: PriceAlertDraft): Promise<PriceAlert>
-  remove(id: string): Promise<void>
-  setStatus(id: string, status: PriceAlertStatus): Promise<void>
-}
+export type AlertClient = PriceAlertActions
 
 export class HttpStopRules implements StopRuleClient {
   constructor(private readonly http: HttpClient) {}

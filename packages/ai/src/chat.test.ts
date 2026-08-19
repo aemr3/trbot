@@ -9,7 +9,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai"
 import type { ChatMessageDraft } from "@trbot/chat/session.ts"
-import { ChatAgent, type ChatRecord } from "./chat.ts"
+import { CHAT_SYSTEM_PROMPT, ChatAgent, type ChatRecord } from "./chat.ts"
 import { ChatTools, toolText, type ChatTool } from "./tool.ts"
 
 /** A harness answering with scripted replies, as the harness's own tests do it. */
@@ -19,6 +19,23 @@ function scripted(options: { reasoning?: boolean } = {}) {
   models.setProvider(faux.provider)
   return { faux, models }
 }
+
+test("tells the agent to check live app data before claiming it has none", () => {
+  expect(CHAT_SYSTEM_PROMPT).toContain("do not claim live data is unavailable before checking")
+  expect(CHAT_SYSTEM_PROMPT).toContain("Never infer or assume prices")
+  expect(CHAT_SYSTEM_PROMPT).toContain("Read it from a tool")
+})
+
+test("teaches the agent VIOP exposure and the difference between limits and circuit breakers", () => {
+  expect(CHAT_SYSTEM_PROMPT).toContain("Collateral is margin, not the purchase price")
+  expect(CHAT_SYSTEM_PROMPT).toContain("live lowerLimit and upperLimit")
+  expect(CHAT_SYSTEM_PROMPT).toContain("daily price margin from a circuit breaker")
+  expect(CHAT_SYSTEM_PROMPT).toContain("BIST 100 fall of 6%")
+  expect(CHAT_SYSTEM_PROMPT).toContain("current official Borsa Istanbul source")
+  expect(CHAT_SYSTEM_PROMPT).toContain("underlying cash equity, not its VIOP contract")
+  expect(CHAT_SYSTEM_PROMPT).toContain("never describe an underlying equity order book as a VIOP contract order book")
+  expect(CHAT_SYSTEM_PROMPT).toContain("the tool does not translate a VIOP contract symbol")
+})
 
 test("streams a reply and hands over the message it produced", async () => {
   const { faux, models } = scripted({ reasoning: true })
@@ -93,13 +110,16 @@ test("runs the tools a reply asks for and answers with their results", async () 
       description: "The last price of a symbol",
       parameters: Type.Object({ symbol: Type.String() }),
     },
-    run: async (args) => ({
-      blocks: [toolText(`Fetched ${(args as { symbol: string }).symbol} quote.`)],
-      modelBlocks: [toolText(`${(args as { symbol: string }).symbol} 390.00`)],
-      details: { last: 390 },
-      isError: false,
-      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costTotal: 0.01 },
-    }),
+    run: async (args, options) => {
+      expect(options.chatSessionId).toBe("chat-1")
+      return {
+        blocks: [toolText(`Fetched ${(args as { symbol: string }).symbol} quote.`)],
+        modelBlocks: [toolText(`${(args as { symbol: string }).symbol} 390.00`)],
+        details: { last: 390 },
+        isError: false,
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costTotal: 0.01 },
+      }
+    },
   }
   const { faux, models } = scripted()
   faux.setResponses([
@@ -125,6 +145,7 @@ test("runs the tools a reply asks for and answers with their results", async () 
     model: faux.getModel(),
     history: [],
     prompt: "What is ASELS trading at?",
+    chatSessionId: "chat-1",
     events: {
       onText: () => {},
       onReasoning: () => {},

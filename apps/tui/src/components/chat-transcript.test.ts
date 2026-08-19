@@ -70,6 +70,29 @@ test("a header sits above the words and a footer below them", async () => {
   renderer.destroy()
 })
 
+test("a turn with no spoken text puts its provenance directly under the thought", async () => {
+  const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 50, height: 10 })
+  const transcript = new ChatTranscript(renderer, { backgroundColor: "#101010" })
+  renderer.root.add(transcript.root)
+  transcript.setBlocks([{
+    id: "tool-call",
+    marker: new StyledText([fg("#888888")("•")]),
+    header: new StyledText([fg("#c08a52")("Planning the alert")]),
+    bodyVisible: false,
+    content: new StyledText([]),
+    footer: new StyledText([fg("#5a5a62")("▪ gpt-5.6-sol · 3.6s")]),
+  }])
+  await renderOnce()
+
+  const lines = captureCharFrame().split("\n")
+  const thought = lines.findIndex((line) => line.includes("Planning the alert"))
+  const signature = lines.findIndex((line) => line.includes("▪ gpt-5.6-sol · 3.6s"))
+  expect(signature - thought).toBe(1)
+
+  transcript.destroy()
+  renderer.destroy()
+})
+
 test("keeps a blank row between adjacent turns", async () => {
   const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 40, height: 14 })
   const transcript = new ChatTranscript(renderer, { backgroundColor: "#101010" })

@@ -146,6 +146,35 @@ test("persists a trailing level as it advances", async () => {
   expect(triggers).toHaveLength(1)
 })
 
+test("editing an agent-created alert keeps its continuation ownership", async () => {
+  const owned = alert({}, {
+    chatSessionId: "chat-1",
+    onTrigger: "Reassess the setup.",
+  })
+  const { monitor } = await monitorWith([owned])
+
+  const edited = await monitor.saveAlert({
+    id: owned.id,
+    instrumentUid: owned.instrumentUid,
+    symbol: owned.symbol,
+    displayName: owned.displayName,
+    direction: owned.direction,
+    kind: owned.kind,
+    value: 430,
+    basis: owned.basis,
+    interval: owned.interval,
+    repeat: owned.repeat,
+    referencePrice: owned.referencePrice,
+    atrValue: owned.atrValue,
+  })
+
+  expect(edited).toMatchObject({
+    value: 430,
+    chatSessionId: "chat-1",
+    onTrigger: "Reassess the setup.",
+  })
+})
+
 test("a close-based alert ignores a wick and fires on the finished candle", async () => {
   const candles = new FakeCandleSource()
   const { monitor, triggers } = await monitorWith([alert({ basis: "CLOSE", interval: "MIN_10" })], { candles })
@@ -232,7 +261,12 @@ test("re-arming clears the fired reading and waits for the near side again", asy
   expect(triggers).toHaveLength(1)
 
   await monitor.setStatus("alert-1", "ARMED")
-  expect(store.alerts.get("alert-1")).toMatchObject({ status: "ARMED", triggeredAt: null, triggeredPrice: null })
+  expect(store.alerts.get("alert-1")).toMatchObject({
+    status: "ARMED",
+    triggeredAt: null,
+    triggeredPrice: null,
+    triggerId: null,
+  })
 
   // Still beyond the level, so it waits rather than firing straight back.
   monitor.applyQuote(quote(422))

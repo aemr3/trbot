@@ -24,12 +24,17 @@ function fakeChats(): ChatSessions & { sessions: ChatSession[]; sent: string[]; 
     async list() {
       // A copy, as a real client's answer would be: handing out the live array
       // would let the screen and the fake share state no server ever shares.
-      return [...sessions]
+      return sessions.filter((session) => session.parentSessionId === null)
+    },
+    async children(sessionId) {
+      return sessions.filter((session) => session.parentSessionId === sessionId)
     },
     async create(choice?: AiModelChoice) {
       const session: ChatSession = {
         id: `chat-${sessions.length + 1}`,
         title: "New chat",
+        parentSessionId: null,
+        agent: null,
         model: choice?.modelId ?? "test-model",
         provider: choice?.providerId ?? "test-provider",
         reasoning: choice?.reasoning ?? null,
@@ -103,6 +108,14 @@ function replyMessage(text: string, status: ChatMessage["status"] = "COMPLETE"):
     role: "ASSISTANT",
     model: "test-model",
     reasoning: "high",
+  }
+}
+
+function applicationEvent(text: string): ChatMessage {
+  return {
+    ...userMessage(text, "SENT"),
+    id: `event-${text}`,
+    role: "APP_EVENT",
   }
 }
 
@@ -254,6 +267,145 @@ test("renders a reply as it streams and replaces it with the stored message", as
   // which would show the same words twice.
   const settled = await waitForFrame((frame) => frame.includes("Heading higher."))
   expect(settled.split("Heading higher.").length - 1).toBe(1)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("renders an application wake-up as a price event, not as trader input", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptMessage(session.id, applicationEvent("ASELS crossed above 420 at 421."))
+  const frame = await waitForFrame((value) => value.includes("ASELS crossed above 420 at 421."))
+
+  expect(frame).toContain("◆ price alert")
+  expect(frame).not.toContain("› ASELS crossed")
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("opens a filtered slash-command menu below the composer", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("/")
+  const menu = await waitForFrame((frame) => frame.includes("/model") && frame.includes("/subagents"))
+  const lines = menu.split("\n")
+  const composerRow = lines.findIndex((line) => line.includes("› /"))
+  const firstCommand = lines.findIndex((line) => line.includes("/model"))
+  expect(composerRow).toBeGreaterThanOrEqual(0)
+  expect(firstCommand).toBeGreaterThan(composerRow)
+
+  await mockInput.typeText("sub")
+  const filtered = await waitForFrame((frame) => frame.includes("/subagents") && !frame.includes("/model"))
+  expect(filtered).toContain("open this chat's worker sessions")
+
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("No subagents have run in this session."))
+  expect(chats.sent).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("opens durable worker transcripts with /subagents and returns with /parent", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-1",
+    title: "Inspect the XU100 trend",
+    parentSessionId: parent.id,
+    agent: "worker",
+    createdAt: 2_000,
+    updatedAt: 2_000,
+    running: true,
+  }
+  chats.sessions.push(child)
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("/subagents")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Subagents") && frame.includes("Inspect the XU100 trend"))
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Subagent transcript") && frame.includes("worker · test-model"))
+
+  await mockInput.typeText("/parent")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("^G keys") && !frame.includes("Subagent transcript"))
+  expect(chats.sent).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("⌥ arrows cycle worker transcripts directly and return to their parent", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const first: ChatSession = {
+    ...parent,
+    id: "worker-1",
+    title: "First worker",
+    parentSessionId: parent.id,
+    agent: "worker",
+    createdAt: 2_000,
+    updatedAt: 2_000,
+  }
+  const second: ChatSession = {
+    ...first,
+    id: "worker-2",
+    title: "Second worker",
+    createdAt: 3_000,
+    updatedAt: 3_000,
+  }
+  chats.sessions.push(first, second)
+  const selected: Array<string | null> = []
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    onSessionChange: (sessionId) => selected.push(sessionId),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("draft stays here")
+  mockInput.pressArrow("right", { meta: true })
+  await waitForFrame((frame) => frame.includes("Subagent transcript") && frame.includes("⌥←/→ workers"))
+  expect(selected.at(-1)).toBe(first.id)
+
+  mockInput.pressArrow("right", { meta: true })
+  await waitForFrame(() => selected.at(-1) === second.id)
+  mockInput.pressArrow("left", { meta: true })
+  await waitForFrame(() => selected.at(-1) === first.id)
+  mockInput.pressArrow("up", { meta: true })
+  const parentFrame = await waitForFrame((frame) => (
+    selected.at(-1) === parent.id
+    && frame.includes("draft stays here")
+    && !frame.includes("Subagent transcript")
+  ))
+  expect(parentFrame).toContain("draft stays here")
+  expect(chats.sent).toEqual([])
 
   screen.destroy()
   renderer.destroy()
@@ -785,6 +937,74 @@ test("shows what a model thought, and folds every thought on ^T", async () => {
 
   mockInput.pressKey("t", { ctrl: true })
   await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("restores and reports the preferred thought visibility", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const changes: boolean[] = []
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    initialShowThoughts: false,
+    onShowThoughtsChange: (showThoughts) => changes.push(showThoughts),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  const reply = replyMessage("Higher while it holds 318.")
+  screen.acceptMessage(session.id, {
+    ...reply,
+    thinkingMs: 1_800,
+    blocks: [
+      { kind: "THINKING", text: "buyers stepped in at 318 twice", toolName: null, toolCallId: null, toolArguments: null },
+      ...reply.blocks,
+    ],
+  })
+  const restored = await waitForFrame((frame) => frame.includes("+ thought: 1.8s"))
+  expect(restored).not.toContain("buyers stepped in at 318 twice")
+
+  mockInput.pressKey("t", { ctrl: true })
+  await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
+  await mockInput.typeText("/thoughts")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("+ thought: 1.8s"))
+  expect(changes).toEqual([true, false])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("does not reserve an empty answer between a tool-call thought and its signature", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptMessage(session.id, {
+    ...replyMessage(""),
+    elapsedMs: 3_600,
+    thinkingMs: 3_600,
+    blocks: [
+      { kind: "THINKING", text: "Planning alerts tool integration", toolName: null, toolCallId: null, toolArguments: null },
+      { kind: "TOOL_CALL", text: null, toolName: "create_price_alert", toolCallId: "call-1", toolArguments: {} },
+    ],
+  })
+  const frame = await waitForFrame((content) => content.includes("Planning alerts tool integration"))
+  const lines = frame.split("\n")
+  const thought = lines.findIndex((line) => line.includes("Planning alerts tool integration"))
+  const signature = lines.findIndex((line) => line.includes("test-model") && line.includes("3.6s"))
+  expect(signature - thought).toBe(1)
 
   screen.destroy()
   renderer.destroy()
