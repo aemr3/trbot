@@ -1,4 +1,4 @@
-import { validateToolCall, type Static, type Tool, type ToolCall, type TSchema } from "@mariozechner/pi-ai"
+import { validateToolCall, type Static, type Tool, type ToolCall, type TSchema } from "@earendil-works/pi-ai"
 import type { ChatBlock } from "@trbot/chat/session.ts"
 
 /**

@@ -1,12 +1,12 @@
-import {
-  stream,
-  type AssistantMessage,
-  type Context,
-  type Api,
-  type Message,
-  type Model,
-  type ToolCall,
-} from "@mariozechner/pi-ai"
+import type {
+  Api,
+  AssistantMessage,
+  Context,
+  Message,
+  Model,
+  Models,
+  ToolCall,
+} from "@earendil-works/pi-ai"
 import {
   chatMessageText,
   type ChatBlock,
@@ -31,9 +31,13 @@ export const CHAT_SYSTEM_PROMPT = [
 export type ChatRecord = Message
 
 export interface ChatAgentOptions {
+  /**
+   * The harness, which resolves and refreshes the credential per request. Nothing
+   * here handles a token: a run that outlives an access token is the harness's
+   * problem to solve, and it already does.
+   */
+  models: Models
   model: Model<Api>
-  /** Read per call: an access token is refreshed underneath a long-lived agent. */
-  accessToken: () => Promise<string>
   reasoningEffort?: string
   tools?: ChatToolRegistry
   systemPrompt?: string
@@ -96,10 +100,8 @@ export class ChatAgent {
     const asked: Message = { role: "user", content: turn.prompt, timestamp: this.now() }
     context.messages.push(asked)
 
-    const accessToken = await this.options.accessToken()
-
     for (;;) {
-      const reply = await this.streamReply(context, accessToken, turn)
+      const reply = await this.streamReply(context, turn)
       context.messages.push(reply)
       await turn.events.onMessage(assistantDraft(reply))
 
@@ -139,13 +141,8 @@ export class ChatAgent {
     }
   }
 
-  private async streamReply(
-    context: Context,
-    accessToken: string,
-    turn: ChatTurnOptions,
-  ): Promise<AssistantMessage> {
-    const events = stream(this.options.model, context, {
-      apiKey: accessToken,
+  private async streamReply(context: Context, turn: ChatTurnOptions): Promise<AssistantMessage> {
+    const events = this.options.models.stream(this.options.model, context, {
       signal: turn.signal,
       // Named for what the provider calls it; one that does not know the option
       // ignores it.

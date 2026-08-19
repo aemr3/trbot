@@ -3,6 +3,7 @@ import type { Server } from "bun"
 import type { AuthSession } from "@trbot/auth/session.ts"
 import type { AuthState } from "@trbot/auth/state.ts"
 import type { AuthStore } from "@trbot/auth/store.ts"
+import { createHarness } from "@trbot/ai/harness.ts"
 import type { ProviderState, ProviderStateStore } from "@trbot/ai/provider-state.ts"
 import { HttpAiAccount, HttpOverviewGenerator } from "@trbot/client/ai.ts"
 import { HttpClient } from "@trbot/client/http.ts"
@@ -68,8 +69,10 @@ describe("server and client over the wire", () => {
     connection = await openDatabase(":memory:")
     session = new ProviderSession({ openAuthSession: emptyAuthSession, credentials: null })
     const hub = new StreamHub(session)
+    const states = memoryStates()
     const ai = new AiService({
-      states: memoryStates(),
+      states,
+      models: createHarness(states),
       model: "test-model",
       generator: {
         async generate(_digest, options) {
@@ -195,7 +198,7 @@ describe("server and client over the wire", () => {
       },
     })
 
-    expect(summary).toMatchObject({ providerId: "openai", accountId: "account-1" })
+    expect(summary).toMatchObject({ providerId: "openai-codex", accountId: "account-1" })
     // Nothing hands a credential back out, which is the half of the rule that
     // still holds absolutely.
     expect(Object.keys(summary)).not.toContain("accessToken")

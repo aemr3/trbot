@@ -159,10 +159,61 @@ describe("chat session store", () => {
         cacheWrite: 0,
         totalTokens: 2,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        // Real, not hypothetical: the harness reports reasoning tokens for this
+        // provider, and usage is rebuilt column by column — so a nested field it
+        // has no column for is the easiest one to lose.
+        reasoning: 1,
       },
       stopReason: "stop",
+      // Also real: the harness records the provider's own terminal reason
+      // alongside the one it maps.
+      rawStopReason: "completed",
       timestamp: 1_000,
       futureMessageField: ["kept"],
+    }
+
+    await chats.append("chat-1", draftFor(record))
+
+    expect(await chats.records("chat-1")).toEqual([record])
+  })
+
+  test("keeps the usage a tool result reports", async () => {
+    // A tool result carries usage only sometimes, so it is easy to write to the
+    // columns and never read back. A tool that costs tokens would then look free.
+    const chats = await store()
+    await chats.create(session())
+    const record = {
+      role: "toolResult",
+      toolCallId: "call_1",
+      toolName: "quote",
+      content: [{ type: "text", text: "ASELS 214.30" }],
+      isError: false,
+      timestamp: 2_000,
+      usage: {
+        input: 12,
+        output: 3,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 15,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    }
+
+    await chats.append("chat-1", draftFor(record))
+
+    expect(await chats.records("chat-1")).toEqual([record])
+  })
+
+  test("a tool result that reports no usage does not come back inventing one", async () => {
+    const chats = await store()
+    await chats.create(session())
+    const record = {
+      role: "toolResult",
+      toolCallId: "call_1",
+      toolName: "quote",
+      content: [{ type: "text", text: "ASELS 214.30" }],
+      isError: false,
+      timestamp: 2_000,
     }
 
     await chats.append("chat-1", draftFor(record))

@@ -47,6 +47,16 @@ const MAPPED_MESSAGE_KEYS = new Set([
   "details",
 ])
 
+/**
+ * The same, inside `usage` and its `cost`.
+ *
+ * These two are the only nested objects taken apart into columns, so they are the
+ * only places where a field can hide from the message-level sweep above — the
+ * harness reporting reasoning tokens inside `usage` is exactly that case.
+ */
+const MAPPED_USAGE_KEYS = new Set(["input", "output", "cacheRead", "cacheWrite", "totalTokens", "cost"])
+const MAPPED_COST_KEYS = new Set(["input", "output", "cacheRead", "cacheWrite", "total"])
+
 /** The same, per content block. */
 const MAPPED_BLOCK_KEYS = new Set([
   "type",
@@ -329,7 +339,7 @@ function toRows(
       isError: record?.isError === undefined ? null : record.isError === true ? 1 : 0,
       details: record?.details === undefined ? null : JSON.stringify(record.details),
       harnessVersion,
-      extra: unmappedJson(record, MAPPED_MESSAGE_KEYS),
+      extra: messageExtraJson(record, usage, cost),
       createdAt: message.createdAt,
     },
     blocks: content.map((block, idx) => toBlockRow(message.id, idx, block)),
@@ -375,6 +385,11 @@ function toRecord(row: MessageRow, blocks: BlockRow[]): unknown {
     record.toolName = row.toolName
     record.isError = row.isError === 1
     if (row.details !== null) record.details = parseJson(row.details)
+    // A tool result may carry usage of its own. Unlike a reply's, it is optional,
+    // so it comes back only when something was actually stored.
+    if (row.totalTokens !== null || row.inputTokens !== null || row.outputTokens !== null) {
+      record.usage = usageOf(row)
+    }
   } else {
     record.content = blocks.map(toContentBlock)
     record.api = row.api
@@ -382,25 +397,29 @@ function toRecord(row: MessageRow, blocks: BlockRow[]): unknown {
     record.model = row.model
     if (row.responseModel !== null) record.responseModel = row.responseModel
     if (row.responseId !== null) record.responseId = row.responseId
-    record.usage = {
-      input: row.inputTokens ?? 0,
-      output: row.outputTokens ?? 0,
-      cacheRead: row.cacheReadTokens ?? 0,
-      cacheWrite: row.cacheWriteTokens ?? 0,
-      totalTokens: row.totalTokens ?? 0,
-      cost: {
-        input: row.costInput ?? 0,
-        output: row.costOutput ?? 0,
-        cacheRead: row.costCacheRead ?? 0,
-        cacheWrite: row.costCacheWrite ?? 0,
-        total: row.costTotal ?? 0,
-      },
-    }
+    record.usage = usageOf(row)
     record.stopReason = row.stopReason
     if (row.errorMessage !== null) record.errorMessage = row.errorMessage
   }
 
-  return { ...record, ...(parseJson(row.extra) as Record<string, unknown> | null) }
+  return withExtra(record, row.extra)
+}
+
+function usageOf(row: MessageRow): Record<string, unknown> {
+  return {
+    input: row.inputTokens ?? 0,
+    output: row.outputTokens ?? 0,
+    cacheRead: row.cacheReadTokens ?? 0,
+    cacheWrite: row.cacheWriteTokens ?? 0,
+    totalTokens: row.totalTokens ?? 0,
+    cost: {
+      input: row.costInput ?? 0,
+      output: row.costOutput ?? 0,
+      cacheRead: row.costCacheRead ?? 0,
+      cacheWrite: row.costCacheWrite ?? 0,
+      total: row.costTotal ?? 0,
+    },
+  }
 }
 
 function toContentBlock(row: BlockRow): unknown {
@@ -476,12 +495,66 @@ function blockKind(type: string | null): string {
 }
 
 function unmappedJson(value: Record<string, unknown> | null, mapped: Set<string>): string | null {
-  if (!value) return null
+  const extra = unmappedEntries(value, mapped)
+  return Object.keys(extra).length > 0 ? JSON.stringify(extra) : null
+}
+
+function unmappedEntries(
+  value: Record<string, unknown> | null,
+  mapped: Set<string>,
+): Record<string, unknown> {
   const extra: Record<string, unknown> = {}
+  if (!value) return extra
   for (const [key, entry] of Object.entries(value)) {
     if (!mapped.has(key)) extra[key] = entry
   }
+  return extra
+}
+
+/**
+ * What a message carries that no column holds, `usage` included.
+ *
+ * Nested unmapped fields are kept under `usage` and `usage.cost` so they can be
+ * merged back onto the rebuilt objects rather than replacing them; see
+ * `withExtra`.
+ */
+function messageExtraJson(
+  record: Record<string, unknown> | null,
+  usage: Record<string, unknown> | null,
+  cost: Record<string, unknown> | null,
+): string | null {
+  const extra = unmappedEntries(record, MAPPED_MESSAGE_KEYS)
+  const usageExtra = unmappedEntries(usage, MAPPED_USAGE_KEYS)
+  const costExtra = unmappedEntries(cost, MAPPED_COST_KEYS)
+  if (Object.keys(costExtra).length > 0) usageExtra.cost = costExtra
+  if (Object.keys(usageExtra).length > 0) extra.usage = usageExtra
   return Object.keys(extra).length > 0 ? JSON.stringify(extra) : null
+}
+
+/**
+ * Puts the unmapped fields back on a rebuilt message.
+ *
+ * A plain spread is right for everything except `usage`: that one was rebuilt from
+ * columns, so its stored remainder has to merge into it. Overwriting it with the
+ * remainder would trade one lost field for five.
+ */
+function withExtra(record: Record<string, unknown>, stored: string | null): unknown {
+  const extra = parseJson(stored) as Record<string, unknown> | null
+  if (!extra) return record
+
+  const merged = { ...record, ...extra }
+  const usageExtra = asObject(extra.usage)
+  const usage = asObject(record.usage)
+  if (!usageExtra || !usage) return merged
+
+  const costExtra = asObject(usageExtra.cost)
+  const cost = asObject(usage.cost)
+  merged.usage = {
+    ...usage,
+    ...usageExtra,
+    ...(costExtra && cost ? { cost: { ...cost, ...costExtra } } : {}),
+  }
+  return merged
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {

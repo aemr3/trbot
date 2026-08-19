@@ -1,5 +1,5 @@
-import { ChatGptAccountService, type ChatGptCredentials, type ChatGptTokenRefresh } from "@trbot/ai/chatgpt-account.ts"
-import { codexModel } from "@trbot/ai/codex-model.ts"
+import { ChatGptAccountService, type ChatGptCredentials } from "@trbot/ai/chatgpt-account.ts"
+import { harnessModel, type AiHarness } from "@trbot/ai/harness.ts"
 import { ModelOverviewGenerator } from "@trbot/ai/overview.ts"
 import type { ProviderState, ProviderStateStore } from "@trbot/ai/provider-state.ts"
 import type {
@@ -12,12 +12,12 @@ import { ProtocolError } from "@trbot/protocol/error.ts"
 
 export interface AiServiceOptions {
   states: ProviderStateStore
+  /** The harness, which owns the catalogue and every credential decision. */
+  models: AiHarness
   model: string
   reasoningEffort?: string
-  tokens?: ChatGptTokenRefresh
   /** Overridden in tests; the real generator streams from ChatGPT. */
   generator?: OverviewGenerator
-  now?: () => number
 }
 
 /**
@@ -36,14 +36,10 @@ export class AiService {
   private readonly generator: OverviewGenerator
 
   constructor(options: AiServiceOptions) {
-    this.account = new ChatGptAccountService(options.states, {
-      ...(options.tokens ? { tokens: options.tokens } : {}),
-      ...(options.now ? { now: options.now } : {}),
-    })
+    this.account = new ChatGptAccountService(options.states, options.models)
     this.generator = options.generator
-      ?? new ModelOverviewGenerator(codexModel(options.model), {
-        ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
-        accessToken: () => this.accessToken(),
+      ?? new ModelOverviewGenerator(options.models, harnessModel(options.models, options.model), {
+        reasoningEffort: options.reasoningEffort,
       })
   }
 
@@ -62,24 +58,15 @@ export class AiService {
   }
 
   /**
-   * The credential for a model call, refreshed if it is close to lapsing.
-   *
-   * Read per call rather than held: an access token lasts under an hour, so
-   * anything that captured one would work until the first refresh and then stop.
-   */
-  async accessToken(): Promise<string> {
-    return (await this.account.validState()).accessToken
-  }
-
-  /**
    * Fails before a response starts streaming when ChatGPT is not connected, so
    * the client sees an ordinary error rather than an empty overview.
+   *
+   * Only asks whether a connection exists. A token that has lapsed is not a
+   * refusal: the harness refreshes it as part of the request.
    */
   async requireConnected(): Promise<void> {
-    try {
-      await this.account.validState()
-    } catch (error) {
-      throw new ProtocolError("invalid_request", errorMessage(error), { cause: error })
+    if (!(await this.account.isConnected())) {
+      throw new ProtocolError("invalid_request", "ChatGPT is not connected")
     }
   }
 
@@ -95,8 +82,4 @@ function summarize(state: ProviderState): AiAccountSummary {
     connectedAt: state.createdAt,
     updatedAt: state.updatedAt,
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

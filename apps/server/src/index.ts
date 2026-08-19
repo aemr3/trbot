@@ -9,8 +9,7 @@ import { DrizzleProviderStateStore } from "@trbot/db/provider-state-store.ts"
 import { DrizzleStopRuleStore } from "@trbot/db/stop-rule-store.ts"
 import { DrizzleWatchlistPreferencesStore } from "@trbot/db/watchlist-preferences-store.ts"
 import { ChatAgent } from "@trbot/ai/chat.ts"
-import { HARNESS_VERSION } from "@trbot/ai/harness.ts"
-import { codexModel } from "@trbot/ai/codex-model.ts"
+import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trbot/ai/harness.ts"
 import { noTools } from "@trbot/ai/tool.ts"
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { AiService } from "./ai.ts"
@@ -69,9 +68,15 @@ async function startTrbotServer(): Promise<void> {
   await idempotency.sweep()
 
   // The ChatGPT connection lives here for the same reason the provider session
-  // does: its tokens are a credential, and a client must never hold one.
+  // does: its tokens are a credential, and a client must never hold one. One
+  // harness serves the process, holding the model catalogue and resolving every
+  // credential against that stored connection, refreshing when a request needs it.
+  const states = new DrizzleProviderStateStore(connection.db)
+  const models = createHarness(states)
+
   const ai = new AiService({
-    states: new DrizzleProviderStateStore(connection.db),
+    states,
+    models,
     model: config.aiModel,
     reasoningEffort: config.aiReasoningEffort,
   })
@@ -81,8 +86,8 @@ async function startTrbotServer(): Promise<void> {
   const chat = new ChatController({
     store: new DrizzleChatSessionStore(connection.db, { harnessVersion: HARNESS_VERSION }),
     agent: new ChatAgent({
-      model: codexModel(config.aiModel),
-      accessToken: () => ai.accessToken(),
+      models,
+      model: harnessModel(models, config.aiModel),
       reasoningEffort: config.aiReasoningEffort,
       tools: noTools(),
     }),
@@ -224,6 +229,7 @@ async function startTrbotServer(): Promise<void> {
     clearInterval(candleTimer)
     if (positionRefreshTimer) clearTimeout(positionRefreshTimer)
     chat.destroy()
+    closeHarness()
     stops.destroy()
     alerts.destroy()
     session.close()

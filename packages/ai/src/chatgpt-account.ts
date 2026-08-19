@@ -1,7 +1,6 @@
-import { refreshOpenAICodexToken } from "@mariozechner/pi-ai/oauth"
+import type { Models } from "@earendil-works/pi-ai"
+import { StoredCredentials } from "./credentials.ts"
 import { CHATGPT_PROVIDER_ID, type ProviderState, type ProviderStateStore } from "./provider-state.ts"
-
-const REFRESH_MARGIN_MS = 60_000
 
 /**
  * What a finished ChatGPT login produces, in the harness's own shape.
@@ -19,46 +18,23 @@ export interface ChatGptCredentials {
   accountId: string | null
 }
 
-/** Exchanging a refresh token for a new access token. Replaced in tests. */
-export interface ChatGptTokenRefresh {
-  refresh(refreshToken: string): Promise<ChatGptCredentials>
-}
-
-export const chatGptTokenRefresh: ChatGptTokenRefresh = {
-  async refresh(refreshToken) {
-    const credentials = await refreshOpenAICodexToken(refreshToken)
-    return {
-      accessToken: credentials.access,
-      refreshToken: credentials.refresh,
-      expiresAt: credentials.expires,
-      accountId: typeof credentials.accountId === "string" ? credentials.accountId : null,
-    }
-  },
-}
-
-interface ChatGptAccountServiceOptions {
-  tokens?: ChatGptTokenRefresh
-  now?: () => number
-}
-
 /**
- * Owns the stored ChatGPT tokens and keeps them fresh.
+ * The stored ChatGPT connection.
  *
- * This runs on the server only. A client hands over the credentials a login
- * produced and afterwards learns only which account is connected; refreshing
- * happens here, unattended, for as long as the server runs.
+ * Deliberately thin. Keeping a token usable — knowing when it is close to
+ * expiring, exchanging the refresh token, not letting two requests refresh at
+ * once — is the harness's work, done against `StoredCredentials`. What is left
+ * here is what the harness has no opinion about: recording the connection a login
+ * produced, reporting which account it is, and forgetting it on request.
  */
 export class ChatGptAccountService {
-  private readonly tokens: ChatGptTokenRefresh
-  private readonly now: () => number
-  private refreshRequest: Promise<ProviderState> | null = null
+  private readonly credentials: StoredCredentials
 
   constructor(
     private readonly states: ProviderStateStore,
-    options: ChatGptAccountServiceOptions = {},
+    private readonly models: Models,
   ) {
-    this.tokens = options.tokens ?? chatGptTokenRefresh
-    this.now = options.now ?? Date.now
+    this.credentials = new StoredCredentials(states)
   }
 
   getState(): Promise<ProviderState | null> {
@@ -67,48 +43,30 @@ export class ChatGptAccountService {
 
   /** Records the credentials a finished login produced. */
   async save(credentials: ChatGptCredentials): Promise<ProviderState> {
-    const previous = await this.getState()
-    const now = this.now()
-    const state: ProviderState = {
-      providerId: CHATGPT_PROVIDER_ID,
-      accessToken: credentials.accessToken,
-      refreshToken: credentials.refreshToken,
-      expiresAt: credentials.expiresAt,
-      accountId: credentials.accountId,
-      createdAt: previous?.createdAt ?? now,
-      updatedAt: now,
-    }
-    await this.states.put(state)
+    await this.credentials.modify(CHATGPT_PROVIDER_ID, async () => ({
+      type: "oauth",
+      access: credentials.accessToken,
+      refresh: credentials.refreshToken,
+      expires: credentials.expiresAt,
+      ...(credentials.accountId === null ? {} : { accountId: credentials.accountId }),
+    }))
+    const state = await this.getState()
+    if (!state) throw new Error("The ChatGPT connection was not stored")
     return state
   }
 
   disconnect(): Promise<void> {
-    return this.states.delete(CHATGPT_PROVIDER_ID)
+    return this.models.logout(CHATGPT_PROVIDER_ID)
   }
 
-  async validState(): Promise<ProviderState> {
-    const state = await this.getState()
-    if (!state) throw new Error("ChatGPT is not connected")
-    if (state.expiresAt > this.now() + REFRESH_MARGIN_MS) return state
-    if (!this.refreshRequest) {
-      this.refreshRequest = this.refresh(state).finally(() => {
-        this.refreshRequest = null
-      })
-    }
-    return this.refreshRequest
-  }
-
-  private async refresh(state: ProviderState): Promise<ProviderState> {
-    const credentials = await this.tokens.refresh(state.refreshToken)
-    const refreshed: ProviderState = {
-      ...state,
-      accessToken: credentials.accessToken,
-      refreshToken: credentials.refreshToken,
-      expiresAt: credentials.expiresAt,
-      accountId: credentials.accountId ?? state.accountId,
-      updatedAt: this.now(),
-    }
-    await this.states.put(refreshed)
-    return refreshed
+  /**
+   * Whether the connection is complete enough to make a request with.
+   *
+   * Asks the harness rather than reading an expiry here: it is the thing that will
+   * refresh the token, so it is the thing that knows whether it can.
+   */
+  async isConnected(): Promise<boolean> {
+    // Undefined is the harness's way of saying "not configured".
+    return (await this.models.checkAuth(CHATGPT_PROVIDER_ID)) !== undefined
   }
 }

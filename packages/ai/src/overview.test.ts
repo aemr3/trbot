@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { fauxAssistantMessage, fauxText, fauxThinking, registerFauxProvider } from "@mariozechner/pi-ai"
+import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxThinking } from "@earendil-works/pi-ai"
 import { buildOverviewDigest } from "@trbot/market/overview.ts"
 import { ModelOverviewGenerator, overviewPrompt, overviewSystemPrompt } from "./overview.ts"
 
@@ -60,55 +60,53 @@ test("the brief commits to a side instead of listing both", () => {
   }
 })
 
+/** A harness answering with scripted replies, as the harness's own tests do it. */
+function scripted(options: { reasoning?: boolean } = {}) {
+  const faux = fauxProvider({ models: [{ id: "overview-model", ...options }] })
+  const models = createModels()
+  models.setProvider(faux.provider)
+  return { faux, models }
+}
+
 test("streams the model's words through onDelta and leaves its reasoning out", async () => {
   // The trader reads the brief, not the working. A reasoning model emits both, so
   // the generator has to forward one and drop the other.
-  const faux = registerFauxProvider({ models: [{ id: "overview-model", reasoning: true }] })
+  const { faux, models } = scripted({ reasoning: true })
   faux.setResponses([
     fauxAssistantMessage([fauxThinking("weighing the tape"), fauxText("Bid side dominates.")]),
   ])
-  const generator = new ModelOverviewGenerator(faux.getModel(), {
-    reasoningEffort: "high",
-    accessToken: async () => "token-1",
-  })
+  const generator = new ModelOverviewGenerator(models, faux.getModel(), { reasoningEffort: "high" })
 
   const deltas: string[] = []
   await generator.generate(DIGEST, { onDelta: (text) => deltas.push(text) })
 
   expect(deltas.join("")).toBe("Bid side dominates.")
-  faux.unregister()
 })
 
-test("reads the credential per call rather than holding one", async () => {
-  // A ChatGPT access token lasts under an hour and is refreshed underneath this,
-  // so a generator that captured one would work until the first refresh and then
-  // fail every overview after it.
-  const faux = registerFauxProvider({ models: [{ id: "overview-model" }] })
+test("generates again from the same instance", async () => {
+  // One generator serves every overview for as long as the server runs, so a
+  // second call has to behave like the first. What used to be checked here — that
+  // a credential is read per call rather than captured — is the harness's own
+  // business now: it resolves and refreshes one per request.
+  const { faux, models } = scripted()
   faux.setResponses([fauxAssistantMessage("First."), fauxAssistantMessage("Second.")])
-  const tokens: string[] = []
-  const generator = new ModelOverviewGenerator(faux.getModel(), {
-    accessToken: async () => {
-      tokens.push(`token-${tokens.length + 1}`)
-      return `token-${tokens.length}`
-    },
-  })
+  const generator = new ModelOverviewGenerator(models, faux.getModel())
 
-  await generator.generate(DIGEST, { onDelta: () => {} })
-  await generator.generate(DIGEST, { onDelta: () => {} })
+  const deltas: string[] = []
+  await generator.generate(DIGEST, { onDelta: (text) => deltas.push(text) })
+  await generator.generate(DIGEST, { onDelta: (text) => deltas.push(text) })
 
-  expect(tokens).toEqual(["token-1", "token-2"])
-  faux.unregister()
+  expect(deltas).toEqual(["First.", "Second."])
 })
 
 test("rethrows a stream failure instead of finishing silently", async () => {
   // The harness reports a failure as the stream's final message rather than by
   // throwing, so an unread one becomes an empty overview and no error at all.
-  const faux = registerFauxProvider({ models: [{ id: "overview-model" }] })
+  const { faux, models } = scripted()
   faux.setResponses([
     fauxAssistantMessage([fauxText("Partial")], { stopReason: "error", errorMessage: "stream lost" }),
   ])
-  const generator = new ModelOverviewGenerator(faux.getModel(), { accessToken: async () => "token-1" })
+  const generator = new ModelOverviewGenerator(models, faux.getModel())
 
   expect(generator.generate(DIGEST, { onDelta: () => {} })).rejects.toThrow("stream lost")
-  faux.unregister()
 })

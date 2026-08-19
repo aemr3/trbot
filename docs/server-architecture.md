@@ -153,6 +153,11 @@ recorded per row, and `chat-store.test.ts` asserts the round trip is lossless: t
 test is the guarantee, and it is the first thing to fail after an upgrade that changes
 the shape.
 
+Pinning catches a new version of the same package, which is not the only way a harness
+moves: this one has already changed npm scope once, and a rename arrives as no version
+bump at all. So the pin is a tripwire for shape changes, not a substitute for looking
+at where the harness now lives.
+
 ## Losing and regaining the provider session
 
 A provider session can lapse while the server runs — overnight, or when the
@@ -320,6 +325,16 @@ A ChatGPT token is a credential, so it belongs where the provider credentials ar
 `packages/ai` is a server-only package: the model runs there, the tokens are
 stored there, and `apps/tui` does not depend on it at all.
 
+Keeping a token usable is the harness's own work, not ours. It is handed a store
+backed by `provider_state` and from then on decides when a token is close enough to
+lapsing to exchange, does the exchange, and serializes writes so two requests
+cannot both refresh and lose a rotated token between them. What this application
+keeps is the part the harness has no opinion about: which row that credential lives
+in, which account it belongs to, and when the connection was made. The harness also
+owns the model catalogue, so a model is looked up by id rather than described here —
+an id it does not know is refused at startup, naming the ones that work, instead of
+being guessed at.
+
 The terminal still builds the digest, because every figure in it comes from data
 already on its screen. It posts that digest to `POST /v1/ai/overview` and renders
 the words as they stream back. The prompt, the model, and the effort setting are
@@ -353,6 +368,12 @@ was dropped when the harness became the one place that runs it.
 A machine with no browser, or one where port 1455 is already taken, is not a
 failure: the modal shows the address to open by hand and takes the code — or the
 whole redirect URL — pasted back.
+
+The harness asks which flow to run, offering a browser flow and a headless
+device-code one. The terminal answers `browser` on the trader's behalf, matched by
+id so a reordered list cannot silently pick the other: the modal is built around a
+browser and has nowhere to show a device code. Wiring the headless flow up is a
+screen that can render one, not a change to any of the above.
 
 ## Security
 

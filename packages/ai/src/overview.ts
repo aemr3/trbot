@@ -1,4 +1,4 @@
-import { stream, type Api, type Model } from "@mariozechner/pi-ai"
+import type { Api, Model, Models } from "@earendil-works/pi-ai"
 import type {
   MarketOverviewDigest,
   OverviewGenerateOptions,
@@ -69,30 +69,24 @@ export function overviewPrompt(digest: MarketOverviewDigest): string {
 // provider's own, so it stays an open string.
 export interface ModelOverviewGeneratorOptions {
   reasoningEffort?: string
-  /**
-   * The credential for the call, read per request rather than held.
-   *
-   * A ChatGPT access token lasts under an hour and is refreshed underneath this,
-   * so a generator that captured one would start failing after the first refresh.
-   */
-  accessToken: () => Promise<string>
 }
 
 export class ModelOverviewGenerator implements OverviewGenerator {
   constructor(
+    /** Resolves and refreshes the credential per request; see `createHarness`. */
+    private readonly models: Models,
     private readonly model: Model<Api>,
-    private readonly options: ModelOverviewGeneratorOptions,
+    private readonly options: ModelOverviewGeneratorOptions = {},
   ) {}
 
   async generate(digest: MarketOverviewDigest, options: OverviewGenerateOptions): Promise<void> {
-    const events = stream(
+    const events = this.models.stream(
       this.model,
       {
         systemPrompt: overviewSystemPrompt(digest.mode),
         messages: [{ role: "user", content: overviewPrompt(digest), timestamp: Date.now() }],
       },
       {
-        apiKey: await this.options.accessToken(),
         signal: options.signal,
         // Named for what the provider calls it. Providers that do not know the
         // option ignore it, which is what lets the model stay configurable.

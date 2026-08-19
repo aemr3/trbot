@@ -1,20 +1,29 @@
 import { expect, test } from "bun:test"
 import {
   Type,
+  createModels,
+  fauxProvider,
   fauxAssistantMessage,
   fauxText,
   fauxThinking,
   fauxToolCall,
-  registerFauxProvider,
-} from "@mariozechner/pi-ai"
+} from "@earendil-works/pi-ai"
 import type { ChatMessageDraft } from "@trbot/chat/session.ts"
 import { ChatAgent, type ChatRecord } from "./chat.ts"
 import { ChatTools, toolText, type ChatTool } from "./tool.ts"
 
+/** A harness answering with scripted replies, as the harness's own tests do it. */
+function scripted(options: { reasoning?: boolean } = {}) {
+  const faux = fauxProvider({ models: [{ id: "chat-model", ...options }] })
+  const models = createModels()
+  models.setProvider(faux.provider)
+  return { faux, models }
+}
+
 test("streams a reply and hands over the message it produced", async () => {
-  const faux = registerFauxProvider({ models: [{ id: "chat-model", reasoning: true }] })
+  const { faux, models } = scripted({ reasoning: true })
   faux.setResponses([fauxAssistantMessage([fauxThinking("thinking it over"), fauxText("Ankara.")])])
-  const agent = new ChatAgent({ model: faux.getModel(), accessToken: async () => "token-1" })
+  const agent = new ChatAgent({ models, model: faux.getModel() })
 
   const text: string[] = []
   const reasoning: string[] = []
@@ -41,11 +50,10 @@ test("streams a reply and hands over the message it produced", async () => {
   // The reasoning is kept as its own block rather than folded into the text: the
   // model needs it back to continue, and the transcript must not show it as speech.
   expect(drafts[0]?.message.blocks.map((block) => block.kind)).toEqual(["THINKING", "TEXT"])
-  faux.unregister()
 })
 
 test("replays the stored history rather than only the new question", async () => {
-  const faux = registerFauxProvider({ models: [{ id: "chat-model" }] })
+  const { faux, models } = scripted()
   faux.setResponses([
     (context) => {
       // Every earlier turn plus the new question, in order: a session that replayed
@@ -54,7 +62,7 @@ test("replays the stored history rather than only the new question", async () =>
       return fauxAssistantMessage("Still Ankara.")
     },
   ])
-  const agent = new ChatAgent({ model: faux.getModel(), accessToken: async () => "token-1" })
+  const agent = new ChatAgent({ models, model: faux.getModel() })
   const history: ChatRecord[] = [
     { role: "user", content: "Capital of Turkey?", timestamp: 1 },
     {
@@ -74,7 +82,6 @@ test("replays the stored history rather than only the new question", async () =>
     prompt: "Are you sure?",
     events: { onText: () => {}, onReasoning: () => {}, onToolCall: () => {}, onMessage: async () => {} },
   })
-  faux.unregister()
 })
 
 test("runs the tools a reply asks for and answers with their results", async () => {
@@ -90,14 +97,14 @@ test("runs the tools a reply asks for and answers with their results", async () 
       isError: false,
     }),
   }
-  const faux = registerFauxProvider({ models: [{ id: "chat-model" }] })
+  const { faux, models } = scripted()
   faux.setResponses([
     fauxAssistantMessage([fauxToolCall("quote", { symbol: "ASELS" })], { stopReason: "toolUse" }),
     fauxAssistantMessage("ASELS last traded at 390.00."),
   ])
   const agent = new ChatAgent({
+    models,
     model: faux.getModel(),
-    accessToken: async () => "token-1",
     tools: new ChatTools([quote]),
   })
 
@@ -123,7 +130,6 @@ test("runs the tools a reply asks for and answers with their results", async () 
   expect(drafts.map((draft) => draft.message.role)).toEqual(["ASSISTANT", "TOOL_RESULT", "ASSISTANT"])
   expect(drafts[1]?.message.text).toBe("ASELS 390.00")
   expect(drafts[2]?.message.text).toBe("ASELS last traded at 390.00.")
-  faux.unregister()
 })
 
 test("a tool called with arguments it cannot use fails without running", async () => {
@@ -170,11 +176,11 @@ test("a tool called with arguments it cannot use fails without running", async (
 })
 
 test("keeps a reply that failed part way and reports why", async () => {
-  const faux = registerFauxProvider({ models: [{ id: "chat-model" }] })
+  const { faux, models } = scripted()
   faux.setResponses([
     fauxAssistantMessage([fauxText("Partial")], { stopReason: "error", errorMessage: "stream lost" }),
   ])
-  const agent = new ChatAgent({ model: faux.getModel(), accessToken: async () => "token-1" })
+  const agent = new ChatAgent({ models, model: faux.getModel() })
 
   const drafts: ChatMessageDraft[] = []
   const result = await agent.run({
@@ -195,5 +201,4 @@ test("keeps a reply that failed part way and reports why", async () => {
   // trader than an empty transcript with an error beside it.
   expect(drafts[0]?.message.text).toBe("Partial")
   expect(drafts[0]?.message.status).toBe("FAILED")
-  faux.unregister()
 })

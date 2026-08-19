@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { MarketOverviewDigest } from "@trbot/market/overview.ts"
 import { isProtocolError } from "@trbot/protocol/error.ts"
 import type { AiAccountSummary } from "@trbot/protocol/ai.ts"
-import { HttpAiAccount, HttpOverviewGenerator, type ChatGptLogin } from "./ai.ts"
+import { HttpAiAccount, HttpOverviewGenerator } from "./ai.ts"
 import type { HttpClient } from "./http.ts"
 
 const DIGEST = { mode: "DAILY" } as unknown as MarketOverviewDigest
@@ -94,10 +94,16 @@ describe("connecting ChatGPT", () => {
     const urls: string[] = []
     const opened: string[] = []
     const account = new HttpAiAccount(http, {
-      login: (async (options) => {
-        options.onAuth({ url: "https://auth.openai.test/authorize?state=state-1" })
-        return { access: "access-1", refresh: "refresh-1", expires: 601_000, accountId: "account-1" }
-      }) as ChatGptLogin,
+      login: async (interaction) => {
+        interaction.notify({ type: "auth_url", url: "https://auth.openai.test/authorize?state=state-1" })
+        return {
+          type: "oauth",
+          access: "access-1",
+          refresh: "refresh-1",
+          expires: 601_000,
+          accountId: "account-1",
+        }
+      },
       // Never a real browser from a test.
       openUrl: async (url) => {
         opened.push(url)
@@ -131,7 +137,7 @@ describe("connecting ChatGPT", () => {
       },
     } as unknown as HttpClient
     const account = new HttpAiAccount(http, {
-      login: (async () => ({ access: "access-1", refresh: "refresh-1", expires: 1 })) as ChatGptLogin,
+      login: async () => ({ type: "oauth", access: "access-1", refresh: "refresh-1", expires: 1 }),
     })
 
     await account.connect()
@@ -149,14 +155,61 @@ describe("connecting ChatGPT", () => {
     // must not be sent to the server as a login that half happened.
     const http = { post: () => Promise.reject(new Error("must not reach the server")) } as unknown as HttpClient
     const account = new HttpAiAccount(http, {
-      login: ((options: { onPrompt: (prompt: { message: string }) => Promise<string> }) =>
-        options.onPrompt({ message: "Paste the code" })) as unknown as ChatGptLogin,
+      login: async (interaction) => {
+        await interaction.prompt({ type: "manual_code", message: "Paste the code" })
+        throw new Error("the prompt was expected to cancel the login")
+      },
     })
 
     const failure = await account
       .connect({ onManualCode: async () => "" })
       .then(() => null, (error: unknown) => error as Error)
     expect(failure?.name).toBe("AbortError")
+  })
+
+  test("the browser flow is chosen by id, not by position", async () => {
+    // The harness asks which flow to use and offers a headless one alongside the
+    // browser. Answering by id means a reordered list cannot silently connect
+    // through a device code the modal has nowhere to show.
+    const http = {
+      post: () => Promise.resolve({ providerId: "openai", accountId: null, connectedAt: 1, updatedAt: 1 }),
+    } as unknown as HttpClient
+    const answered: string[] = []
+    const account = new HttpAiAccount(http, {
+      login: async (interaction) => {
+        answered.push(
+          await interaction.prompt({
+            type: "select",
+            message: "Select login method:",
+            options: [
+              { id: "device_code", label: "Device code login (headless)" },
+              { id: "browser", label: "Browser login" },
+            ],
+          }),
+        )
+        return { type: "oauth", access: "a", refresh: "r", expires: 1 }
+      },
+    })
+
+    await account.connect()
+    expect(answered).toEqual(["browser"])
+  })
+
+  test("a harness offering no browser flow fails rather than guessing", async () => {
+    const http = { post: () => Promise.reject(new Error("must not reach the server")) } as unknown as HttpClient
+    const account = new HttpAiAccount(http, {
+      login: async (interaction) => {
+        await interaction.prompt({
+          type: "select",
+          message: "Select login method:",
+          options: [{ id: "device_code", label: "Device code login (headless)" }],
+        })
+        throw new Error("the prompt was expected to fail")
+      },
+    })
+
+    const failure = await account.connect().then(() => null, (error: unknown) => error as Error)
+    expect(failure?.message).toBe("The harness no longer offers a browser login")
   })
 })
 
