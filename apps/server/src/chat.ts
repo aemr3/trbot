@@ -3,6 +3,8 @@ import type { SubagentSessionRecorder, SubagentSessionRun } from "@trbot/ai/suba
 import {
   chatBlockText,
   chatSessionTitle,
+  defaultChatSessionTitle,
+  isDefaultChatSessionTitle,
   type ChatApplicationEvent,
   type ChatModelChoice,
   type ChatMessage,
@@ -36,6 +38,12 @@ export interface ChatControllerOptions {
   defaultChoice: () => Promise<ChatModelChoice | null>
   /** Resolves a stored choice into something a turn can run on. */
   resolveModel: (choice: ChatModelChoice) => Promise<ChatTurnModel>
+  /** A separate, tool-free model call that names an eligible root conversation. */
+  generateTitle?: (input: {
+    message: string
+    model: ChatTurnModel
+    signal: AbortSignal
+  }) => Promise<string | null>
   /** Refused before a run starts, so an unusable model is an ordinary error. */
   requireModel: (choice: ChatModelChoice | null) => Promise<void>
   broadcast: (frame: ChatFrame) => void
@@ -70,6 +78,7 @@ interface ChatRun {
  */
 export class ChatController {
   private readonly runs = new Map<string, ChatRun>()
+  private readonly titleRuns = new Map<string, AbortController>()
   /** The last known session list, so a socket opening costs no query. */
   private sessions: ChatSession[] = []
   /** Sessions whose queue is being worked through, so a second send does not start a race. */
@@ -111,7 +120,7 @@ export class ChatController {
     const chosen = choice ?? (await this.options.defaultChoice())
     const session: ChatSession = {
       id: crypto.randomUUID(),
-      title: chatSessionTitle(""),
+      title: defaultChatSessionTitle(now),
       parentSessionId: null,
       agent: null,
       model: chosen?.modelId ?? "",
@@ -175,6 +184,8 @@ export class ChatController {
     for (const id of removed) {
       this.removedSessionIds.add(id)
       this.abortRun(id)
+      this.titleRuns.get(id)?.abort()
+      this.titleRuns.delete(id)
       this.runs.delete(id)
     }
     await this.options.store.delete(sessionId)
@@ -211,12 +222,6 @@ export class ChatController {
       createdAt: this.now(),
     }
     await this.options.store.append(sessionId, { message, record: userRecord(message) })
-
-    // A session is named after what was first asked of it. Renaming on every
-    // message would rewrite the list under the trader as they typed.
-    if (detail.messages.length === 0) {
-      await this.options.store.rename(sessionId, chatSessionTitle(text))
-    }
 
     this.options.broadcast({ type: "chatMessage", sessionId, message })
     await this.announceSessions()
@@ -290,7 +295,9 @@ export class ChatController {
   destroy(): void {
     this.destroyed = true
     for (const run of this.runs.values()) run.controller?.abort()
+    for (const title of this.titleRuns.values()) title.abort()
     this.runs.clear()
+    this.titleRuns.clear()
   }
 
   /**
@@ -434,11 +441,16 @@ export class ChatController {
         return
       }
 
-      await this.runTurn(sessionId, next, choice as ChatModelChoice)
+      await this.runTurn(sessionId, next, choice as ChatModelChoice, detail.session.title)
     }
   }
 
-  private async runTurn(sessionId: string, asked: ChatMessage, choice: ChatModelChoice): Promise<void> {
+  private async runTurn(
+    sessionId: string,
+    asked: ChatMessage,
+    choice: ChatModelChoice,
+    sessionTitle: string,
+  ): Promise<void> {
     // Read while the question is still queued, so the history is what came before
     // it and the model is not handed the same question twice.
     const history = (await this.options.store.records(sessionId)) as ChatRecord[]
@@ -462,6 +474,9 @@ export class ChatController {
     let result: { completed: boolean; aborted: boolean; errorMessage: string | null }
     try {
       const turnModel = await this.options.resolveModel(choice)
+      if (asked.role === "USER") {
+        this.maybeStartTitleGeneration(sessionId, sessionTitle, asked.text, turnModel)
+      }
       const prompt = await this.options.store.inputText(asked.id) ?? asked.text
       result = await this.options.agent.run({
         model: turnModel.model,
@@ -535,6 +550,40 @@ export class ChatController {
       status: result.aborted ? "aborted" : "done",
     })
     await this.announceSessions()
+  }
+
+  /**
+   * Names a conversation beside its main turn, never in front of it.
+   *
+   * A null result leaves the timestamp in place, so a greeting can be followed by
+   * the first meaningful prompt. The store's comparison is the final race guard.
+   */
+  private maybeStartTitleGeneration(
+    sessionId: string,
+    expectedTitle: string,
+    message: string,
+    model: ChatTurnModel,
+  ): void {
+    if (
+      !this.options.generateTitle ||
+      !isDefaultChatSessionTitle(expectedTitle) ||
+      this.titleRuns.has(sessionId)
+    ) return
+
+    const controller = new AbortController()
+    this.titleRuns.set(sessionId, controller)
+    void this.options.generateTitle({ message, model, signal: controller.signal })
+      .then(async (title) => {
+        if (!title || controller.signal.aborted || this.removedSessionIds.has(sessionId)) return
+        const replaced = await this.options.store.replaceAutomaticTitle(sessionId, expectedTitle, title)
+        if (replaced) await this.announceSessions()
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) this.options.onError(error)
+      })
+      .finally(() => {
+        if (this.titleRuns.get(sessionId) === controller) this.titleRuns.delete(sessionId)
+      })
   }
 
   private async persist(sessionId: string, draft: ChatMessageDraft): Promise<void> {

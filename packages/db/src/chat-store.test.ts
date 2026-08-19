@@ -411,6 +411,17 @@ test("renames a session without touching what was said in it", async () => {
     expect(detail?.messages).toHaveLength(1)
   })
 
+test("replaces only the automatic title a background job started from", async () => {
+    const chats = await store()
+    await chats.create(session())
+
+    expect(await chats.replaceAutomaticTitle("chat-1", "New chat", "Review ASELS setup")).toBe(true)
+    expect(await chats.replaceAutomaticTitle("chat-1", "New chat", "Stale title")).toBe(false)
+    await chats.rename("chat-1", "My notes")
+    expect(await chats.replaceAutomaticTitle("chat-1", "My notes", "Generated title")).toBe(false)
+    expect((await chats.get("chat-1"))?.session.title).toBe("My notes")
+  })
+
 test("keeps child sessions out of the root list and finds them through their parent", async () => {
   const chats = await store()
   const parent = session()

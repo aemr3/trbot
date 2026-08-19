@@ -1,5 +1,18 @@
 import { describe, expect, test } from "bun:test"
-import { chatBlockText, chatMessageText, chatSessionTitle } from "./session.ts"
+import {
+  chatBlockText,
+  chatMessageText,
+  chatSessionTitle,
+  defaultChatSessionTitle,
+  isDefaultChatSessionTitle,
+} from "./session.ts"
+
+test("creates a recognizable timestamp placeholder", () => {
+  const title = defaultChatSessionTitle(Date.UTC(2026, 7, 20, 12, 34, 56, 789))
+  expect(title).toBe("New session - 2026-08-20T12:34:56.789Z")
+  expect(isDefaultChatSessionTitle(title)).toBe(true)
+  expect(isDefaultChatSessionTitle("Review ASELS trend")).toBe(false)
+})
 
 describe("chatSessionTitle", () => {
   test("names an empty session rather than leaving it blank", () => {

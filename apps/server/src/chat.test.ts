@@ -31,7 +31,11 @@ interface Harness {
  * The store is real because the queue's behaviour is mostly about what survives in
  * it; the runner is not, because none of this is about the model.
  */
-async function harness(options: { connected?: boolean; auto?: boolean } = {}): Promise<Harness> {
+async function harness(options: {
+  connected?: boolean
+  auto?: boolean
+  generateTitle?: (message: string, signal: AbortSignal) => Promise<string | null>
+} = {}): Promise<Harness> {
   connection = await openDatabase(":memory:")
   const store = new DrizzleChatSessionStore(connection.db, { harnessVersion: "pi-ai/test" })
   const frames: ChatFrame[] = []
@@ -62,6 +66,9 @@ async function harness(options: { connected?: boolean; auto?: boolean } = {}): P
       model: { id: choice.modelId, provider: choice.providerId } as never,
       reasoningEffort: choice.reasoning,
     }),
+    generateTitle: options.generateTitle
+      ? ({ message, signal }) => options.generateTitle!(message, signal)
+      : undefined,
     requireModel: async () => {
       if (options.connected === false) throw new Error("test-provider is not connected")
     },
@@ -372,18 +379,60 @@ test("different sessions answer at the same time", async () => {
   expect(sessions.every((session) => session.running)).toBe(true)
 })
 
-test("names a session after the first thing asked of it", async () => {
-  const { chat } = await harness()
+test("generates a session title beside the first meaningful turn", async () => {
+  const prompts: string[] = []
+  const { chat } = await harness({
+    generateTitle: async (message) => {
+      prompts.push(message)
+      return "Review ASELS closing direction"
+    },
+  })
   const session = await chat.create()
-  expect(session.title).toBe("New chat")
+  expect(session.title).toMatch(/^New session - \d{4}-\d{2}-\d{2}T/u)
 
   await chat.send(session.id, "  Where is ASELS   heading   into the close?  ")
   await settle()
   await chat.send(session.id, "and THYAO?")
   await settle()
 
-  // Renaming on every message would rewrite the list under the trader as they type.
-  expect((await chat.detail(session.id)).session.title).toBe("Where is ASELS heading into the close?")
+  expect(prompts).toEqual(["  Where is ASELS   heading   into the close?  "])
+  expect((await chat.detail(session.id)).session.title).toBe("Review ASELS closing direction")
+})
+
+test("keeps the timestamp through small talk and retries on the next prompt", async () => {
+  const prompts: string[] = []
+  const { chat } = await harness({
+    generateTitle: async (message) => {
+      prompts.push(message)
+      return message === "hello" ? null : "Analyze THYAO trend"
+    },
+  })
+  const session = await chat.create()
+
+  await chat.send(session.id, "hello")
+  await settle()
+  expect((await chat.detail(session.id)).session.title).toBe(session.title)
+
+  await chat.send(session.id, "analyze THYAO")
+  await settle()
+  expect(prompts).toEqual(["hello", "analyze THYAO"])
+  expect((await chat.detail(session.id)).session.title).toBe("Analyze THYAO trend")
+})
+
+test("a late automatic title cannot overwrite a manual rename", async () => {
+  let finishTitle!: (title: string | null) => void
+  const { chat, store } = await harness({
+    generateTitle: async () => new Promise((resolve) => { finishTitle = resolve }),
+  })
+  const session = await chat.create()
+
+  await chat.send(session.id, "Analyze ASELS")
+  await settle()
+  await store.rename(session.id, "My ASELS notes")
+  finishTitle("Generated ASELS analysis")
+  await settle()
+
+  expect((await chat.detail(session.id)).session.title).toBe("My ASELS notes")
 })
 
 test("tells a client that attaches what is running, so it can catch up", async () => {

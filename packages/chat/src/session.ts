@@ -169,7 +169,15 @@ export interface ChatSessionStore {
   /** Model-facing text for one queued input; application events may hide detail from the transcript. */
   inputText(messageId: string): Promise<string | null>
   create(session: ChatSession): Promise<void>
+  /** A trader-chosen title is final and cannot be replaced by background generation. */
   rename(sessionId: string, title: string): Promise<void>
+  /**
+   * Replaces the title only when it is still the automatic title this job started from.
+   *
+   * The comparison makes a slow model response harmless: it cannot overwrite a
+   * manual rename or a newer title job that completed first.
+   */
+  replaceAutomaticTitle(sessionId: string, expectedTitle: string, title: string): Promise<boolean>
   /** Points a session at a different model, from the next turn onwards. */
   configure(sessionId: string, choice: ChatModelChoice): Promise<void>
   delete(sessionId: string): Promise<void>
@@ -192,11 +200,21 @@ export interface ChatSessionStore {
   queuedSessionIds(): Promise<string[]>
 }
 
-// A session is named after what was first asked of it, which is the only thing
-// available without spending a model call on a title.
 const TITLE_LENGTH = 48
 const UNTITLED = "New chat"
 
+const DEFAULT_SESSION_TITLE = /^New session - \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+/** A recognizable timestamp placeholder used until background title generation finishes. */
+export function defaultChatSessionTitle(createdAt: number): string {
+  return `New session - ${new Date(createdAt).toISOString()}`
+}
+
+export function isDefaultChatSessionTitle(title: string): boolean {
+  return DEFAULT_SESSION_TITLE.test(title)
+}
+
+/** A compact title for application-owned child sessions, which do not run title generation. */
 export function chatSessionTitle(firstMessage: string): string {
   const line = firstMessage.replace(/\s+/g, " ").trim()
   if (!line) return UNTITLED

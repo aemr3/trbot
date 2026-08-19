@@ -162,6 +162,13 @@
       "when": 1787177296873,
       "tag": "0022_remember_chat_thought_visibility",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1787179244272,
+      "tag": "0023_chat_title_generation",
+      "breakpoints": true
     }
   ]
 }

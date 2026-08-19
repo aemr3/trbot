@@ -1,4 +1,4 @@
-import { asc, eq, inArray, isNull, max, sql } from "drizzle-orm"
+import { and, asc, eq, inArray, isNull, max, or, sql } from "drizzle-orm"
 import type {
   ChatBlock,
   ChatMessage,
@@ -195,6 +195,7 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
     await this.db.insert(chatSessions).values({
       id: session.id,
       title: session.title,
+      titleSource: session.parentSessionId ? "user" : null,
       parentSessionId: session.parentSessionId,
       agent: session.agent,
       model: session.model,
@@ -206,7 +207,25 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
   }
 
   async rename(sessionId: string, title: string): Promise<void> {
-    await this.db.update(chatSessions).set({ title }).where(eq(chatSessions.id, sessionId))
+    await this.db
+      .update(chatSessions)
+      .set({ title, titleSource: "user", updatedAt: Date.now() })
+      .where(eq(chatSessions.id, sessionId))
+  }
+
+  async replaceAutomaticTitle(sessionId: string, expectedTitle: string, title: string): Promise<boolean> {
+    const updated = await this.db
+      .update(chatSessions)
+      .set({ title, titleSource: "auto", updatedAt: Date.now() })
+      .where(
+        and(
+          eq(chatSessions.id, sessionId),
+          eq(chatSessions.title, expectedTitle),
+          or(isNull(chatSessions.titleSource), eq(chatSessions.titleSource, "auto")),
+        ),
+      )
+      .returning({ id: chatSessions.id })
+    return updated.length === 1
   }
 
   async configure(sessionId: string, choice: ChatModelChoice): Promise<void> {

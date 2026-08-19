@@ -11,6 +11,7 @@ import { DrizzleStopRuleStore } from "@trbot/db/stop-rule-store.ts"
 import { DrizzleAppPreferencesStore } from "@trbot/db/app-preferences-store.ts"
 import { createAgentTools } from "@trbot/ai/agent-tools.ts"
 import { ChatAgent } from "@trbot/ai/chat.ts"
+import { ChatTitleGenerator } from "@trbot/ai/title.ts"
 import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trbot/ai/harness.ts"
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { AiService } from "./ai.ts"
@@ -76,6 +77,7 @@ async function startTrbotServer(): Promise<void> {
   const credentials = new DrizzleAiCredentialStore(connection.db)
   const aiPreferences = new DrizzleAiPreferencesStore(connection.db)
   const models = createHarness(credentials)
+  const titles = new ChatTitleGenerator(models)
 
   const ai = new AiService({ models, credentials, preferences: aiPreferences })
   let hub: StreamHub | null = null
@@ -151,6 +153,11 @@ async function startTrbotServer(): Promise<void> {
     resolveModel: async (choice) => ({
       model: harnessModel(models, choice.providerId, choice.modelId),
       reasoningEffort: choice.reasoning,
+    }),
+    generateTitle: ({ message, model, signal }) => titles.generate({
+      message,
+      model: model.model,
+      signal,
     }),
     requireModel: (choice) => ai.requireModel("chat", choice?.providerId, choice?.modelId),
     broadcast: (frame) => hub?.broadcast(frame),

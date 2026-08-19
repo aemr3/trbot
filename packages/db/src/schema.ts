@@ -141,6 +141,9 @@ export const appPreferences = sqliteTable("app_preferences", {
 export const chatSessions = sqliteTable("chat_sessions", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
+  // New root chats start null under a timestamp placeholder. Auto is model-generated;
+  // user is final. Legacy titles also remain null but cannot match a new placeholder.
+  titleSource: text("title_source", { enum: ["auto", "user"] }),
   parentSessionId: text("parent_session_id"),
   agent: text("agent"),
   // Recorded per session so an old transcript still says what wrote it, even

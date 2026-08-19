@@ -1,0 +1,1 @@
+ALTER TABLE `chat_sessions` ADD `title_source` text;
