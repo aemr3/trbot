@@ -25,6 +25,7 @@ import { loadClientConfig } from "@trbot/config"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
 import { isTransientError, requiresAuthentication } from "@trbot/protocol/error.ts"
 import { SystemSoundPlayer, type SoundPlayer } from "./components/sound.ts"
+import { copySelection, SystemClipboard, type ClipboardWriter } from "./clipboard.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
 import type { OverviewGenerator, OverviewSnapshotStore } from "@trbot/market/overview.ts"
 import { ConnectingScreen } from "./screens/connecting.ts"
@@ -73,6 +74,7 @@ interface AppOptions {
   overview?: OverviewGenerator
   overviewSnapshots?: OverviewSnapshotStore
   sound?: SoundPlayer
+  clipboard?: ClipboardWriter
   logs?: ApplicationLog
   /** How often to re-ask whether the server has a session. Tests shorten it. */
   sessionPollMs?: number
@@ -164,6 +166,7 @@ export class App {
   private readonly overview: OverviewGenerator | undefined
   private readonly overviewSnapshots: OverviewSnapshotStore | undefined
   private readonly sound: SoundPlayer | undefined
+  private readonly clipboard: ClipboardWriter
   private readonly logs: ApplicationLog
   private readonly stops: RemoteStopRules
   private readonly alerts: RemoteAlerts
@@ -174,6 +177,12 @@ export class App {
   private readonly sessionPollMs: number
 
   private readonly handleKeypress = (key: KeyEvent): void => {
+    const copyShortcut = key.name === "c" && (key.ctrl || key.meta || key.super)
+    if (copyShortcut && this.copySelection()) {
+      key.preventDefault()
+      key.stopPropagation()
+      return
+    }
     if (!key.ctrl || key.name !== "c") return
     key.preventDefault()
     key.stopPropagation()
@@ -198,6 +207,7 @@ export class App {
     this.overview = options.overview
     this.overviewSnapshots = options.overviewSnapshots
     this.sound = options.sound
+    this.clipboard = options.clipboard ?? new SystemClipboard(renderer)
     this.logs = options.logs ?? new ApplicationLog()
     this.sessionPollMs = options.sessionPollMs ?? SESSION_POLL_MS
 
@@ -223,6 +233,7 @@ export class App {
     this.root = new BoxRenderable(renderer, {
       width: "100%",
       height: "100%",
+      onMouseUp: () => this.copySelection(),
     })
 
     if (initialState.authenticated === true && this.preferencesLoaded) {
@@ -490,6 +501,10 @@ export class App {
     this.dispose()
     this.renderer.destroy()
     this.exit()
+  }
+
+  private copySelection(): boolean {
+    return copySelection(this.renderer, this.clipboard, (error) => this.logs.error("Clipboard", error))
   }
 }
 

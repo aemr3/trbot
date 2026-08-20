@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { type BoxRenderable, MouseEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { App } from "./app.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
@@ -40,6 +41,62 @@ test("restores the terminal synchronously on Ctrl+C", async () => {
   expect(renderer.isDestroyed).toBe(true)
   expect(exitRequested).toBe(true)
   expect(preferencesClosed).toBe(true)
+})
+
+test("copies selected text by keyboard or mouse without exiting", async () => {
+  const { renderer, mockInput } = await createTestRenderer({
+    width: 80,
+    height: 20,
+    kittyKeyboard: true,
+  })
+  const copied: string[] = []
+  let selectionCleared = false
+  let exitRequested = false
+  const app = new App(
+    renderer,
+    { session: offlineSession(), authenticated: false },
+    {
+      clipboard: { write: async (text) => void copied.push(text) },
+      exit: () => {
+        exitRequested = true
+      },
+    },
+  )
+  app.mount()
+
+  const selectionRenderer = renderer as unknown as {
+    getSelection(): { getSelectedText(): string; selectedRenderables: [] }
+    clearSelection(): void
+  }
+  selectionRenderer.getSelection = () => ({
+    getSelectedText: () => "823abd65-02b7-46f3-852d-36146a7280a2",
+    selectedRenderables: [],
+  })
+  selectionRenderer.clearSelection = () => {
+    selectionCleared = true
+  }
+
+  mockInput.pressCtrlC()
+
+  expect(copied).toEqual(["823abd65-02b7-46f3-852d-36146a7280a2"])
+  expect(selectionCleared).toBe(true)
+  expect(exitRequested).toBe(false)
+  expect(renderer.isDestroyed).toBe(false)
+
+  const root = (app as unknown as { root: BoxRenderable }).root
+  root.processMouseEvent(new MouseEvent(root, {
+    type: "up",
+    button: 0,
+    x: 0,
+    y: 0,
+    modifiers: { shift: false, alt: false, ctrl: false },
+  }))
+  expect(copied).toEqual([
+    "823abd65-02b7-46f3-852d-36146a7280a2",
+    "823abd65-02b7-46f3-852d-36146a7280a2",
+  ])
+
+  app.dispose()
 })
 
 test("shows the sign-in screen when the server holds no provider session", async () => {
