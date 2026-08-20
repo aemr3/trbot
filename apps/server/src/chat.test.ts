@@ -178,7 +178,7 @@ test("an application event wakes its chat once with private model context", asyn
   const event = {
     key: "price-alert:trigger-1",
     text: "ASELS crossed above 420 at 421.",
-    prompt: "<price_alert_triggered>continue the breakout review</price_alert_triggered>",
+    prompt: "<market_monitor_triggered>continue the breakout review</market_monitor_triggered>",
   }
 
   const queued = await chat.enqueueEvent(session.id, event)

@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatModelChoice, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
+import type { ChatNotification } from "@trbot/chat/notification.ts"
 
 /**
  * The chat as a client drives it.
@@ -28,4 +29,7 @@ export interface ChatSessions {
   questions(): Promise<ChatQuestionRequest[]>
   answerQuestion(requestId: string, answers: ChatQuestionAnswer[]): Promise<void>
   rejectQuestion(requestId: string): Promise<void>
+  /** Durable agent notices waiting for the user to acknowledge them. */
+  notifications(): Promise<ChatNotification[]>
+  dismissNotification(notificationId: string): Promise<void>
 }

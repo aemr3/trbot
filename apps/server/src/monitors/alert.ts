@@ -7,8 +7,6 @@ export interface AlertControllerOptions {
   store: PriceAlertStore
   candles?: CandleSource
   broadcast: (event: AlertControllerEvent) => void
-  /** Wakes the originating agent conversation for agent-owned alerts. */
-  onAgentTrigger?: (event: AlertTriggerEvent) => Promise<void>
   onError?: (error: unknown) => void
   now?: () => number
 }
@@ -29,7 +27,6 @@ export class AlertController {
       store: options.store,
       candles: options.candles,
       onTrigger: (event) => this.onTrigger(event),
-      onTriggerPersisted: (event) => this.wakeAgent(event),
       onChange: () => options.broadcast({ type: "changed" }),
       onError: (error) => options.onError?.(error),
       now: options.now,
@@ -40,13 +37,9 @@ export class AlertController {
     return this.monitor
   }
 
-  /** Loads alerts and retries any durable agent wake-up a restart may have interrupted. */
+  /** Loads durable price alerts. */
   async load(): Promise<void> {
     await this.monitor.load()
-    for (const { alert } of this.monitor.views()) {
-      if (alert.triggeredAt === null || alert.triggeredPrice === null || !alert.triggerId) continue
-      this.wakeAgent({ alert, price: alert.triggeredPrice, priceAgeMs: 0 })
-    }
   }
 
   symbols(): string[] {
@@ -105,10 +98,5 @@ export class AlertController {
   private onTrigger(event: AlertTriggerEvent): void {
     this.fired.set(event.alert.id, event)
     this.options.broadcast({ type: "triggered", event })
-  }
-
-  private wakeAgent(event: AlertTriggerEvent): void {
-    if (!this.options.onAgentTrigger) return
-    void this.options.onAgentTrigger(event).catch((error: unknown) => this.options.onError?.(error))
   }
 }

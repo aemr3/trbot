@@ -12,15 +12,21 @@ function player(overrides: { platform?: string; spawn?: (command: string[]) => v
   return { sound, commands, written }
 }
 
-test("the two cues are different sounds", () => {
+test("the cues use different system sounds", () => {
   const { sound, commands } = player()
 
   sound.play("ALERT")
   sound.play("STOP")
+  sound.play("COMPLETE")
+  sound.play("QUESTION")
+  sound.play("NOTIFICATION")
 
   // Which one fired has to be clear without looking at the screen.
   expect(commands[0]?.[0]).toBe("afplay")
   expect(commands[0]?.[1]).not.toBe(commands[1]?.[1])
+  expect(commands[2]?.[1]).not.toBe(commands[0]?.[1])
+  expect(commands[2]?.[1]).not.toBe(commands[1]?.[1])
+  expect(new Set(commands.map((command) => command[1])).size).toBe(5)
 })
 
 test("falls back to the terminal bell where no player exists", () => {

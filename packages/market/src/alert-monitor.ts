@@ -23,7 +23,6 @@ import {
   type PriceAlert,
   type PriceAlertDraft,
   type PriceAlertStatus,
-  type PriceAlertStore,
 } from "./alert.ts"
 import type { QuoteUpdate } from "./quote-stream.ts"
 import { z } from "zod"
@@ -37,18 +36,24 @@ const DEFAULT_STALE_PRICE_MS = 20_000
 const STALE_CANDLE_MS = 90_000
 const ATR_PERIOD = 14
 
-export interface AlertTriggerEvent {
-  alert: PriceAlert
+export interface AlertTriggerEvent<TAlert extends PriceAlert = PriceAlert> {
+  alert: TAlert
   // The price that reached the level.
   price: number
   priceAgeMs: number
 }
 
+export interface PriceRuleStore<TAlert extends PriceAlert> {
+  list(): Promise<TAlert[]>
+  put(alert: TAlert): Promise<void>
+  remove(id: string): Promise<void>
+}
+
 /** How the price feed for an alert's symbol is doing. */
 export type AlertFeedState = "live" | "stale" | "missing"
 
-export interface PriceAlertView {
-  alert: PriceAlert
+export interface PriceAlertView<TAlert extends PriceAlert = PriceAlert> {
+  alert: TAlert
   level: number | null
   lastPrice: number | null
   // Distance from the last price to the level, signed toward the level.
@@ -70,12 +75,16 @@ export const PriceAlertViewSchema: z.ZodType<PriceAlertView> = z.object({
   feed: z.enum(["live", "stale", "missing"]),
 })
 
-export interface AlertMonitorOptions {
-  store: PriceAlertStore
+export interface AlertMonitorOptions<
+  TAlert extends PriceAlert = PriceAlert,
+  TDraft extends PriceAlertDraft = PriceAlertDraft,
+> {
+  store: PriceRuleStore<TAlert>
+  create?: (draft: TDraft, now: number) => TAlert
   candles?: CandleSource
-  onTrigger: (event: AlertTriggerEvent) => void
+  onTrigger: (event: AlertTriggerEvent<TAlert>) => void
   /** Called only after the fired state is durable; suitable for retryable downstream work. */
-  onTriggerPersisted?: (event: AlertTriggerEvent) => void
+  onTriggerPersisted?: (event: AlertTriggerEvent<TAlert>) => void
   onChange?: () => void
   onError?: (error: unknown) => void
   stalePriceMs?: number
@@ -87,8 +96,11 @@ interface QuoteSample {
   timestamp: number
 }
 
-export class AlertMonitor {
-  private alerts = new Map<string, PriceAlert>()
+export class AlertMonitor<
+  TAlert extends PriceAlert = PriceAlert,
+  TDraft extends PriceAlertDraft = PriceAlertDraft,
+> {
+  private alerts = new Map<string, TAlert>()
   private readonly quotes = new Map<string, QuoteSample>()
   // The last closed candle read per instrument and grain, keyed
   // `instrumentUid:interval`. A close-based alert watches these, not ticks.
@@ -100,7 +112,7 @@ export class AlertMonitor {
   private candleRequest: AbortController | null = null
   private destroyed = false
 
-  constructor(private readonly options: AlertMonitorOptions) {}
+  constructor(private readonly options: AlertMonitorOptions<TAlert, TDraft>) {}
 
   /** Seeds from the store. A fired alert stays fired until it is re-armed. */
   async load(): Promise<void> {
@@ -129,11 +141,11 @@ export class AlertMonitor {
     return [...symbols]
   }
 
-  alert(id: string): PriceAlert | undefined {
+  alert(id: string): TAlert | undefined {
     return this.alerts.get(id)
   }
 
-  views(): PriceAlertView[] {
+  views(): PriceAlertView<TAlert>[] {
     const now = this.now()
     return [...this.alerts.values()]
       // Newest first: the alert just written is the one being looked for.
@@ -238,21 +250,22 @@ export class AlertMonitor {
     }
   }
 
-  async saveAlert(draft: PriceAlertDraft): Promise<PriceAlert> {
+  async saveAlert(draft: TDraft): Promise<TAlert> {
     const existing = draft.id ? this.alerts.get(draft.id) : undefined
     const alert = {
-      ...createPriceAlert(draft, this.now()),
+      ...(this.options.create?.(draft, this.now()) ?? createPriceAlert(draft, this.now()) as TAlert),
       ...(existing
         ? {
             createdAt: existing.createdAt,
-            chatSessionId: draft.chatSessionId === undefined ? existing.chatSessionId : draft.chatSessionId,
-            onTrigger: draft.onTrigger === undefined ? existing.onTrigger : draft.onTrigger,
           }
         : {}),
     }
     this.alerts.set(alert.id, alert)
-    // An edited alert earns its near-side latch again: its level moved.
+    // An edited alert earns its near-side latch again: its level moved. A fresh
+    // cached quote can establish that side immediately, so the first trade through
+    // the level is not discarded while waiting for another near-side tick.
     this.approaching.delete(alert.id)
+    this.seedApproachFromQuote(alert, this.now())
     await this.persist(alert)
     this.options.onChange?.()
     return alert
@@ -275,7 +288,7 @@ export class AlertMonitor {
     // Re-arming starts the near-side latch over, so a level the market is
     // already beyond cannot fire again the moment it is switched back on.
     if (status === "ARMED") this.approaching.delete(id)
-    const updated: PriceAlert = {
+    const updated: TAlert = {
       ...alert,
       status,
       ...(status === "ARMED" ? { triggeredAt: null, triggeredPrice: null, triggerId: null } : {}),
@@ -300,7 +313,7 @@ export class AlertMonitor {
       if (atr !== null && isAtrAlert(alert.kind) && isTrailingAlert(alert.kind) && atr !== alert.atrValue) {
         // Only the trail refreshes its width; a standing ATR level was measured
         // once on purpose and must not wander.
-        const rewidened = { ...alert, atrValue: atr, updatedAt: now }
+        const rewidened: TAlert = { ...alert, atrValue: atr, updatedAt: now }
         this.alerts.set(alert.id, rewidened)
         void this.persist(rewidened)
         changed = true
@@ -334,7 +347,7 @@ export class AlertMonitor {
     // come back to the near side before it can ring again, so a market sitting
     // beyond the level announces itself once per crossing rather than per tick.
     const repeats = alert.repeat === "ALWAYS"
-    const triggered: PriceAlert = {
+    const triggered: TAlert = {
       ...alert,
       status: repeats ? "ARMED" : "TRIGGERED",
       triggeredAt: now,
@@ -364,11 +377,18 @@ export class AlertMonitor {
     return sampleState(this.quotes.get(symbol), now, this.staleAfter())
   }
 
+  /** Arms a touch crossing from a live quote observed before the rule was saved. */
+  private seedApproachFromQuote(alert: TAlert, now: number): void {
+    if (alert.basis !== "TOUCH" || this.feedState(alert.symbol, now) !== "live") return
+    const quote = this.quotes.get(alert.symbol)
+    if (quote && !isAlertReached(alert, { lastPrice: quote.price })) this.approaching.add(alert.id)
+  }
+
   private staleAfter(): number {
     return this.options.stalePriceMs ?? DEFAULT_STALE_PRICE_MS
   }
 
-  private async persist(alert: PriceAlert): Promise<boolean> {
+  private async persist(alert: TAlert): Promise<boolean> {
     try {
       await this.options.store.put(alert)
       return true

@@ -14,7 +14,7 @@ import {
   type ChatMessageDraft,
   type ChatUsage,
 } from "@trbot/chat/session.ts"
-import type { ChatToolRegistry } from "./tool.ts"
+import { createChatDelegationContext, type ChatDelegationContext, type ChatToolRegistry } from "./tool.ts"
 
 export const CHAT_SYSTEM_PROMPT = [
   "You are the trading desk assistant inside trbot, a terminal trading application.",
@@ -45,8 +45,11 @@ export const CHAT_SYSTEM_PROMPT = [
   "live tool values or a current official Borsa Istanbul source and state any uncertainty.",
   "Answer in plain text for a narrow terminal panel: no markdown headers, no tables, short",
   "paragraphs. Be direct and brief — the user is reading this between quotes.",
-  "A price-alert event is an application continuation, not a message the user typed; use its stored",
-  "continuation to decide what, if anything, to say or do next.",
+  "A market-monitor event is an application continuation, not a message the user typed. It records",
+  "what happened at trigger time, not current market data: follow its stored continuation, refresh the",
+  "required market and account data, and then decide what, if anything, to say or do next.",
+  "A monitor trigger never grants permission to trade. Use separate trading tools only within the user's",
+  "active execution authorization.",
 ].join(" ")
 
 /** The harness message shape a store keeps so a later turn replays exactly. */
@@ -94,6 +97,10 @@ export interface ChatTurnOptions {
   prompt: string
   /** Conversation that owns any durable work a tool creates. */
   chatSessionId?: string
+  /** Inherited only by a delegated worker; root turns create a fresh context. */
+  delegation?: ChatDelegationContext
+  /** Inherited by delegated workers; root turns receive a fresh allowance. */
+  notificationBudget?: { sent: number }
   events: ChatTurnEvents
   signal?: AbortSignal
 }
@@ -129,6 +136,8 @@ export class ChatAgent {
 
   async run(turn: ChatTurnOptions): Promise<ChatTurnResult> {
     const tools = this.options.tools
+    const delegation = turn.delegation ?? createChatDelegationContext()
+    const notificationBudget = turn.notificationBudget ?? { sent: 0 }
     const context: Context = {
       systemPrompt: this.options.systemPrompt ?? CHAT_SYSTEM_PROMPT,
       messages: [...turn.history],
@@ -166,6 +175,8 @@ export class ChatAgent {
           model: turn.model,
           reasoningEffort: turn.reasoningEffort,
           chatSessionId: turn.chatSessionId,
+          delegation,
+          notificationBudget,
         })
         const result: Message = {
           role: "toolResult",

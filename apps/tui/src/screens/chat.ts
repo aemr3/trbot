@@ -8,18 +8,23 @@ import {
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
-import type { ChatMessage, ChatSession } from "@trbot/chat/session.ts"
+import type { ChatMessage, ChatRunStatus, ChatSession } from "@trbot/chat/session.ts"
 import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
+import type { ChatNotification } from "@trbot/chat/notification.ts"
+import type { MarketMonitor } from "@trbot/market/market-monitor.ts"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
+import type { MarketMonitorClient } from "@trbot/client/monitors.ts"
 import { AiConnectionModal } from "../components/ai-connection-modal.ts"
 import { AiModelModal } from "../components/ai-model-modal.ts"
 import { ChatCommandMenu, type ChatCommand } from "../components/chat-command-menu.ts"
 import { ChatHelpModal } from "../components/chat-help-modal.ts"
-import { ChatQuestionModal } from "../components/chat-question-modal.ts"
+import { ChatQuestionPanel } from "../components/chat-question-panel.ts"
 import { ChatSessionModal } from "../components/chat-session-modal.ts"
 import { ChatTranscript, type ChatTranscriptBlock } from "../components/chat-transcript.ts"
+import { MarketMonitorModal } from "../components/market-monitor-modal.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
+import type { SoundPlayer } from "../components/sound.ts"
 import { SubagentSessionModal } from "../components/subagent-session-modal.ts"
 import type { ApplicationLog } from "../logging/application-log.ts"
 
@@ -32,13 +37,14 @@ const REASONING_COLOR = "#6f6f7a"
 const THOUGHT_COLOR = "#c08a52"
 const QUEUED_COLOR = "#8a8a5a"
 const ERROR_COLOR = "#ff6b6b"
-const MODEL_COLOR = "#d7c58a"
+const MODEL_COLOR = "#9ab8ff"
+const MONITOR_COLOR = "#58d68d"
 const TOOL_COLOR = "#4a4a52"
-const PROMPT_BG = "#292725"
+const PROMPT_BG = "#23272f"
 const TURN_MARKER_COLOR = "#8b8580"
 /**
- * The field at the foot of the screen. It shares the prompt fill so the empty field reads
- * as the next prompt, with the warm marker identifying the insertion point.
+ * Sent prompts and the field at the foot of the screen share one graphite surface;
+ * the warm insertion marker distinguishes the active field.
  */
 const COMPOSER_BG = PROMPT_BG
 const COMPOSER_COLOR = "#d0894a"
@@ -46,20 +52,26 @@ const COMPOSER_COLOR = "#d0894a"
 /**
  * One set of keys: control keys, so they work mid-sentence and there is nothing to
  * switch between. They are listed in the help modal rather than along the bottom, and
- * `^G` is the only one the screen names for itself.
+ * `/help` is the only one the screen names for itself.
  *
  * The model picker is ^O rather than the ^M its name asks for, because Ctrl+M and
  * Return are the same byte and only a terminal that disambiguates them can tell them
  * apart — where one does not, ^M sends the message instead of opening the picker.
  * ^O is also clear of the field's own editing keys, which take ^A ^E ^F ^B ^W ^K ^U ^D.
  */
-const CHAT_HINT = "^G keys"
-const RUNNING_HINT = "Esc interrupt · ^G keys"
+const CHAT_HINT = "/help keys"
+const RUNNING_HINT = "Esc interrupt · /help keys"
 const CONNECT_HINT = "No model provider connected · ^P to connect one"
 const NO_MODEL_HINT = "No model chosen for this chat · ^O to choose one"
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const SPINNER_INTERVAL_MS = 120
+const MARKET_MONITOR_MUTATIONS = new Set([
+  "create_market_monitor",
+  "update_market_monitor",
+  "set_market_monitor_status",
+  "cancel_market_monitor",
+])
 
 /** One quiet terminal cell around the conversation, matching the Codex transcript. */
 const CHAT_INSET = 1
@@ -77,6 +89,7 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/model", description: "choose which model answers this chat" },
   { name: "/reasoning", description: "choose the model's reasoning effort" },
   { name: "/thoughts", description: "show or hide model reasoning" },
+  { name: "/monitors", description: "view or cancel this chat's market monitors" },
   { name: "/subagents", description: "open this chat's worker sessions" },
   { name: "/parent", description: "return from a worker transcript" },
   { name: "/chats", description: "open another chat" },
@@ -85,17 +98,23 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/help", description: "show every chat key" },
 ]
 
-type Focus = "transcript" | "composer"
-type Modal = AiConnectionModal | AiModelModal | ChatSessionModal | ChatHelpModal | SubagentSessionModal | ChatQuestionModal
+type Focus = "transcript" | "composer" | "question"
+type Modal = AiConnectionModal | AiModelModal | ChatSessionModal | ChatHelpModal | MarketMonitorModal | SubagentSessionModal
 
 export interface ChatScreenOptions {
   chats: ChatSessions
+  marketMonitors?: MarketMonitorClient
   account?: AiAccount
+  sound?: SoundPlayer
   logs: ApplicationLog
   initialSessionId?: string | null
   initialShowThoughts?: boolean
   onSessionChange?: (sessionId: string | null) => void
   onShowThoughtsChange?: (showThoughts: boolean) => void
+  onQuestionPending?: (request: ChatQuestionRequest, selected: boolean) => void
+  onQuestionResolved?: (requestId: string) => void
+  onNotification?: (notification: ChatNotification) => void
+  onNotificationDismissed?: (notificationId: string) => void
 }
 
 /** A reply arriving now, before it has been stored as a message. */
@@ -144,6 +163,7 @@ export class ChatScreen {
   private readonly composerRow: BoxRenderable
   private readonly composerMarker: TextRenderable
   private readonly composer: TextareaRenderable
+  private readonly questionSlot: BoxRenderable
   private readonly composerMeta: TextRenderable
   private readonly hint: TextRenderable
   private readonly usage: TextRenderable
@@ -152,7 +172,10 @@ export class ChatScreen {
   private sessions: ChatSession[] = []
   private messagesBySession = new Map<string, ChatMessage[]>()
   private streamingBySession = new Map<string, Streaming>()
+  private runningRunIds = new Set<string>()
   private pendingQuestions = new Map<string, ChatQuestionRequest>()
+  private questionPanel: ChatQuestionPanel | null = null
+  private armedMonitorCountBySession = new Map<string, number>()
   /** Context window per `provider/model`, for reading a conversation's usage as a share of it. */
   private contextWindows = new Map<string, number>()
   private selectedSessionId: string | null = null
@@ -231,6 +254,11 @@ export class ChatScreen {
     })
     this.composerRow.add(this.composerMarker)
     this.composerRow.add(this.composer)
+    this.questionSlot = new BoxRenderable(renderer, {
+      width: "100%",
+      flexShrink: 0,
+      flexDirection: "column",
+    })
 
     // Model, keys and usage form one quiet status line below the field, as in Codex.
     const composerDetails = new BoxRenderable(renderer, {
@@ -267,6 +295,7 @@ export class ChatScreen {
 
     this.root.add(body)
     this.root.add(this.composerRow)
+    this.root.add(this.questionSlot)
     // As in Codex, slash commands unfold below the prompt instead of covering the
     // conversation or floating over the field being edited.
     this.root.add(this.commandMenu.root)
@@ -293,7 +322,7 @@ export class ChatScreen {
    * not: typing "Tomorrow" would otherwise leave the tab.
    */
   capturesInput(): boolean {
-    return this.typing() || this.modal !== null
+    return this.typing() || this.focus === "question" || this.modal !== null
   }
 
   handleKey(key: KeyEvent): void {
@@ -307,6 +336,10 @@ export class ChatScreen {
     key.preventDefault()
     if (this.modal) {
       this.modal.handleKey(key)
+      return
+    }
+    if (this.focus === "question" && this.questionPanel) {
+      this.questionPanel.handleKey(key)
       return
     }
     if (this.typing() && this.handleCommandMenuKey(key)) return
@@ -344,16 +377,6 @@ export class ChatScreen {
       this.openConnection()
       return
     }
-    // One control folds or opens reasoning across the conversation. Thoughts start
-    // open, matching the live Codex transcript; ^T is there when they get in the way.
-    if (isControl(key, "t")) {
-      this.toggleThoughts()
-      return
-    }
-    if (isControl(key, "g")) {
-      this.openHelp()
-      return
-    }
     if (isControl(key, "x")) {
       void this.cancelQueued()
       return
@@ -364,7 +387,8 @@ export class ChatScreen {
       return
     }
     if (key.name === "tab" || key.name === "backtab") {
-      this.setFocus(this.typing() ? "transcript" : "composer")
+      if (this.typing()) this.setFocus(this.selectedPendingQuestion() ? "question" : "transcript")
+      else this.setFocus("composer")
       return
     }
     // Reading back through a conversation without leaving the field first.
@@ -392,6 +416,7 @@ export class ChatScreen {
     this.render.cancel()
     this.stopSpinner()
     this.closeModal()
+    this.removeQuestionPanel()
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
 
@@ -429,6 +454,9 @@ export class ChatScreen {
       const toolIndex = streaming?.tools.indexOf(message.toolName) ?? -1
       if (streaming && toolIndex >= 0) streaming.tools.splice(toolIndex, 1)
     }
+    if (message.role === "APP_EVENT" || (message.toolName && MARKET_MONITOR_MUTATIONS.has(message.toolName))) {
+      void this.refreshMarketMonitorCount(sessionId)
+    }
     this.render.schedule()
   }
 
@@ -459,14 +487,19 @@ export class ChatScreen {
     this.render.schedule()
   }
 
-  acceptRun(sessionId: string, runId: string, status: string, error?: string): void {
+  acceptRun(sessionId: string, runId: string, status: ChatRunStatus, error?: string): void {
     if (this.destroyed) return
+    const wasRunning = status === "running" ? false : this.runningRunIds.delete(runId)
     if (status !== "running") this.streamingBySession.delete(sessionId)
     // A run announces itself before its first delta, and a model can think for a long
     // while before that one arrives: holding the run from here is what makes the
     // spinner turn from the moment the question went rather than from the answer.
     else if (this.streamingBySession.get(sessionId)?.runId !== runId) {
       this.streamingBySession.set(sessionId, { runId, startedAt: Date.now(), thinkingMs: null, text: "", reasoning: "", tools: [] })
+    }
+    if (status === "running") this.runningRunIds.add(runId)
+    if (wasRunning && (status === "done" || status === "failed")) {
+      this.options.sound?.play("COMPLETE")
     }
     if (error) this.options.logs.error("Chat", new Error(error))
     this.sessions = this.sessions.map((session) => (
@@ -477,13 +510,27 @@ export class ChatScreen {
 
   acceptQuestion(request: ChatQuestionRequest): void {
     if (this.destroyed) return
+    const isNew = !this.pendingQuestions.has(request.id)
     this.pendingQuestions.set(request.id, request)
-    this.openPendingQuestion()
+    if (!isNew) return
+    if (request.sessionId === this.selectedSessionId) this.setFocus("question")
+    this.options.onQuestionPending?.(request, request.sessionId === this.selectedSessionId)
+    this.render.schedule()
   }
 
   acceptQuestionResolved(_sessionId: string, requestId: string): void {
     if (this.destroyed) return
     this.finishQuestion(requestId)
+  }
+
+  acceptNotification(notification: ChatNotification): void {
+    if (this.destroyed) return
+    this.options.onNotification?.(notification)
+  }
+
+  acceptNotificationDismissed(notificationId: string): void {
+    if (this.destroyed) return
+    this.options.onNotificationDismissed?.(notificationId)
   }
 
   /** Re-reads a session after a missed frame, so no transcript keeps a hole. */
@@ -497,13 +544,19 @@ export class ChatScreen {
   private async load(): Promise<void> {
     await this.refreshConnection()
     try {
-      const [sessions, questions] = await Promise.all([
+      const [sessions, questions, notifications] = await Promise.all([
         this.options.chats.list(),
         this.options.chats.questions(),
+        this.options.chats.notifications(),
       ])
       if (this.destroyed) return
       this.sessions = sessions
-      this.pendingQuestions = new Map(questions.map((request) => [request.id, request]))
+      for (const request of questions) {
+        if (this.pendingQuestions.has(request.id)) continue
+        this.pendingQuestions.set(request.id, request)
+        this.options.onQuestionPending?.(request, request.sessionId === this.selectedSessionId)
+      }
+      for (const notification of notifications) this.options.onNotification?.(notification)
       const preferred = this.options.initialSessionId
       if (preferred && !sessions.some((session) => session.id === preferred)) {
         try {
@@ -513,8 +566,13 @@ export class ChatScreen {
         }
       }
       this.setSelectedSession(this.initialSession(this.sessions))
-      if (this.selectedSessionId) await this.loadSession(this.selectedSessionId)
-      this.openPendingQuestion()
+      if (this.selectedPendingQuestion()) this.setFocus("question")
+      if (this.selectedSessionId) {
+        await Promise.all([
+          this.loadSession(this.selectedSessionId),
+          this.refreshMarketMonitorCount(this.selectedSessionId),
+        ])
+      }
     } catch (error) {
       this.options.logs.error("Chat", error)
     }
@@ -546,6 +604,22 @@ export class ChatScreen {
       this.render.schedule()
     } catch (error) {
       this.options.logs.error("Chat", error)
+    }
+  }
+
+  private async refreshMarketMonitorCount(sessionId: string): Promise<void> {
+    const service = this.options.marketMonitors
+    if (!service) return
+    try {
+      const monitors = await service.list(sessionId)
+      if (this.destroyed) return
+      this.armedMonitorCountBySession.set(
+        sessionId,
+        monitors.filter((monitor) => monitor.status === "ARMED").length,
+      )
+      this.render.schedule()
+    } catch (error) {
+      this.options.logs.error("Market monitors", error)
     }
   }
 
@@ -674,6 +748,9 @@ export class ChatScreen {
         break
       case "/thoughts":
         this.toggleThoughts()
+        break
+      case "/monitors":
+        await this.openMarketMonitors()
         break
       case "/subagents":
         await this.openSubagents()
@@ -812,6 +889,52 @@ export class ChatScreen {
     }))
   }
 
+  private async openMarketMonitors(): Promise<void> {
+    if (this.modal || this.destroyed) return
+    const sessionId = this.selectedSessionId
+    let monitors: MarketMonitor[] = []
+    if (sessionId && this.options.marketMonitors) {
+      try {
+        monitors = await this.options.marketMonitors.list(sessionId)
+        this.armedMonitorCountBySession.set(
+          sessionId,
+          monitors.filter((monitor) => monitor.status === "ARMED").length,
+        )
+      } catch (error) {
+        this.options.logs.error("Market monitors", error)
+        if (this.destroyed || this.modal) return
+      }
+    }
+    if (this.destroyed || this.modal) return
+    this.showModal(new MarketMonitorModal(this.renderer, {
+      monitors,
+      onCancel: (monitorId) => void this.cancelMarketMonitor(monitorId),
+      onClose: () => this.closeModal(),
+    }))
+  }
+
+  private async cancelMarketMonitor(monitorId: string): Promise<void> {
+    const service = this.options.marketMonitors
+    if (!service) return
+    try {
+      await service.remove(monitorId)
+      if (this.modal instanceof MarketMonitorModal) {
+        const sessionId = this.selectedSessionId
+        const monitors = sessionId ? await service.list(sessionId) : []
+        if (sessionId) {
+          this.armedMonitorCountBySession.set(
+            sessionId,
+            monitors.filter((monitor) => monitor.status === "ARMED").length,
+          )
+        }
+        this.modal.setMonitors(monitors)
+        this.render.schedule()
+      }
+    } catch (error) {
+      this.options.logs.error("Market monitors", error)
+    }
+  }
+
   /** Moves between a parent's worker transcripts without opening the worker picker. */
   private async cycleSubagent(direction: -1 | 1): Promise<void> {
     const selected = this.selectedSession()
@@ -897,35 +1020,15 @@ export class ChatScreen {
     // offered at all depends on it.
     void this.refreshConnection()
     this.renderer.requestRender()
-    this.openPendingQuestion()
-  }
-
-  /** Questions take the next modal slot and keep their agent turn paused until answered. */
-  private openPendingQuestion(): void {
-    if (this.modal || this.destroyed) return
-    const request = this.pendingQuestions.values().next().value as ChatQuestionRequest | undefined
-    if (!request) return
-    this.showModal(new ChatQuestionModal(this.renderer, {
-      request,
-      onAnswer: async (answers) => {
-        await this.options.chats.answerQuestion(request.id, answers)
-        this.finishQuestion(request.id)
-      },
-      onReject: async () => {
-        await this.options.chats.rejectQuestion(request.id)
-        this.finishQuestion(request.id)
-      },
-    }))
   }
 
   private finishQuestion(requestId: string): void {
-    this.pendingQuestions.delete(requestId)
-    if (this.modal instanceof ChatQuestionModal && this.modal.requestId === requestId) {
-      this.closeModal()
-    } else {
-      this.render.schedule()
-      this.openPendingQuestion()
-    }
+    if (!this.pendingQuestions.delete(requestId)) return
+    this.options.onQuestionResolved?.(requestId)
+    if (this.questionPanel?.requestId === requestId) this.removeQuestionPanel()
+    if (this.selectedPendingQuestion()) this.setFocus("question")
+    else if (this.focus === "question") this.setFocus("composer")
+    this.render.schedule()
   }
 
   // --- state --------------------------------------------------------------------
@@ -947,7 +1050,35 @@ export class ChatScreen {
     if (sessionId === this.selectedSessionId) return
     this.setSelectedSession(sessionId)
     if (!this.messagesBySession.has(sessionId)) void this.loadSession(sessionId)
+    if (this.selectedPendingQuestion()) this.setFocus("question")
+    else if (this.focus === "question") this.setFocus("composer")
     this.render.schedule()
+  }
+
+  /** Opens the exact conversation where an agent is waiting for an answer. */
+  openQuestion(sessionId: string): void {
+    if (this.destroyed) return
+    this.selectSession(sessionId)
+    this.setFocus("question")
+  }
+
+  /** Opens the conversation that emitted a non-blocking notification. */
+  openSession(sessionId: string): void {
+    if (this.destroyed) return
+    this.selectSession(sessionId)
+    this.setFocus("composer")
+  }
+
+  async dismissNotification(notificationId: string): Promise<void> {
+    try {
+      await this.options.chats.dismissNotification(notificationId)
+    } catch (error) {
+      this.options.logs.error("Chat notification", error)
+    }
+  }
+
+  isShowingSession(sessionId: string): boolean {
+    return this.selectedSessionId === sessionId
   }
 
   private initialSession(sessions: ChatSession[]): string | null {
@@ -959,6 +1090,7 @@ export class ChatScreen {
     if (sessionId === this.selectedSessionId) return
     this.selectedSessionId = sessionId
     this.options.onSessionChange?.(sessionId)
+    if (sessionId) void this.refreshMarketMonitorCount(sessionId)
   }
 
   private toggleThoughts(): void {
@@ -989,6 +1121,7 @@ export class ChatScreen {
     this.focus = focus
     if (focus === "composer") this.composer.focus()
     else this.composer.blur()
+    this.questionPanel?.setActive(focus === "question")
     this.render.schedule()
   }
 
@@ -1009,6 +1142,7 @@ export class ChatScreen {
     const session = this.selectedSession()
     this.syncSpinner(session)
     this.transcript.setBlocks(this.transcriptBlocks(session))
+    this.syncQuestionPanel()
     this.composerRow.visible = this.composerUsable()
     // Nothing here sizes the field: it measures its own text and the block around it
     // takes exactly the height the prompt needs. Only the active insertion marker is
@@ -1035,17 +1169,60 @@ export class ChatScreen {
     this.renderer.requestRender()
   }
 
+  private selectedPendingQuestion(): ChatQuestionRequest | null {
+    for (const request of this.pendingQuestions.values()) {
+      if (request.sessionId === this.selectedSessionId) return request
+    }
+    return null
+  }
+
+  private syncQuestionPanel(): void {
+    const request = this.selectedPendingQuestion()
+    if (this.questionPanel && request && this.questionPanel.requestId === request.id) {
+      this.questionPanel.setActive(this.focus === "question")
+      return
+    }
+    this.removeQuestionPanel()
+    if (!request) return
+    this.questionPanel = new ChatQuestionPanel(this.renderer, {
+      request,
+      onAnswer: async (answers) => {
+        await this.options.chats.answerQuestion(request.id, answers)
+        this.finishQuestion(request.id)
+      },
+      onFocus: () => this.setFocus("question"),
+      onLeave: () => this.setFocus("composer"),
+    })
+    this.questionPanel.setActive(this.focus === "question")
+    this.questionSlot.add(this.questionPanel.root)
+  }
+
+  private removeQuestionPanel(): void {
+    const panel = this.questionPanel
+    if (!panel) return
+    this.questionPanel = null
+    if (!this.questionSlot.isDestroyed && !panel.root.isDestroyed) this.questionSlot.remove(panel.root)
+    panel.destroy()
+  }
+
   /** What will answer what is being typed. */
   private composerMetaText(session: ChatSession | null): StyledText {
     if (!session?.model) return new StyledText([fg(QUEUED_COLOR)("no model · ^O chooses one")])
-    if (session.parentSessionId) {
-      return new StyledText([
+    const label = session.parentSessionId
+      ? new StyledText([
         fg(MODEL_COLOR)(session.agent ?? "worker"),
         fg(FAINT_COLOR)(" · "),
         ...modelLabel(session.model, session.reasoning).chunks,
       ])
+      : modelLabel(session.model, session.reasoning)
+    const monitorCount = this.armedMonitorCountBySession.get(session.id)
+    if (monitorCount !== undefined && monitorCount > 0) {
+      label.chunks.push(
+        fg(FAINT_COLOR)(" · "),
+        fg(MONITOR_COLOR)(`${monitorCount} monitor${monitorCount === 1 ? "" : "s"}`),
+      )
     }
-    return modelLabel(session.model, session.reasoning)
+    return label
   }
 
   /**
@@ -1156,7 +1333,7 @@ function messageBlock(message: ChatMessage, current: StyledText, showThoughts: b
     return {
       id: message.id,
       marker: new StyledText([fg(COMPOSER_COLOR)("◆")]),
-      header: new StyledText([fg(COMPOSER_COLOR)("price alert")]),
+      header: new StyledText([fg(COMPOSER_COLOR)("market monitor")]),
       content: new StyledText([fg(MUTED_COLOR)(message.text)]),
       ...(message.status === "QUEUED"
         ? { footer: new StyledText([fg(QUEUED_COLOR)("waiting for agent")]) }
@@ -1278,7 +1455,7 @@ function signature(message: ChatMessage, current: StyledText): StyledText {
  * That the model thought, how long it took over it, and what it thought when asked to
  * show it.
  *
- * Visible by default, matching the live Codex transcript. `^T` folds every thought when
+ * Visible by default, matching the live Codex transcript. `/thoughts` folds every thought when
  * reasoning gets in the way. The duration stays either way, because how long a model sat
  * thinking is worth knowing even when the thoughts themselves are hidden.
  */

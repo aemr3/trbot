@@ -1,4 +1,5 @@
 import { PriceAlertSchema, type PriceAlert, type PriceAlertActions, type PriceAlertDraft, type PriceAlertStatus } from "@trbot/market/alert.ts"
+import { MarketMonitorSchema, type MarketMonitor } from "@trbot/market/market-monitor.ts"
 import { OkResponseSchema, ROUTES } from "@trbot/protocol/routes.ts"
 import { StopRuleSchema, type StopRule, type StopRuleDraft, type StopRuleStatus } from "@trbot/trading/stop.ts"
 import type { HttpClient } from "./http.ts"
@@ -27,6 +28,11 @@ export interface StopRuleClient {
 }
 
 export type AlertClient = PriceAlertActions
+
+export interface MarketMonitorClient {
+  list(chatSessionId: string): Promise<MarketMonitor[]>
+  remove(id: string): Promise<void>
+}
 
 export class HttpStopRules implements StopRuleClient {
   constructor(private readonly http: HttpClient) {}
@@ -69,5 +75,18 @@ export class HttpAlerts implements AlertClient {
 
   async setStatus(id: string, status: PriceAlertStatus): Promise<void> {
     await this.http.put(ROUTES.alertStatus(id), z.array(PriceAlertSchema), { body: { status } })
+  }
+}
+
+export class HttpMarketMonitors implements MarketMonitorClient {
+  constructor(private readonly http: HttpClient) {}
+
+  list(chatSessionId: string): Promise<MarketMonitor[]> {
+    const query = new URLSearchParams({ chatSessionId })
+    return this.http.get(`${ROUTES.marketMonitors}?${query}`, z.array(MarketMonitorSchema))
+  }
+
+  async remove(id: string): Promise<void> {
+    await this.http.delete(ROUTES.marketMonitor(id), OkResponseSchema)
   }
 }

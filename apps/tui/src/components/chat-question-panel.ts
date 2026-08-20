@@ -6,33 +6,31 @@ import {
   type KeyEvent,
   type RenderContext,
 } from "@opentui/core"
-import type {
-  ChatQuestionAnswer,
-  ChatQuestionRequest,
-} from "@trbot/chat/question.ts"
+import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import { SelectableList } from "./selectable-list.ts"
 
-const PANEL_BG = "#101010"
-const BORDER_COLOR = "#666666"
+const PANEL_BG = "#17191f"
+const BORDER_COLOR = "#555a68"
+const ACTIVE_BORDER_COLOR = "#8491d9"
 const TEXT_COLOR = "#dddddd"
 const MUTED_COLOR = "#888888"
-const ACCENT_COLOR = "#7c83ff"
+const ACCENT_COLOR = "#9ab8ff"
 const ERROR_COLOR = "#ff6b6b"
-const SELECTED_BG = "#22252d"
+const SELECTED_BG = "#2b3040"
 const CUSTOM_ID = "__custom__"
 
-export interface ChatQuestionModalOptions {
+export interface ChatQuestionPanelOptions {
   request: ChatQuestionRequest
   onAnswer: (answers: ChatQuestionAnswer[]) => Promise<void>
-  onReject: () => Promise<void>
+  onFocus: () => void
+  onLeave: () => void
 }
 
-/** Collects one or more answers while the calling agent remains paused. */
-export class ChatQuestionModal {
+/** Keeps an agent's pending question beside the composer until it is answered. */
+export class ChatQuestionPanel {
   readonly root: BoxRenderable
   readonly requestId: string
 
-  private readonly modal: BoxRenderable
   private readonly header: TextRenderable
   private readonly list: SelectableList
   private readonly customInput: TextRenderable
@@ -44,65 +42,75 @@ export class ChatQuestionModal {
   private busy = false
   private error: string | null = null
   private renderedQuestion = -1
+  private active = true
   private destroyed = false
 
   constructor(
     private readonly renderer: RenderContext,
-    private readonly options: ChatQuestionModalOptions,
+    private readonly options: ChatQuestionPanelOptions,
   ) {
     this.requestId = options.request.id
     this.answers = options.request.questions.map(() => [])
     this.root = new BoxRenderable(renderer, {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      width: "100%",
-      height: "100%",
-      alignItems: "center",
-      justifyContent: "center",
-      onSizeChange: () => this.resizeModal(),
-    })
-    this.modal = new BoxRenderable(renderer, {
-      width: 78,
-      height: 22,
-      paddingTop: 1,
-      paddingBottom: 1,
-      paddingLeft: 2,
-      paddingRight: 2,
+      width: "auto",
+      height: 11,
+      flexShrink: 0,
+      marginLeft: 1,
+      marginRight: 1,
+      marginTop: 1,
+      paddingLeft: 1,
+      paddingRight: 1,
       backgroundColor: PANEL_BG,
       border: true,
       borderStyle: "rounded",
-      borderColor: BORDER_COLOR,
+      borderColor: ACTIVE_BORDER_COLOR,
       flexDirection: "column",
+      onMouseDown: (event) => {
+        if (event.button !== 0) return
+        event.stopPropagation()
+        this.options.onFocus()
+      },
     })
-    this.header = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
+    this.header = new TextRenderable(renderer, {
+      content: "",
+      width: "100%",
+      height: 2,
+      flexShrink: 0,
+      wrapMode: "word",
+    })
     this.list = new SelectableList(renderer, {
       backgroundColor: PANEL_BG,
       selectedBackgroundColor: SELECTED_BG,
       wrapContent: true,
-      rowGap: 1,
+      onFocusRequest: options.onFocus,
       onActivate: (index) => this.activate(index),
     })
     this.customInput = new TextRenderable(renderer, {
       content: "",
       width: "100%",
-      height: 3,
+      flexGrow: 1,
       wrapMode: "word",
     })
-    this.footer = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
-    this.modal.add(this.header)
-    this.modal.add(this.list.root)
-    this.modal.add(this.customInput)
-    this.modal.add(this.footer)
-    this.root.add(this.modal)
+    this.footer = new TextRenderable(renderer, { content: "", width: "100%", flexShrink: 0, wrapMode: "word" })
+    this.root.add(this.header)
+    this.root.add(this.list.root)
+    this.root.add(this.customInput)
+    this.root.add(this.footer)
+    this.render()
+  }
+
+  setActive(active: boolean): void {
+    if (this.active === active) return
+    this.active = active
+    this.root.borderColor = active ? ACTIVE_BORDER_COLOR : BORDER_COLOR
     this.render()
   }
 
   handleKey(key: KeyEvent): boolean {
     if (this.destroyed || this.busy) return true
     if (this.custom) return this.handleCustomKey(key)
-    if (key.name === "escape" || key.name === "esc") {
-      void this.reject()
+    if (key.name === "escape" || key.name === "esc" || key.name === "tab") {
+      this.options.onLeave()
       return true
     }
 
@@ -231,20 +239,6 @@ export class ChatQuestionModal {
     }
   }
 
-  private async reject(): Promise<void> {
-    this.busy = true
-    this.error = null
-    this.render()
-    try {
-      await this.options.onReject()
-    } catch (error) {
-      if (this.destroyed) return
-      this.busy = false
-      this.error = errorMessage(error)
-      this.render()
-    }
-  }
-
   private question() {
     return this.options.request.questions[this.questionIndex]
   }
@@ -255,9 +249,9 @@ export class ChatQuestionModal {
     if (!question) return
     const total = this.options.request.questions.length
     this.header.content = new StyledText([
-      fg(ACCENT_COLOR)(question.header),
+      fg(ACCENT_COLOR)(`Agent asks · ${question.header}`),
       fg(MUTED_COLOR)(total > 1 ? `  ${this.questionIndex + 1}/${total}` : ""),
-      fg(TEXT_COLOR)(`\n${question.question}\n`),
+      fg(TEXT_COLOR)(`\n${question.question}`),
     ])
     this.list.root.visible = !this.custom
     this.customInput.visible = this.custom
@@ -295,20 +289,17 @@ export class ChatQuestionModal {
 
     const hint = this.busy
       ? "Sending answer…"
-      : this.custom
-        ? "Enter use answer · Esc choices"
-        : question.multiple
-          ? "Space toggle · Enter continue · Esc dismiss"
-          : "Enter choose · Esc dismiss"
+      : !this.active
+        ? "Tab to answer"
+        : this.custom
+          ? "Enter use answer · Esc choices"
+          : question.multiple
+            ? "Space toggle · Enter continue · Tab answer later"
+            : "Enter choose · Tab answer later"
     this.footer.content = new StyledText([
-      fg(this.error ? ERROR_COLOR : MUTED_COLOR)(`\n${this.error ?? hint}`),
+      fg(this.error ? ERROR_COLOR : MUTED_COLOR)(this.error ?? hint),
     ])
     this.renderer.requestRender()
-  }
-
-  private resizeModal(): void {
-    this.modal.width = Math.max(40, Math.min(78, this.root.width - 4))
-    this.modal.height = Math.max(12, Math.min(22, this.root.height - 2))
   }
 }
 

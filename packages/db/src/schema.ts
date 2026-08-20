@@ -120,6 +120,33 @@ export const priceAlerts = sqliteTable("price_alerts", {
   triggerId: text("trigger_id"),
 })
 
+// Agent-owned conditions are deliberately separate from user price alerts. A
+// monitor belongs to one chat and wakes that chat; it never appears in Alerts.
+export const marketMonitors = sqliteTable("market_monitors", {
+  id: text("id").primaryKey(),
+  instrumentUid: text("instrument_uid").notNull(),
+  symbol: text("symbol").notNull(),
+  displayName: text("display_name").notNull(),
+  direction: text("direction").notNull(),
+  kind: text("kind").notNull(),
+  value: real("value").notNull(),
+  basis: text("basis").notNull(),
+  interval: text("interval"),
+  repeat: text("repeat").notNull(),
+  status: text("status").notNull(),
+  triggerPrice: real("trigger_price"),
+  extremePrice: real("extreme_price"),
+  referencePrice: real("reference_price"),
+  atrValue: real("atr_value"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+  triggeredAt: integer("triggered_at"),
+  triggeredPrice: real("triggered_price"),
+  chatSessionId: text("chat_session_id").notNull(),
+  onTrigger: text("on_trigger").notNull(),
+  triggerId: text("trigger_id"),
+})
+
 export const appPreferences = sqliteTable("app_preferences", {
   id: integer("id").primaryKey(),
   instrumentSort: text("instrument_sort").notNull(),
@@ -156,6 +183,21 @@ export const chatSessions = sqliteTable("chat_sessions", {
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 })
+
+// Agent notices remain pending across terminal disconnects until the user opens
+// or dismisses them. Deleting their chat removes notices that can no longer open.
+export const chatNotifications = sqliteTable(
+  "chat_notifications",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    message: text("message").notNull(),
+    urgency: text("urgency").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("chat_notifications_created_at").on(table.createdAt)],
+)
 
 /**
  * One message in a conversation, whether the trader wrote it, the model replied,

@@ -9,6 +9,7 @@ import {
   type ChatSessionDetail,
 } from "@trbot/chat/session.ts"
 import { ChatQuestionRequestSchema, type ChatQuestionAnswer, type ChatQuestionRequest } from "@trbot/chat/question.ts"
+import { ChatNotificationSchema, type ChatNotification } from "@trbot/chat/notification.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import { OkResponseSchema, ROUTES } from "@trbot/protocol/routes.ts"
 import type { HttpClient } from "./http.ts"
@@ -65,6 +66,14 @@ export class HttpChatSessions implements ChatSessions {
   async rejectQuestion(requestId: string): Promise<void> {
     await this.http.delete(ROUTES.chatQuestion(requestId), OkResponseSchema)
   }
+
+  notifications(): Promise<ChatNotification[]> {
+    return this.http.get(ROUTES.chatNotifications, z.array(ChatNotificationSchema))
+  }
+
+  async dismissNotification(notificationId: string): Promise<void> {
+    await this.http.delete(ROUTES.chatNotification(notificationId), OkResponseSchema)
+  }
 }
 
 export interface ChatEvents {
@@ -75,6 +84,8 @@ export interface ChatEvents {
   onRun?: (sessionId: string, runId: string, status: ChatRunStatus, error?: string) => void
   onQuestionAsked?: (request: ChatQuestionRequest) => void
   onQuestionResolved?: (sessionId: string, requestId: string) => void
+  onNotification?: (notification: ChatNotification) => void
+  onNotificationDismissed?: (notificationId: string) => void
   /**
    * Asked when this client can tell it is not seeing the whole run: a delta
    * arrived out of order, or a run is reported that it holds no partial for. The
@@ -140,6 +151,12 @@ export class ChatClient {
           return
         case "chatQuestionResolved":
           events.onQuestionResolved?.(frame.sessionId, frame.requestId)
+          return
+        case "chatNotification":
+          events.onNotification?.(frame.notification)
+          return
+        case "chatNotificationDismissed":
+          events.onNotificationDismissed?.(frame.notificationId)
           return
         default:
           return

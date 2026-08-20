@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { Server } from "bun"
-import { HttpAlerts, HttpStopRules } from "@trbot/client/monitors.ts"
+import { HttpAlerts, HttpMarketMonitors, HttpStopRules } from "@trbot/client/monitors.ts"
 import { HttpClient } from "@trbot/client/http.ts"
 import type { PriceAlert, PriceAlertStore } from "@trbot/market/alert.ts"
+import type { MarketMonitor, MarketMonitorStore } from "@trbot/market/market-monitor.ts"
 import type { StopRule, StopRuleStore } from "@trbot/trading/stop.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import { startServer } from "../http/server.ts"
@@ -10,6 +11,7 @@ import { ProviderSession } from "../session.ts"
 import { StreamHub } from "../stream-hub.ts"
 import type { SocketData } from "../stream-hub.ts"
 import { AlertController } from "./alert.ts"
+import { MarketMonitorController } from "./market-monitor.ts"
 import { StopController } from "./stop.ts"
 import { z } from "zod"
 
@@ -54,6 +56,21 @@ function memoryAlertStore(): PriceAlertStore {
   }
 }
 
+function memoryMarketMonitorStore(): MarketMonitorStore {
+  const monitors = new Map<string, MarketMonitor>()
+  return {
+    async list() {
+      return [...monitors.values()]
+    },
+    async put(monitor) {
+      monitors.set(monitor.id, monitor)
+    },
+    async remove(id) {
+      monitors.delete(id)
+    },
+  }
+}
+
 const STOP_DRAFT = {
   instrumentUid: "future-1",
   symbol: "F_XU0300826",
@@ -93,6 +110,7 @@ describe("editing the rules the server evaluates", () => {
   let client: HttpClient
   let stops: StopController
   let alerts: AlertController
+  let marketMonitors: MarketMonitorController
   let broadcasts: string[]
 
   beforeEach(() => {
@@ -107,6 +125,10 @@ describe("editing the rules the server evaluates", () => {
       store: memoryAlertStore(),
       broadcast: (event) => broadcasts.push(event.type),
     })
+    marketMonitors = new MarketMonitorController({
+      store: memoryMarketMonitorStore(),
+      onTrigger: async () => {},
+    })
     server = startServer(
       { host: "127.0.0.1", port: 0, token: TOKEN, tls: null },
       {
@@ -118,7 +140,9 @@ describe("editing the rules the server evaluates", () => {
         ai: notUsed as never,
         chat: notUsed as never,
         questions: notUsed as never,
+        notifications: notUsed as never,
         alerts,
+        marketMonitors,
         stops,
         backlog: () => [],
         onDecision: () => {},
@@ -131,6 +155,7 @@ describe("editing the rules the server evaluates", () => {
     void server.stop(true)
     stops.destroy()
     alerts.destroy()
+    marketMonitors.destroy()
   })
 
   test("a saved stop rule is watched by the monitor, not only stored", async () => {
@@ -169,6 +194,22 @@ describe("editing the rules the server evaluates", () => {
     await remote.remove(saved.id)
 
     expect(alerts.alerts.views()).toBeEmpty()
+  })
+
+  test("chat monitor routes expose and cancel monitors without creating price alerts", async () => {
+    const saved = await marketMonitors.save({
+      ...ALERT_DRAFT,
+      chatSessionId: "chat-1",
+      onTrigger: "Refresh the quote and reassess the setup.",
+    })
+    const remote = new HttpMarketMonitors(client)
+
+    expect(await remote.list("chat-1")).toEqual([saved])
+    expect(await remote.list("chat-2")).toEqual([])
+    expect(alerts.list()).toEqual([])
+
+    await remote.remove(saved.id)
+    expect(await remote.list("chat-1")).toEqual([])
   })
 
   test("pausing a rule reaches the monitor that would otherwise fire it", async () => {

@@ -1,4 +1,8 @@
 import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
+import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
+import type { ChatNotification } from "@trbot/chat/notification.ts"
+import { NotificationCenter } from "../components/notification-center.ts"
+import type { SoundPlayer } from "../components/sound.ts"
 import {
   WORKSPACE_ACTIVE_BACKGROUND,
   WORKSPACE_CHROME_BACKGROUND,
@@ -25,6 +29,10 @@ interface WorkspacePanel {
    * search, would find the tab changing under them.
    */
   capturesInput?(): boolean
+  openQuestion?(sessionId: string): void
+  openSession?(sessionId: string): void
+  dismissNotification?(notificationId: string): void
+  isShowingSession?(sessionId: string): boolean
   destroy(): void
 }
 
@@ -32,6 +40,7 @@ interface TradingWorkspaceScreenOptions {
   trade: WorkspacePanel
   chat: WorkspacePanel
   logs: WorkspacePanel
+  sound?: SoundPlayer
 }
 
 // Each tab answers to its own initial, so the shortcut is the label.
@@ -52,16 +61,26 @@ export class TradingWorkspaceScreen {
   private readonly status: TextRenderable
   private readonly tabBoxes = new Map<TradingWorkspaceTab, BoxRenderable>()
   private readonly tabLabels = new Map<TradingWorkspaceTab, TextRenderable>()
+  private readonly notifications: NotificationCenter
+  private readonly knownQuestionIds = new Set<string>()
+  private readonly questions = new Map<string, ChatQuestionRequest>()
+  private readonly dismissedQuestionIds = new Set<string>()
+  private readonly agentNotifications = new Map<string, ChatNotification>()
   private activeTab: TradingWorkspaceTab = "trade"
   private mounted = false
   private destroyed = false
 
   private readonly handleKeypress = (key: KeyEvent): void => {
+    if (this.notifications.count > 0) {
+      key.preventDefault()
+      key.stopPropagation()
+      this.notifications.handleKey(key)
+      return
+    }
     const panel = this.options[this.activeTab]
-    // A panel that is taking text owns every letter: switching tabs mid-word is worse
-    // than making the trader leave the field first. A control key is nobody's letter,
-    // so the cycle holds whatever the panel is doing.
-    const tab = cycleTab(key, this.activeTab) ?? (panel.capturesInput?.() ? null : tabShortcut(key))
+    // Direct control shortcuts remain available while a field has focus. Plain tab
+    // initials are only shortcuts when the active panel is not taking text.
+    const tab = controlTabShortcut(key) ?? (panel.capturesInput?.() ? null : tabShortcut(key))
     if (tab) {
       key.preventDefault()
       key.stopPropagation()
@@ -121,6 +140,8 @@ export class TradingWorkspaceScreen {
     this.content.add(options.trade.root)
     this.root.add(tabs)
     this.root.add(this.content)
+    this.notifications = new NotificationCenter(renderer)
+    this.root.add(this.notifications.root)
     this.renderTabs()
   }
 
@@ -144,6 +165,7 @@ export class TradingWorkspaceScreen {
     if (!this.content.isDestroyed && !next.root.isDestroyed) this.content.add(next.root)
     next.activate?.()
     this.renderTabs()
+    this.syncQuestionNotifications()
     this.renderer.requestRender()
   }
 
@@ -153,10 +175,103 @@ export class TradingWorkspaceScreen {
     this.status.fg = color
   }
 
+  /** Announces a durable question without resolving or rejecting it. */
+  notifyQuestion(request: ChatQuestionRequest, sessionSelected: boolean): void {
+    if (this.destroyed || this.knownQuestionIds.has(request.id)) return
+    this.knownQuestionIds.add(request.id)
+    this.questions.set(request.id, request)
+    this.options.sound?.play("QUESTION")
+    if (this.activeTab === "chat" && (this.options.chat.isShowingSession?.(request.sessionId) ?? sessionSelected)) return
+
+    this.showQuestionNotification(request)
+  }
+
+  syncQuestionNotifications(): void {
+    if (this.destroyed) return
+    for (const request of this.questions.values()) {
+      const visible = this.activeTab === "chat" && this.options.chat.isShowingSession?.(request.sessionId) === true
+      if (visible) this.notifications.remove(request.id)
+      else if (!this.dismissedQuestionIds.has(request.id)) this.showQuestionNotification(request)
+    }
+  }
+
+  private showQuestionNotification(request: ChatQuestionRequest): void {
+    const first = request.questions[0]
+    if (!first) return
+    const more = request.questions.length > 1 ? `\n+${request.questions.length - 1} more question${request.questions.length === 2 ? "" : "s"}` : ""
+    this.notifications.add({
+      id: request.id,
+      title: "Agent needs your answer",
+      body: `${first.header}\n${first.question}${more}`,
+      actions: [
+        {
+          label: "Open chat",
+          onSelect: () => {
+            this.selectTab("chat")
+            this.options.chat.openQuestion?.(request.sessionId)
+            this.syncQuestionNotifications()
+          },
+        },
+        {
+          label: "Stay here",
+          onSelect: () => this.dismissedQuestionIds.add(request.id),
+        },
+      ],
+      onDismiss: () => this.dismissedQuestionIds.add(request.id),
+    })
+  }
+
+  resolveQuestion(requestId: string): void {
+    this.knownQuestionIds.delete(requestId)
+    this.questions.delete(requestId)
+    this.dismissedQuestionIds.delete(requestId)
+    this.notifications.remove(requestId)
+  }
+
+  notifyAgent(notification: ChatNotification): void {
+    if (this.destroyed || this.agentNotifications.has(notification.id)) return
+    this.agentNotifications.set(notification.id, notification)
+    this.options.sound?.play("NOTIFICATION")
+    this.notifications.add({
+      id: notification.id,
+      title: notification.urgency === "INFO"
+        ? notification.title
+        : `${notification.urgency} · ${notification.title}`,
+      body: notification.message,
+      actions: [
+        {
+          label: "Open chat",
+          onSelect: () => {
+            this.selectTab("chat")
+            this.options.chat.openSession?.(notification.sessionId)
+            this.dismissAgentNotification(notification.id)
+          },
+        },
+        {
+          label: "Dismiss",
+          onSelect: () => this.dismissAgentNotification(notification.id),
+        },
+      ],
+      onDismiss: () => this.dismissAgentNotification(notification.id),
+    })
+  }
+
+  resolveAgentNotification(notificationId: string): void {
+    this.agentNotifications.delete(notificationId)
+    this.notifications.remove(notificationId)
+  }
+
+  private dismissAgentNotification(notificationId: string): void {
+    if (!this.agentNotifications.delete(notificationId)) return
+    this.notifications.remove(notificationId)
+    this.options.chat.dismissNotification?.(notificationId)
+  }
+
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
     if (this.mounted) this.renderer.keyInput.off("keypress", this.handleKeypress)
+    this.notifications.destroy()
     for (const tab of TABS) this.options[tab.id].destroy()
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
@@ -179,19 +294,11 @@ function tabShortcut(key: KeyEvent): TradingWorkspaceTab | null {
   return tab?.id ?? null
 }
 
-/**
- * Along the tabs on ^A, and back on ^⇧A.
- *
- * A control key rather than a letter, because a letter belongs to whatever is taking
- * text — and a letter rather than a digit, because Ctrl with a digit is a key only a
- * terminal speaking the kitty keyboard protocol reports at all. Reverse needs that same
- * protocol to be seen: without it Ctrl+Shift+A is the same byte as ^A and cycles
- * forward, which is the harmless way for it to fail. Taking ^A also takes it from the
- * chat composer, where it moved to the start of the line; Home still does that.
- */
-function cycleTab(key: KeyEvent, active: TradingWorkspaceTab): TradingWorkspaceTab | null {
-  if (!key.ctrl || key.meta || key.option || key.name !== "a") return null
-  const position = TABS.findIndex((candidate) => candidate.id === active)
-  const step = key.shift ? -1 : 1
-  return TABS[(position + step + TABS.length) % TABS.length]!.id
+/** Direct tab selection does not depend on terminals distinguishing Ctrl from Ctrl+Shift. */
+function controlTabShortcut(key: KeyEvent): TradingWorkspaceTab | null {
+  if (!key.ctrl || key.meta || key.option) return null
+  if (key.name === "a") return "chat"
+  if (key.name === "t") return "trade"
+  if (key.name === "g") return "logs"
+  return null
 }

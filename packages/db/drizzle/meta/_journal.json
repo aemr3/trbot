@@ -169,6 +169,20 @@
       "when": 1787179244272,
       "tag": "0023_chat_title_generation",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1787214099916,
+      "tag": "0024_create_market_monitors",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1787227508798,
+      "tag": "0025_create_chat_notifications",
+      "breakpoints": true
     }
   ]
 }

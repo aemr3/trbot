@@ -107,6 +107,37 @@ test("announces a crossing once, after the market has been seen on the near side
   expect(triggers).toHaveLength(1)
 })
 
+test("uses a live quote seen before saving to arm the first crossing", async () => {
+  const store = new FakePriceAlertStore()
+  const triggers: AlertTriggerEvent[] = []
+  const monitor = new AlertMonitor({
+    store,
+    onTrigger: (event) => triggers.push(event),
+    now: () => NOW,
+  })
+
+  monitor.applyQuote(quote(410))
+  await monitor.saveAlert({
+    id: "saved-after-quote",
+    instrumentUid: "instrument-1",
+    symbol: "F_ASELS0826",
+    displayName: "ASELS",
+    direction: "ABOVE",
+    kind: "PRICE",
+    value: 420,
+    basis: "TOUCH",
+    interval: null,
+    repeat: "ONCE",
+    referencePrice: 410,
+    atrValue: null,
+  })
+
+  monitor.applyQuote(quote(421))
+
+  expect(triggers).toHaveLength(1)
+  expect(triggers[0]?.price).toBe(421)
+})
+
 test("fires without any position, unlike a stop", async () => {
   // Nothing is ever set on this monitor but the alert itself; an alert watches
   // the market, not a holding.
@@ -144,35 +175,6 @@ test("persists a trailing level as it advances", async () => {
 
   monitor.applyQuote(quote(411))
   expect(triggers).toHaveLength(1)
-})
-
-test("editing an agent-created alert keeps its continuation ownership", async () => {
-  const owned = alert({}, {
-    chatSessionId: "chat-1",
-    onTrigger: "Reassess the setup.",
-  })
-  const { monitor } = await monitorWith([owned])
-
-  const edited = await monitor.saveAlert({
-    id: owned.id,
-    instrumentUid: owned.instrumentUid,
-    symbol: owned.symbol,
-    displayName: owned.displayName,
-    direction: owned.direction,
-    kind: owned.kind,
-    value: 430,
-    basis: owned.basis,
-    interval: owned.interval,
-    repeat: owned.repeat,
-    referencePrice: owned.referencePrice,
-    atrValue: owned.atrValue,
-  })
-
-  expect(edited).toMatchObject({
-    value: 430,
-    chatSessionId: "chat-1",
-    onTrigger: "Reassess the setup.",
-  })
 })
 
 test("a close-based alert ignores a wick and fires on the finished candle", async () => {

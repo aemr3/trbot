@@ -6,7 +6,9 @@ import type { AuthStore } from "@trbot/auth/store.ts"
 import { createHarness } from "@trbot/ai/harness.ts"
 import type { AiCredentialRecord, AiCredentialStore, AiPreferencesRecord, AiPreferencesStore } from "@trbot/ai/credential-store.ts"
 import { HttpAiAccount, HttpOverviewGenerator } from "@trbot/client/ai.ts"
+import { HttpChatSessions } from "@trbot/client/chat.ts"
 import { HttpClient } from "@trbot/client/http.ts"
+import type { ChatNotification, ChatNotificationStore } from "@trbot/chat/notification.ts"
 import { HttpInstrumentSource, HttpMemberFeatureSource, HttpOrderSource } from "@trbot/client/sources.ts"
 import { buildOverviewDigest, type MarketOverviewDigest } from "@trbot/market/overview.ts"
 import { memberFeatureSet, type MemberFeatureSet } from "@trbot/member/features.ts"
@@ -18,6 +20,7 @@ import { AiService } from "../ai.ts"
 import { IdempotencyStore } from "./idempotency.ts"
 import { startServer } from "./server.ts"
 import { ProviderSession } from "../session.ts"
+import { ChatNotificationController } from "../chat-notification.ts"
 import { StreamHub } from "../stream-hub.ts"
 import type { SocketData } from "../stream-hub.ts"
 import { z } from "zod"
@@ -90,6 +93,7 @@ describe("server and client over the wire", () => {
   let connection: DatabaseConnection
   let session: ProviderSession
   let overviewFailure: Error | null = null
+  let notifications: ChatNotificationController
 
   beforeAll(async () => {
     connection = await openDatabase(":memory:")
@@ -108,6 +112,16 @@ describe("server and client over the wire", () => {
         },
       },
     })
+    const notificationRows: ChatNotification[] = []
+    const notificationStore: ChatNotificationStore = {
+      list: async () => [...notificationRows],
+      put: async (notification) => { notificationRows.push(notification) },
+      remove: async (id) => {
+        const index = notificationRows.findIndex((notification) => notification.id === id)
+        if (index >= 0) notificationRows.splice(index, 1)
+      },
+    }
+    notifications = new ChatNotificationController({ store: notificationStore, broadcast: () => {} })
     server = startServer(
       { host: "127.0.0.1", port: 0, token: TOKEN, tls: null },
       {
@@ -116,11 +130,13 @@ describe("server and client over the wire", () => {
         idempotency: new IdempotencyStore(connection.db),
         preferences: notUsed as never,
         alerts: notUsed as never,
+        marketMonitors: notUsed as never,
         stops: notUsed as never,
         overviewSnapshots: notUsed as never,
         ai,
         chat: notUsed as never,
         questions: notUsed as never,
+        notifications,
         backlog: () => [],
         onDecision: () => {},
       },
@@ -156,6 +172,20 @@ describe("server and client over the wire", () => {
   test("an unknown route reports not_found rather than hanging", async () => {
     const error = await client.get("/v1/nope", z.unknown()).catch((caught: unknown) => caught)
     expect(isProtocolError(error) && error.code).toBe("not_found")
+  })
+
+  test("pending agent notifications round-trip and can be dismissed", async () => {
+    const notification = await notifications.notify({
+      sessionId: "chat-1",
+      title: "Review complete",
+      message: "The setup remains valid.",
+      urgency: "INFO",
+    })
+    const chats = new HttpChatSessions(client)
+
+    expect(await chats.notifications()).toEqual([notification])
+    await chats.dismissNotification(notification.id)
+    expect(await chats.notifications()).toEqual([])
   })
 
   test("a rejected sign-in reports invalid_request for a missing field", async () => {

@@ -1,26 +1,26 @@
-// Audible cues for the two things a trader must not miss while looking at
-// something else: a price alert reaching its level, and a protective stop about
-// to send a live order. They are deliberately different sounds — hearing which
-// one fired should not require looking at the screen.
+// Audible cues for events worth noticing while looking at something else. They
+// use different system sounds so the urgent market cues remain recognizable.
 
-const SOUND_CUES = ["ALERT", "STOP"] as const
+const SOUND_CUES = ["ALERT", "STOP", "COMPLETE", "QUESTION", "NOTIFICATION"] as const
 export type SoundCue = (typeof SOUND_CUES)[number]
 
 export interface SoundPlayer {
   play(cue: SoundCue): void
 }
 
-// macOS ships distinct system sounds, so each cue gets its own voice: the alert
-// pings, the stop is the sharper one because money is about to move.
+// The completion sound is deliberately gentler than the market cues.
 const MACOS_SOUND_FILES: Record<SoundCue, string> = {
   ALERT: "/System/Library/Sounds/Submarine.aiff",
   STOP: "/System/Library/Sounds/Sosumi.aiff",
+  COMPLETE: "/System/Library/Sounds/Glass.aiff",
+  QUESTION: "/System/Library/Sounds/Ping.aiff",
+  NOTIFICATION: "/System/Library/Sounds/Pop.aiff",
 }
 
 // Where no sound player is available the terminal bell stands in, twice for a
 // stop, so the two cues stay apart even at their most primitive.
 const BELL = "\u0007"
-const BELL_COUNT: Record<SoundCue, number> = { ALERT: 1, STOP: 2 }
+const BELL_COUNT: Record<SoundCue, number> = { ALERT: 1, STOP: 2, COMPLETE: 1, QUESTION: 1, NOTIFICATION: 1 }
 
 export interface SystemSoundPlayerOptions {
   // Writes raw terminal output. Pass the renderer's writer so a bell never

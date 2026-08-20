@@ -1,7 +1,7 @@
-// Price levels the trader or agent wants watched. An alert is the same shape of
+// Price levels the user wants announced in the trading interface. An alert is the same shape of
 // rule as a protective stop — a level, how it is measured, and what counts as
 // reaching it — but it is not attached to a position and it never trades. The
-// app announces every trigger; an agent-owned alert also resumes its chat.
+// app announces every trigger. Agent-owned conditions are market monitors.
 import { CANDLE_INTERVALS, type Candle, type CandleInterval } from "./candle.ts"
 import {
   LEVEL_DIRECTIONS,
@@ -66,11 +66,6 @@ export interface PriceAlert {
   triggeredAt: number | null
   // The price that reached the level, so a fired alert still says what it saw.
   triggeredPrice: number | null
-  // Present when a chat agent created the alert. The continuation belongs to
-  // that conversation and is handed back to it when this particular crossing
-  // fires; the unique trigger id makes retrying that handoff safe.
-  chatSessionId: string | null
-  onTrigger: string | null
   triggerId: string | null
 }
 
@@ -88,9 +83,6 @@ export interface PriceAlertDraft {
   repeat: PriceAlertRepeat
   referencePrice: number | null
   atrValue: number | null
-  /** Agent-owned continuation metadata; omitted by the ordinary alert editor. */
-  chatSessionId?: string | null
-  onTrigger?: string | null
 }
 
 const RequiredTextSchema = z.string().refine((value) => value.trim().length > 0)
@@ -109,15 +101,9 @@ export const PriceAlertDraftSchema = z.object({
   repeat: z.enum(ALERT_REPEATS),
   referencePrice: z.number().nullable(),
   atrValue: z.number().nullable(),
-  chatSessionId: z.string().nullable().optional(),
-  onTrigger: z.string().nullable().optional(),
 }) satisfies z.ZodType<PriceAlertDraft>
 
-/** Ordinary clients cannot attach a model continuation to an alert. */
-export const UserPriceAlertDraftSchema = PriceAlertDraftSchema.omit({
-  chatSessionId: true,
-  onTrigger: true,
-})
+export const UserPriceAlertDraftSchema = PriceAlertDraftSchema
 
 export const PriceAlertSchema: z.ZodType<PriceAlert> = PriceAlertDraftSchema.extend({
   id: RequiredTextSchema,
@@ -128,8 +114,6 @@ export const PriceAlertSchema: z.ZodType<PriceAlert> = PriceAlertDraftSchema.ext
   updatedAt: z.number(),
   triggeredAt: z.number().nullable(),
   triggeredPrice: z.number().nullable(),
-  chatSessionId: z.string().nullable(),
-  onTrigger: z.string().nullable(),
   triggerId: z.string().nullable(),
 })
 
@@ -249,8 +233,6 @@ export function createPriceAlert(draft: PriceAlertDraft, now: number): PriceAler
     updatedAt: now,
     triggeredAt: null,
     triggeredPrice: null,
-    chatSessionId: draft.chatSessionId ?? null,
-    onTrigger: draft.onTrigger ?? null,
     triggerId: null,
   }
 }

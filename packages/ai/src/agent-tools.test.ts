@@ -12,17 +12,17 @@ test("gives parents and subagents the complete chat toolset", () => {
   expect(tools.list().map((tool) => tool.name)).toEqual(["web_search", "fetch_content", "subagent"])
 })
 
-test("adds the durable price watch when the server provides it", () => {
+test("adds the durable market-monitor tools when the server provides them", () => {
   const faux = fauxProvider({ models: [{ id: "chat-model" }] })
   const models = createModels()
   models.setProvider(faux.provider)
 
   const tools = createAgentTools({
     models,
-    priceAlerts: {
+    marketMonitors: {
       instruments: { listInstruments: async () => [] },
       candles: { loadCandles: async () => { throw new Error("not called") } },
-      alerts: {
+      monitors: {
         list: async () => [],
         save: async () => { throw new Error("not called") },
         setStatus: async () => {},
@@ -34,11 +34,11 @@ test("adds the durable price watch when the server provides it", () => {
   expect(tools.list().map((tool) => tool.name)).toEqual([
     "web_search",
     "fetch_content",
-    "create_price_alert",
-    "list_price_alerts",
-    "update_price_alert",
-    "set_price_alert_status",
-    "delete_price_alert",
+    "create_market_monitor",
+    "list_market_monitors",
+    "update_market_monitor",
+    "set_market_monitor_status",
+    "cancel_market_monitor",
     "subagent",
   ])
 })
@@ -57,6 +57,26 @@ test("adds interactive questions to the complete parent and subagent toolset", (
     "web_search",
     "fetch_content",
     "ask_question",
+    "subagent",
+  ])
+})
+
+test("adds non-blocking user notifications to the complete parent and subagent toolset", () => {
+  const faux = fauxProvider({ models: [{ id: "chat-model" }] })
+  const models = createModels()
+  models.setProvider(faux.provider)
+
+  const tools = createAgentTools({
+    models,
+    notifications: {
+      notify: async (input) => ({ id: "notice-1", ...input, createdAt: 1_000 }),
+    },
+  })
+
+  expect(tools.list().map((tool) => tool.name)).toEqual([
+    "web_search",
+    "fetch_content",
+    "notify_user",
     "subagent",
   ])
 })

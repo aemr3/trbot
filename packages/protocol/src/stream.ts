@@ -6,6 +6,7 @@ import {
   type ChatSession,
 } from "@trbot/chat/session.ts"
 import { ChatQuestionRequestSchema, type ChatQuestionRequest } from "@trbot/chat/question.ts"
+import { ChatNotificationSchema, type ChatNotification } from "@trbot/chat/notification.ts"
 import {
   AlertTriggerEventSchema,
   PriceAlertViewSchema,
@@ -96,6 +97,8 @@ export type ChatFrame =
   | { type: "chatRun"; sessionId: string; runId: string; status: ChatRunStatus; message?: ChatMessage; error?: string }
   | { type: "chatQuestionAsked"; request: ChatQuestionRequest }
   | { type: "chatQuestionResolved"; requestId: string; sessionId: string }
+  | { type: "chatNotification"; notification: ChatNotification }
+  | { type: "chatNotificationDismissed"; notificationId: string }
 
 // Owned by the trading package: how a stop ended is a trading fact, and this
 // package already depends on it.
@@ -156,6 +159,8 @@ export const ServerFrameSchema: z.ZodType<ServerFrame> = z.discriminatedUnion("t
   }),
   z.object({ type: z.literal("chatQuestionAsked"), request: ChatQuestionRequestSchema }),
   z.object({ type: z.literal("chatQuestionResolved"), requestId: z.string(), sessionId: z.string() }),
+  z.object({ type: z.literal("chatNotification"), notification: ChatNotificationSchema }),
+  z.object({ type: z.literal("chatNotificationDismissed"), notificationId: z.string() }),
   z.object({ type: z.literal("error"), channel: z.enum(STREAM_CHANNELS).optional(), message: z.string() }),
 ])
 

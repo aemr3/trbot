@@ -24,7 +24,9 @@ import { StopDecisionRequestSchema, StopRuleStatusRequestSchema } from "@trbot/t
 import type { AiService } from "../ai.ts"
 import type { ChatController } from "../chat.ts"
 import type { ChatQuestionController } from "../chat-question.ts"
+import type { ChatNotificationController } from "../chat-notification.ts"
 import type { AlertController } from "../monitors/alert.ts"
+import type { MarketMonitorController } from "../monitors/market-monitor.ts"
 import type { StopController } from "../monitors/stop.ts"
 import { hashRequest, type IdempotencyStore } from "./idempotency.ts"
 import { AttemptLimiter, json, ndjson, readJsonObject, readJsonObjectOrEmpty } from "./request.ts"
@@ -42,11 +44,13 @@ export interface RouteContext {
   preferences: AppPreferencesStore
   /** The controllers, not their stores: see the alert and stop routes below. */
   alerts: AlertController
+  marketMonitors: MarketMonitorController
   stops: StopController
   overviewSnapshots: OverviewSnapshotStore
   ai: AiService
   chat: ChatController
   questions: ChatQuestionController
+  notifications: ChatNotificationController
 }
 
 type Handler = (request: Request, context: RouteContext) => Promise<Response>
@@ -234,6 +238,14 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
     PUT: async (request, { alerts }) => json(await alerts.save(check.priceAlertDraft(await readJsonObject(request)))),
   },
 
+  [ROUTES.marketMonitors]: {
+    GET: async (request, { marketMonitors }) => {
+      const chatSessionId = new URL(request.url).searchParams.get("chatSessionId")
+      const monitors = marketMonitors.list()
+      return json(chatSessionId ? monitors.filter((monitor) => monitor.chatSessionId === chatSessionId) : monitors)
+    },
+  },
+
   [ROUTES.overviewSnapshots]: {
     GET: async (_request, { overviewSnapshots }) => json(await overviewSnapshots.list()),
     PUT: async (request, { overviewSnapshots }) => {
@@ -268,6 +280,10 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
     GET: async (_request, { questions }) => json(questions.list()),
   },
 
+  [ROUTES.chatNotifications]: {
+    GET: async (_request, { notifications }) => json(notifications.list()),
+  },
+
   // The commentary streams because the trader reads it as it arrives. Whether a
   // model is chosen and reachable is checked first, so "no model chosen" is an
   // ordinary error response rather than a stream that yields nothing.
@@ -296,6 +312,14 @@ export const PARAMETERIZED: {
   method: string
   handle: (match: RegExpMatchArray, request: Request, context: RouteContext) => Promise<Response>
 }[] = [
+  {
+    pattern: /^\/v1\/ai\/chat\/notifications\/([^/]+)$/,
+    method: "DELETE",
+    handle: async (match, _request, { notifications }) => {
+      await notifications.dismiss(decodeURIComponent(match[1] ?? ""))
+      return json({ ok: true })
+    },
+  },
   {
     pattern: /^\/v1\/ai\/chat\/questions\/([^/]+)\/reply$/,
     method: "POST",
@@ -381,6 +405,14 @@ export const PARAMETERIZED: {
     },
   },
   {
+    pattern: /^\/v1\/ai\/market-monitors\/([^/]+)$/,
+    method: "DELETE",
+    handle: async (match, _request, { marketMonitors }) => {
+      await marketMonitors.remove(decodeURIComponent(match[1] ?? ""))
+      return json({ ok: true })
+    },
+  },
+  {
     pattern: /^\/v1\/stops\/([^/]+)$/,
     method: "DELETE",
     handle: async (match, _request, { stops }) => {
@@ -452,8 +484,9 @@ export const PARAMETERIZED: {
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,
     method: "DELETE",
-    handle: async (match, _request, { chat }) => {
+    handle: async (match, _request, { chat, notifications }) => {
       await chat.remove(decodeURIComponent(match[1] ?? ""))
+      await notifications.sync()
       return json({ ok: true })
     },
   },

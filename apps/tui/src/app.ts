@@ -13,7 +13,7 @@ import {
   HttpSettlementSource,
   HttpAppPreferences,
 } from "@trbot/client/sources.ts"
-import { HttpAlerts, HttpStopRules } from "@trbot/client/monitors.ts"
+import { HttpAlerts, HttpMarketMonitors, HttpStopRules } from "@trbot/client/monitors.ts"
 import {
   MonitorClient,
   WsAccountStream,
@@ -349,12 +349,15 @@ export class App {
     const chats = new HttpChatSessions(http)
     const chat = new ChatScreen(this.renderer, {
       chats,
+      marketMonitors: new HttpMarketMonitors(http),
       ...(this.aiAccount ? { account: this.aiAccount } : {}),
+      sound: this.sound,
       logs: this.logs,
       initialSessionId: this.preferences?.selectedChatSessionId,
       initialShowThoughts: this.preferences?.showChatThoughts,
       onSessionChange: (selectedChatSessionId) => {
         const current = this.preferences ?? DEFAULT_APP_PREFERENCES
+        workspace?.syncQuestionNotifications()
         if (current.selectedChatSessionId === selectedChatSessionId) return
         const next = { ...current, selectedChatSessionId }
         this.preferences = next
@@ -367,6 +370,10 @@ export class App {
         this.preferences = next
         if (this.preferencesLoaded) this.persistPreferences?.(next)
       },
+      onQuestionPending: (request, selected) => workspace?.notifyQuestion(request, selected),
+      onQuestionResolved: (requestId) => workspace?.resolveQuestion(requestId),
+      onNotification: (notification) => workspace?.notifyAgent(notification),
+      onNotificationDismissed: (notificationId) => workspace?.resolveAgentNotification(notificationId),
     })
     new ChatClient(stream, {
       onSessions: (sessions) => chat.acceptSessions(sessions),
@@ -376,13 +383,15 @@ export class App {
       onRun: (sessionId, runId, status, error) => chat.acceptRun(sessionId, runId, status, error),
       onQuestionAsked: (request) => chat.acceptQuestion(request),
       onQuestionResolved: (sessionId, requestId) => chat.acceptQuestionResolved(sessionId, requestId),
+      onNotification: (notification) => chat.acceptNotification(notification),
+      onNotificationDismissed: (notificationId) => chat.acceptNotificationDismissed(notificationId),
       onResync: (sessionId) => chat.resync(sessionId),
     })
     const logs = new LogsScreen(this.renderer, {
       logs: this.logs,
       onClose: () => workspace?.selectTab("trade"),
     })
-    workspace = new TradingWorkspaceScreen(this.renderer, { trade, chat, logs })
+    workspace = new TradingWorkspaceScreen(this.renderer, { trade, chat, logs, sound: this.sound })
     return workspace
   }
 

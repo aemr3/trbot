@@ -15,7 +15,8 @@ const ENTRIES: Entry[] = [
   ["", ""],
   ["^O", "which model answers this chat"],
   ["^R", "how hard it thinks"],
-  ["^T", "show or hide what it thought"],
+  ["/thoughts", "show or hide what it thought"],
+  ["/monitors", "view or cancel this chat's market monitors"],
   ["⌥←/→", "previous or next worker transcript"],
   ["⌥↑", "return to the parent chat"],
   ["/subagents", "open this chat's worker sessions"],
@@ -29,7 +30,10 @@ const ENTRIES: Entry[] = [
   ["^P", "model providers"],
   ["Tab", "move between the conversation and the field"],
   ["PgUp/PgDn", "read back through the conversation"],
-  ["^A", "next tab, ^⇧A back"],
+  ["^A", "chat"],
+  ["^T", "trade"],
+  ["^G", "logs"],
+  ["/help", "open this list"],
 ]
 
 const KEY_WIDTH = Math.max(...ENTRIES.map(([key]) => key.length)) + 2

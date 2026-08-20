@@ -246,6 +246,47 @@ test("searches instruments and reads current quote and contract details", async 
   expect(modelData(details)).toMatchObject({ details: { leverage: 8, openInterest: 20_000 } })
 })
 
+test("optionally sorts instruments before limiting them and keeps missing values last", async () => {
+  const instruments: ViopInstrument[] = [
+    { ...THYAO, changePercent: -4, volume: null },
+    { ...ASELS, changePercent: null, volume: 100 },
+    {
+      ...ASELS,
+      uid: "instrument-3",
+      symbol: "F_KCHOL0826",
+      displayName: "KCHOL",
+      underlyingSymbol: "KCHOL",
+      changePercent: 2,
+      volume: 500,
+    },
+  ]
+  const tools = new ChatTools(marketDataTools(harness({
+    instruments: { listInstruments: async () => instruments },
+  }).clients))
+
+  const unchanged = await call(tools, "list_instruments", { limit: 3 })
+  const change = await call(tools, "list_instruments", {
+    sortBy: "CHANGE_PERCENT",
+    sortDirection: "DESC",
+    limit: 2,
+  })
+  const magnitude = await call(tools, "list_instruments", {
+    sortBy: "ABS_CHANGE_PERCENT",
+    sortDirection: "ASC",
+    limit: 3,
+  })
+  const volume = await call(tools, "list_instruments", {
+    sortBy: "VOLUME",
+    sortDirection: "ASC",
+    limit: 3,
+  })
+
+  expect(instrumentSymbols(unchanged)).toEqual(["F_THYAO0826", "F_ASELS0826", "F_KCHOL0826"])
+  expect(instrumentSymbols(change)).toEqual(["F_KCHOL0826", "F_THYAO0826"])
+  expect(instrumentSymbols(magnitude)).toEqual(["F_KCHOL0826", "F_THYAO0826", "F_ASELS0826"])
+  expect(instrumentSymbols(volume)).toEqual(["F_ASELS0826", "F_KCHOL0826", "F_THYAO0826"])
+})
+
 test("falls back to the latest contract candle when closed-market quote sources have no price", async () => {
   const instrument = { ...ASELS, lastPrice: null }
   const testHarness = harness({
@@ -457,6 +498,11 @@ async function call(tools: ChatTools, name: string, args: Record<string, unknown
 
 function modelData(outcome: Awaited<ReturnType<typeof call>>): unknown {
   return JSON.parse(outcome.modelBlocks?.[0]?.text ?? "null") as unknown
+}
+
+function instrumentSymbols(outcome: Awaited<ReturnType<typeof call>>): string[] {
+  const data = modelData(outcome) as { instruments: ViopInstrument[] }
+  return data.instruments.map((instrument) => instrument.symbol)
 }
 
 function candles(

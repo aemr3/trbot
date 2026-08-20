@@ -3,8 +3,11 @@ import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from
 import { createTestRenderer } from "@opentui/core/testing"
 import { chatBlockText, type ChatMessage, type ChatSession, type ChatSessionDetail } from "@trbot/chat/session.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
+import type { ChatNotification } from "@trbot/chat/notification.ts"
+import { createMarketMonitor } from "@trbot/market/market-monitor.ts"
 import type { AiAccount, AiModelChoice, AiModelSummary, AiPreferences, AiProviderSummary } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
+import type { SoundCue } from "../components/sound.ts"
 import { ApplicationLog } from "../logging/application-log.ts"
 import { ChatScreen } from "./chat.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
@@ -17,6 +20,8 @@ function fakeChats(): ChatSessions & {
   aborted: string[]
   answered: Array<{ requestId: string; answers: ChatQuestionAnswer[] }>
   rejected: string[]
+  agentNotifications: ChatNotification[]
+  dismissedNotifications: string[]
 } {
   const sessions: ChatSession[] = []
   const messages = new Map<string, ChatMessage[]>()
@@ -25,6 +30,8 @@ function fakeChats(): ChatSessions & {
   const aborted: string[] = []
   const answered: Array<{ requestId: string; answers: ChatQuestionAnswer[] }> = []
   const rejected: string[] = []
+  const agentNotifications: ChatNotification[] = []
+  const dismissedNotifications: string[] = []
 
   return {
     sessions,
@@ -33,6 +40,8 @@ function fakeChats(): ChatSessions & {
     aborted,
     answered,
     rejected,
+    agentNotifications,
+    dismissedNotifications,
     async list() {
       // A copy, as a real client's answer would be: handing out the live array
       // would let the screen and the fake share state no server ever shares.
@@ -98,6 +107,12 @@ function fakeChats(): ChatSessions & {
     },
     async rejectQuestion(requestId) {
       rejected.push(requestId)
+    },
+    async notifications() {
+      return [...agentNotifications]
+    },
+    async dismissNotification(notificationId) {
+      dismissedNotifications.push(notificationId)
     },
   }
 }
@@ -310,7 +325,7 @@ test("answers an agent question and returns to the composer", async () => {
   renderer.destroy()
 })
 
-test("dismisses an agent question without sending it as chat text", async () => {
+test("leaves an inline agent question pending and answers it later", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const session = await chats.create()
@@ -326,11 +341,93 @@ test("dismisses an agent question without sending it as chat text", async () => 
     questions: [{ header: "Confirm", question: "Continue?", options: [] }],
   })
   await waitForFrame((frame) => frame.includes("Continue?"))
-  mockInput.pressEscape()
+  mockInput.pressTab()
+  await waitForFrame((frame) => frame.includes("Continue?") && frame.includes("Tab to answer"))
+  mockInput.pressTab()
+  mockInput.pressEnter()
+  await mockInput.typeText("Yes")
+  mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("ask something") && !frame.includes("Continue?"))
 
-  expect(chats.rejected).toEqual(["question-2"])
+  expect(chats.answered).toEqual([{ requestId: "question-2", answers: [["Yes"]] }])
+  expect(chats.rejected).toEqual([])
   expect(chats.sent).toEqual([])
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("dismisses a question notification on trade and answers it later in chat", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  let workspace: TradingWorkspaceScreen | null = null
+  const chat = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    onQuestionPending: (request, selected) => workspace?.notifyQuestion(request, selected),
+    onQuestionResolved: (requestId) => workspace?.resolveQuestion(requestId),
+  })
+  workspace = new TradingWorkspaceScreen(renderer, {
+    trade: labelledPanel(renderer, "TRADE PANEL"),
+    chat,
+    logs: labelledPanel(renderer, "LOG PANEL"),
+  })
+  renderer.root.add(workspace.root)
+  workspace.mount()
+  await waitForFrame((frame) => frame.includes("TRADE PANEL"))
+
+  chat.acceptQuestion({
+    id: "question-away",
+    sessionId: session.id,
+    questions: [{
+      header: "Risk",
+      question: "Should I keep watching this position?",
+      options: [{ label: "Keep watching", description: "Leave the monitor active" }],
+    }],
+  })
+  await waitForFrame((frame) => frame.includes("Agent needs your answer") && frame.includes("Open chat"))
+
+  mockInput.pressEscape()
+  const stayed = await waitForFrame((frame) => frame.includes("TRADE PANEL") && !frame.includes("Agent needs your answer"))
+  expect(stayed).not.toContain("Should I keep watching this position?")
+
+  mockInput.pressKey("a", { ctrl: true })
+  await waitForFrame((frame) => frame.includes("Should I keep watching this position?") && frame.includes("Agent asks · Risk"))
+  mockInput.pressEnter()
+  await waitForFrame((frame) => !frame.includes("Should I keep watching this position?"))
+
+  expect(chats.answered).toEqual([{ requestId: "question-away", answers: [["Keep watching"]] }])
+  workspace.destroy()
+  renderer.destroy()
+})
+
+test("restores durable agent notifications when the chat screen mounts", async () => {
+  const { renderer, waitFor } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const notification: ChatNotification = {
+    id: "notice-1",
+    sessionId: session.id,
+    title: "Review complete",
+    message: "The setup remains valid.",
+    urgency: "INFO",
+    createdAt: 1_000,
+  }
+  chats.agentNotifications.push(notification)
+  const restored: ChatNotification[] = []
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    onNotification: (notice) => restored.push(notice),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitFor(() => restored.length === 1)
+
+  expect(restored).toEqual([notification])
   screen.destroy()
   renderer.destroy()
 })
@@ -388,7 +485,7 @@ test("removes completed tools from the live status list", async () => {
   renderer.destroy()
 })
 
-test("renders an application wake-up as a price event, not as trader input", async () => {
+test("renders a market-monitor wake-up as an application event, not as user input", async () => {
   const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const session = await chats.create()
@@ -400,7 +497,7 @@ test("renders an application wake-up as a price event, not as trader input", asy
   screen.acceptMessage(session.id, applicationEvent("ASELS crossed above 420 at 421."))
   const frame = await waitForFrame((value) => value.includes("ASELS crossed above 420 at 421."))
 
-  expect(frame).toContain("◆ price alert")
+  expect(frame).toContain("◆ market monitor")
   expect(frame).not.toContain("› ASELS crossed")
   screen.destroy()
   renderer.destroy()
@@ -436,6 +533,67 @@ test("opens a filtered slash-command menu below the composer", async () => {
   renderer.destroy()
 })
 
+test("opens and cancels only the current chat's agent monitors", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 26, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const requested: string[] = []
+  const removed: string[] = []
+  let monitors = [createMarketMonitor({
+    id: "monitor-1",
+    instrumentUid: "instrument-1",
+    symbol: "F_ASELS0826",
+    displayName: "ASELS",
+    direction: "ABOVE",
+    kind: "PRICE",
+    value: 420,
+    basis: "TOUCH",
+    interval: null,
+    repeat: "ONCE",
+    referencePrice: 400,
+    atrValue: null,
+    chatSessionId: session.id,
+    onTrigger: "Refresh the quote and reassess the breakout.",
+  }, 1_000)]
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    marketMonitors: {
+      async list(chatSessionId) {
+        requested.push(chatSessionId)
+        return monitors.filter((monitor) => monitor.chatSessionId === chatSessionId)
+      },
+      async remove(id) {
+        removed.push(id)
+        monitors = monitors.filter((monitor) => monitor.id !== id)
+      },
+    },
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something") && frame.includes("1 monitor"))
+
+  await mockInput.typeText("/monitors")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Market monitors") && frame.includes("ASELS"))
+
+  await mockInput.typeText("dd")
+  const empty = await waitForFrame((frame) => (
+    frame.includes("No market monitors were created in this chat.") && !frame.includes("1 monitor")
+  ))
+
+  expect(requested.length).toBeGreaterThanOrEqual(3)
+  expect(requested.every((chatSessionId) => chatSessionId === session.id)).toBeTrue()
+  expect(removed).toEqual(["monitor-1"])
+  expect(chats.sent).toEqual([])
+  expect(empty).not.toContain("0 monitors")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("opens durable worker transcripts with /subagents and returns with /parent", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
@@ -465,7 +623,7 @@ test("opens durable worker transcripts with /subagents and returns with /parent"
 
   await mockInput.typeText("/parent")
   mockInput.pressEnter()
-  await waitForFrame((frame) => frame.includes("^G keys") && !frame.includes("Subagent transcript"))
+  await waitForFrame((frame) => frame.includes("/help keys") && !frame.includes("Subagent transcript"))
   expect(chats.sent).toEqual([])
 
   screen.destroy()
@@ -687,7 +845,7 @@ test("typing in the composer never changes tab", async () => {
   workspace.mount()
   await waitForFrame((frame) => frame.includes("TRADE PANEL"))
 
-  mockInput.pressKey("c", { shift: true })
+  mockInput.pressKey("a", { ctrl: true })
   await waitForFrame((frame) => frame.includes("ask something"))
 
   // "Tomorrow" holds a T and an L: without the composer claiming its keys, typing
@@ -717,13 +875,13 @@ test("a hidden chat releases its input focus and cannot receive another panel's 
   workspace.mount()
   await waitForFrame((frame) => frame.includes("TRADE PANEL"))
 
-  mockInput.pressKey("c", { shift: true })
+  mockInput.pressKey("a", { ctrl: true })
   await waitForFrame((frame) => frame.includes("ask something"))
   expect(renderer.currentFocusedRenderable).not.toBeNull()
 
-  // Backwards from CHAT reaches TRADE. The textarea used to remain the renderer's
-  // global focus here, drawing its cursor over the chart and accepting these letters.
-  mockInput.pressKey("a", { ctrl: true, shift: true })
+  // The textarea used to remain the renderer's global focus here, drawing its cursor
+  // over the chart and accepting these letters.
+  mockInput.pressKey("t", { ctrl: true })
   await waitForFrame((frame) => frame.includes("TRADE PANEL"))
   expect(renderer.currentFocusedRenderable).toBeNull()
   await mockInput.typeText("not chat text")
@@ -997,7 +1155,7 @@ test("keeps the conversation one cell from the top and both terminal edges", asy
   const promptFillLineIndex = renderedLines.findIndex((candidate) =>
     candidate.spans.some((span) => {
       const [red, green, blue] = span.bg.toInts()
-      return red === 41 && green === 39 && blue === 37
+      return red === 35 && green === 39 && blue === 47
     }),
   )
   const lineIndex = renderedLines.findIndex((candidate) =>
@@ -1012,7 +1170,7 @@ test("keeps the conversation one cell from the top and both terminal edges", asy
   const filled: number[] = []
   for (const span of line?.spans ?? []) {
     const [red, green, blue] = span.bg.toInts()
-    if (red === 41 && green === 39 && blue === 37) {
+    if (red === 35 && green === 39 && blue === 47) {
       for (let offset = 0; offset < span.width; offset++) filled.push(column + offset)
     }
     column += span.width
@@ -1024,7 +1182,7 @@ test("keeps the conversation one cell from the top and both terminal edges", asy
   renderer.destroy()
 })
 
-test("shows what a model thought, and folds every thought on ^T", async () => {
+test("shows what a model thought, and folds every thought with /thoughts", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const session = await chats.create()
@@ -1047,11 +1205,13 @@ test("shows what a model thought, and folds every thought on ^T", async () => {
   const expanded = await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
   expect(expanded).toContain("− thought: 1.8s")
 
-  mockInput.pressKey("t", { ctrl: true })
+  await mockInput.typeText("/thoughts")
+  mockInput.pressEnter()
   const folded = await waitForFrame((frame) => frame.includes("+ thought: 1.8s"))
   expect(folded).not.toContain("buyers stepped in at 318 twice")
 
-  mockInput.pressKey("t", { ctrl: true })
+  await mockInput.typeText("/thoughts")
+  mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
 
   screen.destroy()
@@ -1087,7 +1247,8 @@ test("restores and reports the preferred thought visibility", async () => {
   const restored = await waitForFrame((frame) => frame.includes("+ thought: 1.8s"))
   expect(restored).not.toContain("buyers stepped in at 318 twice")
 
-  mockInput.pressKey("t", { ctrl: true })
+  await mockInput.typeText("/thoughts")
+  mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
   await mockInput.typeText("/thoughts")
   mockInput.pressEnter()
@@ -1112,13 +1273,13 @@ test("does not reserve an empty answer between a tool-call thought and its signa
     elapsedMs: 3_600,
     thinkingMs: 3_600,
     blocks: [
-      { kind: "THINKING", text: "Planning alerts tool integration", toolName: null, toolCallId: null, toolArguments: null },
-      { kind: "TOOL_CALL", text: null, toolName: "create_price_alert", toolCallId: "call-1", toolArguments: {} },
+      { kind: "THINKING", text: "Planning monitors tool integration", toolName: null, toolCallId: null, toolArguments: null },
+      { kind: "TOOL_CALL", text: null, toolName: "create_market_monitor", toolCallId: "call-1", toolArguments: {} },
     ],
   })
-  const frame = await waitForFrame((content) => content.includes("Planning alerts tool integration"))
+  const frame = await waitForFrame((content) => content.includes("Planning monitors tool integration"))
   const lines = frame.split("\n")
-  const thought = lines.findIndex((line) => line.includes("Planning alerts tool integration"))
+  const thought = lines.findIndex((line) => line.includes("Planning monitors tool integration"))
   const signature = lines.findIndex((line) => line.includes("test-model") && line.includes("3.6s"))
   expect(signature - thought).toBe(1)
 
@@ -1173,8 +1334,31 @@ test("starts turning the moment a run is announced, before any of it has arrived
   await renderOnce()
   const done = captureCharFrame()
   expect(done).not.toContain("Esc interrupt")
-  expect(done).toContain("^G keys")
+  expect(done).toContain("/help keys")
 
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("sounds once when a background agent turn completes after its answer is stored", async () => {
+  const { renderer } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const visibleSession = await chats.create()
+  const backgroundSession = await chats.create()
+  const cues: SoundCue[] = []
+  const screen = new ChatScreen(renderer, {
+    chats,
+    logs: new ApplicationLog(),
+    sound: { play: (cue) => cues.push(cue) },
+    initialSessionId: visibleSession.id,
+  })
+
+  screen.acceptRun(backgroundSession.id, "run-1", "running")
+  screen.acceptMessage(backgroundSession.id, replyMessage("Monitor review complete."))
+  screen.acceptRun(backgroundSession.id, "run-1", "done")
+  screen.acceptRun(backgroundSession.id, "run-1", "done")
+
+  expect(cues).toEqual(["COMPLETE"])
   screen.destroy()
   renderer.destroy()
 })
@@ -1219,11 +1403,12 @@ test("names the model under the field, and the help modal instead of a row of ke
   const named = lines.findIndex((line) => line.includes("test-model"))
   expect(named).toBeGreaterThan(asked)
   // The Codex-like status line keeps model and help together beneath the field.
-  expect(lines[named]).toContain("^G keys")
+  expect(lines[named]).toContain("/help keys")
   expect(lines[asked]).toContain("›")
   expect(idle).not.toContain("^S chats")
 
-  mockInput.pressKey("g", { ctrl: true })
+  await mockInput.typeText("/help")
+  mockInput.pressEnter()
   const help = await waitForFrame((frame) => frame.includes("Keys"))
   expect(help).toContain("which model answers this chat")
   expect(help).toContain("take back the last queued message")

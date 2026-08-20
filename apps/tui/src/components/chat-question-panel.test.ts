@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
-import { ChatQuestionModal } from "./chat-question-modal.ts"
+import { ChatQuestionPanel } from "./chat-question-panel.ts"
 
 function key(name: string, sequence?: string): KeyEvent {
   return { name, sequence: sequence ?? name } as KeyEvent
@@ -12,21 +12,22 @@ function request(questions: ChatQuestionRequest["questions"]): ChatQuestionReque
   return { id: "question-1", sessionId: "chat-1", questions }
 }
 
-async function modalFor(questions: ChatQuestionRequest["questions"]) {
+async function panelFor(questions: ChatQuestionRequest["questions"]) {
   const harness = await createTestRenderer({ width: 90, height: 26 })
   const answers: ChatQuestionAnswer[][] = []
-  let rejected = 0
-  const modal = new ChatQuestionModal(harness.renderer, {
+  let left = 0
+  const panel = new ChatQuestionPanel(harness.renderer, {
     request: request(questions),
     onAnswer: async (value) => { answers.push(value) },
-    onReject: async () => { rejected++ },
+    onFocus: () => {},
+    onLeave: () => { left++ },
   })
-  harness.renderer.root.add(modal.root)
-  return { ...harness, modal, answers, rejected: () => rejected }
+  harness.renderer.root.add(panel.root)
+  return { ...harness, panel, answers, left: () => left }
 }
 
-test("renders choices and submits a single answer", async () => {
-  const { modal, answers, renderOnce, captureCharFrame, renderer } = await modalFor([{
+test("renders inline choices and submits a single answer", async () => {
+  const { panel, answers, renderOnce, captureCharFrame, renderer } = await panelFor([{
     header: "Strategy",
     question: "Which setup should I watch?",
     options: [
@@ -36,18 +37,18 @@ test("renders choices and submits a single answer", async () => {
   }])
 
   await renderOnce()
-  expect(captureCharFrame()).toContain("Which setup should I watch?")
-  expect(captureCharFrame()).toContain("Type your own answer")
-  modal.handleKey(key("down"))
-  modal.handleKey(key("enter"))
+  expect(captureCharFrame()).toContain("Agent asks · Strategy")
+  panel.handleKey(key("down"))
+  panel.handleKey(key("enter"))
   await Bun.sleep(0)
 
   expect(answers).toEqual([[['Pullback']]])
-  modal.destroy()
+  panel.destroy()
   renderer.destroy()
 })
+
 test("supports multiple choices and a custom answer", async () => {
-  const { modal, answers, renderer } = await modalFor([{
+  const { panel, answers, renderer } = await panelFor([{
     header: "Delivery",
     question: "Where should I notify you?",
     options: [
@@ -57,31 +58,30 @@ test("supports multiple choices and a custom answer", async () => {
     multiple: true,
   }])
 
-  modal.handleKey(key("space", " "))
-  modal.handleKey(key("down"))
-  modal.handleKey(key("down"))
-  modal.handleKey(key("enter"))
-  for (const character of "Popup") modal.handleKey(key(character, character))
-  modal.handleKey(key("enter"))
-  modal.handleKey(key("enter"))
+  panel.handleKey(key("space", " "))
+  panel.handleKey(key("down"))
+  panel.handleKey(key("down"))
+  panel.handleKey(key("enter"))
+  for (const character of "Popup") panel.handleKey(key(character, character))
+  panel.handleKey(key("enter"))
+  panel.handleKey(key("enter"))
   await Bun.sleep(0)
 
   expect(answers).toEqual([[['Terminal', 'Popup']]])
-  modal.destroy()
+  panel.destroy()
   renderer.destroy()
 })
 
-test("dismisses the request with Escape", async () => {
-  const { modal, rejected, renderer } = await modalFor([{
+test("leaving the inline question keeps it pending", async () => {
+  const { panel, answers, left, renderer } = await panelFor([{
     header: "Choice",
     question: "Continue?",
     options: [],
   }])
+  panel.handleKey(key("tab"))
 
-  modal.handleKey(key("escape"))
-  await Bun.sleep(0)
-
-  expect(rejected()).toBe(1)
-  modal.destroy()
+  expect(left()).toBe(1)
+  expect(answers).toEqual([])
+  panel.destroy()
   renderer.destroy()
 })

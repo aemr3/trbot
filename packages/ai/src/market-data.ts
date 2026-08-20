@@ -4,7 +4,11 @@ import type { BrokerageDateRange } from "@trbot/market/broker-calendar.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import type { DepthBook, DepthStream } from "@trbot/market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "@trbot/market/equity-quote-stream.ts"
-import { resolveViopInstrument, type ViopInstrumentSource } from "@trbot/market/instrument.ts"
+import {
+  resolveViopInstrument,
+  type ViopInstrument,
+  type ViopInstrumentSource,
+} from "@trbot/market/instrument.ts"
 import type { NewsSource } from "@trbot/market/news.ts"
 import type { SettlementMode, SettlementSource } from "@trbot/market/settlement.ts"
 import type { MemberFeatureSource } from "@trbot/member/features.ts"
@@ -22,6 +26,14 @@ const SymbolParameter = Type.String({
   maxLength: 80,
 })
 const InstrumentLimit = Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 25 }))
+const InstrumentSort = Type.Union([
+  Type.Literal("CHANGE_PERCENT"),
+  Type.Literal("ABS_CHANGE_PERCENT"),
+  Type.Literal("VOLUME"),
+], { description: "Optional ranking field; omit to preserve the market source order" })
+const SortDirection = Type.Union([Type.Literal("ASC"), Type.Literal("DESC")], {
+  description: "Sort direction when sortBy is present; defaults to DESC",
+})
 const ResultLimit = Type.Optional(Type.Integer({ minimum: 1, maximum: 50, default: 20 }))
 const CandleRange = Type.Union([
   Type.Literal("INTRADAY"),
@@ -60,6 +72,8 @@ const IsoDate = Type.String({ description: "Exchange-local date in YYYY-MM-DD fo
 
 const ListInstrumentsParameters = Type.Object({
   query: Type.Optional(Type.String({ description: "Symbol or name fragment to search for", maxLength: 80 })),
+  sortBy: Type.Optional(InstrumentSort),
+  sortDirection: Type.Optional(SortDirection),
   limit: InstrumentLimit,
 })
 const SymbolOnlyParameters = Type.Object({ symbol: SymbolParameter })
@@ -161,7 +175,7 @@ function listInstrumentsTool(clients: MarketDataToolClients): ChatTool<typeof Li
       description: "List active front-month VIOP contracts with instrument UIDs, current prices, changes, and volume.",
       parameters: ListInstrumentsParameters,
     },
-    run: async ({ query, limit }, options) => {
+    run: async ({ query, sortBy, sortDirection, limit }, options) => {
       const instruments = await clients.sources().instruments.listInstruments({ signal: options.signal })
       const wanted = query?.trim().toUpperCase()
       const matches = instruments.filter((instrument) => !wanted || [
@@ -169,13 +183,37 @@ function listInstrumentsTool(clients: MarketDataToolClients): ChatTool<typeof Li
         instrument.displayName,
         instrument.underlyingSymbol,
       ].some((value) => value?.toUpperCase().includes(wanted)))
-      const returned = matches.slice(0, limit ?? 25)
+      const returned = sortInstruments(matches, sortBy, sortDirection ?? "DESC").slice(0, limit ?? 25)
       return dataOutcome(
         `Found ${matches.length} matching VIOP contract${matches.length === 1 ? "" : "s"}; returned ${returned.length}.`,
         { matched: matches.length, instruments: returned },
       )
     },
   }
+}
+
+function sortInstruments(
+  instruments: ViopInstrument[],
+  sortBy: "CHANGE_PERCENT" | "ABS_CHANGE_PERCENT" | "VOLUME" | undefined,
+  direction: "ASC" | "DESC",
+): ViopInstrument[] {
+  if (!sortBy) return instruments
+  return [...instruments].sort((left, right) => {
+    const leftValue = instrumentSortValue(left, sortBy)
+    const rightValue = instrumentSortValue(right, sortBy)
+    if (leftValue === null) return rightValue === null ? 0 : 1
+    if (rightValue === null) return -1
+    return direction === "ASC" ? leftValue - rightValue : rightValue - leftValue
+  })
+}
+
+function instrumentSortValue(
+  instrument: ViopInstrument,
+  sortBy: "CHANGE_PERCENT" | "ABS_CHANGE_PERCENT" | "VOLUME",
+): number | null {
+  if (sortBy === "VOLUME") return instrument.volume
+  if (instrument.changePercent === null) return null
+  return sortBy === "ABS_CHANGE_PERCENT" ? Math.abs(instrument.changePercent) : instrument.changePercent
 }
 
 function viopQuoteTool(clients: MarketDataToolClients): ChatTool<typeof SymbolOnlyParameters> {

@@ -55,8 +55,6 @@ const PRICE_ALERT = {
   updatedAt: 1,
   triggeredAt: null,
   triggeredPrice: null,
-  chatSessionId: null,
-  onTrigger: null,
   triggerId: null,
 }
 
@@ -212,6 +210,18 @@ describe("server frames the terminal will act on", () => {
         },
       },
       { type: "chatQuestionResolved", requestId: "question-1", sessionId: "chat-1" },
+      {
+        type: "chatNotification",
+        notification: {
+          id: "notification-1",
+          sessionId: "chat-1",
+          title: "Review complete",
+          message: "The setup remains valid.",
+          urgency: "INFO",
+          createdAt: 1_000,
+        },
+      },
+      { type: "chatNotificationDismissed", notificationId: "notification-1" },
       { type: "error", message: "something went wrong" },
       { type: "error", channel: "depth", message: "no book for this symbol" },
     ]
@@ -237,6 +247,8 @@ describe("server frames the terminal will act on", () => {
       { type: "alertTriggered" },
       { type: "chatQuestionAsked", request: { id: "question-1", sessionId: "chat-1", questions: [{}] } },
       { type: "chatQuestionResolved", requestId: "question-1" },
+      { type: "chatNotification", notification: {} },
+      { type: "chatNotificationDismissed" },
       { type: "error" },
       { type: "chatter", message: "hello" },
       {},

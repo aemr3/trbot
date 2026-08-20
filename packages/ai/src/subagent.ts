@@ -1,10 +1,18 @@
 import { Type, type Api, type Model, type Models } from "@earendil-works/pi-ai"
 import type { ChatMessageDraft, ChatUsage } from "@trbot/chat/session.ts"
 import { ChatAgent } from "./chat.ts"
-import { toolText, type ChatTool, type ChatToolRegistry } from "./tool.ts"
+import {
+  createChatDelegationContext,
+  toolText,
+  type ChatDelegationContext,
+  type ChatTool,
+  type ChatToolRegistry,
+} from "./tool.ts"
 
 const MAX_PARALLEL_TASKS = 8
 const MAX_CONCURRENCY = 4
+const MAX_SUBAGENTS_PER_TURN = 8
+const MAX_SUBAGENT_DEPTH = 2
 const PER_TASK_OUTPUT_CAP = 50 * 1_024
 
 const TaskItem = Type.Object({
@@ -85,6 +93,8 @@ export function subagentTool(
         "Delegate work to a full-capability worker in an isolated context.",
         "Provide exactly one mode: single (agent + task), parallel (tasks), or chain (sequential tasks using {previous}).",
         `Parallel mode accepts at most ${MAX_PARALLEL_TASKS} tasks and runs ${MAX_CONCURRENCY} at once.`,
+        `One chat turn can create at most ${MAX_SUBAGENTS_PER_TURN} workers across at most ${MAX_SUBAGENT_DEPTH} nested levels.`,
+        "If a limit is reached, the tool reports it so you can continue without delegating; the worker budget resets on the next user or application turn.",
         'The available agent is "worker".',
       ].join(" "),
       parameters: SubagentParameters,
@@ -97,12 +107,34 @@ export function subagentTool(
       const hasSingle = Boolean(params.agent && params.task)
       const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle)
       if (modeCount !== 1) return invalidModeOutcome()
+      if (params.tasks && params.tasks.length > MAX_PARALLEL_TASKS) {
+        return {
+          blocks: [toolText(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`)],
+          details: { mode: "parallel", results: [] } satisfies SubagentDetails,
+          isError: true,
+        }
+      }
+
+      const mode: SubagentMode = hasChain ? "chain" : hasTasks ? "parallel" : "single"
+      const requestedWorkers = mode === "chain"
+        ? params.chain!.length
+        : mode === "parallel"
+          ? params.tasks!.length
+          : 1
+      const delegation = options.delegation ?? createChatDelegationContext()
+      const limitError = reserveSubagents(delegation, requestedWorkers)
+      if (limitError) return limitOutcome(mode, limitError)
 
       const runOptions: RunTaskOptions = {
         model: options.model,
         reasoningEffort: options.reasoningEffort,
         signal: options.signal,
         chatSessionId: options.chatSessionId,
+        notificationBudget: options.notificationBudget ?? { sent: 0 },
+        delegation: {
+          depth: delegation.depth + 1,
+          budget: delegation.budget,
+        },
       }
 
       if (params.chain?.length) {
@@ -110,13 +142,6 @@ export function subagentTool(
       }
 
       if (params.tasks?.length) {
-        if (params.tasks.length > MAX_PARALLEL_TASKS) {
-          return {
-            blocks: [toolText(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`)],
-            details: { mode: "parallel", results: [] } satisfies SubagentDetails,
-            isError: true,
-          }
-        }
         return runParallel(models, tools, params.tasks, runOptions, sessions)
       }
 
@@ -130,6 +155,8 @@ interface RunTaskOptions {
   reasoningEffort?: string | null
   signal?: AbortSignal
   chatSessionId?: string
+  notificationBudget: { sent: number }
+  delegation: ChatDelegationContext
 }
 
 async function runSingle(
@@ -254,6 +281,8 @@ async function runTask(
       history: [],
       prompt: task,
       chatSessionId: session?.sessionId ?? options.chatSessionId,
+      delegation: options.delegation,
+      notificationBudget: options.notificationBudget,
       signal: options.signal,
       events: {
         onText: (delta) => session?.onText(delta),
@@ -291,6 +320,26 @@ async function runTask(
   }
   await session?.finish(taskResult.error)
   return taskResult
+}
+
+function reserveSubagents(context: ChatDelegationContext, requested: number): string | null {
+  if (context.depth >= MAX_SUBAGENT_DEPTH) {
+    return `Subagent nesting limit reached (${MAX_SUBAGENT_DEPTH} levels). Continue the task yourself using the available tools.`
+  }
+  const remaining = MAX_SUBAGENTS_PER_TURN - context.budget.created
+  if (requested > remaining) {
+    return `Subagent limit reached: ${MAX_SUBAGENTS_PER_TURN} workers are allowed per chat turn, ${context.budget.created} have already been allocated, and this call requested ${requested}. Continue with existing results or do the remaining work yourself. The worker budget resets on the next user or application turn.`
+  }
+  context.budget.created += requested
+  return null
+}
+
+function limitOutcome(mode: SubagentMode, message: string) {
+  return {
+    blocks: [toolText(message)],
+    details: { mode, results: [] } satisfies SubagentDetails,
+    isError: true,
+  }
 }
 
 async function mapWithConcurrencyLimit<TInput, TOutput>(

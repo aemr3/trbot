@@ -51,8 +51,6 @@ export class DrizzlePriceAlertStore implements PriceAlertStore {
           updatedAt: alert.updatedAt,
           triggeredAt: alert.triggeredAt,
           triggeredPrice: alert.triggeredPrice,
-          chatSessionId: alert.chatSessionId,
-          onTrigger: alert.onTrigger,
           triggerId: alert.triggerId,
         },
       })
@@ -88,8 +86,6 @@ function toPriceAlert(row: typeof priceAlerts.$inferSelect): PriceAlert | null {
     updatedAt: row.updatedAt,
     triggeredAt: row.triggeredAt,
     triggeredPrice: row.triggeredPrice,
-    chatSessionId: row.chatSessionId,
-    onTrigger: row.onTrigger,
     triggerId: row.triggerId,
   }
 }

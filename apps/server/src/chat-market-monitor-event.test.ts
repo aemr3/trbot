@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test"
-import { createPriceAlert } from "@trbot/market/alert.ts"
-import { priceAlertApplicationEvent } from "./chat-price-alert-event.ts"
+import { createMarketMonitor } from "@trbot/market/market-monitor.ts"
+import { marketMonitorApplicationEvent } from "./chat-market-monitor-event.ts"
 
 const NOW = 1_786_000_000_000
 
 test("builds an idempotent event from facts and the stored continuation", () => {
-  const alert = {
-    ...createPriceAlert({
+  const monitor = {
+    ...createMarketMonitor({
       instrumentUid: "instrument-1",
       symbol: "F_ASELS0826",
       displayName: "ASELS",
@@ -27,15 +27,18 @@ test("builds an idempotent event from facts and the stored continuation", () => 
     triggerId: "trigger-1",
   }
 
-  const queued = priceAlertApplicationEvent({ alert, price: 421, priceAgeMs: 10 })
+  const queued = marketMonitorApplicationEvent({ alert: monitor, price: 421, priceAgeMs: 10 })
 
   expect(queued).toMatchObject({
     sessionId: "chat-1",
     event: {
-      key: "price-alert:trigger-1",
+      key: "market-monitor:trigger-1",
       text: "ASELS crossed above 420 at 421.",
     },
   })
   expect(queued?.event.prompt).toContain("Reassess the breakout and decide whether another watch is useful.")
+  expect(queued?.event.prompt).toContain("<market_monitor_triggered>")
+  expect(queued?.event.prompt).toContain("monitor_id: ")
+  expect(queued?.event.prompt).not.toContain("alert_id: ")
   expect(queued?.event.prompt).not.toContain("notify the trader")
 })

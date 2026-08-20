@@ -5,6 +5,7 @@ import { openAuthSession } from "@trbot/db/auth-store.ts"
 import { openDatabase } from "@trbot/db/client.ts"
 import { DrizzleOverviewSnapshotStore } from "@trbot/db/overview-snapshot-store.ts"
 import { DrizzlePriceAlertStore } from "@trbot/db/price-alert-store.ts"
+import { DrizzleMarketMonitorStore } from "@trbot/db/market-monitor-store.ts"
 import { DrizzleAiCredentialStore } from "@trbot/db/ai-credential-store.ts"
 import { DrizzleAiPreferencesStore } from "@trbot/db/ai-preferences-store.ts"
 import { DrizzleStopRuleStore } from "@trbot/db/stop-rule-store.ts"
@@ -14,12 +15,15 @@ import { ChatAgent } from "@trbot/ai/chat.ts"
 import { ChatTitleGenerator } from "@trbot/ai/title.ts"
 import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trbot/ai/harness.ts"
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
+import { DrizzleChatNotificationStore } from "@trbot/db/chat-notification-store.ts"
 import { AiService } from "./ai.ts"
 import { ChatController } from "./chat.ts"
 import { ChatQuestionController } from "./chat-question.ts"
-import { priceAlertApplicationEvent } from "./chat-price-alert-event.ts"
+import { ChatNotificationController } from "./chat-notification.ts"
+import { marketMonitorApplicationEvent } from "./chat-market-monitor-event.ts"
 import { certificateExpiry } from "./tls.ts"
 import { AlertController } from "./monitors/alert.ts"
+import { MarketMonitorController } from "./monitors/market-monitor.ts"
 import { isDefiniteRefusal, toProtocolError } from "./errors.ts"
 import { IdempotencyStore } from "./http/idempotency.ts"
 import { startServer } from "./http/server.ts"
@@ -67,6 +71,8 @@ async function startTrbotServer(): Promise<void> {
 
   const preferences = new DrizzleAppPreferencesStore(connection.db)
   const alertStore = new DrizzlePriceAlertStore(connection.db)
+  const marketMonitorStore = new DrizzleMarketMonitorStore(connection.db)
+  const chatNotificationStore = new DrizzleChatNotificationStore(connection.db)
   const stopStore = new DrizzleStopRuleStore(connection.db)
   const idempotency = new IdempotencyStore(connection.db)
   await idempotency.sweep()
@@ -83,6 +89,10 @@ async function startTrbotServer(): Promise<void> {
   const ai = new AiService({ models, credentials, preferences: aiPreferences })
   let hub: StreamHub | null = null
   const questions = new ChatQuestionController({ broadcast: (frame) => hub?.broadcast(frame) })
+  const notifications = new ChatNotificationController({
+    store: chatNotificationStore,
+    broadcast: (frame) => hub?.broadcast(frame),
+  })
 
   const stops = new StopController({
     store: stopStore,
@@ -106,16 +116,24 @@ async function startTrbotServer(): Promise<void> {
     store: alertStore,
     candles,
     onError: (error) => log("Price alerts", error),
-    onAgentTrigger: async (event) => {
-      const queued = priceAlertApplicationEvent(event)
-      if (queued) await chat.enqueueEvent(queued.sessionId, queued.event)
-    },
     broadcast: (event) => {
       if (event.type === "triggered") hub?.broadcast({ type: "alertTriggered", event: event.event })
       else {
         hub?.broadcast({ type: "alerts", views: alerts.alerts.views() })
         hub?.refresh()
       }
+    },
+  })
+
+  const marketMonitors = new MarketMonitorController({
+    store: marketMonitorStore,
+    candles,
+    // A newly watched contract must reach the upstream stream even with no TUI attached.
+    onChange: () => hub?.refresh(),
+    onError: (error) => log("Market monitors", error),
+    onTrigger: async (event) => {
+      const queued = marketMonitorApplicationEvent(event)
+      if (queued) await chat.enqueueEvent(queued.sessionId, queued.event)
     },
   })
 
@@ -132,19 +150,20 @@ async function startTrbotServer(): Promise<void> {
           sources: () => session.require(),
           stops: { list: async () => stops.list() },
         },
-        priceAlerts: {
+        marketMonitors: {
           instruments: {
             listInstruments: (options) => session.require().instruments.listInstruments(options),
           },
           candles,
-          alerts: {
-            list: async () => alerts.list(),
-            save: (draft) => alerts.save(draft),
-            setStatus: (id, status) => alerts.setStatus(id, status),
-            remove: (id) => alerts.remove(id),
+          monitors: {
+            list: async () => marketMonitors.list(),
+            save: (draft) => marketMonitors.save(draft),
+            setStatus: (id, status) => marketMonitors.setStatus(id, status),
+            remove: (id) => marketMonitors.remove(id),
           },
         },
         questions,
+        notifications,
         subagentSessions: {
           start: (input) => chat.subagentSessions.start(input),
         },
@@ -168,10 +187,11 @@ async function startTrbotServer(): Promise<void> {
   })
 
   hub = new StreamHub(session, {
-    extraQuoteSymbols: () => [...new Set([...stops.symbols(), ...alerts.symbols()])],
+    extraQuoteSymbols: () => [...new Set([...stops.symbols(), ...alerts.symbols(), ...marketMonitors.symbols()])],
     onQuote: (update) => {
       stops.applyQuote(update)
       alerts.applyQuote(update)
+      marketMonitors.applyQuote(update)
     },
     // A stop reads what is held to decide whether to fire and how much to exit,
     // so a position that closes elsewhere has to reach it now, not on the next
@@ -186,8 +206,10 @@ async function startTrbotServer(): Promise<void> {
   })
 
   await stops.rules.load()
+  await notifications.load()
   await chat.start()
   await alerts.load()
+  await marketMonitors.load()
 
   const resumed = await session.resume()
   console.log(resumed ? "Provider session resumed" : "No provider session; waiting for a client to sign in")
@@ -225,6 +247,7 @@ async function startTrbotServer(): Promise<void> {
     if (!session.authenticated) return
     void stops.rules.refreshCandleRules().catch((error: unknown) => log("Stop candles", error))
     void alerts.alerts.refreshCandleAlerts().catch((error: unknown) => log("Alert candles", error))
+    void marketMonitors.refreshCandles().catch((error: unknown) => log("Market monitor candles", error))
   }
   refreshCandles()
   const candleTimer = setInterval(refreshCandles, CANDLE_REFRESH_MS)
@@ -236,15 +259,18 @@ async function startTrbotServer(): Promise<void> {
     idempotency,
     preferences,
     alerts,
+    marketMonitors,
     stops,
     overviewSnapshots: new DrizzleOverviewSnapshotStore(connection.db),
     ai,
     chat,
     questions,
+    notifications,
     hub,
     backlog: () => [
       ...chat.backlog(),
       ...questions.backlog(),
+      ...notifications.backlog(),
       ...stops.outstanding().map((event) =>
         event.type === "triggered"
           ? { type: "stopTriggered", event: event.event, remainingMs: event.remainingMs, held: event.held }
@@ -272,6 +298,7 @@ async function startTrbotServer(): Promise<void> {
     closeHarness()
     stops.destroy()
     alerts.destroy()
+    marketMonitors.destroy()
     session.close()
     void server.stop(true)
     connection.close()
