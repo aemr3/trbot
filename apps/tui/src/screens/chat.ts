@@ -422,6 +422,13 @@ export class ChatScreen {
     this.messagesBySession.set(sessionId, messages)
     // A stored reply replaces what was streaming, so the words are not shown twice.
     if (message.role === "ASSISTANT") this.streamingBySession.delete(sessionId)
+    // A tool result is also its completion signal. Keep only calls still in flight in
+    // the live status list; the stored result remains visible in the transcript.
+    else if (existing < 0 && message.role === "TOOL_RESULT" && message.toolName) {
+      const streaming = this.streamingBySession.get(sessionId)
+      const toolIndex = streaming?.tools.indexOf(message.toolName) ?? -1
+      if (streaming && toolIndex >= 0) streaming.tools.splice(toolIndex, 1)
+    }
     this.render.schedule()
   }
 

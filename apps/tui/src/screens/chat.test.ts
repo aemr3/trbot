@@ -132,6 +132,16 @@ function replyMessage(text: string, status: ChatMessage["status"] = "COMPLETE"):
   }
 }
 
+function toolResultMessage(toolName: string, text: string): ChatMessage {
+  return {
+    ...userMessage(text, "COMPLETE"),
+    id: `tool-result-${toolName}-${text}`,
+    role: "TOOL_RESULT",
+    toolName,
+    toolCallId: `call-${toolName}`,
+  }
+}
+
 function applicationEvent(text: string): ChatMessage {
   return {
     ...userMessage(text, "SENT"),
@@ -348,6 +358,31 @@ test("renders a reply as it streams and replaces it with the stored message", as
   // which would show the same words twice.
   const settled = await waitForFrame((frame) => frame.includes("Heading higher."))
   expect(settled.split("Heading higher.").length - 1).toBe(1)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("removes completed tools from the live status list", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptDelta(session.id, "run-1", { toolName: "get_quote" })
+  screen.acceptDelta(session.id, "run-1", { toolName: "get_candles" })
+  await waitForFrame((frame) => frame.includes("⚙ get_quote") && frame.includes("⚙ get_candles"))
+
+  screen.acceptMessage(session.id, toolResultMessage("get_quote", "Read live quote."))
+  const oneRunning = await waitForFrame((frame) => frame.includes("Read live quote.") && !frame.includes("⚙ get_quote"))
+  expect(oneRunning).toContain("⚙ get_candles")
+
+  screen.acceptMessage(session.id, toolResultMessage("get_candles", "Read candles."))
+  const completed = await waitForFrame((frame) => frame.includes("Read candles.") && !frame.includes("⚙ get_candles"))
+  expect(completed).toContain("thinking…")
 
   screen.destroy()
   renderer.destroy()
