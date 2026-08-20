@@ -11,6 +11,17 @@ import {
 import { ChatQuestionRequestSchema, type ChatQuestionAnswer, type ChatQuestionRequest } from "@trbot/chat/question.ts"
 import { ChatNotificationSchema, type ChatNotification } from "@trbot/chat/notification.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
+import {
+  ChatAutomationStateSchema,
+  ChatGoalSchema,
+  ChatLoopSchema,
+  type ChatAutomationState,
+  type ChatGoal,
+  type ChatLoop,
+  type CreateChatGoal,
+  type CreateChatLoop,
+  type UpdateChatGoal,
+} from "@trbot/chat/automation.ts"
 import { OkResponseSchema, ROUTES } from "@trbot/protocol/routes.ts"
 import type { HttpClient } from "./http.ts"
 import type { StreamConnection } from "./stream.ts"
@@ -53,6 +64,26 @@ export class HttpChatSessions implements ChatSessions {
 
   async abort(sessionId: string): Promise<void> {
     await this.http.post(ROUTES.chatAbort(sessionId), OkResponseSchema)
+  }
+
+  automations(sessionId: string): Promise<ChatAutomationState> {
+    return this.http.get(ROUTES.chatAutomations(sessionId), ChatAutomationStateSchema)
+  }
+
+  createGoal(sessionId: string, input: CreateChatGoal): Promise<ChatGoal> {
+    return this.http.put(ROUTES.chatGoal(sessionId), ChatGoalSchema, { body: input })
+  }
+
+  updateGoal(sessionId: string, input: UpdateChatGoal): Promise<ChatGoal | null> {
+    return this.http.patch(ROUTES.chatGoal(sessionId), ChatGoalSchema.nullable(), { body: input })
+  }
+
+  createLoop(sessionId: string, input: CreateChatLoop): Promise<ChatLoop> {
+    return this.http.post(ROUTES.chatLoops(sessionId), ChatLoopSchema, { body: input })
+  }
+
+  async cancelLoop(sessionId: string, loopId: string): Promise<void> {
+    await this.http.delete(ROUTES.chatLoop(sessionId, loopId), OkResponseSchema)
   }
 
   questions(): Promise<ChatQuestionRequest[]> {

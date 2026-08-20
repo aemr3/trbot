@@ -17,6 +17,7 @@ import {
 } from "@trbot/chat/session.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import type { ChatFrame } from "@trbot/protocol/stream.ts"
+import type { ExecutionPolicy } from "@trbot/trading/execution-policy.ts"
 
 /**
  * Whatever runs one exchange with the model. Narrower than the agent itself so the
@@ -49,6 +50,17 @@ export interface ChatControllerOptions {
   }) => Promise<string | null>
   /** Refused before a run starts, so an unusable model is an ordinary error. */
   requireModel: (choice: ChatModelChoice | null) => Promise<void>
+  /** Runs automation only after the complete agent/tool lifecycle has settled. */
+  onTurnSettled?: (
+    sessionId: string,
+    event: { label: string | null; referenceId: string | null } | null,
+  ) => Promise<void>
+  /** Resolves persisted authority for an application-owned turn. */
+  executionPolicyForEvent?: (
+    sessionId: string,
+    label: string | null,
+    referenceId: string | null,
+  ) => Promise<ExecutionPolicy>
   broadcast: (frame: ChatFrame) => void
   onError: (error: unknown) => void
   now?: () => number
@@ -248,8 +260,8 @@ export class ChatController {
       status: "QUEUED",
       text: event.text,
       blocks: [chatBlockText(event.text)],
-      toolName: null,
-      toolCallId: null,
+      toolName: event.label ?? null,
+      toolCallId: event.referenceId ?? null,
       isError: false,
       errorMessage: null,
       usage: null,
@@ -469,6 +481,9 @@ export class ChatController {
     try {
       const turnModel = await this.options.resolveModel(choice)
       const prompt = await this.options.store.inputText(asked.id) ?? asked.text
+      const executionPolicy = asked.role === "APP_EVENT" && this.options.executionPolicyForEvent
+        ? await this.options.executionPolicyForEvent(sessionId, asked.toolName, asked.toolCallId)
+        : undefined
       // Read while the question is still queued, so the context is what came before
       // it and the model is not handed the same question twice.
       let modelContext = await this.options.store.context(sessionId)
@@ -512,6 +527,10 @@ export class ChatController {
           history,
           prompt,
           chatSessionId: sessionId,
+          executionPolicy,
+          ...(asked.role === "APP_EVENT" ? {
+            automationEvent: { label: asked.toolName, referenceId: asked.toolCallId },
+          } : {}),
           signal: run.controller!.signal,
           events: {
             onText: (delta) => {
@@ -596,6 +615,16 @@ export class ChatController {
       runId: run.runId,
       status: result.aborted ? "aborted" : "done",
     })
+    if (result.completed && this.options.onTurnSettled) {
+      try {
+        await this.options.onTurnSettled(
+          sessionId,
+          asked.role === "APP_EVENT" ? { label: asked.toolName, referenceId: asked.toolCallId } : null,
+        )
+      } catch (error) {
+        this.options.onError(error)
+      }
+    }
     await this.announceSessions()
   }
 

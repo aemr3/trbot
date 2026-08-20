@@ -137,6 +137,7 @@ describe("server and client over the wire", () => {
         chat: notUsed as never,
         questions: notUsed as never,
         notifications,
+        automations: notUsed as never,
         backlog: () => [],
         onDecision: () => {},
       },

@@ -14,13 +14,17 @@ import { createAgentTools } from "@trbot/ai/agent-tools.ts"
 import { ChatAgent } from "@trbot/ai/chat.ts"
 import { ChatCompactor } from "@trbot/ai/compaction.ts"
 import { ChatTitleGenerator } from "@trbot/ai/title.ts"
+import { ChatGoalEvaluator } from "@trbot/ai/goal-evaluator.ts"
 import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trbot/ai/harness.ts"
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { DrizzleChatNotificationStore } from "@trbot/db/chat-notification-store.ts"
+import { DrizzleChatAutomationStore } from "@trbot/db/chat-automation-store.ts"
 import { AiService } from "./ai.ts"
 import { ChatController } from "./chat.ts"
 import { ChatQuestionController } from "./chat-question.ts"
 import { ChatNotificationController } from "./chat-notification.ts"
+import { ChatAutomationController } from "./chat-automation.ts"
+import { loadDefaultLoopPrompt } from "./chat-loop-prompt.ts"
 import { marketMonitorApplicationEvent } from "./chat-market-monitor-event.ts"
 import { certificateExpiry } from "./tls.ts"
 import { AlertController } from "./monitors/alert.ts"
@@ -74,6 +78,7 @@ async function startTrbotServer(): Promise<void> {
   const alertStore = new DrizzlePriceAlertStore(connection.db)
   const marketMonitorStore = new DrizzleMarketMonitorStore(connection.db)
   const chatNotificationStore = new DrizzleChatNotificationStore(connection.db)
+  const chatAutomationStore = new DrizzleChatAutomationStore(connection.db)
   const stopStore = new DrizzleStopRuleStore(connection.db)
   const idempotency = new IdempotencyStore(connection.db)
   await idempotency.sweep()
@@ -86,6 +91,7 @@ async function startTrbotServer(): Promise<void> {
   const aiPreferences = new DrizzleAiPreferencesStore(connection.db)
   const models = createHarness(credentials)
   const titles = new ChatTitleGenerator(models)
+  const goalEvaluator = new ChatGoalEvaluator(models)
 
   const ai = new AiService({ models, credentials, preferences: aiPreferences })
   let hub: StreamHub | null = null
@@ -141,6 +147,7 @@ async function startTrbotServer(): Promise<void> {
   // Chat runs belong to the server for the same reason the monitors do: a reply
   // has to survive the terminal that asked for it closing its tab or quitting.
   let chat!: ChatController
+  let automations!: ChatAutomationController
   const chatTools = createAgentTools({
     models,
     marketData: {
@@ -161,6 +168,14 @@ async function startTrbotServer(): Promise<void> {
     },
     questions,
     notifications,
+    automations: {
+      state: (sessionId) => automations.state(sessionId),
+      createGoal: (sessionId, input) => automations.createGoal(sessionId, input),
+      finishGoal: (sessionId, status, reason) => automations.finishGoal(sessionId, status, reason),
+      createLoop: (sessionId, input) => automations.createLoop(sessionId, input),
+      rescheduleLoop: (sessionId, loopId, intervalMs) => automations.rescheduleLoop(sessionId, loopId, intervalMs),
+      cancelLoop: (sessionId, loopId) => automations.cancelLoop(sessionId, loopId),
+    },
     subagentSessions: {
       start: (input) => chat.subagentSessions.start(input),
     },
@@ -182,8 +197,45 @@ async function startTrbotServer(): Promise<void> {
       signal,
     }),
     requireModel: (choice) => ai.requireModel("chat", choice?.providerId, choice?.modelId),
+    onTurnSettled: (sessionId, event) => automations.onTurnSettled(sessionId, event),
+    executionPolicyForEvent: (sessionId, label, referenceId) =>
+      automations.executionPolicyForEvent(sessionId, label, referenceId),
     broadcast: (frame) => hub?.broadcast(frame),
     onError: (error) => log("Chat", error),
+  })
+  automations = new ChatAutomationController({
+    store: chatAutomationStore,
+    detail: (sessionId) => chat.detail(sessionId),
+    enqueueEvent: (sessionId, event) => chat.enqueueEvent(sessionId, event),
+    cancelQueuedEvents: async (sessionId, label, referenceId) => {
+      const detail = await chat.detail(sessionId)
+      for (const message of detail.messages) {
+        if (
+          message.role === "APP_EVENT" &&
+          message.status === "QUEUED" &&
+          message.toolName === label &&
+          message.toolCallId === referenceId
+        ) {
+          try {
+            await chat.cancel(sessionId, message.id)
+          } catch (error) {
+            // The queue may have started this event after the snapshot. Its turn may
+            // finish, but the updated automation state prevents another one.
+            log("Chat automation", error)
+          }
+        }
+      }
+    },
+    resolveModel: async (detail) => {
+      const { provider, model, reasoning } = detail.session
+      if (!provider || !model) throw new Error("The goal's chat has no model")
+      await ai.requireModel("chat", provider, model)
+      return { model: harnessModel(models, provider, model), reasoningEffort: reasoning }
+    },
+    evaluator: goalEvaluator,
+    defaultLoopPrompt: loadDefaultLoopPrompt,
+    notify: (input) => notifications.notify({ ...input, urgency: "IMPORTANT" }),
+    onError: (error) => log("Chat automation", error),
   })
 
   hub = new StreamHub(session, {
@@ -212,6 +264,7 @@ async function startTrbotServer(): Promise<void> {
   await marketMonitors.load()
 
   const resumed = await session.resume()
+  await automations.start()
   console.log(resumed ? "Provider session resumed" : "No provider session; waiting for a client to sign in")
 
   // The stop monitor needs to know what is held. The timer is the floor, so an
@@ -266,6 +319,7 @@ async function startTrbotServer(): Promise<void> {
     chat,
     questions,
     notifications,
+    automations,
     hub,
     backlog: () => [
       ...chat.backlog(),
@@ -294,6 +348,7 @@ async function startTrbotServer(): Promise<void> {
     clearInterval(candleTimer)
     if (positionRefreshTimer) clearTimeout(positionRefreshTimer)
     chat.destroy()
+    automations.destroy()
     questions.destroy()
     closeHarness()
     stops.destroy()

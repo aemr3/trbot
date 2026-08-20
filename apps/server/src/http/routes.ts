@@ -4,6 +4,7 @@ import { SettlementRequestSchema } from "@trbot/market/settlement.ts"
 import { PriceAlertStatusRequestSchema } from "@trbot/market/alert.ts"
 import { ChatMessageInputSchema } from "@trbot/chat/session.ts"
 import { ChatQuestionReplySchema } from "@trbot/chat/question.ts"
+import { CreateChatGoalSchema, CreateChatLoopSchema, UpdateChatGoalSchema } from "@trbot/chat/automation.ts"
 import type { AppPreferences } from "@trbot/preferences/app.ts"
 import { AiCredentialsSchema } from "@trbot/protocol/ai.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
@@ -25,6 +26,7 @@ import type { AiService } from "../ai.ts"
 import type { ChatController } from "../chat.ts"
 import type { ChatQuestionController } from "../chat-question.ts"
 import type { ChatNotificationController } from "../chat-notification.ts"
+import type { ChatAutomationController } from "../chat-automation.ts"
 import type { AlertController } from "../monitors/alert.ts"
 import type { MarketMonitorController } from "../monitors/market-monitor.ts"
 import type { StopController } from "../monitors/stop.ts"
@@ -51,6 +53,7 @@ export interface RouteContext {
   chat: ChatController
   questions: ChatQuestionController
   notifications: ChatNotificationController
+  automations: ChatAutomationController
 }
 
 type Handler = (request: Request, context: RouteContext) => Promise<Response>
@@ -312,6 +315,47 @@ export const PARAMETERIZED: {
   method: string
   handle: (match: RegExpMatchArray, request: Request, context: RouteContext) => Promise<Response>
 }[] = [
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/automations$/,
+    method: "GET",
+    handle: async (match, _request, { automations }) =>
+      json(await automations.state(decodeURIComponent(match[1] ?? ""))),
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/goal$/,
+    method: "PUT",
+    handle: async (match, request, { automations }) => {
+      const body = check.payload(await readJsonObject(request), CreateChatGoalSchema, "goal")
+      return json(await automations.createGoal(decodeURIComponent(match[1] ?? ""), body))
+    },
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/goal$/,
+    method: "PATCH",
+    handle: async (match, request, { automations }) => {
+      const body = check.payload(await readJsonObject(request), UpdateChatGoalSchema, "goal action")
+      return json(await automations.updateGoal(decodeURIComponent(match[1] ?? ""), body))
+    },
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/loops$/,
+    method: "POST",
+    handle: async (match, request, { automations }) => {
+      const body = check.payload(await readJsonObject(request), CreateChatLoopSchema, "loop")
+      return json(await automations.createLoop(decodeURIComponent(match[1] ?? ""), body))
+    },
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/loops\/([^/]+)$/,
+    method: "DELETE",
+    handle: async (match, _request, { automations }) => {
+      await automations.cancelLoop(
+        decodeURIComponent(match[1] ?? ""),
+        decodeURIComponent(match[2] ?? ""),
+      )
+      return json({ ok: true })
+    },
+  },
   {
     pattern: /^\/v1\/ai\/chat\/notifications\/([^/]+)$/,
     method: "DELETE",

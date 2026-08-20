@@ -6,6 +6,7 @@ import { askQuestionTool, type ChatQuestionAsker } from "./question.ts"
 import { subagentTool, type SubagentSessionRecorder } from "./subagent.ts"
 import { ChatTools, type ChatToolRegistry } from "./tool.ts"
 import { webTools, type WebToolsOptions } from "./web.ts"
+import { automationTools, type ChatAutomationToolsClient } from "./automation.ts"
 
 export interface AgentToolsOptions {
   models: Models
@@ -15,6 +16,7 @@ export interface AgentToolsOptions {
   questions?: ChatQuestionAsker
   notifications?: ChatNotifier
   subagentSessions?: SubagentSessionRecorder
+  automations?: ChatAutomationToolsClient
 }
 
 /** The complete chat capability set, shared by parents and isolated subagents. */
@@ -28,6 +30,9 @@ export function createAgentTools(options: AgentToolsOptions): ChatToolRegistry {
   }
   if (options.questions) tools.register(askQuestionTool(options.questions))
   if (options.notifications) tools.register(notifyUserTool(options.notifications))
+  if (options.automations) {
+    for (const tool of automationTools(options.automations)) tools.register(tool)
+  }
   tools.register(subagentTool(options.models, tools, options.subagentSessions))
   return tools
 }

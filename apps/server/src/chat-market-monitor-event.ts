@@ -26,6 +26,6 @@ export function marketMonitorApplicationEvent(event: MarketMonitorTriggerEvent):
   ].join("\n")
   return {
     sessionId: monitor.chatSessionId,
-    event: { key: `market-monitor:${monitor.triggerId}`, text: display, prompt },
+    event: { key: `market-monitor:${monitor.triggerId}`, label: "market monitor", text: display, prompt },
   }
 }

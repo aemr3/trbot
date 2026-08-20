@@ -209,6 +209,10 @@ export interface ChatApplicationEvent {
   text: string
   /** Full event and stored continuation handed to the model. */
   prompt: string
+  /** Short source label shown above the event in a transcript. */
+  label?: string
+  /** Stable owner id used to recover typed automation authority for this turn. */
+  referenceId?: string
 }
 
 /**

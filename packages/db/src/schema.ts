@@ -199,6 +199,48 @@ export const chatNotifications = sqliteTable(
   (table) => [index("chat_notifications_created_at").on(table.createdAt)],
 )
 
+// One current objective per root chat. Replacing a goal replaces this row.
+export const chatGoals = sqliteTable("chat_goals", {
+  sessionId: text("session_id").primaryKey().references(() => chatSessions.id, { onDelete: "cascade" }),
+  id: text("id").notNull().unique(),
+  objective: text("objective").notNull(),
+  status: text("status").notNull(),
+  executionPolicy: text("execution_policy").notNull(),
+  turnCount: integer("turn_count").notNull(),
+  maxTurns: integer("max_turns").notNull(),
+  tokenBudget: integer("token_budget"),
+  startedTokens: integer("started_tokens").notNull(),
+  usedTokens: integer("used_tokens").notNull(),
+  lastEvaluation: text("last_evaluation"),
+  pendingEventKey: text("pending_event_key"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+})
+
+// Scheduled prompts are durable and session-owned; missed intervals are coalesced.
+export const chatLoops = sqliteTable(
+  "chat_loops",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
+    prompt: text("prompt").notNull(),
+    usesDefaultPrompt: integer("uses_default_prompt", { mode: "boolean" }).notNull(),
+    schedule: text("schedule").notNull(),
+    intervalMs: integer("interval_ms"),
+    cronExpression: text("cron_expression"),
+    status: text("status").notNull(),
+    executionPolicy: text("execution_policy").notNull(),
+    nextRunAt: integer("next_run_at").notNull(),
+    lastRunAt: integer("last_run_at"),
+    runCount: integer("run_count").notNull(),
+    maxRuns: integer("max_runs"),
+    expiresAt: integer("expires_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("chat_loops_due").on(table.status, table.nextRunAt)],
+)
+
 /**
  * One message in a conversation, whether the trader wrote it, the model replied,
  * or a tool answered.

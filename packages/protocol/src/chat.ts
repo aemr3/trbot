@@ -1,6 +1,14 @@
 import type { ChatMessage, ChatModelChoice, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
+import type {
+  ChatAutomationState,
+  ChatGoal,
+  ChatLoop,
+  CreateChatGoal,
+  CreateChatLoop,
+  UpdateChatGoal,
+} from "@trbot/chat/automation.ts"
 
 /**
  * The chat as a client drives it.
@@ -25,6 +33,11 @@ export interface ChatSessions {
   cancel(sessionId: string, messageId: string): Promise<void>
   /** Stops the reply being generated now, keeping whatever it produced. */
   abort(sessionId: string): Promise<void>
+  automations(sessionId: string): Promise<ChatAutomationState>
+  createGoal(sessionId: string, input: CreateChatGoal): Promise<ChatGoal>
+  updateGoal(sessionId: string, input: UpdateChatGoal): Promise<ChatGoal | null>
+  createLoop(sessionId: string, input: CreateChatLoop): Promise<ChatLoop>
+  cancelLoop(sessionId: string, loopId: string): Promise<void>
   /** Questions currently blocking an agent tool call. */
   questions(): Promise<ChatQuestionRequest[]>
   answerQuestion(requestId: string, answers: ChatQuestionAnswer[]): Promise<void>

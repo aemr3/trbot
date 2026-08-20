@@ -8,6 +8,7 @@ import {
   type TSchema,
 } from "@earendil-works/pi-ai"
 import type { ChatBlock, ChatUsage } from "@trbot/chat/session.ts"
+import type { ExecutionPolicy } from "@trbot/trading/execution-policy.ts"
 
 /**
  * What a tool call produced: what the trader sees, what the model is told, and
@@ -49,6 +50,10 @@ export interface ChatToolRunOptions {
   delegation?: ChatDelegationContext
   /** Shared by the parent and every worker so one turn cannot spam notices. */
   notificationBudget?: { sent: number }
+  /** Server-resolved authority for this turn; order tools must enforce it. */
+  executionPolicy?: ExecutionPolicy
+  /** Application event that woke the root turn, inherited by its workers. */
+  automationEvent?: { label: string | null; referenceId: string | null }
 }
 
 /**

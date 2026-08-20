@@ -81,6 +81,27 @@ test("adds non-blocking user notifications to the complete parent and subagent t
   ])
 })
 
+test("adds persistent goal and loop tools to the shared registry", () => {
+  const faux = fauxProvider({ models: [{ id: "chat-model" }] })
+  const models = createModels()
+  models.setProvider(faux.provider)
+
+  const tools = createAgentTools({ models, automations: {} as never })
+
+  expect(tools.list().map((tool) => tool.name)).toEqual([
+    "web_search",
+    "fetch_content",
+    "get_goal",
+    "create_goal",
+    "update_goal",
+    "create_loop",
+    "list_loops",
+    "cancel_loop",
+    "reschedule_loop",
+    "subagent",
+  ])
+})
+
 test("adds every read-only market tool when the server provides its clients", () => {
   const faux = fauxProvider({ models: [{ id: "chat-model" }] })
   const models = createModels()

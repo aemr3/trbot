@@ -11,6 +11,7 @@ import {
 import type { ChatMessage, ChatRunStatus, ChatSession } from "@trbot/chat/session.ts"
 import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
+import { parseLoopInterval, type ChatAutomationState } from "@trbot/chat/automation.ts"
 import type { MarketMonitor } from "@trbot/market/market-monitor.ts"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
@@ -72,6 +73,13 @@ const MARKET_MONITOR_MUTATIONS = new Set([
   "set_market_monitor_status",
   "cancel_market_monitor",
 ])
+const AUTOMATION_MUTATIONS = new Set([
+  "create_goal",
+  "update_goal",
+  "create_loop",
+  "cancel_loop",
+  "reschedule_loop",
+])
 
 /** One quiet terminal cell around the conversation, matching the Codex transcript. */
 const CHAT_INSET = 1
@@ -90,6 +98,8 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/reasoning", description: "choose the model's reasoning effort" },
   { name: "/thoughts", description: "show or hide model reasoning" },
   { name: "/monitors", description: "view or cancel this chat's market monitors" },
+  { name: "/goal", description: "<objective> · pause · resume · clear" },
+  { name: "/loop", description: "[interval] [task] · list · cancel <id>" },
   { name: "/subagents", description: "open this chat's worker sessions" },
   { name: "/parent", description: "return from a worker transcript" },
   { name: "/chats", description: "open another chat" },
@@ -184,6 +194,8 @@ export class ChatScreen {
   private modal: Modal | null = null
   /** Whether replies show the reasoning that led to them, or only that there was some. */
   private showThoughts: boolean
+  private commandNotice: string | null = null
+  private automationNotice: "goal" | "loop" | null = null
   private spinner = 0
   private spinnerTimer: ReturnType<typeof setInterval> | null = null
   private destroyed = false
@@ -457,6 +469,12 @@ export class ChatScreen {
     if (message.role === "APP_EVENT" || (message.toolName && MARKET_MONITOR_MUTATIONS.has(message.toolName))) {
       void this.refreshMarketMonitorCount(sessionId)
     }
+    if (
+      (message.role === "APP_EVENT" && (message.toolName === "goal" || message.toolName === "loop")) ||
+      (message.role === "TOOL_RESULT" && message.toolName && AUTOMATION_MUTATIONS.has(message.toolName))
+    ) {
+      void this.refreshAutomationNotice(sessionId)
+    }
     this.render.schedule()
   }
 
@@ -623,6 +641,19 @@ export class ChatScreen {
     }
   }
 
+  private async refreshAutomationNotice(sessionId: string): Promise<void> {
+    const focus = this.automationNotice
+    if (!focus || sessionId !== this.selectedSessionId) return
+    try {
+      const state = await this.options.chats.automations(sessionId)
+      if (this.destroyed || sessionId !== this.selectedSessionId || focus !== this.automationNotice) return
+      this.commandNotice = formatAutomations(state, focus)
+      this.render.schedule()
+    } catch (error) {
+      this.options.logs.error("Chat automation", error)
+    }
+  }
+
   private async refreshConnection(): Promise<void> {
     if (!this.options.account) {
       this.connected = false
@@ -715,6 +746,8 @@ export class ChatScreen {
     const session = this.selectedSession() ?? await this.startSession()
     if (!session || this.destroyed) return
     try {
+      this.commandNotice = null
+      this.automationNotice = null
       this.composer.setText("")
       this.commandMenu.close()
       this.render.schedule()
@@ -730,9 +763,10 @@ export class ChatScreen {
     }
   }
 
-  /** Local navigation commands never become trader messages or consume model tokens. */
+  /** Slash commands invoke application controls without becoming user messages or consuming model tokens. */
   private async runCommand(text: string): Promise<boolean> {
-    const command = text.toLowerCase()
+    const [head = "", ...words] = text.trim().split(/\s+/u)
+    const command = head.toLowerCase()
     if (!CHAT_COMMANDS.some((entry) => entry.name === command)) return false
 
     this.composer.setText("")
@@ -751,6 +785,12 @@ export class ChatScreen {
         break
       case "/monitors":
         await this.openMarketMonitors()
+        break
+      case "/goal":
+        await this.runGoalCommand(words.join(" "))
+        break
+      case "/loop":
+        await this.runLoopCommand(words.join(" "))
         break
       case "/subagents":
         await this.openSubagents()
@@ -775,6 +815,66 @@ export class ChatScreen {
     }
     this.render.schedule()
     return true
+  }
+
+  private async runGoalCommand(argumentsText: string): Promise<void> {
+    this.automationNotice = "goal"
+    try {
+      const action = argumentsText.trim()
+      const selected = this.selectedSession()
+      if (!selected && (!action || ["pause", "resume", "clear"].includes(action.toLowerCase()))) {
+        this.commandNotice = "No goal in this chat.\n\n/goal <objective>"
+        return
+      }
+      const session = selected ?? await this.startSession()
+      if (!session) return
+      this.automationNotice = "goal"
+      if (!action) {
+        this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "goal")
+      } else if (["pause", "resume", "clear"].includes(action.toLowerCase())) {
+        await this.options.chats.updateGoal(session.id, { action: action.toUpperCase() as "PAUSE" | "RESUME" | "CLEAR" })
+        this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "goal")
+      } else {
+        await this.options.chats.createGoal(session.id, { objective: action })
+        this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "goal")
+      }
+    } catch (error) {
+      this.options.logs.error("Chat goal", error)
+      this.commandNotice = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  private async runLoopCommand(argumentsText: string): Promise<void> {
+    this.automationNotice = "loop"
+    try {
+      const selected = this.selectedSession()
+      const command = parseLoopCommand(argumentsText)
+      if (command.action === "LIST") {
+        if (!selected) {
+          this.commandNotice = "No scheduled tasks in this chat.\n\n/loop [interval] [task]"
+          return
+        }
+        this.commandNotice = formatAutomations(await this.options.chats.automations(selected.id), "loop")
+        return
+      }
+      if (!selected && command.action === "CANCEL") {
+        this.commandNotice = "No scheduled tasks in this chat.\n\n/loop [interval] [task]"
+        return
+      }
+      const session = selected ?? await this.startSession()
+      if (!session) return
+      this.automationNotice = "loop"
+      if (command.action === "CANCEL") {
+        await this.options.chats.cancelLoop(session.id, command.loopId)
+        this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "loop")
+        return
+      }
+      await this.options.chats.createLoop(session.id, command.input)
+      this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "loop")
+    } catch (error) {
+      this.options.logs.error("Chat loop", error)
+      this.commandNotice = error instanceof Error ? error.message : String(error)
+    }
   }
 
   private async createSession(): Promise<void> {
@@ -1089,6 +1189,8 @@ export class ChatScreen {
   private setSelectedSession(sessionId: string | null): void {
     if (sessionId === this.selectedSessionId) return
     this.selectedSessionId = sessionId
+    this.commandNotice = null
+    this.automationNotice = null
     this.options.onSessionChange?.(sessionId)
     if (sessionId) void this.refreshMarketMonitorCount(sessionId)
   }
@@ -1317,9 +1419,104 @@ export class ChatScreen {
         showThoughts: this.showThoughts,
       }))
     }
+    if (this.commandNotice) blocks.push(note(this.commandNotice))
     if (blocks.length === 0) return [note("Nothing said yet.")]
     return blocks
   }
+}
+
+function formatAutomations(state: ChatAutomationState, focus: "goal" | "loop"): string {
+  if (focus === "goal") {
+    const goal = state.goal
+    if (!goal) return "No goal in this chat.\n\n/goal <objective>"
+    const budget = goal.tokenBudget === null ? "no token budget" : `${goal.usedTokens}/${goal.tokenBudget} tokens`
+    return [
+      `${goal.status.toLowerCase()} goal`,
+      goal.objective,
+      `${goal.turnCount}/${goal.maxTurns} continuations · ${budget} · ${goal.executionPolicy.mode.toLowerCase()}`,
+      ...(goal.lastEvaluation ? [`Evaluator: ${goal.lastEvaluation}`] : []),
+      "",
+      "/goal pause · /goal resume · /goal clear",
+    ].join("\n")
+  }
+  if (state.loops.length === 0) return "No scheduled tasks in this chat.\n\n/loop [interval] [task]"
+  return [
+    "Scheduled tasks",
+    ...state.loops.map((loop) => (
+      `${loop.id} · ${loop.status.toLowerCase()} · ${formatLoopSchedule(loop)} · next ${new Date(loop.nextRunAt).toLocaleString()} · ${loop.prompt}`
+    )),
+    "",
+    "/loop cancel <id>",
+  ].join("\n")
+}
+
+function parseLoopCommand(argumentsText: string):
+  | { action: "LIST" }
+  | { action: "CANCEL"; loopId: string }
+  | { action: "CREATE"; input: Parameters<ChatSessions["createLoop"]>[1] } {
+  const text = argumentsText.trim()
+  if (text.toLowerCase() === "list") return { action: "LIST" }
+  if (/^cancel(?:\s|$)/iu.test(text)) {
+    const [, loopId, extra] = text.split(/\s+/u)
+    if (!loopId || extra) throw new Error("Usage: /loop cancel <id>")
+    return { action: "CANCEL", loopId }
+  }
+  if (/^cron\s/iu.test(text)) {
+    const words = text.slice(5).trim().split(/\s+/u)
+    if (words.length < 5) throw new Error("Usage: /loop cron <5 fields> [task]")
+    const cronExpression = words.slice(0, 5).join(" ")
+    const prompt = words.slice(5).join(" ").trim()
+    return { action: "CREATE", input: { schedule: "CRON", cronExpression, ...(prompt ? { prompt } : {}) } }
+  }
+  if (/^at\s/iu.test(text)) {
+    const [, timestamp = "", ...promptWords] = text.split(/\s+/u)
+    const runAt = Date.parse(timestamp)
+    if (!Number.isFinite(runAt)) throw new Error("Usage: /loop at <ISO timestamp> [task]")
+    const prompt = promptWords.join(" ").trim()
+    return { action: "CREATE", input: { schedule: "ONCE", runAt, ...(prompt ? { prompt } : {}) } }
+  }
+
+  const [first = "", ...rest] = text.split(/\s+/u)
+  const leadingInterval = parseLoopInterval(first)
+  if (leadingInterval) {
+    const prompt = rest.join(" ").trim()
+    return {
+      action: "CREATE",
+      input: { schedule: "INTERVAL", intervalMs: leadingInterval, ...(prompt ? { prompt } : {}) },
+    }
+  }
+
+  const trailing = text.match(/^(.*?)\s+every\s+(\d+)\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$/iu)
+  if (trailing) {
+    const prompt = trailing[1]?.trim() ?? ""
+    const intervalMs = parseNaturalLoopInterval(trailing[2] ?? "", trailing[3] ?? "")
+    if (!intervalMs) throw new Error("Loop interval must be at least one minute")
+    return {
+      action: "CREATE",
+      input: { schedule: "INTERVAL", intervalMs, ...(prompt ? { prompt } : {}) },
+    }
+  }
+
+  return { action: "CREATE", input: { schedule: "DYNAMIC", ...(text ? { prompt: text } : {}) } }
+}
+
+function parseNaturalLoopInterval(amount: string, unit: string): number | null {
+  const normalized = unit.toLowerCase()
+  const suffix = normalized.startsWith("s") ? "s" : normalized.startsWith("m") ? "m" : normalized.startsWith("h") ? "h" : "d"
+  return parseLoopInterval(`${amount}${suffix}`)
+}
+
+function formatLoopSchedule(loop: ChatAutomationState["loops"][number]): string {
+  if (loop.schedule === "CRON") return `cron ${loop.cronExpression}`
+  if (loop.schedule === "ONCE") return `once ${new Date(loop.nextRunAt).toLocaleString()}`
+  if (loop.schedule === "DYNAMIC") return `dynamic · next delay ${formatLoopInterval(loop.intervalMs ?? 60_000)}`
+  return `every ${formatLoopInterval(loop.intervalMs ?? 60_000)}`
+}
+
+function formatLoopInterval(intervalMs: number): string {
+  if (intervalMs % 86_400_000 === 0) return `${intervalMs / 86_400_000}d`
+  if (intervalMs % 3_600_000 === 0) return `${intervalMs / 3_600_000}h`
+  return `${intervalMs / 60_000}m`
 }
 
 /**
@@ -1333,7 +1530,7 @@ function messageBlock(message: ChatMessage, current: StyledText, showThoughts: b
     return {
       id: message.id,
       marker: new StyledText([fg(COMPOSER_COLOR)("◆")]),
-      header: new StyledText([fg(COMPOSER_COLOR)("market monitor")]),
+      header: new StyledText([fg(COMPOSER_COLOR)(message.toolName ?? "market monitor")]),
       content: new StyledText([fg(MUTED_COLOR)(message.text)]),
       ...(message.status === "QUEUED"
         ? { footer: new StyledText([fg(QUEUED_COLOR)("waiting for agent")]) }

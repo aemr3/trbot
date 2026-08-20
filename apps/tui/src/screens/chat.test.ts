@@ -4,6 +4,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { chatBlockText, type ChatMessage, type ChatSession, type ChatSessionDetail } from "@trbot/chat/session.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
+import { ChatLoopSchema, type ChatAutomationState } from "@trbot/chat/automation.ts"
 import { createMarketMonitor } from "@trbot/market/market-monitor.ts"
 import type { AiAccount, AiModelChoice, AiModelSummary, AiPreferences, AiProviderSummary } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
@@ -32,6 +33,7 @@ function fakeChats(): ChatSessions & {
   const rejected: string[] = []
   const agentNotifications: ChatNotification[] = []
   const dismissedNotifications: string[] = []
+  const automations = new Map<string, ChatAutomationState>()
 
   return {
     sessions,
@@ -98,6 +100,75 @@ function fakeChats(): ChatSessions & {
     },
     async abort(sessionId) {
       aborted.push(sessionId)
+    },
+    async automations(sessionId) {
+      return automations.get(sessionId) ?? { goal: null, loops: [] }
+    },
+    async createGoal(sessionId, input) {
+      const now = 1_000
+      const goal = {
+        id: "goal-1",
+        sessionId,
+        objective: input.objective,
+        status: "ACTIVE" as const,
+        executionPolicy: input.executionPolicy ?? { mode: "ANALYSIS_ONLY" as const },
+        turnCount: 0,
+        maxTurns: input.maxTurns ?? 50,
+        tokenBudget: input.tokenBudget ?? null,
+        startedTokens: 0,
+        usedTokens: 0,
+        lastEvaluation: null,
+        pendingEventKey: null,
+        createdAt: now,
+        updatedAt: now,
+      }
+      automations.set(sessionId, { goal, loops: automations.get(sessionId)?.loops ?? [] })
+      return goal
+    },
+    async updateGoal(sessionId, input) {
+      const state = automations.get(sessionId) ?? { goal: null, loops: [] }
+      if (input.action === "CLEAR") {
+        automations.set(sessionId, { ...state, goal: null })
+        return null
+      }
+      if (!state.goal) throw new Error("no goal")
+      const goal = { ...state.goal, status: input.action === "PAUSE" ? "PAUSED" as const : "ACTIVE" as const }
+      automations.set(sessionId, { ...state, goal })
+      return goal
+    },
+    async createLoop(sessionId, input) {
+      const state = automations.get(sessionId) ?? { goal: null, loops: [] }
+      const intervalMs = input.schedule === "INTERVAL"
+        ? input.intervalMs
+        : input.schedule === "DYNAMIC"
+          ? input.initialDelayMs ?? 60_000
+          : null
+      const nextRunAt = input.schedule === "ONCE" ? input.runAt : 1_000 + (intervalMs ?? 60_000)
+      const loop = ChatLoopSchema.parse({
+        id: `loop-${state.loops.length + 1}`,
+        sessionId,
+        prompt: input.prompt ?? "Maintenance",
+        usesDefaultPrompt: input.prompt === undefined,
+        schedule: input.schedule,
+        intervalMs,
+        cronExpression: input.schedule === "CRON" ? input.cronExpression : null,
+        status: "ACTIVE" as const,
+        executionPolicy: input.executionPolicy ?? { mode: "ANALYSIS_ONLY" as const },
+        nextRunAt,
+        lastRunAt: null,
+        runCount: 0,
+        maxRuns: input.maxRuns ?? null,
+        expiresAt: input.expiresAt ?? null,
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      })
+      state.loops.push(loop)
+      automations.set(sessionId, state)
+      return loop
+    },
+    async cancelLoop(sessionId, loopId) {
+      const state = automations.get(sessionId) ?? { goal: null, loops: [] }
+      automations.set(sessionId, { ...state, loops: state.loops.filter((loop) => loop.id !== loopId) })
     },
     async questions() {
       return []
@@ -528,6 +599,61 @@ test("opens a filtered slash-command menu below the composer", async () => {
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("No subagents have run in this session."))
   expect(chats.sent).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("creates and inspects persistent goals and scheduled loops from slash commands", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 110, height: 28, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("/goal Verify the close")
+  mockInput.pressEnter()
+  const goal = await waitForFrame((frame) => frame.includes("active goal") && frame.includes("Verify the close"))
+  expect(goal).toContain("analysis_only")
+  expect(chats.sent).toEqual([])
+
+  await mockInput.typeText("/loop 5m Refresh positions")
+  mockInput.pressEnter()
+  const loop = await waitForFrame((frame) => frame.includes("Scheduled tasks") && frame.includes("every 5m"))
+  expect(loop).toContain("Refresh positions")
+  expect(chats.sent).toEqual([])
+
+  await mockInput.typeText("/loop Recheck the account every 2 hours")
+  mockInput.pressEnter()
+  const trailing = await waitForFrame((frame) => frame.includes("every 2h") && frame.includes("Recheck the account"))
+  expect(trailing).toContain("Scheduled tasks")
+
+  await mockInput.typeText("/loop Watch the open")
+  mockInput.pressEnter()
+  const dynamic = await waitForFrame((frame) => frame.includes("dynamic") && frame.includes("Watch the open"))
+  expect(dynamic).toContain("next delay 1m")
+
+  await mockInput.typeText("/loop 20s")
+  mockInput.pressEnter()
+  const rounded = await waitForFrame((frame) => frame.includes("every 1m") && frame.includes("Maintenance"))
+  expect(rounded).toContain("Scheduled tasks")
+
+  await mockInput.typeText("/loop cron */5 * * * * Refresh news")
+  mockInput.pressEnter()
+  const cron = await waitForFrame((frame) => frame.includes("cron */5 * * * *") && frame.includes("Refresh news"))
+  expect(cron).toContain("Scheduled tasks")
+
+  const state = await chats.automations(session.id)
+  const rescheduled = state.loops.find((entry) => entry.schedule === "DYNAMIC" && entry.prompt === "Watch the open")
+  if (!rescheduled || rescheduled.schedule !== "DYNAMIC") throw new Error("dynamic loop was not created")
+  rescheduled.intervalMs = 3_600_000
+  rescheduled.nextRunAt += 3_600_000
+  screen.acceptMessage(session.id, toolResultMessage("reschedule_loop", "Next run in 60 minutes."))
+  const refreshed = await waitForFrame((frame) => frame.includes("Watch the open") && frame.includes("next delay 1h"))
+  expect(refreshed).toContain("Scheduled tasks")
 
   screen.destroy()
   renderer.destroy()

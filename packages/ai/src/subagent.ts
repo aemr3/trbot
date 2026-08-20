@@ -1,5 +1,6 @@
 import { Type, type Api, type Model, type Models } from "@earendil-works/pi-ai"
 import type { ChatMessageDraft, ChatUsage } from "@trbot/chat/session.ts"
+import type { ExecutionPolicy } from "@trbot/trading/execution-policy.ts"
 import { ChatAgent } from "./chat.ts"
 import {
   createChatDelegationContext,
@@ -131,6 +132,8 @@ export function subagentTool(
         signal: options.signal,
         chatSessionId: options.chatSessionId,
         notificationBudget: options.notificationBudget ?? { sent: 0 },
+        executionPolicy: options.executionPolicy,
+        automationEvent: options.automationEvent,
         delegation: {
           depth: delegation.depth + 1,
           budget: delegation.budget,
@@ -156,6 +159,8 @@ interface RunTaskOptions {
   signal?: AbortSignal
   chatSessionId?: string
   notificationBudget: { sent: number }
+  executionPolicy?: ExecutionPolicy
+  automationEvent?: { label: string | null; referenceId: string | null }
   delegation: ChatDelegationContext
 }
 
@@ -283,6 +288,8 @@ async function runTask(
       chatSessionId: session?.sessionId ?? options.chatSessionId,
       delegation: options.delegation,
       notificationBudget: options.notificationBudget,
+      executionPolicy: options.executionPolicy,
+      automationEvent: options.automationEvent,
       signal: options.signal,
       events: {
         onText: (delta) => session?.onText(delta),

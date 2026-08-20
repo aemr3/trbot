@@ -6,6 +6,7 @@
     "./*": "./src/*"
   },
   "dependencies": {
+    "@trbot/trading": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {
