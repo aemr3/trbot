@@ -239,6 +239,15 @@ export interface ChatCompaction {
   createdAt: number
 }
 
+export type ChatCompactionReport =
+  | { compacted: true; tokensBefore: number }
+  | { compacted: false; tokensBefore: null }
+
+export const ChatCompactionReportSchema: z.ZodType<ChatCompactionReport> = z.discriminatedUnion("compacted", [
+  z.object({ compacted: z.literal(true), tokensBefore: z.number().int() }),
+  z.object({ compacted: z.literal(false), tokensBefore: z.null() }),
+])
+
 /** One persisted harness record and its stable position in the complete transcript. */
 export interface ChatContextRecord {
   id: string

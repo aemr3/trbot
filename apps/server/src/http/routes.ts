@@ -316,6 +316,12 @@ export const PARAMETERIZED: {
   handle: (match: RegExpMatchArray, request: Request, context: RouteContext) => Promise<Response>
 }[] = [
   {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/compact$/,
+    method: "POST",
+    handle: async (match, _request, { chat }) =>
+      json(await chat.compact(decodeURIComponent(match[1] ?? ""))),
+  },
+  {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/automations$/,
     method: "GET",
     handle: async (match, _request, { automations }) =>

@@ -1,8 +1,10 @@
 import {
+  ChatCompactionReportSchema,
   ChatMessageSchema,
   ChatSessionDetailSchema,
   ChatSessionSchema,
   type ChatMessage,
+  type ChatCompactionReport,
   type ChatModelChoice,
   type ChatRunStatus,
   type ChatSession,
@@ -64,6 +66,10 @@ export class HttpChatSessions implements ChatSessions {
 
   async abort(sessionId: string): Promise<void> {
     await this.http.post(ROUTES.chatAbort(sessionId), OkResponseSchema)
+  }
+
+  compact(sessionId: string): Promise<ChatCompactionReport> {
+    return this.http.post(ROUTES.chatCompact(sessionId), ChatCompactionReportSchema)
   }
 
   automations(sessionId: string): Promise<ChatAutomationState> {

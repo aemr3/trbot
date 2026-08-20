@@ -7,6 +7,7 @@ import {
   defaultChatSessionTitle,
   isDefaultChatSessionTitle,
   type ChatApplicationEvent,
+  type ChatCompactionReport,
   type ChatModelChoice,
   type ChatMessage,
   type ChatMessageDraft,
@@ -305,6 +306,31 @@ export class ChatController {
   async abort(sessionId: string): Promise<void> {
     await this.detail(sessionId)
     this.abortRun(sessionId)
+  }
+
+  /** Forces a fresh rolling summary without adding anything to the conversation. */
+  async compact(sessionId: string): Promise<ChatCompactionReport> {
+    const detail = await this.detail(sessionId)
+    if (detail.session.running || detail.session.queued > 0) {
+      throw new ProtocolError("invalid_request", "Wait for this chat to finish before compacting it")
+    }
+    if (!this.options.compaction) {
+      throw new ProtocolError("invalid_request", "Chat compaction is unavailable")
+    }
+
+    const choice = choiceOf(detail.session)
+    await this.options.requireModel(choice)
+    const turnModel = await this.options.resolveModel(choice as ChatModelChoice)
+    const compacted = await this.options.compaction.compact({
+      sessionId,
+      model: turnModel.model,
+      context: await this.options.store.context(sessionId),
+      prompt: "",
+      force: true,
+    })
+    if (!compacted) return { compacted: false, tokensBefore: null }
+    await this.options.store.saveCompaction(compacted.checkpoint)
+    return { compacted: true, tokensBefore: compacted.checkpoint.tokensBefore }
   }
 
   destroy(): void {

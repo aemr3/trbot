@@ -98,6 +98,7 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/reasoning", description: "choose the model's reasoning effort" },
   { name: "/thoughts", description: "show or hide model reasoning" },
   { name: "/monitors", description: "view or cancel this chat's market monitors" },
+  { name: "/compact", description: "summarize this chat's model context now" },
   { name: "/goal", description: "<objective> · pause · resume · clear" },
   { name: "/loop", description: "[interval] [task] · list · cancel <id>" },
   { name: "/subagents", description: "open this chat's worker sessions" },
@@ -196,6 +197,7 @@ export class ChatScreen {
   private showThoughts: boolean
   private commandNotice: string | null = null
   private automationNotice: "goal" | "loop" | null = null
+  private compactingSessionId: string | null = null
   private spinner = 0
   private spinnerTimer: ReturnType<typeof setInterval> | null = null
   private destroyed = false
@@ -786,6 +788,9 @@ export class ChatScreen {
       case "/monitors":
         await this.openMarketMonitors()
         break
+      case "/compact":
+        await this.compactSession(words)
+        break
       case "/goal":
         await this.runGoalCommand(words.join(" "))
         break
@@ -815,6 +820,38 @@ export class ChatScreen {
     }
     this.render.schedule()
     return true
+  }
+
+  private async compactSession(arguments_: string[]): Promise<void> {
+    if (arguments_.length > 0) {
+      this.commandNotice = "Usage: /compact"
+      return
+    }
+    const session = this.selectedSession()
+    if (!session) {
+      this.commandNotice = "Nothing to compact in this chat."
+      return
+    }
+
+    try {
+      this.compactingSessionId = session.id
+      this.commandNotice = "Compacting context…"
+      this.render.schedule()
+      const compacted = await this.options.chats.compact(session.id)
+      if (this.selectedSessionId === session.id) {
+        this.commandNotice = compacted.compacted
+          ? `Context compacted · ${formatTokens(compacted.tokensBefore)} estimated tokens summarized.`
+          : "Context is already fully compacted."
+      }
+    } catch (error) {
+      this.options.logs.error("Chat compaction", error)
+      if (this.selectedSessionId === session.id) {
+        this.commandNotice = error instanceof Error ? error.message : String(error)
+      }
+    } finally {
+      if (this.compactingSessionId === session.id) this.compactingSessionId = null
+      this.render.schedule()
+    }
   }
 
   private async runGoalCommand(argumentsText: string): Promise<void> {
@@ -1334,7 +1371,9 @@ export class ChatScreen {
    * one that never ran would leave a thinking model looking like a hung one.
    */
   private syncSpinner(session: ChatSession | null): void {
-    const running = session !== null && this.streamingBySession.has(session.id)
+    const running = session !== null && (
+      this.streamingBySession.has(session.id) || this.compactingSessionId === session.id
+    )
     if (!running) {
       this.stopSpinner()
       return
@@ -1419,7 +1458,12 @@ export class ChatScreen {
         showThoughts: this.showThoughts,
       }))
     }
-    if (this.commandNotice) blocks.push(note(this.commandNotice))
+    if (this.commandNotice) {
+      const content = this.compactingSessionId === session.id
+        ? `${SPINNER_FRAMES[this.spinner] ?? SPINNER_FRAMES[0]!} ${this.commandNotice}`
+        : this.commandNotice
+      blocks.push(note(content))
+    }
     if (blocks.length === 0) return [note("Nothing said yet.")]
     return blocks
   }

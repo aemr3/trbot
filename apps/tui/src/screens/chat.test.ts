@@ -19,6 +19,7 @@ function fakeChats(): ChatSessions & {
   sent: string[]
   cancelled: string[]
   aborted: string[]
+  compacted: string[]
   answered: Array<{ requestId: string; answers: ChatQuestionAnswer[] }>
   rejected: string[]
   agentNotifications: ChatNotification[]
@@ -29,6 +30,7 @@ function fakeChats(): ChatSessions & {
   const sent: string[] = []
   const cancelled: string[] = []
   const aborted: string[] = []
+  const compacted: string[] = []
   const answered: Array<{ requestId: string; answers: ChatQuestionAnswer[] }> = []
   const rejected: string[] = []
   const agentNotifications: ChatNotification[] = []
@@ -40,6 +42,7 @@ function fakeChats(): ChatSessions & {
     sent,
     cancelled,
     aborted,
+    compacted,
     answered,
     rejected,
     agentNotifications,
@@ -100,6 +103,13 @@ function fakeChats(): ChatSessions & {
     },
     async abort(sessionId) {
       aborted.push(sessionId)
+    },
+    async compact(sessionId) {
+      compacted.push(sessionId)
+      return {
+        compacted: true,
+        tokensBefore: 24_000,
+      }
     },
     async automations(sessionId) {
       return automations.get(sessionId) ?? { goal: null, loops: [] }
@@ -598,6 +608,50 @@ test("opens a filtered slash-command menu below the composer", async () => {
 
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("No subagents have run in this session."))
+  expect(chats.sent).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("compacts the selected chat without sending a message", async () => {
+  const { renderer, mockInput, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  let finishCompaction: ((result: Awaited<ReturnType<ChatSessions["compact"]>>) => void) | null = null
+  chats.compact = async (sessionId) => {
+    chats.compacted.push(sessionId)
+    return await new Promise((resolve) => {
+      finishCompaction = resolve
+    })
+  }
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("/compact")
+  mockInput.pressEnter()
+  const loading = await waitForFrame((value) => value.includes("Compacting context…"))
+  const first = spinnerFrame(loading)
+  expect(first).toBeDefined()
+
+  await Bun.sleep(200)
+  await renderOnce()
+  const second = spinnerFrame(captureCharFrame())
+  expect(second).toBeDefined()
+  expect(second).not.toBe(first)
+
+  const complete = finishCompaction as ((result: Awaited<ReturnType<ChatSessions["compact"]>>) => void) | null
+  if (!complete) throw new Error("compaction did not start")
+  complete({ compacted: true, tokensBefore: 24_000 })
+  await Bun.sleep(0)
+  const frame = await waitForFrame((value) => value.includes("24.0K estimated tokens summarized"))
+
+  expect(frame).toContain("Context compacted")
+  expect(spinnerFrame(frame)).toBeUndefined()
+  expect(chats.compacted).toEqual([session.id])
   expect(chats.sent).toEqual([])
 
   screen.destroy()

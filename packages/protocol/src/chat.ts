@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatModelChoice, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
+import type { ChatCompactionReport, ChatMessage, ChatModelChoice, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type {
@@ -33,6 +33,8 @@ export interface ChatSessions {
   cancel(sessionId: string, messageId: string): Promise<void>
   /** Stops the reply being generated now, keeping whatever it produced. */
   abort(sessionId: string): Promise<void>
+  /** Replaces the current model-facing history with a fresh rolling summary. */
+  compact(sessionId: string): Promise<ChatCompactionReport>
   automations(sessionId: string): Promise<ChatAutomationState>
   createGoal(sessionId: string, input: CreateChatGoal): Promise<ChatGoal>
   updateGoal(sessionId: string, input: UpdateChatGoal): Promise<ChatGoal | null>

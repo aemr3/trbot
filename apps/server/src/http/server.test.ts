@@ -94,6 +94,7 @@ describe("server and client over the wire", () => {
   let session: ProviderSession
   let overviewFailure: Error | null = null
   let notifications: ChatNotificationController
+  const compactedChats: string[] = []
 
   beforeAll(async () => {
     connection = await openDatabase(":memory:")
@@ -134,7 +135,12 @@ describe("server and client over the wire", () => {
         stops: notUsed as never,
         overviewSnapshots: notUsed as never,
         ai,
-        chat: notUsed as never,
+        chat: {
+          async compact(sessionId: string) {
+            compactedChats.push(sessionId)
+            return { compacted: true, tokensBefore: 24_000 }
+          },
+        } as never,
         questions: notUsed as never,
         notifications,
         automations: notUsed as never,
@@ -187,6 +193,14 @@ describe("server and client over the wire", () => {
     expect(await chats.notifications()).toEqual([notification])
     await chats.dismissNotification(notification.id)
     expect(await chats.notifications()).toEqual([])
+  })
+
+  test("manual chat compaction round-trips without exposing the hidden summary", async () => {
+    compactedChats.length = 0
+    const chats = new HttpChatSessions(client)
+
+    expect(await chats.compact("chat/one")).toEqual({ compacted: true, tokensBefore: 24_000 })
+    expect(compactedChats).toEqual(["chat/one"])
   })
 
   test("a rejected sign-in reports invalid_request for a missing field", async () => {

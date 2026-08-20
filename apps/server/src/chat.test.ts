@@ -220,6 +220,57 @@ test("stores a rolling checkpoint without removing the visible transcript", asyn
   ])
 })
 
+test("manually compacts a settled chat without changing its transcript", async () => {
+  const forceCalls: boolean[] = []
+  const compaction: ChatCompactionRunner = {
+    history: (context) => context.records.map((entry) => entry.record as ChatRecord),
+    compact: async (input) => {
+      forceCalls.push(input.force === true)
+      if (!input.force) return null
+      const last = input.context.records.at(-1)
+      if (!last) return null
+      return {
+        checkpoint: {
+          sessionId: input.sessionId,
+          summary: "manual checkpoint",
+          compactedThroughSeq: last.seq,
+          firstKeptSeq: null,
+          tokensBefore: 24_000,
+          createdAt: 5,
+        },
+        history: [],
+      }
+    },
+  }
+  const { chat, store } = await harness({ compaction })
+  const session = await chat.create()
+  await chat.send(session.id, "keep this visible")
+  await settle()
+
+  const compacted = await chat.compact(session.id)
+
+  expect(compacted).toEqual({ compacted: true, tokensBefore: 24_000 })
+  expect(forceCalls).toEqual([false, true])
+  expect((await store.context(session.id)).compaction?.summary).toBe("manual checkpoint")
+  expect((await chat.detail(session.id)).messages.map((message) => message.text)).toEqual([
+    "keep this visible",
+    "answer to keep this visible",
+  ])
+})
+
+test("refuses manual compaction while the chat is answering", async () => {
+  const { chat, finish } = await harness({ auto: false })
+  const session = await chat.create()
+  await chat.send(session.id, "still running")
+  await settle()
+
+  const error = await chat.compact(session.id).catch((caught: unknown) => caught)
+
+  expect(isProtocolError(error) && error.message).toContain("finish before compacting")
+  finish()
+  await settle()
+})
+
 test("compacts and retries one clean overflow without duplicating durable output", async () => {
   const summary: ChatRecord = { role: "user", content: "<conversation-summary>seed</conversation-summary>", timestamp: 4 }
   const forceCalls: boolean[] = []
