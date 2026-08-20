@@ -31,7 +31,7 @@ export interface ChatToolOutcome {
 export interface ChatDelegationContext {
   /** Current worker depth. The user-facing chat starts at zero. */
   depth: number
-  /** Shared across every descendant created during one user-facing turn. */
+  /** Shared across every worker created during one user-facing turn. */
   budget: { created: number }
 }
 
@@ -44,9 +44,9 @@ export interface ChatToolRunOptions {
   /** Present when a tool is called by ChatAgent; optional for direct registry use in tests. */
   model?: Model<Api>
   reasoningEffort?: string | null
-  /** Originating conversation, inherited by nested subagents. */
+  /** Originating conversation, inherited by delegated workers. */
   chatSessionId?: string
-  /** Shared lineage and budget for nested delegation during this turn. */
+  /** Shared worker depth and budget for delegation during this turn. */
   delegation?: ChatDelegationContext
   /** Shared by the parent and every worker so one turn cannot spam notices. */
   notificationBudget?: { sent: number }

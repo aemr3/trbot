@@ -13,7 +13,7 @@ import {
 const MAX_PARALLEL_TASKS = 8
 const MAX_CONCURRENCY = 4
 const MAX_SUBAGENTS_PER_TURN = 8
-const MAX_SUBAGENT_DEPTH = 2
+const MAX_SUBAGENT_DEPTH = 1
 const PER_TASK_OUTPUT_CAP = 50 * 1_024
 
 const TaskItem = Type.Object({
@@ -40,7 +40,7 @@ const SubagentParameters = Type.Object({
 const WORKER_PROMPT = [
   "You are a general-purpose subagent working in an isolated context.",
   "Complete only the delegated task and return a clear, self-contained result to the parent agent.",
-  "Use any available tool when it helps, including further subagents for work that genuinely benefits from delegation.",
+  "Use any available tool when it helps. Do not delegate or create further subagents.",
   "When using web sources, include the URLs you relied on.",
 ].join(" ")
 
@@ -94,7 +94,7 @@ export function subagentTool(
         "Delegate work to a full-capability worker in an isolated context.",
         "Provide exactly one mode: single (agent + task), parallel (tasks), or chain (sequential tasks using {previous}).",
         `Parallel mode accepts at most ${MAX_PARALLEL_TASKS} tasks and runs ${MAX_CONCURRENCY} at once.`,
-        `One chat turn can create at most ${MAX_SUBAGENTS_PER_TURN} workers across at most ${MAX_SUBAGENT_DEPTH} nested levels.`,
+        `One chat turn can create at most ${MAX_SUBAGENTS_PER_TURN} workers. Only the user-facing agent can delegate; workers cannot create further subagents.`,
         "If a limit is reached, the tool reports it so you can continue without delegating; the worker budget resets on the next user or application turn.",
         'The available agent is "worker".',
       ].join(" "),
@@ -278,7 +278,7 @@ async function runTask(
         reasoning: options.reasoningEffort ?? null,
       })
     : null
-  const agent = new ChatAgent({ models, tools, systemPrompt: WORKER_PROMPT })
+  const agent = new ChatAgent({ models, tools: workerTools(tools), systemPrompt: WORKER_PROMPT })
   let taskResult: SubagentResult
   try {
     const result = await agent.run({
@@ -332,7 +332,8 @@ async function runTask(
 
 function reserveSubagents(context: ChatDelegationContext, requested: number): string | null {
   if (context.depth >= MAX_SUBAGENT_DEPTH) {
-    return `Subagent nesting limit reached (${MAX_SUBAGENT_DEPTH} levels). Continue the task yourself using the available tools.`
+    const unit = MAX_SUBAGENT_DEPTH === 1 ? "level" : "levels"
+    return `Subagent nesting limit reached (${MAX_SUBAGENT_DEPTH} ${unit}). Continue the task yourself using the available tools.`
   }
   const remaining = MAX_SUBAGENTS_PER_TURN - context.budget.created
   if (requested > remaining) {
@@ -340,6 +341,21 @@ function reserveSubagents(context: ChatDelegationContext, requested: number): st
   }
   context.budget.created += requested
   return null
+}
+
+/** Give a worker every parent capability except the ability to delegate again. */
+function workerTools(tools: ChatToolRegistry): ChatToolRegistry {
+  return {
+    list: () => tools.list().filter((tool) => tool.name !== "subagent"),
+    call: (call, options) => {
+      if (call.name !== "subagent") return tools.call(call, options)
+      return Promise.resolve({
+        blocks: [toolText("Workers cannot create further subagents. Continue the delegated task using the available tools.")],
+        details: null,
+        isError: true,
+      })
+    },
+  }
 }
 
 function limitOutcome(mode: SubagentMode, message: string) {

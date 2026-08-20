@@ -22,10 +22,11 @@ function harness(responseCount: number, response: Parameters<ReturnType<typeof f
   return { faux, models }
 }
 
-test("runs a single worker with the complete parent tool registry", async () => {
+test("runs a single worker with every non-delegation parent tool", async () => {
   const { faux, models } = harness(1, (context) => {
     expect(context.systemPrompt).toContain("general-purpose subagent")
-    expect(context.tools?.map((tool) => tool.name)).toEqual(["web_search", "subagent"])
+    expect(context.systemPrompt).toContain("Do not delegate or create further subagents")
+    expect(context.tools?.map((tool) => tool.name)).toEqual(["web_search"])
     return fauxAssistantMessage("Worker result.")
   })
   const tools = new ChatTools([passthroughTool("web_search")])
@@ -194,34 +195,25 @@ test("reports the shared turn limit and lets the parent agent continue", async (
   expect(faux.state.callCount).toBe(11)
 })
 
-test("reports the nesting limit to a worker without stopping its parent", async () => {
+test("hides delegation from workers and rejects a hallucinated nested call", async () => {
   const faux = fauxProvider({ models: [{ id: "worker-model", reasoning: true }] })
   const models = createModels()
   models.setProvider(faux.provider)
   faux.setResponses([
     (context) => {
       expect(context.messages.at(-1)).toMatchObject({ role: "user", content: "Outer task" })
+      expect(context.tools?.map((tool) => tool.name)).toEqual(["web_search"])
       return fauxAssistantMessage([
         fauxToolCall("subagent", { agent: "worker", task: "Nested task" }),
       ], { stopReason: "toolUse" })
     },
     (context) => {
-      expect(context.messages.at(-1)).toMatchObject({ role: "user", content: "Nested task" })
-      return fauxAssistantMessage([
-        fauxToolCall("subagent", { agent: "worker", task: "Too deep" }),
-      ], { stopReason: "toolUse" })
-    },
-    (context) => {
       expect(context.messages.at(-1)).toMatchObject({ role: "toolResult", isError: true })
-      expect(JSON.stringify(context.messages.at(-1))).toContain("Subagent nesting limit reached")
-      return fauxAssistantMessage("Nested worker continued.")
-    },
-    (context) => {
-      expect(context.messages.at(-1)).toMatchObject({ role: "toolResult", isError: false })
+      expect(JSON.stringify(context.messages.at(-1))).toContain("Workers cannot create further subagents")
       return fauxAssistantMessage("Outer worker continued.")
     },
   ])
-  const tools = new ChatTools()
+  const tools = new ChatTools([passthroughTool("web_search")])
   tools.register(subagentTool(models, tools))
 
   const outcome = await tools.call({
@@ -233,7 +225,27 @@ test("reports the nesting limit to a worker without stopping its parent", async 
 
   expect(outcome.isError).toBe(false)
   expect(outcome.modelBlocks?.[0]?.text).toBe("Outer worker continued.")
-  expect(faux.state.callCount).toBe(4)
+  expect(faux.state.callCount).toBe(2)
+})
+
+test("enforces the nesting limit when a nested call reaches the root registry", async () => {
+  const { faux, models } = harness(1, fauxAssistantMessage("Should not run."))
+  const tools = new ChatTools()
+  tools.register(subagentTool(models, tools))
+
+  const outcome = await tools.call({
+    type: "toolCall",
+    id: "subagent-depth",
+    name: "subagent",
+    arguments: { agent: "worker", task: "Nested task" },
+  }, {
+    model: faux.getModel(),
+    delegation: { depth: 1, budget: { created: 0 } },
+  })
+
+  expect(outcome.isError).toBe(true)
+  expect(outcome.blocks[0]?.text).toContain("Subagent nesting limit reached (1 level)")
+  expect(faux.state.callCount).toBe(0)
 })
 
 test("runs a chain sequentially and substitutes the previous output", async () => {

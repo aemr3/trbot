@@ -16,7 +16,7 @@ const automations: ChatAutomationToolsClient = {
   cancelLoop: unavailableAutomation,
 }
 
-test("gives parents and subagents the complete chat toolset", () => {
+test("builds the complete root chat toolset", () => {
   const faux = fauxProvider({ models: [{ id: "chat-model" }] })
   const models = createModels()
   models.setProvider(faux.provider)
@@ -57,7 +57,7 @@ test("adds the durable market-monitor tools when the server provides them", () =
   ])
 })
 
-test("adds interactive questions to the complete parent and subagent toolset", () => {
+test("adds interactive questions to the root toolset", () => {
   const faux = fauxProvider({ models: [{ id: "chat-model" }] })
   const models = createModels()
   models.setProvider(faux.provider)
@@ -75,7 +75,7 @@ test("adds interactive questions to the complete parent and subagent toolset", (
   ])
 })
 
-test("adds non-blocking user notifications to the complete parent and subagent toolset", () => {
+test("adds non-blocking user notifications to the root toolset", () => {
   const faux = fauxProvider({ models: [{ id: "chat-model" }] })
   const models = createModels()
   models.setProvider(faux.provider)

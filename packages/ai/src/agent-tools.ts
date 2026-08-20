@@ -19,7 +19,7 @@ export interface AgentToolsOptions {
   automations?: ChatAutomationToolsClient
 }
 
-/** The complete chat capability set, shared by parents and isolated subagents. */
+/** The complete chat capability set; workers receive a non-delegating view of it. */
 export function createAgentTools(options: AgentToolsOptions): ChatToolRegistry {
   const tools = new ChatTools(webTools(options.web))
   if (options.marketData) {
