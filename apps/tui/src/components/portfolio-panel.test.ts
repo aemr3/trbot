@@ -102,6 +102,49 @@ test("draws gains above the zero line and losses below it", async () => {
   renderer.destroy()
 })
 
+test("centers each date under the slot occupied by its bar", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+
+  panel.showPortfolio(portfolio)
+  panel.showPerformance(performance())
+  await Bun.sleep(0)
+  await renderOnce()
+
+  const axis = captureCharFrame().split("\n").find((line) => line.includes("10") && line.includes("11") && line.includes("12")) ?? ""
+  expect([axis.indexOf("10"), axis.indexOf("11"), axis.indexOf("12")]).toEqual([5, 19, 32])
+
+  renderer.destroy()
+})
+
+test("selects a day from the chart and walks its profit with the keyboard", async () => {
+  const { renderer, renderOnce, captureCharFrame, mockMouse, panel } = await mountPanel()
+
+  panel.showPortfolio(portfolio)
+  panel.showPerformance(performance())
+  await Bun.sleep(0)
+  await renderOnce()
+
+  const lines = captureCharFrame().split("\n")
+  const metrics = lines.findIndex((line) => line.includes("Week P/L"))
+  const zero = lines.findIndex((line, index) => index > metrics && line.includes("───"))
+  await mockMouse.click(6, zero)
+  await renderOnce()
+
+  const selected = captureCharFrame()
+  expect(selected).toContain("10 Aug P/L  -₺1.490,00  -7.15%")
+  expect(selected).toContain("│")
+
+  expect(panel.handleKey(key("right"))).toBeTrue()
+  await renderOnce()
+  expect(captureCharFrame()).toContain("11 Aug P/L  +₺941,56  +4.87%")
+
+  expect(panel.handleKey(key("escape"))).toBeTrue()
+  await renderOnce()
+  expect(captureCharFrame()).toContain("Week P/L    +₺905,43")
+
+  renderer.destroy()
+})
+
 test("says so rather than drawing an empty field", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
 

@@ -16,6 +16,8 @@ export interface BarBitmapOptions {
   upColor: string
   downColor: string
   zeroColor: string
+  selectedIndex?: number | null
+  guideColor?: string
 }
 
 // Share of a bar's slot taken by the bar itself; the rest is the gap that keeps
@@ -26,6 +28,32 @@ const ZERO_LINE_PIXELS = 1
 // A bar this tall is drawn even when its value rounds to nothing, so a flat day
 // still reads as a day rather than a hole in the series.
 const MIN_BAR_PIXELS = 2
+
+export interface BarSlot {
+  left: number
+  right: number
+  center: number
+  barLeft: number
+  barRight: number
+}
+
+/** One bar's horizontal slot, shared by drawing, labels, and pointer selection. */
+export function barSlot(index: number, count: number, width: number): BarSlot {
+  const safeWidth = Math.max(1, Math.floor(width))
+  const safeCount = Math.max(1, Math.floor(count))
+  const left = Math.min(safeWidth - 1, Math.round((index * safeWidth) / safeCount))
+  const right = Math.min(safeWidth, Math.max(left + 1, Math.round(((index + 1) * safeWidth) / safeCount)))
+  const slotWidth = right - left
+  const barWidth = Math.max(1, Math.round(slotWidth * BAR_FILL))
+  const barLeft = left + Math.floor((slotWidth - barWidth) / 2)
+  return {
+    left,
+    right,
+    center: left + Math.floor((slotWidth - 1) / 2),
+    barLeft,
+    barRight: Math.min(right, barLeft + barWidth),
+  }
+}
 
 /**
  * Draws the bars around a zero line, gains rising and losses hanging. Both
@@ -44,8 +72,6 @@ export function renderBarBitmap(options: BarBitmapOptions): ChartBitmap {
   // gain and a loss of the same size are drawn the same size.
   const zeroY = Math.round(height / 2)
   const halfHeight = Math.max(1, zeroY - 1)
-  const slot = width / bars.length
-  const barWidth = Math.max(1, Math.round(slot * BAR_FILL))
 
   const up = parseHex(options.upColor)
   const down = parseHex(options.downColor)
@@ -55,14 +81,19 @@ export function renderBarBitmap(options: BarBitmapOptions): ChartBitmap {
   // line is what shows in the gaps between bars.
   fillRect(pixels, width, height, 0, zeroY - ZERO_LINE_PIXELS, width, zeroY, zero)
 
+  if (options.selectedIndex !== null && options.selectedIndex !== undefined && options.guideColor) {
+    const selected = barSlot(options.selectedIndex, bars.length, width)
+    fillRect(pixels, width, height, selected.center, 0, selected.center + 1, height, parseHex(options.guideColor))
+  }
+
   bars.forEach((bar, index) => {
-    const left = Math.round(index * slot + (slot - barWidth) / 2)
+    const slot = barSlot(index, bars.length, width)
     const extent = peak > 0 ? Math.round((Math.abs(bar.value) / peak) * halfHeight) : 0
     const length = Math.max(MIN_BAR_PIXELS, extent)
     if (bar.value >= 0) {
-      fillRect(pixels, width, height, left, zeroY - length, left + barWidth, zeroY, up)
+      fillRect(pixels, width, height, slot.barLeft, zeroY - length, slot.barRight, zeroY, up)
     } else {
-      fillRect(pixels, width, height, left, zeroY, left + barWidth, zeroY + length, down)
+      fillRect(pixels, width, height, slot.barLeft, zeroY, slot.barRight, zeroY + length, down)
     }
   })
 

@@ -16,7 +16,7 @@ import {
   type PortfolioRange,
   type PortfolioSummary,
 } from "@trbot/trading/account.ts"
-import { renderBarBitmap } from "./chart/bar-raster.ts"
+import { barSlot, renderBarBitmap } from "./chart/bar-raster.ts"
 import { ChartBitmapRenderable, chartBitmapSupport } from "./chart/bitmap-renderable.ts"
 import { KittyPlaceholderImages } from "./chart/kitty-placeholder.ts"
 import { rendererOutput } from "../renderer-output.ts"
@@ -36,6 +36,8 @@ const VALUE_COLOR = "#dddddd"
 const UP_COLOR = "#70d7a1"
 const ZERO_LINE_COLOR = "#505050"
 const DOWN_COLOR = "#ff6b6b"
+const GUIDE_COLOR = "#59606c"
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const
 
 // Rows above and below the zero line. The provider serves at most six points
 // for any range, so the bars stay wide enough to read at this height.
@@ -67,6 +69,7 @@ export class PortfolioPanel {
   private portfolio: PortfolioSummary | null = null
   private performance: PortfolioPerformance | null = null
   private range: PortfolioRange = "WEEK"
+  private selectedDate: string | null = null
   private focused = false
   // Created lazily when running inside tmux with kitty graphics passthrough.
   private placeholderImages: KittyPlaceholderImages | null = null
@@ -92,7 +95,12 @@ export class PortfolioPanel {
       borderColor: "#303030",
       backgroundColor: PANEL_BG,
       onMouseDown: (event) => {
-        if (event.button === 0) this.options.onFocusRequest?.()
+        if (event.button !== 0) return
+        this.options.onFocusRequest?.()
+        const plot = this.barsBitmap.visible ? this.barsBitmap : this.barsText
+        const overPlot = event.y >= plot.y && event.y < plot.y + plot.height
+        const overLabels = event.y === this.labels.y
+        if (overPlot || overLabels) this.pickPoint(event.x)
       },
       onSizeChange: () => this.render(),
     })
@@ -155,7 +163,11 @@ export class PortfolioPanel {
       wrapMode: "none",
       onSizeChange: () => this.liveRender.schedule(),
     })
-    this.barsBitmap = new ChartBitmapRenderable(renderer, { width: "100%", flexGrow: 1, visible: false })
+    this.barsBitmap = new ChartBitmapRenderable(renderer, {
+      width: "100%",
+      flexGrow: 1,
+      visible: false,
+    })
     this.labels = new TextRenderable(renderer, {
       content: "",
       width: "100%",
@@ -191,8 +203,17 @@ export class PortfolioPanel {
   }
 
   handleKey(key: KeyEvent): boolean {
+    if (key.name === "escape" && this.selectedDate !== null) {
+      this.selectedDate = null
+      this.render()
+      return true
+    }
     if (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l") {
       const step = key.name === "left" || key.name === "h" ? -1 : 1
+      if (this.selectedDate !== null) {
+        this.moveSelection(step)
+        return true
+      }
       const index = PORTFOLIO_RANGES.indexOf(this.range)
       this.selectRange(PORTFOLIO_RANGES[(index + step + PORTFOLIO_RANGES.length) % PORTFOLIO_RANGES.length] ?? "WEEK")
       return true
@@ -207,6 +228,9 @@ export class PortfolioPanel {
 
   showPerformance(performance: PortfolioPerformance): void {
     this.performance = performance
+    if (this.selectedDate !== null && !performance.points.some((point) => point.date === this.selectedDate)) {
+      this.selectedDate = null
+    }
     if (!this.root.isDestroyed) this.liveRender.schedule()
   }
 
@@ -215,6 +239,7 @@ export class PortfolioPanel {
     this.range = range
     // The old range's bars must not sit under a new range's label.
     this.performance = null
+    this.selectedDate = null
     this.paintRanges()
     this.render()
     this.options.onRangeChange?.(range)
@@ -236,8 +261,9 @@ export class PortfolioPanel {
     if (!portfolio) return
     const dayColor = (portfolio.dailyProfitLoss ?? 0) >= 0 ? UP_COLOR : DOWN_COLOR
     const performance = this.performance
-    const periodValue = performance?.profitLoss ?? null
-    const periodPercent = performance?.profitLossPercent ?? null
+    const selectedPoint = this.selectedPoint()
+    const periodValue = selectedPoint ? selectedPoint.profitLoss : performance?.profitLoss ?? null
+    const periodPercent = selectedPoint ? selectedPoint.profitLossPercent : performance?.profitLossPercent ?? null
     const periodColor = (periodValue ?? 0) >= 0 ? UP_COLOR : DOWN_COLOR
     const chunks: TextChunk[] = [
       ...metric("Collateral", formatMoney(portfolio.totalCollateral, portfolio.currency)),
@@ -247,7 +273,7 @@ export class PortfolioPanel {
       ...metric("Day P/L", formatProfit(portfolio.dailyProfitLoss, portfolio.dailyProfitLossPercent, portfolio.currency), dayColor),
       newline(),
       ...metric(
-        PORTFOLIO_RANGE_METRIC_LABELS[this.range],
+        selectedPoint ? `${formatPointDate(selectedPoint.date)} P/L` : PORTFOLIO_RANGE_METRIC_LABELS[this.range],
         formatProfit(periodValue, periodPercent, portfolio.currency),
         periodColor,
       ),
@@ -273,6 +299,7 @@ export class PortfolioPanel {
     const columns = Math.max(1, this.barsText.width || this.root.width)
     const rows = Math.max(1, this.barsText.height)
     const support = chartBitmapSupport(this.renderer)
+    const selectedIndex = this.selectedIndex(points)
     if (support) {
       const bitmap = renderBarBitmap({
         bars: points.map((point) => ({ value: point.profitLoss ?? 0, label: point.date })),
@@ -281,6 +308,8 @@ export class PortfolioPanel {
         upColor: UP_COLOR,
         downColor: DOWN_COLOR,
         zeroColor: ZERO_LINE_COLOR,
+        selectedIndex,
+        guideColor: GUIDE_COLOR,
       })
       if (support.mode === "placeholder") {
         // Kitty payloads must go through the renderer's serialized write queue;
@@ -298,12 +327,51 @@ export class PortfolioPanel {
         this.barsText.visible = false
       }
     } else {
-      this.barsText.content = new StyledText(performanceChunks(performance, columns))
+      this.barsText.content = new StyledText(performanceChunks(performance, columns, selectedIndex))
       this.barsText.visible = true
       this.barsBitmap.visible = false
       this.barsBitmap.setBitmap(null)
     }
-    this.labels.content = new StyledText(axisLabels(points, barWidth(points.length, columns)))
+    this.labels.content = new StyledText(axisLabels(points, columns, selectedIndex))
+  }
+
+  private pickPoint(screenX: number): void {
+    const points = this.performance?.points ?? []
+    if (points.length === 0) return
+    const plot = this.barsBitmap.visible ? this.barsBitmap : this.barsText
+    const column = Math.max(0, Math.min(plot.width - 1, Math.round(screenX - plot.x)))
+    let nearestIndex = 0
+    let nearestDistance = Number.POSITIVE_INFINITY
+    for (let index = 0; index < points.length; index++) {
+      const distance = Math.abs(barSlot(index, points.length, plot.width).center - column)
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearestIndex = index
+      }
+    }
+    const date = points[nearestIndex]?.date ?? null
+    this.selectedDate = this.selectedDate === date ? null : date
+    this.render()
+  }
+
+  private moveSelection(step: number): void {
+    const points = this.performance?.points ?? []
+    const index = points.findIndex((point) => point.date === this.selectedDate)
+    if (index < 0 || points.length === 0) return
+    const next = Math.max(0, Math.min(points.length - 1, index + step))
+    this.selectedDate = points[next]?.date ?? null
+    this.render()
+  }
+
+  private selectedPoint(): PortfolioPoint | null {
+    if (this.selectedDate === null) return null
+    return this.performance?.points.find((point) => point.date === this.selectedDate) ?? null
+  }
+
+  private selectedIndex(points: PortfolioPoint[]): number | null {
+    if (this.selectedDate === null) return null
+    const index = points.findIndex((point) => point.date === this.selectedDate)
+    return index < 0 ? null : index
   }
 
   private showBarMessage(message: string): void {
@@ -321,20 +389,23 @@ export class PortfolioPanel {
  * below it. Both halves are scaled by the same worst-case magnitude so a small
  * loss beside a large gain reads as small.
  */
-function performanceChunks(performance: PortfolioPerformance, width: number): TextChunk[] {
+function performanceChunks(
+  performance: PortfolioPerformance,
+  width: number,
+  selectedIndex: number | null,
+): TextChunk[] {
   const points = performance.points
   const peak = Math.max(...points.map((point) => Math.abs(point.profitLoss ?? 0)))
   if (points.length === 0 || peak <= 0) return []
-  const columns = barWidth(points.length, width)
   const rows: TextChunk[] = []
 
   // Gains first, from the tallest row down to the zero line.
   for (let row = BAR_ROWS; row >= 1; row--) {
-    rows.push(...barRow(points, columns, row, "UP", peak), newline())
+    rows.push(...barRow(points, width, row, "UP", peak, selectedIndex), newline())
   }
-  rows.push(fg(ZERO_LINE_COLOR)("─".repeat(Math.min(width, columns * points.length))), newline())
+  rows.push(...zeroRow(points.length, width, selectedIndex), newline())
   for (let row = 1; row <= BAR_ROWS; row++) {
-    rows.push(...barRow(points, columns, row, "DOWN", peak), newline())
+    rows.push(...barRow(points, width, row, "DOWN", peak, selectedIndex), newline())
   }
   return rows
 }
@@ -342,36 +413,75 @@ function performanceChunks(performance: PortfolioPerformance, width: number): Te
 /** One row of the bar field, `row` steps away from the zero line. */
 function barRow(
   points: PortfolioPoint[],
-  columns: number,
+  width: number,
   row: number,
   direction: "UP" | "DOWN",
   peak: number,
+  selectedIndex: number | null,
 ): TextChunk[] {
   const blocks = direction === "UP" ? UP_BLOCKS : DOWN_BLOCKS
-  return points.map((point) => {
+  return points.flatMap((point, index) => {
+    const slot = barSlot(index, points.length, width)
+    const slotWidth = slot.right - slot.left
+    const before = slot.barLeft - slot.left
+    const after = slot.right - slot.barRight
     const value = point.profitLoss ?? 0
     const wanted = direction === "UP" ? value : -value
-    if (wanted <= 0) return fg(MUTED_COLOR)(" ".repeat(columns))
+    if (wanted <= 0) return emptyBarSlot(slotWidth, slot.center - slot.left, index === selectedIndex)
     // Half rows, so the smallest bar on the range still shows as something.
     const halves = Math.max(1, Math.round((wanted / peak) * BAR_ROWS * HALF_STEPS))
     const filled = Math.max(0, Math.min(HALF_STEPS, halves - (row - 1) * HALF_STEPS))
     const glyph = blocks[filled] ?? ""
-    if (glyph === "") return fg(MUTED_COLOR)(" ".repeat(columns))
-    // One column of gap keeps neighbouring bars apart.
-    return fg(direction === "UP" ? UP_COLOR : DOWN_COLOR)(glyph.repeat(columns - 1).padEnd(columns))
+    if (glyph === "") return emptyBarSlot(slotWidth, slot.center - slot.left, index === selectedIndex)
+    // Slot padding keeps neighbouring bars distinct at every panel width.
+    return [
+      fg(MUTED_COLOR)(" ".repeat(before)),
+      fg(direction === "UP" ? UP_COLOR : DOWN_COLOR)(glyph.repeat(slot.barRight - slot.barLeft)),
+      fg(MUTED_COLOR)(" ".repeat(after)),
+    ]
   })
 }
 
-/** Day-of-month under each bar, dropped when the columns are too narrow. */
-function axisLabels(points: PortfolioPoint[], columns: number): TextChunk[] {
-  if (columns < 3) return []
-  return points.map((point) => fg(MUTED_COLOR)(point.date.slice(-2).padEnd(columns)))
+function emptyBarSlot(width: number, center: number, selected: boolean): TextChunk[] {
+  if (!selected) return [fg(MUTED_COLOR)(" ".repeat(width))]
+  return [
+    fg(MUTED_COLOR)(" ".repeat(center)),
+    fg(GUIDE_COLOR)("│"),
+    fg(MUTED_COLOR)(" ".repeat(Math.max(0, width - center - 1))),
+  ]
 }
 
-/** Bar width in columns, wide enough to read and narrow enough to fit. */
-function barWidth(count: number, width: number): number {
-  if (count <= 0) return 1
-  return Math.max(2, Math.min(6, Math.floor(Math.max(width, 1) / count)))
+function zeroRow(count: number, width: number, selectedIndex: number | null): TextChunk[] {
+  const chunks: TextChunk[] = []
+  for (let index = 0; index < count; index++) {
+    const slot = barSlot(index, count, width)
+    const slotWidth = slot.right - slot.left
+    const center = slot.center - slot.left
+    if (index !== selectedIndex) {
+      chunks.push(fg(ZERO_LINE_COLOR)("─".repeat(slotWidth)))
+      continue
+    }
+    chunks.push(
+      fg(ZERO_LINE_COLOR)("─".repeat(center)),
+      fg(GUIDE_COLOR)("┼"),
+      fg(ZERO_LINE_COLOR)("─".repeat(Math.max(0, slotWidth - center - 1))),
+    )
+  }
+  return chunks
+}
+
+/** Day-of-month centered under the exact slot used by its bar. */
+function axisLabels(points: PortfolioPoint[], width: number, selectedIndex: number | null): TextChunk[] {
+  if (width < points.length * 2) return []
+  return points.map((point, index) => {
+    const slot = barSlot(index, points.length, width)
+    const slotWidth = slot.right - slot.left
+    if (slotWidth < 2) return fg(MUTED_COLOR)(" ".repeat(slotWidth))
+    const label = point.date.slice(-2)
+    const before = Math.max(0, Math.floor((slotWidth - label.length) / 2))
+    const after = Math.max(0, slotWidth - before - label.length)
+    return fg(index === selectedIndex ? FOCUSED_COLOR : MUTED_COLOR)(`${" ".repeat(before)}${label}${" ".repeat(after)}`)
+  })
 }
 
 function metric(label: string, value: string, valueColor = VALUE_COLOR): TextChunk[] {
@@ -392,4 +502,11 @@ function formatMoney(value: number | null, currency: string): string {
   if (value === null) return "—"
   const amount = value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return currency === "TRY" ? `₺${amount}` : `${amount} ${currency}`
+}
+
+function formatPointDate(date: string): string {
+  const [, month, day] = date.split("-")
+  const monthIndex = Number(month) - 1
+  const monthLabel = MONTH_LABELS[monthIndex]
+  return day && monthLabel ? `${day} ${monthLabel}` : date.slice(-5)
 }

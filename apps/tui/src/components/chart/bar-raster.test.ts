@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { renderBarBitmap, type PerformanceBar } from "./bar-raster.ts"
+import { barSlot, renderBarBitmap, type PerformanceBar } from "./bar-raster.ts"
 
 const UP = "#70d7a1"
 const DOWN = "#ff6b6b"
@@ -85,4 +85,23 @@ test("survives a range with nothing in it", () => {
   // Every day flat: the bars are stubs, and the zero line still anchors them.
   const flat = bitmap([{ value: 0, label: "10" }, { value: 0, label: "11" }])
   expect(rowsWithColor(flat, ZERO)).toHaveLength(1)
+})
+
+test("marks the selected bar through the empty side of the chart", () => {
+  const guide = "#59606c"
+  const bars = [{ value: -1_000, label: "10" }, { value: 1_000, label: "11" }]
+  const frame = renderBarBitmap({
+    bars,
+    width: 60,
+    height: 24,
+    upColor: UP,
+    downColor: DOWN,
+    zeroColor: ZERO,
+    selectedIndex: 0,
+    guideColor: guide,
+  })
+  const column = barSlot(0, bars.length, frame.width).center
+  const [red, green, blue] = [1, 3, 5].map((offset) => parseInt(guide.slice(offset, offset + 2), 16))
+
+  expect(Array.from(frame.pixels.slice(column * 4, column * 4 + 3))).toEqual([red, green, blue])
 })
