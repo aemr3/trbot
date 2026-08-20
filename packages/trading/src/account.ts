@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 export interface PortfolioSummary {
   currency: string
   totalCollateral: number | null
@@ -76,6 +78,18 @@ export interface AccountPosition {
   multiplier?: number
 }
 
+export const AccountPositionSchema: z.ZodType<AccountPosition> = z.object({
+  uid: z.string(),
+  symbol: z.string(),
+  displayName: z.string(),
+  quantity: z.number(),
+  averageCost: z.number().nullable(),
+  currentPrice: z.number().nullable(),
+  unrealizedProfitLoss: z.number().nullable(),
+  currency: z.string(),
+  multiplier: z.number().optional(),
+})
+
 export interface AccountSnapshot {
   portfolio: PortfolioSummary
   performance: PortfolioPerformance
@@ -83,6 +97,46 @@ export interface AccountSnapshot {
   positions: AccountPosition[]
   updatedAt: number
 }
+
+const PortfolioSummarySchema = z.object({
+  currency: z.string(),
+  totalCollateral: z.number().nullable(),
+  availableCollateral: z.number().nullable(),
+  dailyProfitLoss: z.number().nullable(),
+  dailyProfitLossPercent: z.number().nullable(),
+  periodProfitLoss: z.number().nullable(),
+  periodProfitLossPercent: z.number().nullable(),
+})
+
+const PortfolioPointSchema = z.object({
+  date: z.string(),
+  profitLoss: z.number().nullable(),
+  profitLossPercent: z.number().nullable(),
+  totalCollateral: z.number().nullable(),
+})
+
+const PortfolioPerformanceSchema = z.object({
+  range: z.enum(PORTFOLIO_RANGES),
+  points: z.array(PortfolioPointSchema),
+  profitLoss: z.number().nullable(),
+  profitLossPercent: z.number().nullable(),
+})
+
+const AccountOrderSchema = z.object({
+  uid: z.string(),
+  title: z.string(),
+  description: z.string().nullable(),
+  value: z.string().nullable(),
+  status: z.enum(["pending", "completed"]),
+})
+
+export const AccountSnapshotSchema: z.ZodType<AccountSnapshot> = z.object({
+  portfolio: PortfolioSummarySchema,
+  performance: PortfolioPerformanceSchema,
+  orders: z.array(AccountOrderSchema),
+  positions: z.array(AccountPositionSchema),
+  updatedAt: z.number(),
+})
 
 export interface AccountSource {
   // The range comes in with the read because the provider returns the summary
@@ -110,6 +164,27 @@ export type AccountLiveUpdate =
       providerStatus: string
       description: string | null
     }
+
+export const AccountLiveUpdateSchema: z.ZodType<AccountLiveUpdate> = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("position"),
+    uid: z.string(),
+    quantity: z.number(),
+    averageCost: z.number().nullable(),
+    country: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("collateral"),
+    availableCollateral: z.number(),
+  }),
+  z.object({
+    type: z.literal("order"),
+    uid: z.string(),
+    status: z.enum(["pending", "completed"]),
+    providerStatus: z.string(),
+    description: z.string().nullable(),
+  }),
+])
 
 export type AccountLiveUpdateListener = (update: AccountLiveUpdate) => void
 

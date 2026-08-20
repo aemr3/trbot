@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 export interface ViopInstrument {
   uid: string
   symbol: string
@@ -8,6 +10,17 @@ export interface ViopInstrument {
   volume: number | null
   currency: string
 }
+
+export const ViopInstrumentSchema: z.ZodType<ViopInstrument> = z.object({
+  uid: z.string(),
+  symbol: z.string(),
+  displayName: z.string(),
+  underlyingSymbol: z.string().nullable(),
+  lastPrice: z.number().nullable(),
+  changePercent: z.number().nullable(),
+  volume: z.number().nullable(),
+  currency: z.string(),
+})
 
 export interface ViopContractDetails {
   initialCollateral: number | null
@@ -21,6 +34,19 @@ export interface ViopContractDetails {
   volume: number | null
   openInterest: number | null
 }
+
+export const ViopContractDetailsSchema: z.ZodType<ViopContractDetails> = z.object({
+  initialCollateral: z.number().nullable(),
+  leverage: z.number().nullable(),
+  contractSize: z.number().nullable(),
+  expiryDate: z.string().nullable(),
+  sessionHigh: z.number().nullable(),
+  sessionLow: z.number().nullable(),
+  settlementPrice: z.number().nullable(),
+  previousSettlementPrice: z.number().nullable(),
+  volume: z.number().nullable(),
+  openInterest: z.number().nullable(),
+})
 
 export interface ViopInstrumentSource {
   listInstruments(options?: { signal?: AbortSignal }): Promise<ViopInstrument[]>

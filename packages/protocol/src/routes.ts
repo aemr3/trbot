@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 const API_PREFIX = "/v1"
 
 /** Header deduplicating a mutation so a retry cannot place a second order. */
@@ -68,7 +70,25 @@ export interface SessionState {
   authenticated: boolean
 }
 
+export const SessionStateSchema: z.ZodType<SessionState> = z.object({ authenticated: z.boolean() })
+
+export const OkResponseSchema = z.object({ ok: z.literal(true) })
+
 export interface StreamTicket {
   ticket: string
   expiresAt: number
 }
+
+export const StreamTicketSchema: z.ZodType<StreamTicket> = z.object({
+  ticket: z.string(),
+  expiresAt: z.number(),
+})
+
+const RequiredTextSchema = z.string().refine((value) => value.trim().length > 0)
+
+export const LoginRequestSchema = z.object({
+  username: RequiredTextSchema,
+  password: RequiredTextSchema,
+})
+
+export const OtpRequestSchema = z.object({ code: RequiredTextSchema })

@@ -1,13 +1,30 @@
-import type { ChatMessage, ChatRunStatus, ChatSession } from "@trbot/chat/session.ts"
-import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
-import type { AlertTriggerEvent, PriceAlertView } from "@trbot/market/alert-monitor.ts"
-import { DEPTH_STATUSES } from "@trbot/market/depth.ts"
-import type { DepthBook, DepthStatus } from "@trbot/market/depth.ts"
-import type { EquityQuoteUpdate } from "@trbot/market/equity-quote-stream.ts"
-import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
-import type { AccountLiveUpdate } from "@trbot/trading/account.ts"
-import { STOP_OUTCOMES } from "@trbot/trading/stop-monitor.ts"
-import type { StopOutcome, StopRuleView, StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
+import {
+  ChatMessageSchema,
+  ChatSessionSchema,
+  type ChatMessage,
+  type ChatRunStatus,
+  type ChatSession,
+} from "@trbot/chat/session.ts"
+import { ChatQuestionRequestSchema, type ChatQuestionRequest } from "@trbot/chat/question.ts"
+import {
+  AlertTriggerEventSchema,
+  PriceAlertViewSchema,
+  type AlertTriggerEvent,
+  type PriceAlertView,
+} from "@trbot/market/alert-monitor.ts"
+import { DEPTH_STATUSES, DepthBookSchema, type DepthBook, type DepthStatus } from "@trbot/market/depth.ts"
+import { EquityQuoteUpdateSchema, type EquityQuoteUpdate } from "@trbot/market/equity-quote-stream.ts"
+import { QuoteUpdateSchema, type QuoteUpdate } from "@trbot/market/quote-stream.ts"
+import { AccountLiveUpdateSchema, type AccountLiveUpdate } from "@trbot/trading/account.ts"
+import {
+  STOP_OUTCOMES,
+  StopRuleViewSchema,
+  StopTriggerEventSchema,
+  type StopOutcome,
+  type StopRuleView,
+  type StopTriggerEvent,
+} from "@trbot/trading/stop-monitor.ts"
+import { z } from "zod"
 
 export const STREAM_CHANNELS = ["quotes", "equityQuotes", "depth", "account"] as const
 export type StreamChannel = (typeof STREAM_CHANNELS)[number]
@@ -23,6 +40,24 @@ export type ClientFrame =
   // Answering a fired alert. A stop decision does not travel this way: it needs
   // an acknowledgement, so it goes over HTTP. See ROUTES.stopDecision.
   | { type: "alertDecision"; alertId: string; decision: "dismiss" | "rearm" }
+
+const SubscribeFrameSchema = z.union([
+  z.object({ type: z.literal("subscribe"), channel: z.literal("quotes"), symbols: z.array(z.string()) }),
+  z.object({ type: z.literal("subscribe"), channel: z.literal("equityQuotes"), symbol: z.string() }),
+  z.object({ type: z.literal("subscribe"), channel: z.literal("depth"), symbol: z.string() }),
+  z.object({ type: z.literal("subscribe"), channel: z.literal("account") }),
+])
+
+export const ClientFrameSchema: z.ZodType<ClientFrame> = z.union([
+  SubscribeFrameSchema,
+  z.object({ type: z.literal("unsubscribe"), channel: z.enum(STREAM_CHANNELS) }),
+  z.object({ type: z.literal("pendingOrders"), orderUids: z.array(z.string()) }),
+  z.object({
+    type: z.literal("alertDecision"),
+    alertId: z.string(),
+    decision: z.enum(["dismiss", "rearm"]),
+  }),
+])
 
 export type ServerFrame =
   | { type: "quotes"; update: QuoteUpdate }
@@ -64,7 +99,7 @@ export type ChatFrame =
 
 // Owned by the trading package: how a stop ended is a trading fact, and this
 // package already depends on it.
-export {  type StopOutcome } from "@trbot/trading/stop-monitor.ts"
+export { type StopOutcome } from "@trbot/trading/stop-monitor.ts"
 
 /**
  * A stop rule has reached its level and the server has started the countdown.
@@ -81,6 +116,49 @@ interface StopTriggerFrame {
   held: boolean
 }
 
+export const ServerFrameSchema: z.ZodType<ServerFrame> = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("quotes"), update: QuoteUpdateSchema }),
+  z.object({ type: z.literal("equityQuotes"), update: EquityQuoteUpdateSchema }),
+  z.object({ type: z.literal("depth"), book: DepthBookSchema }),
+  z.object({ type: z.literal("depthStatus"), status: z.enum(DEPTH_STATUSES) }),
+  z.object({ type: z.literal("account"), update: AccountLiveUpdateSchema }),
+  z.object({ type: z.literal("status"), channel: z.enum(STREAM_CHANNELS), connected: z.boolean() }),
+  z.object({ type: z.literal("session"), state: z.literal("expired") }),
+  z.object({
+    type: z.literal("stopTriggered"),
+    event: StopTriggerEventSchema,
+    remainingMs: z.number(),
+    held: z.boolean(),
+  }),
+  z.object({ type: z.literal("stopResolved"), ruleId: z.string(), outcome: z.enum(STOP_OUTCOMES) }),
+  z.object({ type: z.literal("stops"), views: z.array(StopRuleViewSchema) }),
+  z.object({ type: z.literal("alertTriggered"), event: AlertTriggerEventSchema }),
+  z.object({ type: z.literal("alerts"), views: z.array(PriceAlertViewSchema) }),
+  z.object({ type: z.literal("chatSessions"), sessions: z.array(ChatSessionSchema) }),
+  z.object({ type: z.literal("chatMessage"), sessionId: z.string(), message: ChatMessageSchema }),
+  z.object({ type: z.literal("chatMessageRemoved"), sessionId: z.string(), messageId: z.string() }),
+  z.object({
+    type: z.literal("chatDelta"),
+    sessionId: z.string(),
+    runId: z.string(),
+    seq: z.number(),
+    text: z.string().optional(),
+    reasoning: z.string().optional(),
+    toolName: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("chatRun"),
+    sessionId: z.string(),
+    runId: z.string(),
+    status: z.enum(["running", "done", "failed", "aborted"]),
+    message: ChatMessageSchema.optional(),
+    error: z.string().optional(),
+  }),
+  z.object({ type: z.literal("chatQuestionAsked"), request: ChatQuestionRequestSchema }),
+  z.object({ type: z.literal("chatQuestionResolved"), requestId: z.string(), sessionId: z.string() }),
+  z.object({ type: z.literal("error"), channel: z.enum(STREAM_CHANNELS).optional(), message: z.string() }),
+])
+
 /**
  * Whether a decoded frame is one the server can act on.
  *
@@ -89,155 +167,20 @@ interface StopTriggerFrame {
  * version-skewed frame that passes here becomes a thrown handler rather than an
  * ignored message.
  */
-function isClientFrame(value: unknown): value is ClientFrame {
-  if (!value || typeof value !== "object") return false
-  const frame = value as Record<string, unknown>
-
-  switch (frame.type) {
-    case "subscribe":
-      if (frame.channel === "quotes") return isStringList(frame.symbols)
-      if (frame.channel === "equityQuotes" || frame.channel === "depth") return typeof frame.symbol === "string"
-      return frame.channel === "account"
-    case "unsubscribe":
-      return isChannel(frame.channel)
-    case "pendingOrders":
-      return isStringList(frame.orderUids)
-    case "alertDecision":
-      return typeof frame.alertId === "string" && isOneOf(frame.decision, ALERT_DECISIONS)
-    default:
-      return false
-  }
-}
-
-const ALERT_DECISIONS = ["dismiss", "rearm"] as const
-const CHAT_RUN_STATUSES = ["running", "done", "failed", "aborted"] as const
-
-function isChannel(value: unknown): value is StreamChannel {
-  return isOneOf(value, STREAM_CHANNELS)
-}
-
-function isStringList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string")
-}
-
-function isOneOf<T extends string>(value: unknown, allowed: readonly T[]): value is T {
-  return typeof value === "string" && (allowed as readonly string[]).includes(value)
-}
-
 export function parseClientFrame(data: string): ClientFrame | null {
   try {
-    const decoded: unknown = JSON.parse(data)
-    return isClientFrame(decoded) ? decoded : null
+    const parsed = ClientFrameSchema.safeParse(JSON.parse(data))
+    return parsed.success ? parsed.data : null
   } catch {
     return null
   }
-}
-
-/**
- * Whether a decoded frame is one a client can act on.
- *
- * The same reasoning as `isClientFrame`, in the other direction: a listener
- * reads the payload without a further guard, so a frame carrying only its type
- * would hand `undefined` to the screen rather than being ignored. A frame this
- * client has never heard of is ignored, which is what lets the server add one.
- */
-function isServerFrame(value: unknown): value is ServerFrame {
-  if (!value || typeof value !== "object") return false
-  const frame = value as Record<string, unknown>
-
-  switch (frame.type) {
-    case "quotes":
-    case "equityQuotes":
-      return hasSymbol(frame.update)
-    case "account":
-      return typeof field(frame.update, "type") === "string"
-    case "depth":
-      return hasSymbol(frame.book)
-    case "depthStatus":
-      return isOneOf(frame.status, DEPTH_STATUSES)
-    case "status":
-      return isChannel(frame.channel) && typeof frame.connected === "boolean"
-    case "session":
-      return frame.state === "expired"
-    case "stopTriggered":
-      return isTrigger(frame.event) && typeof frame.remainingMs === "number" && typeof frame.held === "boolean"
-    case "stopResolved":
-      return typeof frame.ruleId === "string" && isOneOf(frame.outcome, STOP_OUTCOMES)
-    case "stops":
-      return isListOf(frame.views, (view) => isObject(field(view, "rule")))
-    case "alerts":
-      return isListOf(frame.views, (view) => isObject(field(view, "alert")))
-    case "alertTriggered":
-      return isObject(field(frame.event, "alert"))
-    case "chatSessions":
-      return isListOf(frame.sessions, (session) => typeof field(session, "id") === "string")
-    case "chatMessage":
-      return typeof frame.sessionId === "string" && typeof field(frame.message, "id") === "string"
-    case "chatMessageRemoved":
-      return typeof frame.sessionId === "string" && typeof frame.messageId === "string"
-    case "chatDelta":
-      return typeof frame.sessionId === "string" && typeof frame.runId === "string"
-        && typeof frame.seq === "number"
-    case "chatRun":
-      return typeof frame.sessionId === "string" && typeof frame.runId === "string"
-        && isOneOf(frame.status, CHAT_RUN_STATUSES)
-    case "chatQuestionAsked":
-      return isChatQuestionRequest(frame.request)
-    case "chatQuestionResolved":
-      return typeof frame.requestId === "string" && typeof frame.sessionId === "string"
-    case "error":
-      return typeof frame.message === "string" && (frame.channel === undefined || isChannel(frame.channel))
-    default:
-      return false
-  }
-}
-
-/**
- * The payload checks go one level in, not just "is an object".
- *
- * A screen reads `book.symbol` and `view.rule.displayName` straight off what it
- * is handed, so `{"type":"depth","book":{}}` is not a frame it can ignore — it
- * is a crash a level down from here, in a panel that has no way to check.
- */
-function hasSymbol(value: unknown): boolean {
-  return typeof field(value, "symbol") === "string"
-}
-
-function isTrigger(value: unknown): boolean {
-  return isObject(field(value, "rule")) && isObject(field(value, "position"))
-}
-
-function isChatQuestionRequest(value: unknown): boolean {
-  return typeof field(value, "id") === "string"
-    && typeof field(value, "sessionId") === "string"
-    && isListOf(field(value, "questions"), (question) => (
-      typeof field(question, "question") === "string"
-      && typeof field(question, "header") === "string"
-      && (field(question, "multiple") === undefined || typeof field(question, "multiple") === "boolean")
-      && isListOf(field(question, "options"), (option) => (
-        typeof field(option, "label") === "string"
-        && typeof field(option, "description") === "string"
-      ))
-    ))
-}
-
-function field(value: unknown, name: string): unknown {
-  return isObject(value) ? (value as Record<string, unknown>)[name] : undefined
-}
-
-function isListOf(value: unknown, ok: (entry: unknown) => boolean): boolean {
-  return Array.isArray(value) && value.every(ok)
 }
 
 export function parseServerFrame(data: string): ServerFrame | null {
   try {
-    const decoded: unknown = JSON.parse(data)
-    return isServerFrame(decoded) ? decoded : null
+    const parsed = ServerFrameSchema.safeParse(JSON.parse(data))
+    return parsed.success ? parsed.data : null
   } catch {
     return null
   }
-}
-
-function isObject(value: unknown): boolean {
-  return typeof value === "object" && value !== null
 }

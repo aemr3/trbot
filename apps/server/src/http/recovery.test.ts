@@ -6,6 +6,7 @@ import { ROUTES } from "@trbot/protocol/routes.ts"
 import type { ProviderSession, ProviderSources } from "../session.ts"
 import type { SocketData } from "../stream-hub.ts"
 import { startServer } from "./server.ts"
+import { z } from "zod"
 
 const TOKEN = "recovery-token"
 
@@ -85,7 +86,7 @@ function serve(session: ProviderSession): HttpClient {
 test("a request that outlives the session is answered by the recovered one", async () => {
   const { session, state } = lapsedSession({ recovers: true })
 
-  expect(await serve(session).get<typeof INSTRUMENTS>(ROUTES.instruments)).toEqual(INSTRUMENTS)
+  expect(await serve(session).get(ROUTES.instruments, z.array(z.unknown()))).toEqual(INSTRUMENTS)
   expect(state.recoveries).toBe(1)
   // Refused once, then run again on the session that replaced it.
   expect(state.calls).toBe(2)
@@ -95,7 +96,7 @@ test("a recovery that fails still reports the expiry, so the trader is asked to 
   const { session, state } = lapsedSession({ recovers: false })
 
   const failure = await serve(session)
-    .get(ROUTES.instruments)
+    .get(ROUTES.instruments, z.unknown())
     .then(() => null, (error: unknown) => error as ProtocolError)
 
   expect(failure?.code).toBe("unauthenticated")
@@ -125,7 +126,9 @@ test("a request with a body is retried with that body intact", async () => {
     },
   } as unknown as ProviderSession
 
-  await serve(withOrders).post(ROUTES.cancelOrders, { body: { orderUids: ["order-1", "order-2"] } })
+  await serve(withOrders).post(ROUTES.cancelOrders, z.unknown(), {
+    body: { orderUids: ["order-1", "order-2"] },
+  })
 
   expect(seen).toEqual([{ orderUids: ["order-1", "order-2"] }])
 })

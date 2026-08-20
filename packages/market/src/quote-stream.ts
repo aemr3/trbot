@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 export interface QuoteUpdate {
   symbol: string
   lastPrice: number | null
@@ -6,6 +8,15 @@ export interface QuoteUpdate {
   sessionStatus: string | null
   timestamp: number
 }
+
+export const QuoteUpdateSchema: z.ZodType<QuoteUpdate> = z.object({
+  symbol: z.string(),
+  lastPrice: z.number().nullable(),
+  ask: z.number().nullable().optional(),
+  bid: z.number().nullable().optional(),
+  sessionStatus: z.string().nullable(),
+  timestamp: z.number(),
+})
 
 export type QuoteUpdateListener = (update: QuoteUpdate) => void
 

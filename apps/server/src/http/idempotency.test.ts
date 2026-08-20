@@ -32,6 +32,17 @@ describe("idempotency store", () => {
     expect(await store.replay("key-1", ROUTE, hash)).toEqual({ orderUid: "order-1" })
   })
 
+  test("reports a corrupt stored response instead of crashing in JSON.parse", async () => {
+    const hash = hashRequest(ORDER)
+    await store.record("key-1", ROUTE, hash, { orderUid: "order-1" })
+    connection.db.$client.run("UPDATE idempotency_keys SET response_body = 'not json'")
+
+    const error = await store.replay("key-1", ROUTE, hash).catch((caught: unknown) => caught)
+
+    expect(isProtocolError(error) && error.code).toBe("internal")
+    expect(isProtocolError(error) && error.message).toContain("corrupt")
+  })
+
   test("rejects the same key carrying a different order", async () => {
     await store.record("key-1", ROUTE, hashRequest(ORDER), { orderUid: "order-1" })
 

@@ -1,8 +1,15 @@
-import type { BrokerageDatePreset, BrokerageDateRange } from "./broker-calendar.ts"
+import {
+  BrokerageDatePresetSchema,
+  BrokerageDateRangeSchema,
+  type BrokerageDatePreset,
+  type BrokerageDateRange,
+} from "./broker-calendar.ts"
+import { z } from "zod"
 
 // Which brokerage houses accumulated or distributed a stock over a date range.
 // The provider reports the two sides separately: a house can appear on both.
 export type BrokerageSide = "BUYER" | "SELLER"
+export const BROKERAGE_SIDES = ["BUYER", "SELLER"] as const
 
 export interface BrokerageShare {
   brokerage: string
@@ -29,6 +36,26 @@ export interface BrokerageDistribution {
   availableDates: string[]
 }
 
+const BrokerageShareSchema = z.object({
+  brokerage: z.string(),
+  netLots: z.number(),
+  averagePrice: z.number(),
+  percentage: z.number(),
+})
+
+export const BrokerageDistributionSchema: z.ZodType<BrokerageDistribution> = z.object({
+  side: z.enum(BROKERAGE_SIDES),
+  shares: z.array(BrokerageShareSchema),
+  topCount: z.number(),
+  topPercentage: z.number(),
+  topLots: z.number(),
+  otherLots: z.number(),
+  lastUpdate: z.string().nullable(),
+  live: z.boolean(),
+  presets: z.array(BrokerageDatePresetSchema),
+  availableDates: z.array(z.string()),
+})
+
 export interface BrokerageDistributionRequest {
   // The VIOP contract's own uid; the source resolves the underlying stock behind it.
   instrumentUid: string
@@ -36,6 +63,12 @@ export interface BrokerageDistributionRequest {
   range: BrokerageDateRange
   signal?: AbortSignal
 }
+
+export const BrokerageDistributionRequestSchema = z.object({
+  instrumentUid: z.string().min(1),
+  side: z.enum(BROKERAGE_SIDES),
+  range: BrokerageDateRangeSchema,
+})
 
 export interface BrokerageDistributionSource {
   loadDistribution(request: BrokerageDistributionRequest): Promise<BrokerageDistribution>

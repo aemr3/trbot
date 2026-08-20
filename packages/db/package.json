@@ -16,7 +16,8 @@
     "@trbot/market": "workspace:*",
     "@trbot/preferences": "workspace:*",
     "@trbot/trading": "workspace:*",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@trbot/tsconfig": "workspace:*",

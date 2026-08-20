@@ -1,3 +1,6 @@
+import { z } from "zod"
+import { ProtocolErrorBodySchema, type ProtocolErrorBody } from "./error.ts"
+
 /**
  * A model provider as a client sees it.
  *
@@ -21,6 +24,18 @@ export interface AiProviderSummary {
   updatedAt: number | null
 }
 
+export const AiProviderSummarySchema: z.ZodType<AiProviderSummary> = z.object({
+  providerId: z.string(),
+  name: z.string(),
+  authTypes: z.array(z.enum(["oauth", "api_key"])),
+  isSubscription: z.boolean(),
+  connected: z.boolean(),
+  source: z.string().nullable(),
+  accountId: z.string().nullable(),
+  connectedAt: z.number().nullable(),
+  updatedAt: z.number().nullable(),
+})
+
 export type AiAuthType = "oauth" | "api_key"
 
 /**
@@ -40,6 +55,16 @@ export interface AiModelSummary {
   contextWindow: number
 }
 
+export const AiModelSummarySchema: z.ZodType<AiModelSummary> = z.object({
+  providerId: z.string(),
+  providerName: z.string(),
+  modelId: z.string(),
+  name: z.string(),
+  reasoning: z.boolean(),
+  thinkingLevels: z.array(z.string()),
+  contextWindow: z.number(),
+})
+
 /** Which model answers, and how hard it thinks. */
 export interface AiModelChoice {
   providerId: string
@@ -47,6 +72,14 @@ export interface AiModelChoice {
   /** Null leaves the model's own default effort alone. */
   reasoning: string | null
 }
+
+const RequiredTextSchema = z.string().refine((value) => value.trim().length > 0)
+
+export const AiModelChoiceSchema: z.ZodType<AiModelChoice> = z.object({
+  providerId: RequiredTextSchema,
+  modelId: RequiredTextSchema,
+  reasoning: RequiredTextSchema.nullable(),
+})
 
 /**
  * The chosen models: one for the market overview, one for a new chat session.
@@ -58,6 +91,11 @@ export interface AiPreferences {
   overview: AiModelChoice | null
   chat: AiModelChoice | null
 }
+
+export const AiPreferencesSchema: z.ZodType<AiPreferences> = z.object({
+  overview: AiModelChoiceSchema.nullable(),
+  chat: AiModelChoiceSchema.nullable(),
+})
 
 /**
  * What a finished login hands to the server.
@@ -77,6 +115,15 @@ export interface AiCredentials {
   providerId: string
   credential: Record<string, unknown>
 }
+
+export const AiCredentialSchema = z.object({
+  type: z.enum(["oauth", "api_key"]),
+}).catchall(z.unknown())
+
+export const AiCredentialsSchema: z.ZodType<AiCredentials> = z.object({
+  providerId: RequiredTextSchema,
+  credential: AiCredentialSchema,
+})
 
 /** A choice the authorization flow asks the trader to make. */
 export interface AiSelectOption {
@@ -129,3 +176,11 @@ export interface AiAccount {
   preferences(): Promise<AiPreferences>
   setPreferences(preferences: AiPreferences): Promise<AiPreferences>
 }
+
+export type OverviewStreamFrame = { delta: string } | { heartbeat: true } | ProtocolErrorBody
+
+export const OverviewStreamFrameSchema: z.ZodType<OverviewStreamFrame> = z.union([
+  z.object({ delta: z.string() }),
+  z.object({ heartbeat: z.literal(true) }),
+  ProtocolErrorBodySchema,
+])

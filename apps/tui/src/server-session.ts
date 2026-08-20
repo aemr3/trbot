@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { HttpClient } from "@trbot/client/http.ts"
 import { StreamConnection } from "@trbot/client/stream.ts"
 import type { ClientConfig } from "@trbot/config"
-import { ROUTES, type SessionState } from "@trbot/protocol/routes.ts"
+import { ROUTES, SessionStateSchema } from "@trbot/protocol/routes.ts"
 
 /**
  * The terminal's link to the server: one HTTP client for requests and one socket
@@ -76,15 +76,15 @@ function readAuthority(path: string | null): string | null {
 
 /** Whether the server currently holds a usable provider session. */
 export async function serverAuthenticated(http: HttpClient): Promise<boolean> {
-  const state = await http.get<SessionState>(ROUTES.session)
+  const state = await http.get(ROUTES.session, SessionStateSchema)
   return state.authenticated
 }
 
 /** Signs the server in. Throws a protocol error with `otp_required` when the provider asks for a code. */
 export async function signIn(http: HttpClient, username: string, password: string): Promise<void> {
-  await http.post<SessionState>(ROUTES.login, { body: { username, password } })
+  await http.post(ROUTES.login, SessionStateSchema, { body: { username, password } })
 }
 
 export async function submitOtp(http: HttpClient, code: string): Promise<void> {
-  await http.post<SessionState>(ROUTES.otp, { body: { code } })
+  await http.post(ROUTES.otp, SessionStateSchema, { body: { code } })
 }

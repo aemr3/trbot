@@ -1,7 +1,26 @@
-import type { MarketOverviewDigest, OverviewSnapshotStore } from "@trbot/market/overview.ts"
+import type { OverviewSnapshotStore } from "@trbot/market/overview.ts"
+import { BrokerageDistributionRequestSchema } from "@trbot/market/brokerage.ts"
+import { SettlementRequestSchema } from "@trbot/market/settlement.ts"
+import { PriceAlertStatusRequestSchema } from "@trbot/market/alert.ts"
+import { ChatMessageInputSchema } from "@trbot/chat/session.ts"
+import { ChatQuestionReplySchema } from "@trbot/chat/question.ts"
 import type { AppPreferences } from "@trbot/preferences/app.ts"
+import { AiCredentialsSchema } from "@trbot/protocol/ai.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
-import { IDEMPOTENCY_HEADER, ROUTES, type SessionState } from "@trbot/protocol/routes.ts"
+import {
+  IDEMPOTENCY_HEADER,
+  LoginRequestSchema,
+  OtpRequestSchema,
+  ROUTES,
+  type SessionState,
+} from "@trbot/protocol/routes.ts"
+import {
+  CancelPendingViopOrdersRequestSchema,
+  ExitViopPositionRequestSchema,
+  PlaceViopOrderRequestSchema,
+  PrepareViopOrderRequestSchema,
+} from "@trbot/trading/order.ts"
+import { StopDecisionRequestSchema, StopRuleStatusRequestSchema } from "@trbot/trading/stop.ts"
 import type { AiService } from "../ai.ts"
 import type { ChatController } from "../chat.ts"
 import type { ChatQuestionController } from "../chat-question.ts"
@@ -65,11 +84,11 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
 
   [ROUTES.login]: {
     POST: async (request, { session }) => {
-      const body = await readJsonObject(request)
-      const username = check.text(body.username, "username")
+      const body = check.payload(await readJsonObject(request), LoginRequestSchema, "credentials")
+      const { username, password } = body
       loginLimiter.check(username)
       try {
-        await session.login(username, check.text(body.password, "password"))
+        await session.login(username, password)
         loginLimiter.clear(username)
       } catch (error) {
         loginLimiter.record(username)
@@ -81,13 +100,13 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
 
   [ROUTES.otp]: {
     POST: async (request, { session }) => {
-      const body = await readJsonObject(request)
+      const body = check.payload(await readJsonObject(request), OtpRequestSchema, "verification")
       // One challenge is outstanding at a time, so the budget is the server's
       // rather than per caller: this counts guesses at the code itself.
       const key = "otp"
       otpLimiter.check(key)
       try {
-        await session.completeOtp(check.text(body.code, "code"))
+        await session.completeOtp(body.code)
         otpLimiter.clear(key)
       } catch (error) {
         otpLimiter.record(key)
@@ -132,12 +151,14 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
 
   [ROUTES.brokerageDistribution]: {
     POST: async (request, { session }) => {
-      const body = await readJsonObject(request)
+      const body = check.payload(
+        await readJsonObject(request),
+        BrokerageDistributionRequestSchema,
+        "brokerage request",
+      )
       return json(
         await session.require().brokerage.loadDistribution({
-          instrumentUid: check.text(body.instrumentUid, "instrumentUid"),
-          side: check.brokerageSide(body.side),
-          range: check.dateRange(body.range),
+          ...body,
           signal: request.signal,
         }),
       )
@@ -146,12 +167,10 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
 
   [ROUTES.settlement]: {
     POST: async (request, { session }) => {
-      const body = await readJsonObject(request)
+      const body = check.payload(await readJsonObject(request), SettlementRequestSchema, "settlement request")
       return json(
         await session.require().settlement.loadSettlement({
-          instrumentUid: check.text(body.instrumentUid, "instrumentUid"),
-          mode: check.settlementMode(body.mode),
-          range: check.dateRange(body.range),
+          ...body,
           signal: request.signal,
         }),
       )
@@ -160,11 +179,10 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
 
   [ROUTES.prepareOrder]: {
     POST: async (request, { session }) => {
-      const body = await readJsonObject(request)
+      const body = check.payload(await readJsonObject(request), PrepareViopOrderRequestSchema, "order preparation")
       return json(
         await session.require().orders.prepareOrder({
-          instrumentUid: check.text(body.instrumentUid, "instrumentUid"),
-          side: check.orderSide(body.side),
+          ...body,
           signal: request.signal,
         }),
       )
@@ -173,13 +191,7 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
 
   [ROUTES.placeOrder]: {
     POST: async (request, context) => {
-      const body = await readJsonObject(request)
-      const order = {
-        instrumentUid: check.text(body.instrumentUid, "instrumentUid"),
-        side: check.orderSide(body.side),
-        quantity: check.positiveNumber(body.quantity, "quantity"),
-        limitPrice: check.positiveNumber(body.limitPrice, "limitPrice"),
-      }
+      const order = check.payload(await readJsonObject(request), PlaceViopOrderRequestSchema, "order")
       return once(request, context, ROUTES.placeOrder, order, () =>
         context.session.require().orders.placeOrder(order),
       )
@@ -188,8 +200,11 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
 
   [ROUTES.cancelOrders]: {
     POST: async (request, context) => {
-      const body = await readJsonObject(request)
-      const cancellation = { orderUids: check.stringList(body.orderUids, "orderUids") }
+      const cancellation = check.payload(
+        await readJsonObject(request),
+        CancelPendingViopOrdersRequestSchema,
+        "cancellation",
+      )
       return once(request, context, ROUTES.cancelOrders, cancellation, () =>
         context.session.require().orders.cancelPendingOrders(cancellation),
       )
@@ -258,8 +273,7 @@ export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
   // ordinary error response rather than a stream that yields nothing.
   [ROUTES.overview]: {
     POST: async (request, { ai }) => {
-      const digest = (await readJsonObject(request)) as unknown as MarketOverviewDigest
-      check.overviewMode(digest.mode)
+      const digest = check.overviewDigest(await readJsonObject(request))
       await ai.requireOverviewModel()
       return ndjson((emit) =>
         ai.generate(digest, {
@@ -286,8 +300,8 @@ export const PARAMETERIZED: {
     pattern: /^\/v1\/ai\/chat\/questions\/([^/]+)\/reply$/,
     method: "POST",
     handle: async (match, request, { questions }) => {
-      const body = await readJsonObject(request)
-      questions.reply(decodeURIComponent(match[1] ?? ""), check.chatQuestionAnswers(body.answers))
+      const body = check.payload(await readJsonObject(request), ChatQuestionReplySchema, "answers")
+      questions.reply(decodeURIComponent(match[1] ?? ""), body.answers)
       return json({ ok: true })
     },
   },
@@ -338,9 +352,12 @@ export const PARAMETERIZED: {
     method: "POST",
     handle: async (match, request, context) => {
       const instrumentUid = decodeURIComponent(match[1] ?? "")
-      const body: Record<string, unknown> = await readJsonObject(request).catch(() => ({}))
-      const quantity = body.quantity === undefined ? undefined : check.positiveNumber(body.quantity, "quantity")
-      const exit = { instrumentUid, quantity }
+      const body = check.payload(
+        (await readJsonObjectOrEmpty(request)) ?? {},
+        ExitViopPositionRequestSchema,
+        "position exit",
+      )
+      const exit = { instrumentUid, ...body }
       return once(request, context, "positions.exit", exit, () =>
         context.session.require().orders.exitPosition(exit),
       )
@@ -358,8 +375,8 @@ export const PARAMETERIZED: {
     pattern: /^\/v1\/alerts\/([^/]+)\/status$/,
     method: "PUT",
     handle: async (match, request, { alerts }) => {
-      const body = await readJsonObject(request)
-      await alerts.setStatus(decodeURIComponent(match[1] ?? ""), check.priceAlertStatus(body.status))
+      const body = check.payload(await readJsonObject(request), PriceAlertStatusRequestSchema, "alert status")
+      await alerts.setStatus(decodeURIComponent(match[1] ?? ""), body.status)
       return json(alerts.list())
     },
   },
@@ -375,8 +392,8 @@ export const PARAMETERIZED: {
     pattern: /^\/v1\/stops\/([^/]+)\/status$/,
     method: "PUT",
     handle: async (match, request, { stops }) => {
-      const body = await readJsonObject(request)
-      await stops.setStatus(decodeURIComponent(match[1] ?? ""), check.stopRuleStatus(body.status))
+      const body = check.payload(await readJsonObject(request), StopRuleStatusRequestSchema, "stop status")
+      await stops.setStatus(decodeURIComponent(match[1] ?? ""), body.status)
       return json(stops.list())
     },
   },
@@ -392,11 +409,15 @@ export const PARAMETERIZED: {
     pattern: /^\/v1\/ai\/providers\/([^/]+)$/,
     method: "POST",
     handle: async (match, request, { ai }) => {
-      const body = await readJsonObject(request)
+      const providerId = decodeURIComponent(match[1] ?? "")
+      const body = check.payload(await readJsonObject(request), AiCredentialsSchema, "credentials")
+      if (body.providerId !== providerId) {
+        throw new ProtocolError("invalid_request", '"providerId" must match the requested provider')
+      }
       return json(
         await ai.connect({
-          providerId: decodeURIComponent(match[1] ?? ""),
-          credential: check.aiCredential(body.credential),
+          providerId,
+          credential: body.credential,
         }),
       )
     },
@@ -448,8 +469,8 @@ export const PARAMETERIZED: {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/messages$/,
     method: "POST",
     handle: async (match, request, { chat }) => {
-      const body = await readJsonObject(request)
-      return json(await chat.send(decodeURIComponent(match[1] ?? ""), check.text(body.text, "text")))
+      const body = check.payload(await readJsonObject(request), ChatMessageInputSchema, "message")
+      return json(await chat.send(decodeURIComponent(match[1] ?? ""), body.text))
     },
   },
   {
@@ -480,8 +501,8 @@ export const PARAMETERIZED: {
     pattern: /^\/v1\/stops\/([^/]+)\/decision$/,
     method: "POST",
     handle: async (match, request, { stops }) => {
-      const body = await readJsonObject(request)
-      stops.decide(decodeURIComponent(match[1] ?? ""), check.stopDecision(body.decision))
+      const body = check.payload(await readJsonObject(request), StopDecisionRequestSchema, "stop decision")
+      stops.decide(decodeURIComponent(match[1] ?? ""), body.decision)
       return json({ ok: true })
     },
   },

@@ -17,7 +17,7 @@ interface Write {
 /** An HTTP client whose writes finish only when the test says so. */
 function controllable(writes: Write[]): HttpClient {
   return {
-    put(_path: string, options: { body?: unknown }) {
+    put(_path: string, _schema: unknown, options: { body?: unknown }) {
       return new Promise<void>((resolve) => {
         writes.push({ body: options.body as AppPreferences, settle: resolve })
       })
@@ -56,7 +56,7 @@ test("a save waits for the one in flight rather than racing it", async () => {
 test("a failed save does not wedge the ones after it", async () => {
   const attempts: AppPreferences[] = []
   const failing = {
-    put(_path: string, options: { body?: unknown }) {
+    put(_path: string, _schema: unknown, options: { body?: unknown }) {
       attempts.push(options.body as AppPreferences)
       return Promise.reject(new Error("the server refused"))
     },

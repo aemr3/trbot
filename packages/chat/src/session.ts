@@ -1,6 +1,7 @@
 // What a chat is, as both the server and a client understand it. Nothing here
 // knows about HTTP, the database, the terminal, or the model harness — a client
 // renders these shapes and the server stores them.
+import { z } from "zod"
 
 export type ChatRole = "USER" | "APP_EVENT" | "ASSISTANT" | "TOOL_RESULT"
 
@@ -122,6 +123,71 @@ export interface ChatSessionDetail {
   messages: ChatMessage[]
   partial: ChatPartial | null
 }
+
+const ChatBlockSchema: z.ZodType<ChatBlock> = z.object({
+  kind: z.enum(["TEXT", "THINKING", "TOOL_CALL", "IMAGE"]),
+  text: z.string().nullable(),
+  toolName: z.string().nullable(),
+  toolCallId: z.string().nullable(),
+  toolArguments: z.unknown(),
+})
+
+const ChatUsageSchema: z.ZodType<ChatUsage> = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  totalTokens: z.number(),
+  costTotal: z.number(),
+})
+
+export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
+  id: z.string(),
+  role: z.enum(["USER", "APP_EVENT", "ASSISTANT", "TOOL_RESULT"]),
+  status: z.enum(["QUEUED", "SENT", "COMPLETE", "PARTIAL", "FAILED"]),
+  text: z.string(),
+  blocks: z.array(ChatBlockSchema),
+  toolName: z.string().nullable(),
+  toolCallId: z.string().nullable(),
+  isError: z.boolean(),
+  errorMessage: z.string().nullable(),
+  usage: ChatUsageSchema.nullable(),
+  model: z.string().nullable(),
+  reasoning: z.string().nullable(),
+  elapsedMs: z.number().nullable(),
+  thinkingMs: z.number().nullable(),
+  createdAt: z.number(),
+})
+
+export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
+  id: z.string(),
+  title: z.string(),
+  parentSessionId: z.string().nullable(),
+  agent: z.string().nullable(),
+  model: z.string(),
+  provider: z.string().nullable(),
+  reasoning: z.string().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  messageCount: z.number(),
+  queued: z.number(),
+  running: z.boolean(),
+})
+
+const ChatPartialSchema: z.ZodType<ChatPartial> = z.object({
+  runId: z.string(),
+  seq: z.number(),
+  text: z.string(),
+  reasoning: z.string(),
+})
+
+export const ChatSessionDetailSchema: z.ZodType<ChatSessionDetail> = z.object({
+  session: ChatSessionSchema,
+  messages: z.array(ChatMessageSchema),
+  partial: ChatPartialSchema.nullable(),
+})
+
+export const ChatMessageInputSchema = z.object({
+  text: z.string().refine((value) => value.trim().length > 0),
+})
 
 export type ChatRunStatus = "running" | "done" | "failed" | "aborted"
 

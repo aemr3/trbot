@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 export type ViopOrderSide = "BUY" | "SELL"
 export const VIOP_ORDER_KINDS = ["LIMIT", "MARKETABLE_LIMIT"] as const
 export type ViopOrderKind = (typeof VIOP_ORDER_KINDS)[number]
@@ -20,6 +22,20 @@ export interface ViopOrderPreparation {
   currentPositionQuantity: number
   positionIntent: ViopPositionIntent
 }
+
+export const ViopOrderPreparationSchema: z.ZodType<ViopOrderPreparation> = z.object({
+  lowerLimit: z.number().nullable(),
+  upperLimit: z.number().nullable(),
+  lastPrice: z.number().nullable(),
+  ask: z.number().nullable(),
+  bid: z.number().nullable(),
+  priceScale: z.number(),
+  contractSize: z.number().nullable(),
+  initialCollateral: z.number().nullable(),
+  availableCollateral: z.number().nullable(),
+  currentPositionQuantity: z.number(),
+  positionIntent: z.enum(["BUY_TO_OPEN", "BUY_TO_CLOSE", "SELL_TO_OPEN", "SELL_TO_CLOSE"]),
+})
 
 export interface PrepareViopOrderRequest {
   instrumentUid: string
@@ -50,6 +66,12 @@ export interface PlacedViopOrder {
   description: string | null
 }
 
+export const PlacedViopOrderSchema: z.ZodType<PlacedViopOrder> = z.object({
+  uid: z.string(),
+  status: z.string(),
+  description: z.string().nullable(),
+})
+
 export interface ViopOrderSource {
   prepareOrder(request: PrepareViopOrderRequest): Promise<ViopOrderPreparation>
   placeOrder(request: PlaceViopOrderRequest): Promise<PlacedViopOrder>
@@ -60,6 +82,12 @@ export interface PendingViopOrder {
   title: string
   description: string | null
 }
+
+export const PendingViopOrderSchema: z.ZodType<PendingViopOrder> = z.object({
+  uid: z.string(),
+  title: z.string(),
+  description: z.string().nullable(),
+})
 
 export interface CancelPendingViopOrdersRequest extends IdempotentRequest {
   orderUids: string[]
@@ -76,6 +104,11 @@ export interface ViopOrderCancellationResult {
   failures: ViopOrderCancellationFailure[]
 }
 
+export const ViopOrderCancellationResultSchema: z.ZodType<ViopOrderCancellationResult> = z.object({
+  cancelledOrderUids: z.array(z.string()),
+  failures: z.array(z.object({ orderUid: z.string(), message: z.string() })),
+})
+
 export interface ViopOrderCancellationSource {
   listPendingOrders(options?: { signal?: AbortSignal }): Promise<PendingViopOrder[]>
   cancelPendingOrders(request: CancelPendingViopOrdersRequest): Promise<ViopOrderCancellationResult>
@@ -88,6 +121,13 @@ export interface SubmittedViopPositionExit {
   orderUid: string
 }
 
+export const SubmittedViopPositionExitSchema: z.ZodType<SubmittedViopPositionExit> = z.object({
+  instrumentUid: z.string(),
+  symbol: z.string(),
+  quantity: z.number(),
+  orderUid: z.string(),
+})
+
 interface ViopPositionExitFailure {
   instrumentUid: string
   symbol: string
@@ -99,6 +139,38 @@ export interface ViopPositionExitResult {
   submitted: SubmittedViopPositionExit[]
   failures: ViopPositionExitFailure[]
 }
+
+export const ViopPositionExitResultSchema: z.ZodType<ViopPositionExitResult> = z.object({
+  submitted: z.array(SubmittedViopPositionExitSchema),
+  failures: z.array(z.object({
+    instrumentUid: z.string(),
+    symbol: z.string(),
+    quantity: z.number(),
+    message: z.string(),
+  })),
+})
+
+const RequiredTextSchema = z.string().refine((value) => value.trim().length > 0)
+
+export const PrepareViopOrderRequestSchema = z.object({
+  instrumentUid: RequiredTextSchema,
+  side: z.enum(["BUY", "SELL"]),
+})
+
+export const PlaceViopOrderRequestSchema = z.object({
+  instrumentUid: RequiredTextSchema,
+  side: z.enum(["BUY", "SELL"]),
+  quantity: z.number().positive(),
+  limitPrice: z.number().positive(),
+})
+
+export const CancelPendingViopOrdersRequestSchema = z.object({
+  orderUids: z.array(z.string()),
+})
+
+export const ExitViopPositionRequestSchema = z.object({
+  quantity: z.number().positive().optional(),
+})
 
 export interface ExitViopPositionRequest extends IdempotentRequest {
   instrumentUid: string

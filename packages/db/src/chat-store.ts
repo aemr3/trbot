@@ -12,6 +12,7 @@ import type {
 } from "@trbot/chat/session.ts"
 import type { AppDatabase } from "./client.ts"
 import { chatMessageBlocks, chatMessages, chatSessions } from "./schema.ts"
+import { z } from "zod"
 
 /**
  * Chat sessions in SQLite.
@@ -546,7 +547,7 @@ function usageOf(row: MessageRow): Record<string, unknown> {
 }
 
 function toContentBlock(row: BlockRow): unknown {
-  const extra = (parseJson(row.extra) as Record<string, unknown> | null) ?? {}
+  const extra = parseObjectJson(row.extra) ?? {}
   if (row.kind === "THINKING") {
     return {
       type: "thinking",
@@ -666,7 +667,7 @@ function messageExtraJson(
  * remainder would trade one lost field for five.
  */
 function withExtra(record: Record<string, unknown>, stored: string | null): unknown {
-  const extra = parseJson(stored) as Record<string, unknown> | null
+  const extra = parseObjectJson(stored)
   if (!extra) return record
 
   const merged = { ...record, ...extra }
@@ -684,10 +685,11 @@ function withExtra(record: Record<string, unknown>, stored: string | null): unkn
   return merged
 }
 
+const JsonObjectSchema = z.record(z.string(), z.unknown())
+
 function asObject(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null
+  const parsed = JsonObjectSchema.safeParse(value)
+  return parsed.success ? parsed.data : null
 }
 
 function stringOrNull(value: unknown): string | null {
@@ -700,5 +702,13 @@ function numberOrNull(value: unknown): number | null {
 
 function parseJson(value: string | null): unknown {
   if (value === null) return null
-  return JSON.parse(value)
+  try {
+    return JSON.parse(value)
+  } catch {
+    return null
+  }
+}
+
+function parseObjectJson(value: string | null): Record<string, unknown> | null {
+  return asObject(parseJson(value))
 }

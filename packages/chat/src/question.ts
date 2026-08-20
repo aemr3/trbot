@@ -1,26 +1,38 @@
+import { z } from "zod"
+
 /** One choice the agent offers while asking the user a question. */
-export interface ChatQuestionOption {
+export const ChatQuestionOptionSchema = z.object({
   /** Short display text, suitable for a terminal list. */
-  label: string
+  label: z.string().min(1),
   /** What choosing this option means. */
-  description: string
-}
+  description: z.string().min(1),
+})
+
+export type ChatQuestionOption = z.infer<typeof ChatQuestionOptionSchema>
 
 /** One question in an interactive request from an agent. */
-export interface ChatQuestionPrompt {
-  question: string
+export const ChatQuestionPromptSchema = z.object({
+  question: z.string().min(1),
   /** Short context label shown above the question. */
-  header: string
-  options: ChatQuestionOption[]
+  header: z.string().min(1).max(30),
+  options: z.array(ChatQuestionOptionSchema),
   /** When true, the user may choose more than one option. */
-  multiple?: boolean
-}
+  multiple: z.boolean().optional(),
+})
+
+export type ChatQuestionPrompt = z.infer<typeof ChatQuestionPromptSchema>
 
 /** A pending request. Answers use the same order as `questions`. */
-export interface ChatQuestionRequest {
-  id: string
-  sessionId: string
-  questions: ChatQuestionPrompt[]
-}
+export const ChatQuestionRequestSchema = z.object({
+  id: z.string().min(1),
+  sessionId: z.string().min(1),
+  questions: z.array(ChatQuestionPromptSchema).min(1),
+})
 
-export type ChatQuestionAnswer = string[]
+export type ChatQuestionRequest = z.infer<typeof ChatQuestionRequestSchema>
+
+export const ChatQuestionAnswerSchema = z.array(z.string().min(1))
+export const ChatQuestionAnswersSchema = z.array(ChatQuestionAnswerSchema)
+export const ChatQuestionReplySchema = z.object({ answers: ChatQuestionAnswersSchema })
+
+export type ChatQuestionAnswer = z.infer<typeof ChatQuestionAnswerSchema>

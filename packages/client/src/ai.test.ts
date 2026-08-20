@@ -90,7 +90,7 @@ describe("connecting a provider", () => {
 
   function recordingHttp(posted: { path: string; body: unknown }[]): HttpClient {
     return {
-      post: (path: string, options: { body?: unknown }) => {
+      post: (path: string, _schema: unknown, options: { body?: unknown }) => {
         posted.push({ path, body: options.body })
         return Promise.resolve(summary)
       },

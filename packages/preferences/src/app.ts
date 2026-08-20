@@ -1,4 +1,7 @@
 import {
+  CANDLE_CHART_TARGETS,
+  CANDLE_INTERVALS,
+  CANDLE_RANGES,
   DEFAULT_INTERVAL_BY_RANGE,
   DEFAULT_INTERVALS_BY_RANGE,
   type CandleChartTarget,
@@ -6,7 +9,8 @@ import {
   type CandleRange,
 } from "@trbot/market/candle.ts"
 import { isChartIndicator, type ChartIndicator } from "@trbot/market/indicator.ts"
-import type { ViopOrderKind } from "@trbot/trading/order.ts"
+import { VIOP_ORDER_KINDS, type ViopOrderKind } from "@trbot/trading/order.ts"
+import { z } from "zod"
 
 export const INSTRUMENT_SORTS = ["change", "volume", "name"] as const
 export type InstrumentSort = (typeof INSTRUMENT_SORTS)[number]
@@ -44,6 +48,28 @@ export interface AppPreferences {
   /** Whether CHAT expands model reasoning instead of showing only its summary line. */
   showChatThoughts: boolean
 }
+
+const RequiredTextSchema = z.string().refine((value) => value.trim().length > 0)
+const ChartIndicatorListSchema = z.preprocess(
+  (value) => value === null || value === undefined ? [] : value,
+  z.array(z.unknown()).transform((values) =>
+    values.filter((value): value is ChartIndicator => typeof value === "string" && isChartIndicator(value))
+  ),
+)
+
+/** Full preferences payload accepted from a client before range normalization. */
+export const AppPreferencesSchema: z.ZodType<AppPreferences> = z.object({
+  instrumentSort: z.enum(INSTRUMENT_SORTS),
+  sortDirection: z.enum(SORT_DIRECTIONS),
+  candleRange: z.enum(CANDLE_RANGES),
+  candleInterval: z.enum(CANDLE_INTERVALS),
+  chartTarget: z.enum(CANDLE_CHART_TARGETS),
+  chartIndicators: ChartIndicatorListSchema,
+  selectedInstrumentUid: RequiredTextSchema.nullable().default(null),
+  orderKind: z.enum(VIOP_ORDER_KINDS),
+  selectedChatSessionId: RequiredTextSchema.nullable().default(null),
+  showChatThoughts: z.boolean().default(true),
+})
 
 /** Reads the stored indicator list, dropping any name the app no longer draws. */
 export function parseChartIndicators(value: string): ChartIndicator[] {

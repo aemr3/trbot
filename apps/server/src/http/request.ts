@@ -1,3 +1,4 @@
+import type { OverviewStreamFrame } from "@trbot/protocol/ai.ts"
 import { ProtocolError, statusForErrorCode, type ProtocolErrorBody } from "@trbot/protocol/error.ts"
 import { toProtocolError } from "../errors.ts"
 
@@ -17,7 +18,7 @@ const HEARTBEAT_MS = 4_000
  * A frame of a streamed response: a piece of the answer, a sign of life while
  * there is nothing to send yet, or the failure.
  */
-export type StreamFrame = { delta: string } | { heartbeat: true } | ProtocolErrorBody
+export type StreamFrame = OverviewStreamFrame
 
 /**
  * Streams newline-delimited JSON frames.

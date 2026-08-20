@@ -8,9 +8,9 @@ import type { AiCredentialRecord, AiCredentialStore, AiPreferencesRecord, AiPref
 import { HttpAiAccount, HttpOverviewGenerator } from "@trbot/client/ai.ts"
 import { HttpClient } from "@trbot/client/http.ts"
 import { HttpInstrumentSource, HttpMemberFeatureSource, HttpOrderSource } from "@trbot/client/sources.ts"
-import type { MarketOverviewDigest } from "@trbot/market/overview.ts"
+import { buildOverviewDigest, type MarketOverviewDigest } from "@trbot/market/overview.ts"
 import { memberFeatureSet, type MemberFeatureSet } from "@trbot/member/features.ts"
-import type { AiPreferences, AiProviderSummary } from "@trbot/protocol/ai.ts"
+import { AiProviderSummarySchema, type AiPreferences } from "@trbot/protocol/ai.ts"
 import { isProtocolError, requiresAuthentication } from "@trbot/protocol/error.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import { openDatabase, type DatabaseConnection } from "@trbot/db/client.ts"
@@ -20,6 +20,7 @@ import { startServer } from "./server.ts"
 import { ProviderSession } from "../session.ts"
 import { StreamHub } from "../stream-hub.ts"
 import type { SocketData } from "../stream-hub.ts"
+import { z } from "zod"
 
 const TOKEN = "integration-token"
 
@@ -39,8 +40,17 @@ function emptyAuthSession(): Promise<AuthSession> {
 
 const notUsed = new Proxy({}, { get: () => () => { throw new Error("not used in this test") } })
 
-/** A digest is opaque to the server, so the smallest one that names a mode does. */
-const DIGEST = { mode: "DAILY" } as unknown as MarketOverviewDigest
+const DIGEST = buildOverviewDigest({
+  mode: "DAILY",
+  instrument: {
+    symbol: "ASELS",
+    displayName: "Aselsan",
+    lastPrice: 390,
+    contractSymbol: "F_ASELS0826",
+    contractLastPrice: 394,
+  },
+  range: { start: null, end: null },
+})
 
 function memoryCredentials(): AiCredentialStore {
   const records = new Map<string, AiCredentialRecord>()
@@ -131,7 +141,7 @@ describe("server and client over the wire", () => {
 
   test("a wrong token is rejected with a protocol code", async () => {
     const wrong = new HttpClient({ url, token: "not-the-token" })
-    const error = await wrong.get(ROUTES.session).catch((caught: unknown) => caught)
+    const error = await wrong.get(ROUTES.session, z.unknown()).catch((caught: unknown) => caught)
     expect(isProtocolError(error) && error.code).toBe("unauthorized")
   })
 
@@ -144,12 +154,12 @@ describe("server and client over the wire", () => {
   })
 
   test("an unknown route reports not_found rather than hanging", async () => {
-    const error = await client.get("/v1/nope").catch((caught: unknown) => caught)
+    const error = await client.get("/v1/nope", z.unknown()).catch((caught: unknown) => caught)
     expect(isProtocolError(error) && error.code).toBe("not_found")
   })
 
   test("a rejected sign-in reports invalid_request for a missing field", async () => {
-    const error = await client.post(ROUTES.login, { body: { username: "someone" } }).catch((c: unknown) => c)
+    const error = await client.post(ROUTES.login, z.unknown(), { body: { username: "someone" } }).catch((c: unknown) => c)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
 
@@ -163,7 +173,9 @@ describe("server and client over the wire", () => {
 
   test("an invalid order body is refused before any session work", async () => {
     const error = await client
-      .post(ROUTES.placeOrder, { body: { instrumentUid: "x", side: "SIDEWAYS", quantity: 1, limitPrice: 1 } })
+      .post(ROUTES.placeOrder, z.unknown(), {
+        body: { instrumentUid: "x", side: "SIDEWAYS", quantity: 1, limitPrice: 1 },
+      })
       .catch((caught: unknown) => caught)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
@@ -188,7 +200,7 @@ describe("server and client over the wire", () => {
   // said every sign-in route is throttled, and this is the one that matters.
   test("repeated verification-code attempts are refused", async () => {
     const attempt = (): Promise<unknown> =>
-      client.post(ROUTES.otp, { body: { code: "000000" } }).catch((caught: unknown) => caught)
+      client.post(ROUTES.otp, z.unknown(), { body: { code: "000000" } }).catch((caught: unknown) => caught)
 
     for (let index = 0; index < 5; index += 1) {
       const error = await attempt()
@@ -210,7 +222,7 @@ describe("server and client over the wire", () => {
     // redirects to localhost, it is their browser that has to open, and an API key is
     // theirs to type. What crosses the wire is the result, inward — the same
     // direction as the provider password.
-    const summary = await client.post<AiProviderSummary>(ROUTES.aiProvider("groq"), {
+    const summary = await client.post(ROUTES.aiProvider("groq"), AiProviderSummarySchema, {
       body: { providerId: "groq", credential: { type: "api_key", key: "gsk-not-a-real-key" } },
     })
 
@@ -231,7 +243,9 @@ describe("server and client over the wire", () => {
 
   test("a credential of no known kind is refused rather than stored", async () => {
     const error = await client
-      .post(ROUTES.aiProvider("groq"), { body: { providerId: "groq", credential: { key: "no-type" } } })
+      .post(ROUTES.aiProvider("groq"), z.unknown(), {
+        body: { providerId: "groq", credential: { key: "no-type" } },
+      })
       .catch((caught: unknown) => caught)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
@@ -258,7 +272,7 @@ describe("server and client over the wire", () => {
   // checks before it opens a stream at all.
   test("the overview streams from the server a piece at a time", async () => {
     const account = new HttpAiAccount(client)
-    await client.post(ROUTES.aiProvider("groq"), {
+    await client.post(ROUTES.aiProvider("groq"), AiProviderSummarySchema, {
       body: { providerId: "groq", credential: { type: "api_key", key: "gsk-not-a-real-key" } },
     })
     await account.setPreferences({
@@ -338,7 +352,7 @@ describe("server and client over the wire", () => {
       orderKind: "LIMIT",
     }
     const error = await client
-      .put(ROUTES.appPreferences, { body: preferences })
+      .put(ROUTES.appPreferences, z.unknown(), { body: preferences })
       .catch((caught: unknown) => caught)
 
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
@@ -347,7 +361,7 @@ describe("server and client over the wire", () => {
 
   test("an overview snapshot without the fields it is stored under is refused", async () => {
     const error = await client
-      .put(ROUTES.overviewSnapshots, { body: { commentary: "words", digest: {} } })
+      .put(ROUTES.overviewSnapshots, z.unknown(), { body: { commentary: "words", digest: {} } })
       .catch((caught: unknown) => caught)
 
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
@@ -355,7 +369,7 @@ describe("server and client over the wire", () => {
 
   test("an unreachable server surfaces as a transient error", async () => {
     const offline = new HttpClient({ url: "http://127.0.0.1:1", token: TOKEN })
-    const error = await offline.get(ROUTES.session).catch((caught: unknown) => caught)
+    const error = await offline.get(ROUTES.session, z.unknown()).catch((caught: unknown) => caught)
     expect(isProtocolError(error) && error.code).toBe("upstream_unavailable")
   })
 })

@@ -4,6 +4,7 @@ import type { CandleSeries } from "./candle.ts"
 import type { DepthBook } from "./depth.ts"
 import type { SettlementAnalysis } from "./settlement.ts"
 import type { TradeFlowSummary } from "./trade-flow.ts"
+import { z } from "zod"
 
 // A compact, deterministic reading of everything the app knows about an
 // instrument's broker activity: the live book and tape, the range's trade-flow
@@ -41,105 +42,127 @@ interface OverviewInstrumentInputs {
   contractLastPrice: number | null
 }
 
-interface OverviewInstrument extends OverviewInstrumentInputs {
+const NullableNumberSchema = z.number().nullable()
+
+const OverviewInstrumentSchema = z.object({
+  symbol: z.string(),
+  displayName: z.string().nullable(),
+  lastPrice: NullableNumberSchema,
+  contractSymbol: z.string(),
+  contractLastPrice: NullableNumberSchema,
   // Contract minus underlying: what a level on one is worth on the other.
-  basis: number | null
-}
+  basis: NullableNumberSchema,
+})
 
-interface OverviewBook {
-  bestBid: number | null
-  bestAsk: number | null
-  spread: number | null
-  bidLots: number | null
-  askLots: number | null
+const OverviewBookSchema = z.object({
+  bestBid: NullableNumberSchema,
+  bestAsk: NullableNumberSchema,
+  spread: NullableNumberSchema,
+  bidLots: NullableNumberSchema,
+  askLots: NullableNumberSchema,
   // Bid share of all resting lots, 0..1.
-  bidShare: number | null
-  marketClosed: boolean
-}
+  bidShare: NullableNumberSchema,
+  marketClosed: z.boolean(),
+})
 
-interface OverviewTape {
-  tradeCount: number
-  aggressorBuyLots: number
-  aggressorSellLots: number
-  brokers: Array<{ brokerage: string; boughtLots: number; soldLots: number; netLots: number }>
-}
+const OverviewTapeSchema = z.object({
+  tradeCount: z.number(),
+  aggressorBuyLots: z.number(),
+  aggressorSellLots: z.number(),
+  brokers: z.array(z.object({
+    brokerage: z.string(),
+    boughtLots: z.number(),
+    soldLots: z.number(),
+    netLots: z.number(),
+  })),
+})
 
-interface OverviewFlowHouse {
-  brokerage: string
-  netLots: number
-  averagePrice: number
-  percentage: number
-}
+const OverviewFlowHouseSchema = z.object({
+  brokerage: z.string(),
+  netLots: z.number(),
+  averagePrice: z.number(),
+  percentage: z.number(),
+})
 
-interface OverviewFlow {
-  rangeLabel: string
-  live: boolean
-  buyers: OverviewFlowHouse[]
-  sellers: OverviewFlowHouse[]
-}
+const OverviewFlowSchema = z.object({
+  rangeLabel: z.string(),
+  live: z.boolean(),
+  buyers: z.array(OverviewFlowHouseSchema),
+  sellers: z.array(OverviewFlowHouseSchema),
+})
 
-interface OverviewCustodyHouse {
-  brokerage: string
+const OverviewCustodyHouseSchema = z.object({
+  brokerage: z.string(),
   // Signed: positive lots entered the house's custody, negative left it.
-  lotChange: number | null
-  percentage: number
-}
+  lotChange: NullableNumberSchema,
+  percentage: z.number(),
+})
 
-interface OverviewCustody {
-  lastUpdate: string | null
-  live: boolean
-  gainers: OverviewCustodyHouse[]
-  losers: OverviewCustodyHouse[]
-  unavailableMessage: string | null
-}
+const OverviewCustodySchema = z.object({
+  lastUpdate: z.string().nullable(),
+  live: z.boolean(),
+  gainers: z.array(OverviewCustodyHouseSchema),
+  losers: z.array(OverviewCustodyHouseSchema),
+  unavailableMessage: z.string().nullable(),
+})
 
 // One house seen across both feeds: what it traded over the range and what its
 // settled custody position did. Flow fields are null when the house only shows
 // up in the register, custody fields when it only shows up in the flow.
-interface OverviewHouse {
-  brokerage: string
-  flowBoughtLots: number | null
-  flowSoldLots: number | null
-  flowNetLots: number | null
-  flowAveragePrice: number | null
+const OverviewHouseSchema = z.object({
+  brokerage: z.string(),
+  flowBoughtLots: NullableNumberSchema,
+  flowSoldLots: NullableNumberSchema,
+  flowNetLots: NullableNumberSchema,
+  flowAveragePrice: NullableNumberSchema,
   // Last price minus the house's VWAP: positive means its buys are in profit.
-  averagePriceVsLast: number | null
-  custodyLotChange: number | null
-  custodyShare: number | null
-}
+  averagePriceVsLast: NullableNumberSchema,
+  custodyLotChange: NullableNumberSchema,
+  custodyShare: NullableNumberSchema,
+})
 
-interface OverviewCandle {
-  // Exchange-local time, "YYYY-MM-DD HH:mm".
-  time: string
-  open: number
-  high: number
-  low: number
-  close: number
-  volume: number | null
-}
-
-interface OverviewCandleSeries {
-  interval: string
-  candles: OverviewCandle[]
-}
+const OverviewCandleSeriesSchema = z.object({
+  interval: z.string(),
+  candles: z.array(z.object({
+    // Exchange-local time, "YYYY-MM-DD HH:mm".
+    time: z.string(),
+    open: z.number(),
+    high: z.number(),
+    low: z.number(),
+    close: z.number(),
+    volume: NullableNumberSchema,
+  })),
+})
 
 // The instrument's own price history on two timeframes: the intraday series
 // carries the session's structure, the daily one the standing trend.
-interface OverviewHistory {
-  intraday: OverviewCandleSeries | null
-  daily: OverviewCandleSeries | null
-}
+const OverviewHistorySchema = z.object({
+  intraday: OverviewCandleSeriesSchema.nullable(),
+  daily: OverviewCandleSeriesSchema.nullable(),
+})
 
-export interface MarketOverviewDigest {
-  mode: OverviewMode
-  instrument: OverviewInstrument
-  book: OverviewBook | null
-  tape: OverviewTape | null
-  flow: OverviewFlow | null
-  custody: OverviewCustody | null
-  houses: OverviewHouse[]
-  history: OverviewHistory | null
-}
+export const MarketOverviewDigestSchema = z.object({
+  mode: z.enum(OVERVIEW_MODES),
+  instrument: OverviewInstrumentSchema,
+  book: OverviewBookSchema.nullable(),
+  tape: OverviewTapeSchema.nullable(),
+  flow: OverviewFlowSchema.nullable(),
+  custody: OverviewCustodySchema.nullable(),
+  houses: z.array(OverviewHouseSchema),
+  history: OverviewHistorySchema.nullable(),
+})
+
+export type MarketOverviewDigest = z.infer<typeof MarketOverviewDigestSchema>
+type OverviewInstrument = z.infer<typeof OverviewInstrumentSchema>
+type OverviewBook = z.infer<typeof OverviewBookSchema>
+type OverviewTape = z.infer<typeof OverviewTapeSchema>
+type OverviewFlowHouse = z.infer<typeof OverviewFlowHouseSchema>
+type OverviewFlow = z.infer<typeof OverviewFlowSchema>
+type OverviewCustodyHouse = z.infer<typeof OverviewCustodyHouseSchema>
+type OverviewCustody = z.infer<typeof OverviewCustodySchema>
+type OverviewHouse = z.infer<typeof OverviewHouseSchema>
+type OverviewCandleSeries = z.infer<typeof OverviewCandleSeriesSchema>
+type OverviewHistory = z.infer<typeof OverviewHistorySchema>
 
 // A finished overview run, kept per instrument so revisiting a ticker shows
 // the last analysis instead of paying for a new one.
@@ -154,6 +177,14 @@ export interface StoredOverviewSnapshot extends OverviewSnapshot {
   instrumentUid: string
   mode: OverviewMode
 }
+
+export const StoredOverviewSnapshotSchema: z.ZodType<StoredOverviewSnapshot> = z.object({
+  instrumentUid: z.string().min(1),
+  mode: z.enum(OVERVIEW_MODES),
+  digest: MarketOverviewDigestSchema,
+  commentary: z.string(),
+  generatedAt: z.number().positive(),
+})
 
 // Snapshots outlive the process so a reopened app starts with its last reading.
 export interface OverviewSnapshotStore {

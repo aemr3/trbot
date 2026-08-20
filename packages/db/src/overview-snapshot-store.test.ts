@@ -36,6 +36,15 @@ describe("overview snapshot store", () => {
 
     expect(await store.list()).toEqual([])
   })
+
+  test("skips valid JSON that no longer has the digest shape", async () => {
+    connection = await openDatabase(":memory:")
+    const store = new DrizzleOverviewSnapshotStore(connection.db)
+    await store.put(snapshot("DAILY", "Readable."))
+    connection.db.$client.run(`UPDATE overview_snapshots SET digest = '{"mode":"DAILY"}'`)
+
+    expect(await store.list()).toEqual([])
+  })
 })
 
 function snapshot(mode: "INTRADAY" | "DAILY", commentary: string): StoredOverviewSnapshot {

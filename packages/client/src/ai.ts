@@ -19,10 +19,17 @@ import type {
   AiPreferences,
   AiProviderSummary,
 } from "@trbot/protocol/ai.ts"
+import {
+  AiPreferencesSchema,
+  AiProviderSummarySchema,
+  AiModelSummarySchema,
+  OverviewStreamFrameSchema,
+} from "@trbot/protocol/ai.ts"
 import { ProtocolError, parseErrorBody } from "@trbot/protocol/error.ts"
-import { ROUTES } from "@trbot/protocol/routes.ts"
+import { OkResponseSchema, ROUTES } from "@trbot/protocol/routes.ts"
 import { openExternalUrl } from "./browser.ts"
 import type { HttpClient } from "./http.ts"
+import { z } from "zod"
 
 /**
  * Running a provider's authorization flow on this machine.
@@ -85,19 +92,19 @@ export class HttpAiAccount implements AiAccount {
   }
 
   providers(): Promise<AiProviderSummary[]> {
-    return this.http.get<AiProviderSummary[]>(ROUTES.aiProviders)
+    return this.http.get(ROUTES.aiProviders, z.array(AiProviderSummarySchema))
   }
 
   models(): Promise<AiModelSummary[]> {
-    return this.http.get<AiModelSummary[]>(ROUTES.aiModels)
+    return this.http.get(ROUTES.aiModels, z.array(AiModelSummarySchema))
   }
 
   preferences(): Promise<AiPreferences> {
-    return this.http.get<AiPreferences>(ROUTES.aiPreferences)
+    return this.http.get(ROUTES.aiPreferences, AiPreferencesSchema)
   }
 
   setPreferences(preferences: AiPreferences): Promise<AiPreferences> {
-    return this.http.put<AiPreferences>(ROUTES.aiPreferences, { body: preferences })
+    return this.http.put(ROUTES.aiPreferences, AiPreferencesSchema, { body: preferences })
   }
 
   /**
@@ -156,14 +163,14 @@ export class HttpAiAccount implements AiAccount {
     })
 
     const credentials: AiCredentials = { providerId, credential: credential as unknown as Record<string, unknown> }
-    return await this.http.post<AiProviderSummary>(ROUTES.aiProvider(providerId), {
+    return await this.http.post(ROUTES.aiProvider(providerId), AiProviderSummarySchema, {
       body: credentials,
       ...(options.signal ? { signal: options.signal } : {}),
     })
   }
 
   async disconnect(providerId: string): Promise<void> {
-    await this.http.delete(ROUTES.aiProvider(providerId))
+    await this.http.delete(ROUTES.aiProvider(providerId), OkResponseSchema)
   }
 }
 
@@ -174,19 +181,18 @@ export class HttpOverviewGenerator implements OverviewGenerator {
   async generate(digest: MarketOverviewDigest, options: OverviewGenerateOptions): Promise<void> {
     const stream = await this.http.stream(ROUTES.overview, { body: digest, signal: options.signal })
     for await (const line of readLines(stream)) {
-      const frame: unknown = JSON.parse(line)
-      if (!frame || typeof frame !== "object") continue
+      const decoded: unknown = JSON.parse(line)
+      const parsed = OverviewStreamFrameSchema.safeParse(decoded)
 
-      const delta = (frame as { delta?: unknown }).delta
-      if (typeof delta === "string") {
-        options.onDelta(delta)
+      if (parsed.success && "delta" in parsed.data) {
+        options.onDelta(parsed.data.delta)
         continue
       }
 
       // A failure part way through a response arrives as a frame, since the
       // status was already sent.
-      if ("error" in frame) {
-        throw parseErrorBody(frame) ?? new ProtocolError("internal", "The overview stream failed")
+      if (decoded && typeof decoded === "object" && "error" in decoded) {
+        throw parseErrorBody(decoded) ?? new ProtocolError("internal", "The overview stream failed")
       }
 
       // Anything else is a heartbeat, or a frame from a newer server. Both are

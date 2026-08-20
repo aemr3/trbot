@@ -11,6 +11,7 @@ import { StreamHub } from "../stream-hub.ts"
 import type { SocketData } from "../stream-hub.ts"
 import { AlertController } from "./alert.ts"
 import { StopController } from "./stop.ts"
+import { z } from "zod"
 
 const TOKEN = "editing-token"
 
@@ -215,7 +216,7 @@ describe("editing the rules the server evaluates", () => {
 
   test("a draft the server cannot trust is refused before it becomes a rule", async () => {
     const failure = await client
-      .put(ROUTES.stops, { body: { ...STOP_DRAFT, side: "SIDEWAYS" } })
+      .put(ROUTES.stops, z.unknown(), { body: { ...STOP_DRAFT, side: "SIDEWAYS" } })
       .then(() => null, (error: unknown) => error as Error)
 
     expect(failure?.message).toContain("side")
@@ -237,7 +238,7 @@ describe("editing the rules the server evaluates", () => {
     ["an offset rule with nothing to measure from", { kind: "PERCENT", referencePrice: null }, /average cost/],
   ])("refuses %s", async (_name, overrides, expected) => {
     const failure = await client
-      .put(ROUTES.stops, { body: { ...STOP_DRAFT, ...overrides } })
+      .put(ROUTES.stops, z.unknown(), { body: { ...STOP_DRAFT, ...overrides } })
       .then(() => null, (error: unknown) => error as Error)
 
     expect(failure?.message).toMatch(expected)
@@ -246,7 +247,7 @@ describe("editing the rules the server evaluates", () => {
 
   test("an alert the server cannot evaluate is refused the same way", async () => {
     const failure = await client
-      .put(ROUTES.alerts, { body: { ...ALERT_DRAFT, basis: "CLOSE", interval: null } })
+      .put(ROUTES.alerts, z.unknown(), { body: { ...ALERT_DRAFT, basis: "CLOSE", interval: null } })
       .then(() => null, (error: unknown) => error as Error)
 
     expect(failure?.message).toMatch(/timeframe/)

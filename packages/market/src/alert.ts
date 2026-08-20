@@ -2,13 +2,15 @@
 // rule as a protective stop — a level, how it is measured, and what counts as
 // reaching it — but it is not attached to a position and it never trades. The
 // app announces every trigger; an agent-owned alert also resumes its chat.
-import type { Candle, CandleInterval } from "./candle.ts"
+import { CANDLE_INTERVALS, type Candle, type CandleInterval } from "./candle.ts"
 import {
+  LEVEL_DIRECTIONS,
   isLevelReached,
   offsetLevel as offsetByDistance,
   tightensLevel,
   type LevelDirection,
 } from "./price-level.ts"
+import { z } from "zod"
 
 // How the level is derived. PRICE is typed outright; PERCENT and ATR are
 // measured once from the market at the time of writing and then stand still;
@@ -90,6 +92,48 @@ export interface PriceAlertDraft {
   chatSessionId?: string | null
   onTrigger?: string | null
 }
+
+const RequiredTextSchema = z.string().refine((value) => value.trim().length > 0)
+
+/** Structural boundary for drafts; market-relative validity remains in validatePriceAlert. */
+export const PriceAlertDraftSchema = z.object({
+  id: RequiredTextSchema.optional(),
+  instrumentUid: RequiredTextSchema,
+  symbol: RequiredTextSchema,
+  displayName: RequiredTextSchema,
+  direction: z.enum(LEVEL_DIRECTIONS),
+  kind: z.enum(ALERT_KINDS),
+  value: z.number().positive(),
+  basis: z.enum(ALERT_BASES),
+  interval: z.enum(CANDLE_INTERVALS).nullable(),
+  repeat: z.enum(ALERT_REPEATS),
+  referencePrice: z.number().nullable(),
+  atrValue: z.number().nullable(),
+  chatSessionId: z.string().nullable().optional(),
+  onTrigger: z.string().nullable().optional(),
+}) satisfies z.ZodType<PriceAlertDraft>
+
+/** Ordinary clients cannot attach a model continuation to an alert. */
+export const UserPriceAlertDraftSchema = PriceAlertDraftSchema.omit({
+  chatSessionId: true,
+  onTrigger: true,
+})
+
+export const PriceAlertSchema: z.ZodType<PriceAlert> = PriceAlertDraftSchema.extend({
+  id: RequiredTextSchema,
+  status: z.enum(ALERT_STATUSES),
+  triggerPrice: z.number().nullable(),
+  extremePrice: z.number().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  triggeredAt: z.number().nullable(),
+  triggeredPrice: z.number().nullable(),
+  chatSessionId: z.string().nullable(),
+  onTrigger: z.string().nullable(),
+  triggerId: z.string().nullable(),
+})
+
+export const PriceAlertStatusRequestSchema = z.object({ status: z.enum(ALERT_STATUSES) })
 
 // Persistence contract; the implementation lives in @trbot/db and stays out of
 // the domain so the storage engine can change without touching alert logic.

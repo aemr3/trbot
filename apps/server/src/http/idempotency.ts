@@ -109,7 +109,11 @@ export class IdempotencyStore {
       )
     }
 
-    return JSON.parse(stored.responseBody) as unknown
+    try {
+      return JSON.parse(stored.responseBody)
+    } catch (error) {
+      throw new ProtocolError("internal", "The stored idempotency response is corrupt", { cause: error })
+    }
   }
 
   /**

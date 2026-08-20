@@ -1,5 +1,6 @@
 import { ProtocolError, parseErrorBody } from "@trbot/protocol/error.ts"
 import { IDEMPOTENCY_HEADER } from "@trbot/protocol/routes.ts"
+import type { ZodType } from "zod"
 
 export interface HttpClientOptions {
   url: string
@@ -27,24 +28,24 @@ export class HttpClient {
     this.tls = options.ca ? { ca: options.ca } : undefined
   }
 
-  get<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    return this.send<T>("GET", path, options)
+  get<T>(path: string, schema: ZodType<T>, options: RequestOptions = {}): Promise<T> {
+    return this.send("GET", path, schema, options)
   }
 
-  post<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    return this.send<T>("POST", path, options)
+  post<T>(path: string, schema: ZodType<T>, options: RequestOptions = {}): Promise<T> {
+    return this.send("POST", path, schema, options)
   }
 
-  put<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    return this.send<T>("PUT", path, options)
+  put<T>(path: string, schema: ZodType<T>, options: RequestOptions = {}): Promise<T> {
+    return this.send("PUT", path, schema, options)
   }
 
-  patch<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    return this.send<T>("PATCH", path, options)
+  patch<T>(path: string, schema: ZodType<T>, options: RequestOptions = {}): Promise<T> {
+    return this.send("PATCH", path, schema, options)
   }
 
-  delete<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    return this.send<T>("DELETE", path, options)
+  delete<T>(path: string, schema: ZodType<T>, options: RequestOptions = {}): Promise<T> {
+    return this.send("DELETE", path, schema, options)
   }
 
   /**
@@ -58,8 +59,18 @@ export class HttpClient {
     return response.body
   }
 
-  private async send<T>(method: string, path: string, options: RequestOptions): Promise<T> {
-    return (await (await this.request(method, path, options)).json()) as T
+  private async send<T>(method: string, path: string, schema: ZodType<T>, options: RequestOptions): Promise<T> {
+    const response = await this.request(method, path, options)
+    const body: unknown = await response.json().catch(() => {
+      throw new ProtocolError("internal", `The server returned invalid JSON for ${method} ${path}`)
+    })
+    const parsed = schema.safeParse(body)
+    if (!parsed.success) {
+      throw new ProtocolError("internal", `The server returned an invalid response for ${method} ${path}`, {
+        cause: parsed.error,
+      })
+    }
+    return parsed.data
   }
 
   private async request(method: string, path: string, options: RequestOptions): Promise<Response> {

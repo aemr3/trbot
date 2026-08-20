@@ -12,7 +12,7 @@ import {
   type CandleSource,
 } from "@trbot/market/candle.ts"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
-import type { AccountPosition } from "./account.ts"
+import { AccountPositionSchema, type AccountPosition } from "./account.ts"
 import type { ViopOrderSide } from "./order.ts"
 import {
   advanceTrailingStop,
@@ -25,11 +25,13 @@ import {
   stopExitSide,
   stopRuleNeedsCandles,
   stopRuleQuantity,
+  StopRuleSchema,
   type StopRule,
   type StopRuleDraft,
   type StopRuleStatus,
   type StopRuleStore,
 } from "./stop.ts"
+import { z } from "zod"
 
 // A price this old is treated as no price at all: a dead feed must not look
 // like a market standing still just above a stop.
@@ -75,6 +77,24 @@ export interface StopRuleView {
   feed: StopFeedState
   hasPosition: boolean
 }
+
+export const StopTriggerEventSchema: z.ZodType<StopTriggerEvent> = z.object({
+  rule: StopRuleSchema,
+  position: AccountPositionSchema,
+  price: z.number(),
+  quantity: z.number(),
+  side: z.enum(["BUY", "SELL"]),
+  priceAgeMs: z.number(),
+})
+
+export const StopRuleViewSchema: z.ZodType<StopRuleView> = z.object({
+  rule: StopRuleSchema,
+  level: z.number().nullable(),
+  lastPrice: z.number().nullable(),
+  distancePercent: z.number().nullable(),
+  feed: z.enum(["live", "stale", "missing"]),
+  hasPosition: z.boolean(),
+})
 
 export interface StopMonitorOptions {
   store: StopRuleStore

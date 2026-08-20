@@ -29,6 +29,7 @@
         "@trbot/provider": "workspace:*",
         "@trbot/trading": "workspace:*",
         "drizzle-orm": "^0.45.2",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trbot/client": "workspace:*",
@@ -86,6 +87,9 @@
     },
     "packages/chat": {
       "name": "@trbot/chat",
+      "dependencies": {
+        "zod": "^4.4.3",
+      },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
       },
@@ -100,6 +104,7 @@
         "@trbot/preferences": "workspace:*",
         "@trbot/protocol": "workspace:*",
         "@trbot/trading": "workspace:*",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
@@ -122,6 +127,7 @@
         "@trbot/preferences": "workspace:*",
         "@trbot/trading": "workspace:*",
         "drizzle-orm": "^0.45.2",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
@@ -130,12 +136,18 @@
     },
     "packages/market": {
       "name": "@trbot/market",
+      "dependencies": {
+        "zod": "^4.4.3",
+      },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
       },
     },
     "packages/member": {
       "name": "@trbot/member",
+      "dependencies": {
+        "zod": "^4.4.3",
+      },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
       },
@@ -145,6 +157,7 @@
       "dependencies": {
         "@trbot/market": "workspace:*",
         "@trbot/trading": "workspace:*",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
@@ -156,6 +169,7 @@
         "@trbot/chat": "workspace:*",
         "@trbot/market": "workspace:*",
         "@trbot/trading": "workspace:*",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
@@ -177,6 +191,7 @@
       "name": "@trbot/trading",
       "dependencies": {
         "@trbot/market": "workspace:*",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",

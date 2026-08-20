@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 // The date range every broker-house report is read over. Both the trade-flow
 // distribution and the settlement register are published per trading day and
 // share the provider's calendar, so the range and its presets live here rather
@@ -10,12 +12,22 @@ export interface BrokerageDateRange {
   end: string | null
 }
 
+export const BrokerageDateRangeSchema: z.ZodType<BrokerageDateRange> = z.object({
+  start: z.string().nullable(),
+  end: z.string().nullable(),
+})
+
 // The provider names its presets in its own language; the range itself carries
 // everything needed to label them, so only the dates are kept.
 export interface BrokerageDatePreset {
   range: BrokerageDateRange
   isDefault: boolean
 }
+
+export const BrokerageDatePresetSchema: z.ZodType<BrokerageDatePreset> = z.object({
+  range: BrokerageDateRangeSchema,
+  isDefault: z.boolean(),
+})
 
 export const DEFAULT_BROKERAGE_RANGE: BrokerageDateRange = { start: null, end: null }
 

@@ -6,7 +6,8 @@
     "./*": "./src/*"
   },
   "dependencies": {
-    "@trbot/market": "workspace:*"
+    "@trbot/market": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@trbot/tsconfig": "workspace:*"

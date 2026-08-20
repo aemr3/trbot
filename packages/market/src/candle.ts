@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 export const CANDLE_RANGES = ["INTRADAY", "WEEK", "MONTH", "THREE_MONTH", "YEAR", "FIVE_YEAR"] as const
 
 export type CandleRange = (typeof CANDLE_RANGES)[number]
@@ -91,6 +93,15 @@ export interface Candle {
   volume: number | null
 }
 
+export const CandleSchema: z.ZodType<Candle> = z.object({
+  timestamp: z.number(),
+  open: z.number(),
+  high: z.number(),
+  low: z.number(),
+  close: z.number(),
+  volume: z.number().nullable(),
+})
+
 export interface CandleSeries {
   instrumentUid: string
   range: CandleRange
@@ -100,6 +111,16 @@ export interface CandleSeries {
   intervalMs: number | null
   currency: string | null
 }
+
+export const CandleSeriesSchema: z.ZodType<CandleSeries> = z.object({
+  instrumentUid: z.string(),
+  range: z.enum(CANDLE_RANGES),
+  interval: z.enum(CANDLE_INTERVALS),
+  candles: z.array(CandleSchema),
+  availableIntervalsByRange: z.record(z.enum(CANDLE_RANGES), z.array(z.enum(CANDLE_INTERVALS))),
+  intervalMs: z.number().nullable(),
+  currency: z.string().nullable(),
+})
 
 export interface CandleSource {
   loadCandles(

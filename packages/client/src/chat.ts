@@ -1,59 +1,69 @@
-import type { ChatMessage, ChatModelChoice, ChatRunStatus, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
-import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
+import {
+  ChatMessageSchema,
+  ChatSessionDetailSchema,
+  ChatSessionSchema,
+  type ChatMessage,
+  type ChatModelChoice,
+  type ChatRunStatus,
+  type ChatSession,
+  type ChatSessionDetail,
+} from "@trbot/chat/session.ts"
+import { ChatQuestionRequestSchema, type ChatQuestionAnswer, type ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
-import { ROUTES } from "@trbot/protocol/routes.ts"
+import { OkResponseSchema, ROUTES } from "@trbot/protocol/routes.ts"
 import type { HttpClient } from "./http.ts"
 import type { StreamConnection } from "./stream.ts"
+import { z } from "zod"
 
 export class HttpChatSessions implements ChatSessions {
   constructor(private readonly http: HttpClient) {}
 
   list(): Promise<ChatSession[]> {
-    return this.http.get<ChatSession[]>(ROUTES.chatSessions)
+    return this.http.get(ROUTES.chatSessions, z.array(ChatSessionSchema))
   }
 
   children(sessionId: string): Promise<ChatSession[]> {
-    return this.http.get<ChatSession[]>(ROUTES.chatSessionChildren(sessionId))
+    return this.http.get(ROUTES.chatSessionChildren(sessionId), z.array(ChatSessionSchema))
   }
 
   create(choice?: ChatModelChoice): Promise<ChatSession> {
-    return this.http.post<ChatSession>(ROUTES.chatSessions, choice ? { body: choice } : {})
+    return this.http.post(ROUTES.chatSessions, ChatSessionSchema, choice ? { body: choice } : {})
   }
 
   configure(sessionId: string, choice: ChatModelChoice): Promise<ChatSession> {
-    return this.http.patch<ChatSession>(ROUTES.chatSession(sessionId), { body: choice })
+    return this.http.patch(ROUTES.chatSession(sessionId), ChatSessionSchema, { body: choice })
   }
 
   get(sessionId: string): Promise<ChatSessionDetail> {
-    return this.http.get<ChatSessionDetail>(ROUTES.chatSession(sessionId))
+    return this.http.get(ROUTES.chatSession(sessionId), ChatSessionDetailSchema)
   }
 
   async delete(sessionId: string): Promise<void> {
-    await this.http.delete(ROUTES.chatSession(sessionId))
+    await this.http.delete(ROUTES.chatSession(sessionId), OkResponseSchema)
   }
 
   send(sessionId: string, text: string): Promise<ChatMessage> {
-    return this.http.post<ChatMessage>(ROUTES.chatMessages(sessionId), { body: { text } })
+    return this.http.post(ROUTES.chatMessages(sessionId), ChatMessageSchema, { body: { text } })
   }
 
   async cancel(sessionId: string, messageId: string): Promise<void> {
-    await this.http.delete(ROUTES.chatMessage(sessionId, messageId))
+    await this.http.delete(ROUTES.chatMessage(sessionId, messageId), OkResponseSchema)
   }
 
   async abort(sessionId: string): Promise<void> {
-    await this.http.post(ROUTES.chatAbort(sessionId))
+    await this.http.post(ROUTES.chatAbort(sessionId), OkResponseSchema)
   }
 
   questions(): Promise<ChatQuestionRequest[]> {
-    return this.http.get<ChatQuestionRequest[]>(ROUTES.chatQuestions)
+    return this.http.get(ROUTES.chatQuestions, z.array(ChatQuestionRequestSchema))
   }
 
   async answerQuestion(requestId: string, answers: ChatQuestionAnswer[]): Promise<void> {
-    await this.http.post(ROUTES.chatQuestionReply(requestId), { body: { answers } })
+    await this.http.post(ROUTES.chatQuestionReply(requestId), OkResponseSchema, { body: { answers } })
   }
 
   async rejectQuestion(requestId: string): Promise<void> {
-    await this.http.delete(ROUTES.chatQuestion(requestId))
+    await this.http.delete(ROUTES.chatQuestion(requestId), OkResponseSchema)
   }
 }
 

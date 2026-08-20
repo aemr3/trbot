@@ -1,10 +1,11 @@
 // Protective levels for open VIOP positions: where a position should be closed
 // to cap a loss or take a profit. A rule is plain data — the monitor decides
 // when one is breached, and the trader confirms every exit it proposes.
-import type { Candle, CandleInterval } from "@trbot/market/candle.ts"
+import { CANDLE_INTERVALS, type Candle, type CandleInterval } from "@trbot/market/candle.ts"
 import { isLevelReached, offsetLevel as offsetByDistance, tightensLevel, type LevelDirection } from "@trbot/market/price-level.ts"
 import type { AccountPosition } from "./account.ts"
 import type { ViopOrderSide } from "./order.ts"
+import { z } from "zod"
 
 // Which side of the position the level protects: a stop caps the loss, a target
 // takes the profit. A position may carry one of each.
@@ -82,6 +83,54 @@ export interface StopRuleDraft {
   referencePrice: number | null
   atrValue: number | null
 }
+
+const RequiredTextSchema = z.string().refine((value) => value.trim().length > 0)
+
+/** Structural boundary for drafts; position and market semantics remain in validateStopRule. */
+export const StopRuleDraftSchema: z.ZodType<StopRuleDraft> = z.object({
+  id: RequiredTextSchema.optional(),
+  instrumentUid: RequiredTextSchema,
+  symbol: RequiredTextSchema,
+  displayName: RequiredTextSchema,
+  side: z.enum(STOP_POSITION_SIDES),
+  role: z.enum(STOP_RULE_ROLES),
+  kind: z.enum(STOP_RULE_KINDS),
+  value: z.number().positive(),
+  basis: z.enum(STOP_RULE_BASES),
+  interval: z.enum(CANDLE_INTERVALS).nullable(),
+  quantity: z.number().nullable(),
+  referencePrice: z.number().nullable(),
+  atrValue: z.number().nullable(),
+})
+
+export const StopRuleSchema: z.ZodType<StopRule> = z.object({
+  id: RequiredTextSchema,
+  instrumentUid: RequiredTextSchema,
+  symbol: RequiredTextSchema,
+  displayName: RequiredTextSchema,
+  side: z.enum(STOP_POSITION_SIDES),
+  role: z.enum(STOP_RULE_ROLES),
+  kind: z.enum(STOP_RULE_KINDS),
+  value: z.number().positive(),
+  basis: z.enum(STOP_RULE_BASES),
+  interval: z.enum(CANDLE_INTERVALS).nullable(),
+  quantity: z.number().nullable(),
+  status: z.enum(STOP_RULE_STATUSES),
+  triggerPrice: z.number().nullable(),
+  extremePrice: z.number().nullable(),
+  referencePrice: z.number().nullable(),
+  atrValue: z.number().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  triggeredAt: z.number().nullable(),
+  exitOrderUid: z.string().nullable(),
+})
+
+export const STOP_DECISIONS = ["confirm", "cancel", "hold", "release"] as const
+export type StopDecision = (typeof STOP_DECISIONS)[number]
+
+export const StopRuleStatusRequestSchema = z.object({ status: z.enum(STOP_RULE_STATUSES) })
+export const StopDecisionRequestSchema = z.object({ decision: z.enum(STOP_DECISIONS) })
 
 // Persistence contract; the implementation lives in @trbot/db and stays out of
 // the domain so the storage engine can change without touching stop logic.

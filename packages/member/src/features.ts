@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 // Paid entitlements the signed-in member holds. These are subscription tier
 // features, not application settings: the provider decides them per member and
 // the app can only read them.
@@ -9,6 +11,7 @@ const MEMBER_FEATURES = [
 ] as const
 
 export type MemberFeature = (typeof MEMBER_FEATURES)[number]
+export const MemberFeatureSchema = z.enum(MEMBER_FEATURES)
 
 /**
  * What the member is entitled to.

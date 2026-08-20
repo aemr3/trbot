@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 export interface DepthLevel {
   price: number
   lots: number
@@ -27,6 +29,33 @@ export interface DepthBook {
   maintenance: boolean
   infoMessage: string | null
 }
+
+const DepthLevelSchema = z.object({
+  price: z.number(),
+  lots: z.number(),
+  orderCount: z.number(),
+})
+
+const DepthTradeSchema = z.object({
+  id: z.string(),
+  price: z.number(),
+  lots: z.number(),
+  side: z.enum(["BUY", "SELL"]),
+  buyer: z.string().nullable(),
+  seller: z.string().nullable(),
+})
+
+export const DepthBookSchema: z.ZodType<DepthBook> = z.object({
+  symbol: z.string(),
+  bids: z.array(DepthLevelSchema),
+  asks: z.array(DepthLevelSchema),
+  buyLots: z.number().nullable(),
+  sellLots: z.number().nullable(),
+  trades: z.array(DepthTradeSchema),
+  marketClosed: z.boolean(),
+  maintenance: z.boolean(),
+  infoMessage: z.string().nullable(),
+})
 
 export const DEPTH_STATUSES = [
   // No symbol subscribed.

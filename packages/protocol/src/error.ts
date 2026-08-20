@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 /**
  * Failure kinds a client can act on. These replace the provider error helpers a
  * client used to read directly: a client sees protocol codes, never provider
@@ -33,6 +35,20 @@ export interface ProtocolErrorBody {
   }
 }
 
+export const ProtocolErrorBodySchema: z.ZodType<ProtocolErrorBody> = z.object({
+  error: z.object({
+    code: z.enum(PROTOCOL_ERROR_CODES),
+    message: z.string(),
+  }),
+})
+
+const ProtocolErrorPayloadSchema = z.object({
+  error: z.object({
+    code: z.enum(PROTOCOL_ERROR_CODES),
+    message: z.string().optional(),
+  }),
+})
+
 const STATUS_BY_CODE: Record<ProtocolErrorCode, number> = {
   unauthorized: 401,
   unauthenticated: 419,
@@ -48,10 +64,6 @@ const STATUS_BY_CODE: Record<ProtocolErrorCode, number> = {
 
 export function statusForErrorCode(code: ProtocolErrorCode): number {
   return STATUS_BY_CODE[code]
-}
-
-function isProtocolErrorCode(value: unknown): value is ProtocolErrorCode {
-  return typeof value === "string" && PROTOCOL_ERROR_CODES.some((code) => code === value)
 }
 
 /** An error carrying a protocol code, thrown by clients and by route handlers. */
@@ -81,10 +93,7 @@ export function isTransientError(error: unknown): boolean {
 }
 
 export function parseErrorBody(body: unknown): ProtocolError | null {
-  if (!body || typeof body !== "object") return null
-  const error = (body as { error?: unknown }).error
-  if (!error || typeof error !== "object") return null
-  const { code, message } = error as { code?: unknown; message?: unknown }
-  if (!isProtocolErrorCode(code)) return null
-  return new ProtocolError(code, typeof message === "string" ? message : code)
+  const parsed = ProtocolErrorPayloadSchema.safeParse(body)
+  if (!parsed.success) return null
+  return new ProtocolError(parsed.data.error.code, parsed.data.error.message ?? parsed.data.error.code)
 }

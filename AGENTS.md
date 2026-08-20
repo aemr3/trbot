@@ -35,6 +35,13 @@ This is a Bun workspace. Shared code lives in `packages/*`, runnable programs in
 - Use provider-neutral names for application-owned files, symbols, types, errors, tables, and columns. This holds for both kinds of provider: the brokerage and the model providers. A file named after one vendor is a file that has to be renamed when a second arrives.
 - Use provider-specific names only when an external protocol requires an exact URL, header, operation, or schema name — a model harness's own provider id, such as `openai-codex`, is one of those.
 
+## Runtime Validation
+
+- Validate application-owned data at runtime with Zod whenever it crosses an HTTP, WebSocket, request-body, or persisted-JSON boundary. TypeScript types alone do not validate runtime input.
+- Define each schema beside the domain contract that owns the shape, and reuse that schema at every boundary instead of maintaining handwritten validators or transport-local copies.
+- Require an explicit response schema for every application HTTP client call, and validate complete nested payloads rather than only checking a discriminator or top-level object.
+- Keep tolerant decoders for external provider protocols in their provider or API package. They normalize version-variable upstream payloads and should not be confused with strict validation of application-owned contracts.
+
 ## Persistence and Configuration
 
 - Use Drizzle for schema definitions, queries, and migrations.

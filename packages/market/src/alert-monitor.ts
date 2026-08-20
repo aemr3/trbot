@@ -19,12 +19,14 @@ import {
   isAtrAlert,
   isTrailingAlert,
   resolveAlertLevel,
+  PriceAlertSchema,
   type PriceAlert,
   type PriceAlertDraft,
   type PriceAlertStatus,
   type PriceAlertStore,
 } from "./alert.ts"
 import type { QuoteUpdate } from "./quote-stream.ts"
+import { z } from "zod"
 
 // A price this old is treated as no price at all: a dead feed must not look
 // like a market standing still just above a level.
@@ -53,6 +55,20 @@ export interface PriceAlertView {
   distancePercent: number | null
   feed: AlertFeedState
 }
+
+export const AlertTriggerEventSchema: z.ZodType<AlertTriggerEvent> = z.object({
+  alert: PriceAlertSchema,
+  price: z.number(),
+  priceAgeMs: z.number(),
+})
+
+export const PriceAlertViewSchema: z.ZodType<PriceAlertView> = z.object({
+  alert: PriceAlertSchema,
+  level: z.number().nullable(),
+  lastPrice: z.number().nullable(),
+  distancePercent: z.number().nullable(),
+  feed: z.enum(["live", "stale", "missing"]),
+})
 
 export interface AlertMonitorOptions {
   store: PriceAlertStore

@@ -1,9 +1,8 @@
 import type {
-  MarketOverviewDigest,
-  OverviewMode,
   OverviewSnapshotStore,
   StoredOverviewSnapshot,
 } from "@trbot/market/overview.ts"
+import { MarketOverviewDigestSchema, type MarketOverviewDigest } from "@trbot/market/overview.ts"
 import type { AppDatabase } from "./client.ts"
 import { overviewSnapshots } from "./schema.ts"
 
@@ -21,7 +20,7 @@ export class DrizzleOverviewSnapshotStore implements OverviewSnapshotStore {
       if (!digest) continue
       snapshots.push({
         instrumentUid: row.instrumentUid,
-        mode: row.mode as OverviewMode,
+        mode: digest.mode,
         digest,
         commentary: row.commentary,
         generatedAt: row.generatedAt,
@@ -57,7 +56,8 @@ export class DrizzleOverviewSnapshotStore implements OverviewSnapshotStore {
 
 function parseDigest(value: string): MarketOverviewDigest | null {
   try {
-    return JSON.parse(value) as MarketOverviewDigest
+    const parsed = MarketOverviewDigestSchema.safeParse(JSON.parse(value))
+    return parsed.success ? parsed.data : null
   } catch {
     return null
   }
