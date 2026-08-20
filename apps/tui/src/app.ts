@@ -357,6 +357,7 @@ export class App {
       sound: this.sound,
       logs: this.logs,
       manageInput: false,
+      onMarketOpenChange: (open) => workspace?.setMarketOpen(open),
     })
     // The chat screen is built with the workspace and stays mounted behind the
     // other tabs: a reply the server is generating has to keep arriving while the

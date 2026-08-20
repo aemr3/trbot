@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   ScrollBoxRenderable,
@@ -9,12 +10,12 @@ import {
   type TextChunk,
 } from "@opentui/core"
 
-const PANEL_BG = "#101010"
-const BORDER_COLOR = "#666666"
-const TITLE_COLOR = "#ffffff"
-const KEY_COLOR = "#7c83ff"
-const TEXT_COLOR = "#dddddd"
-const MUTED_COLOR = "#888888"
+const PANEL_BG = TUI_THEME.appBackground
+const BORDER_COLOR = TUI_THEME.textFaint
+const TITLE_COLOR = TUI_THEME.textStrong
+const KEY_COLOR = TUI_THEME.accent
+const TEXT_COLOR = TUI_THEME.textPrimary
+const MUTED_COLOR = TUI_THEME.textMuted
 
 export interface ShortcutHelpSection {
   title: string

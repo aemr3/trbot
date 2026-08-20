@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   StyledText,
@@ -7,13 +8,13 @@ import {
   type RenderContext,
 } from "@opentui/core"
 
-const PANEL_BG = "#15171c"
-const BORDER_COLOR = "#596078"
-const ACTIVE_BORDER_COLOR = "#8491d9"
-const TEXT_COLOR = "#dddddd"
-const MUTED_COLOR = "#888888"
-const ACTION_BG = "#23272f"
-const SELECTED_BG = "#39425c"
+const PANEL_BG = TUI_THEME.notificationBackground
+const BORDER_COLOR = TUI_THEME.notificationBorder
+const ACTIVE_BORDER_COLOR = TUI_THEME.activeBorder
+const TEXT_COLOR = TUI_THEME.textPrimary
+const MUTED_COLOR = TUI_THEME.textMuted
+const ACTION_BG = TUI_THEME.notificationAction
+const SELECTED_BG = TUI_THEME.notificationSelection
 const CARD_HEIGHT = 8
 
 export interface NotificationAction {

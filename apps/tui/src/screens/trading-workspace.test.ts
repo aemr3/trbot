@@ -4,6 +4,10 @@ import { createTestRenderer } from "@opentui/core/testing"
 import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type { SoundCue } from "../components/sound.ts"
+import {
+  WORKSPACE_CLOSED_ACTIVE_BACKGROUND,
+  WORKSPACE_CLOSED_CHROME_BACKGROUND,
+} from "../components/workspace-chrome.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 
 interface TestPanel {
@@ -12,12 +16,14 @@ interface TestPanel {
   openedQuestions: string[]
   openedSessions: string[]
   dismissedNotifications: string[]
+  marketStates: Array<boolean | null>
   handleKey(key: KeyEvent): void
   capturesInput(): boolean
   openQuestion(sessionId: string): void
   openSession(sessionId: string): void
   dismissNotification(notificationId: string): void
   isShowingSession(sessionId: string): boolean
+  setMarketOpen(open: boolean | null): void
   destroy(): void
 }
 
@@ -38,6 +44,7 @@ function panel(
   const openedQuestions: string[] = []
   const openedSessions: string[] = []
   const dismissedNotifications: string[] = []
+  const marketStates: Array<boolean | null> = []
   let showingSession = options.showingSession
   return {
     root,
@@ -45,6 +52,7 @@ function panel(
     openedQuestions,
     openedSessions,
     dismissedNotifications,
+    marketStates,
     handleKey: (key) => {
       keys.push(key)
     },
@@ -61,10 +69,20 @@ function panel(
       dismissedNotifications.push(notificationId)
     },
     isShowingSession: (sessionId) => showingSession === sessionId,
+    setMarketOpen: (open) => marketStates.push(open),
     destroy: () => {
       if (!root.isDestroyed) root.destroyRecursively()
     },
   }
+}
+
+function rgba(color: string): [number, number, number, number] {
+  return [
+    Number.parseInt(color.slice(1, 3), 16),
+    Number.parseInt(color.slice(3, 5), 16),
+    Number.parseInt(color.slice(5, 7), 16),
+    255,
+  ]
 }
 
 function question(id: string): ChatQuestionRequest {
@@ -139,6 +157,23 @@ test("each tab answers to its own initial while no panel is taking text", async 
   await waitForFrame((frame) => frame.includes("LOG PANEL"))
   mockInput.pressKey("c", { shift: true })
   await waitForFrame((frame) => frame.includes("CHAT PANEL"))
+
+  workspace.destroy()
+  renderer.destroy()
+})
+
+test("dims the workspace chrome and every panel footer when the market closes", async () => {
+  const { renderer, renderOnce, captureSpans, workspace, trade, chat, logs } = await mountWorkspace()
+
+  workspace.setMarketOpen(false)
+  await renderOnce()
+
+  const backgrounds = captureSpans().lines[0]?.spans.map((span) => span.bg.toInts()) ?? []
+  expect(backgrounds).toContainEqual(rgba(WORKSPACE_CLOSED_CHROME_BACKGROUND))
+  expect(backgrounds).toContainEqual(rgba(WORKSPACE_CLOSED_ACTIVE_BACKGROUND))
+  expect(trade.marketStates).toEqual([false])
+  expect(chat.marketStates).toEqual([false])
+  expect(logs.marketStates).toEqual([false])
 
   workspace.destroy()
   renderer.destroy()

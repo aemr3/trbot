@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   StyledText,
@@ -29,26 +30,27 @@ import type { SoundPlayer } from "../components/sound.ts"
 import { SubagentSessionModal } from "../components/subagent-session-modal.ts"
 import type { ApplicationLog } from "../logging/application-log.ts"
 
-const BACKGROUND = "#101010"
-const PANEL_BG = "#101010"
-const TEXT_COLOR = "#dddddd"
-const MUTED_COLOR = "#888888"
-const FAINT_COLOR = "#5a5a62"
-const REASONING_COLOR = "#6f6f7a"
-const THOUGHT_COLOR = "#c08a52"
-const QUEUED_COLOR = "#8a8a5a"
-const ERROR_COLOR = "#ff6b6b"
-const MODEL_COLOR = "#9ab8ff"
-const MONITOR_COLOR = "#58d68d"
-const TOOL_COLOR = "#4a4a52"
-const PROMPT_BG = "#23272f"
-const TURN_MARKER_COLOR = "#8b8580"
+const BACKGROUND = TUI_THEME.appBackground
+const PANEL_BG = TUI_THEME.appBackground
+const TEXT_COLOR = TUI_THEME.textPrimary
+const MUTED_COLOR = TUI_THEME.textMuted
+const FAINT_COLOR = TUI_THEME.textDim
+const REASONING_COLOR = TUI_THEME.reasoning
+const THOUGHT_COLOR = TUI_THEME.thought
+const QUEUED_COLOR = TUI_THEME.queued
+const ERROR_COLOR = TUI_THEME.negative
+const MODEL_COLOR = TUI_THEME.modelAccent
+const MONITOR_COLOR = TUI_THEME.monitorAccent
+const TOOL_COLOR = TUI_THEME.tool
+const PROMPT_BG = TUI_THEME.promptBackground
+const CLOSED_PROMPT_BG = TUI_THEME.promptClosedBackground
+const TURN_MARKER_COLOR = TUI_THEME.turnMarker
 /**
  * Sent prompts and the field at the foot of the screen share one graphite surface;
  * the warm insertion marker distinguishes the active field.
  */
 const COMPOSER_BG = PROMPT_BG
-const COMPOSER_COLOR = "#d0894a"
+const COMPOSER_COLOR = TUI_THEME.composer
 
 /**
  * One set of keys: control keys, so they work mid-sentence and there is nothing to
@@ -200,6 +202,7 @@ export class ChatScreen {
   private compactingSessionId: string | null = null
   private spinner = 0
   private spinnerTimer: ReturnType<typeof setInterval> | null = null
+  private marketOpen: boolean | null = null
   private destroyed = false
 
   constructor(
@@ -329,6 +332,16 @@ export class ChatScreen {
   /** A hidden textarea must neither draw a cursor nor receive another panel's keys. */
   deactivate(): void {
     this.composer.blur()
+  }
+
+  setMarketOpen(open: boolean | null): void {
+    if (this.destroyed || this.marketOpen === open) return
+    this.marketOpen = open
+    const background = open === false ? CLOSED_PROMPT_BG : COMPOSER_BG
+    this.composerRow.backgroundColor = background
+    this.composer.backgroundColor = background
+    this.composer.focusedBackgroundColor = background
+    this.render.schedule()
   }
 
   /**
@@ -1455,7 +1468,7 @@ export class ChatScreen {
 
     const current = modelLabel(session.model || "model", session.reasoning)
     const blocks = (this.messagesBySession.get(session.id) ?? [])
-      .map((message) => messageBlock(message, current, this.showThoughts))
+      .map((message) => messageBlock(message, current, this.showThoughts, this.promptBackground()))
     const streaming = this.streamingBySession.get(session.id)
     if (streaming) {
       blocks.push(streamingBlock(streaming, current, {
@@ -1472,6 +1485,10 @@ export class ChatScreen {
     }
     if (blocks.length === 0) return [note("Nothing said yet.")]
     return blocks
+  }
+
+  private promptBackground(): string {
+    return this.marketOpen === false ? CLOSED_PROMPT_BG : PROMPT_BG
   }
 }
 
@@ -1580,7 +1597,12 @@ function formatLoopInterval(intervalMs: number): string {
  * A prompt is a filled block with a chevron. A reply remains on the page with only a
  * muted bullet, leaving the answer visually lighter than the request that started it.
  */
-function messageBlock(message: ChatMessage, current: StyledText, showThoughts: boolean): ChatTranscriptBlock {
+function messageBlock(
+  message: ChatMessage,
+  current: StyledText,
+  showThoughts: boolean,
+  promptBackground: string,
+): ChatTranscriptBlock {
   if (message.role === "APP_EVENT") {
     return {
       id: message.id,
@@ -1599,7 +1621,7 @@ function messageBlock(message: ChatMessage, current: StyledText, showThoughts: b
     return {
       id: message.id,
       marker: new StyledText([fg(queued ? QUEUED_COLOR : TURN_MARKER_COLOR)("›")]),
-      fill: PROMPT_BG,
+      fill: promptBackground,
       padded: true,
       content: new StyledText([fg(queued ? QUEUED_COLOR : TEXT_COLOR)(message.text)]),
       ...(queued

@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   StyledText,
@@ -16,13 +17,13 @@ import {
 } from "@trbot/market/broker-calendar.ts"
 import { SelectableList } from "./selectable-list.ts"
 
-const PANEL_BG = "#101010"
-const BORDER_COLOR = "#666666"
-const TITLE_COLOR = "#ffffff"
-const TEXT_COLOR = "#dddddd"
-const MUTED_COLOR = "#888888"
-const ACCENT_COLOR = "#7c83ff"
-const SELECTED_ROW_BG = "#282828"
+const PANEL_BG = TUI_THEME.appBackground
+const BORDER_COLOR = TUI_THEME.textFaint
+const TITLE_COLOR = TUI_THEME.textStrong
+const TEXT_COLOR = TUI_THEME.textPrimary
+const MUTED_COLOR = TUI_THEME.textMuted
+const ACCENT_COLOR = TUI_THEME.accent
+const SELECTED_ROW_BG = TUI_THEME.selection
 
 const MODAL_WIDTH = 46
 const MODAL_HEIGHT = 22

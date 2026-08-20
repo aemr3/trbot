@@ -1,15 +1,16 @@
+import { TUI_THEME } from "../theme.ts"
 // The last thing between a breached level and a live order. It states exactly
 // what will be sent, counts down, and sends unless the trader stops it.
 import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
 import type { StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
 
-const PANEL_BG = "#101010"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const ALERT_COLOR = "#e5c07b"
-const STOP_COLOR = "#ff6b6b"
-const TARGET_COLOR = "#70d7a1"
+const PANEL_BG = TUI_THEME.appBackground
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const ALERT_COLOR = TUI_THEME.warning
+const STOP_COLOR = TUI_THEME.negative
+const TARGET_COLOR = TUI_THEME.positive
 
 const DEFAULT_COUNTDOWN_MS = 10_000
 const DEFAULT_TICK_MS = 250

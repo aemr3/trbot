@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   StyledText,
@@ -26,17 +27,17 @@ import { RenderCoalescer } from "./render-coalescer.ts"
 // permanently under the instrument list rather than behind a tab: every sizing
 // decision is made against these numbers.
 
-const PANEL_BG = "#161616"
-const ACTIVE_BUTTON_BG = "#333333"
-const HEADING_COLOR = "#eeeeee"
-const FOCUSED_COLOR = "#ffffff"
-const UNFOCUSED_COLOR = "#666666"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const UP_COLOR = "#70d7a1"
-const ZERO_LINE_COLOR = "#505050"
-const DOWN_COLOR = "#ff6b6b"
-const GUIDE_COLOR = "#59606c"
+const PANEL_BG = TUI_THEME.panelBackground
+const ACTIVE_BUTTON_BG = TUI_THEME.activeControl
+const HEADING_COLOR = TUI_THEME.textHeading
+const FOCUSED_COLOR = TUI_THEME.textStrong
+const UNFOCUSED_COLOR = TUI_THEME.textFaint
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const UP_COLOR = TUI_THEME.positive
+const ZERO_LINE_COLOR = TUI_THEME.zeroLine
+const DOWN_COLOR = TUI_THEME.negative
+const GUIDE_COLOR = TUI_THEME.portfolioGuide
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const
 
 // Rows above and below the zero line. The provider serves at most six points
@@ -92,7 +93,7 @@ export class PortfolioPanel {
       flexShrink: 0,
       flexDirection: "column",
       border: ["top"],
-      borderColor: "#303030",
+      borderColor: TUI_THEME.border,
       backgroundColor: PANEL_BG,
       onMouseDown: (event) => {
         if (event.button !== 0) return

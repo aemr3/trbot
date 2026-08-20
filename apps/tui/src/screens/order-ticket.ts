@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
 import type { ViopInstrument } from "@trbot/market/instrument.ts"
 import {
@@ -13,14 +14,14 @@ import {
 } from "@trbot/trading/order.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
 
-const PANEL_BG = "#101010"
-const FIELD_BG = "#2b2b2b"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const EMPHASIS_COLOR = "#7c83ff"
-const BUY_COLOR = "#70d7a1"
-const SELL_COLOR = "#ff6b6b"
-const ERROR_COLOR = "#ff806f"
+const PANEL_BG = TUI_THEME.appBackground
+const FIELD_BG = TUI_THEME.fieldBackground
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const EMPHASIS_COLOR = TUI_THEME.accent
+const BUY_COLOR = TUI_THEME.positive
+const SELL_COLOR = TUI_THEME.negative
+const ERROR_COLOR = TUI_THEME.softError
 
 type TicketPhase = "edit" | "review" | "submitting" | "success"
 type TicketField = "kind" | "price" | "quantity" | "action"

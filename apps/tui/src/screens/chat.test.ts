@@ -614,6 +614,34 @@ test("opens a filtered slash-command menu below the composer", async () => {
   renderer.destroy()
 })
 
+test("dims the composer and earlier user messages while stock futures are closed", async () => {
+  const { renderer, waitForFrame, waitFor, captureSpans } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+  screen.acceptMessage(session.id, userMessage("earlier question", "SENT"))
+  await waitForFrame((frame) => frame.includes("earlier question"))
+
+  screen.setMarketOpen(false)
+  const closedBackground: [number, number, number, number] = [27, 29, 34, 255]
+  await waitFor(() => captureSpans().lines.some((line) => (
+    line.spans.some((span) => span.text.includes("earlier question"))
+      && line.spans.some((span) => span.bg.toInts().every((value, index) => value === closedBackground[index]))
+  )))
+  for (const text of ["earlier question", "ask something"]) {
+    const backgrounds = captureSpans().lines
+      .find((line) => line.spans.some((span) => span.text.includes(text)))
+      ?.spans.map((span) => span.bg.toInts()) ?? []
+    expect(backgrounds).toContainEqual(closedBackground)
+  }
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("compacts the selected chat without sending a message", async () => {
   const { renderer, mockInput, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()

@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   ScrollBoxRenderable,
@@ -26,13 +27,13 @@ import type { StopRuleView } from "@trbot/trading/stop-monitor.ts"
 import { isTrailingStopRule, type StopRuleStatus } from "@trbot/trading/stop.ts"
 import { RenderCoalescer } from "./render-coalescer.ts"
 
-const PANEL_BG = "#161616"
-const ACTIVE_BUTTON_BG = "#333333"
-const FOCUSED_COLOR = "#ffffff"
-const UNFOCUSED_COLOR = "#666666"
-const MUTED_COLOR = "#888888"
-const UP_COLOR = "#70d7a1"
-const DOWN_COLOR = "#ff6b6b"
+const PANEL_BG = TUI_THEME.panelBackground
+const ACTIVE_BUTTON_BG = TUI_THEME.activeControl
+const FOCUSED_COLOR = TUI_THEME.textStrong
+const UNFOCUSED_COLOR = TUI_THEME.textFaint
+const MUTED_COLOR = TUI_THEME.textMuted
+const UP_COLOR = TUI_THEME.positive
+const DOWN_COLOR = TUI_THEME.negative
 const DEFAULT_REFRESH_INTERVAL_MS = 15_000
 
 // The portfolio summary is not a tab: it has a panel of its own under the
@@ -126,7 +127,7 @@ export class AccountPanel {
       flexShrink: 0,
       flexDirection: "column",
       border: ["top"],
-      borderColor: "#303030",
+      borderColor: TUI_THEME.border,
       paddingLeft: 1,
       paddingRight: 1,
       backgroundColor: PANEL_BG,
@@ -475,7 +476,7 @@ export class AccountPanel {
     const content = this.tab === "orders"
       ? renderOrders(this.snapshot.orders)
       : renderPositions(this.snapshot.positions, this.stopViews)
-    this.showTextContent(content, "#cccccc")
+    this.showTextContent(content, TUI_THEME.textBody)
   }
 
   /**
@@ -579,12 +580,12 @@ function renderOrders(orders: AccountOrder[]): StyledText | string {
   if (orders.length === 0) return "No VIOP orders."
   const chunks: TextChunk[] = []
   orders.forEach((order, index) => {
-    const statusColor = order.status === "pending" ? "#e5c07b" : MUTED_COLOR
+    const statusColor = order.status === "pending" ? TUI_THEME.warning : MUTED_COLOR
     const details = [order.description, order.value].filter(Boolean).join(" · ")
     chunks.push(fg(statusColor)(order.status === "pending" ? "PENDING  " : "DONE     "))
-    chunks.push(fg("#dddddd")(order.title))
+    chunks.push(fg(TUI_THEME.textPrimary)(order.title))
     if (details) chunks.push(fg(MUTED_COLOR)(`  ${details}`))
-    if (index < orders.length - 1) chunks.push(fg("#cccccc")("\n"))
+    if (index < orders.length - 1) chunks.push(fg(TUI_THEME.textBody)("\n"))
   })
   return new StyledText(chunks)
 }
@@ -597,7 +598,7 @@ function renderPositions(
   const chunks: TextChunk[] = []
   positions.forEach((position, index) => {
     chunks.push(...positionChunks(position, stops))
-    if (index < positions.length - 1) chunks.push(fg("#cccccc")("\n"))
+    if (index < positions.length - 1) chunks.push(fg(TUI_THEME.textBody)("\n"))
   })
   return new StyledText(chunks)
 }
@@ -607,7 +608,7 @@ function renderStops(views: StopRuleView[]): StyledText | string {
   const chunks: TextChunk[] = []
   views.forEach((view, index) => {
     chunks.push(...stopChunks(view))
-    if (index < views.length - 1) chunks.push(fg("#cccccc")("\n"))
+    if (index < views.length - 1) chunks.push(fg(TUI_THEME.textBody)("\n"))
   })
   return new StyledText(chunks)
 }
@@ -626,9 +627,9 @@ function stopChunks(view: StopRuleView): TextChunk[] {
     ? "    —"
     : `${view.distancePercent >= 0 ? "+" : ""}${view.distancePercent.toFixed(1)}%`.padStart(6)
   return [
-    fg("#dddddd")(`${rule.displayName.slice(0, 8).padEnd(9)}`),
+    fg(TUI_THEME.textPrimary)(`${rule.displayName.slice(0, 8).padEnd(9)}`),
     fg(rule.role === "STOP" ? DOWN_COLOR : UP_COLOR)(rule.role === "STOP" ? "S" : "T"),
-    fg("#bbbbbb")(formatNumber(view.level).padStart(9)),
+    fg(TUI_THEME.textValue)(formatNumber(view.level).padStart(9)),
     fg(MUTED_COLOR)(`${distance} ${stopKindLabel(view)} `),
     marker,
     fg(MUTED_COLOR)(` ${state}`),
@@ -642,7 +643,7 @@ function stopChunks(view: StopRuleView): TextChunk[] {
 function stopMarker(view: StopRuleView): TextChunk {
   if (view.rule.status === "TRIGGERED") return fg(DOWN_COLOR)("▲")
   if (view.rule.status !== "ARMED") return fg(MUTED_COLOR)("○")
-  return view.feed === "live" ? fg(UP_COLOR)("●") : fg("#e5c07b")("◐")
+  return view.feed === "live" ? fg(UP_COLOR)("●") : fg(TUI_THEME.warning)("◐")
 }
 
 /** Short label for how the level is derived, plus its trigger basis. */
@@ -675,7 +676,7 @@ function renderPriceAlerts(views: PriceAlertView[]): StyledText | string {
   const chunks: TextChunk[] = []
   views.forEach((view, index) => {
     chunks.push(...alertChunks(view))
-    if (index < views.length - 1) chunks.push(fg("#cccccc")("\n"))
+    if (index < views.length - 1) chunks.push(fg(TUI_THEME.textBody)("\n"))
   })
   return new StyledText(chunks)
 }
@@ -686,9 +687,9 @@ function renderPriceAlerts(views: PriceAlertView[]): StyledText | string {
 function alertChunks(view: PriceAlertView): TextChunk[] {
   const { alert } = view
   const marker = alert.status === "ARMED"
-    ? (view.feed === "live" ? fg(UP_COLOR)("●") : fg("#e5c07b")("◐"))
+    ? (view.feed === "live" ? fg(UP_COLOR)("●") : fg(TUI_THEME.warning)("◐"))
     : alert.status === "TRIGGERED"
-      ? fg("#e5c07b")("★")
+      ? fg(TUI_THEME.warning)("★")
       : fg(MUTED_COLOR)("○")
   const state = alert.status === "ARMED" && view.feed !== "live"
     ? feedLabel(view.feed, alert.basis === "CLOSE")
@@ -700,9 +701,9 @@ function alertChunks(view: PriceAlertView): TextChunk[] {
     ? "    —"
     : `${view.distancePercent >= 0 ? "+" : ""}${view.distancePercent.toFixed(1)}%`.padStart(6)
   return [
-    fg("#dddddd")(`${alert.displayName.slice(0, 8).padEnd(9)}`),
+    fg(TUI_THEME.textPrimary)(`${alert.displayName.slice(0, 8).padEnd(9)}`),
     fg(alert.direction === "ABOVE" ? UP_COLOR : DOWN_COLOR)(alert.direction === "ABOVE" ? "↑" : "↓"),
-    fg("#bbbbbb")(formatNumber(view.level).padStart(9)),
+    fg(TUI_THEME.textValue)(formatNumber(view.level).padStart(9)),
     fg(MUTED_COLOR)(`${distance} ${alertKindLabel(view)} `),
     marker,
     fg(MUTED_COLOR)(` ${state}${repeat}`),
@@ -726,9 +727,9 @@ function alertKindLabel(view: PriceAlertView): string {
 function positionChunks(position: AccountPosition, stops: StopRuleView[] = []): TextChunk[] {
   const pnlColor = (position.unrealizedProfitLoss ?? 0) >= 0 ? UP_COLOR : DOWN_COLOR
   const chunks = [
-    fg("#dddddd")(`${position.displayName}  `),
+    fg(TUI_THEME.textPrimary)(`${position.displayName}  `),
     fg(MUTED_COLOR)(`${formatQuantity(position.quantity)}x  `),
-    fg("#bbbbbb")(`${formatNumber(position.averageCost)}→${formatNumber(position.currentPrice)}  `),
+    fg(TUI_THEME.textValue)(`${formatNumber(position.averageCost)}→${formatNumber(position.currentPrice)}  `),
     fg(pnlColor)(formatSignedMoney(position.unrealizedProfitLoss, position.currency)),
   ]
   // The protective levels this position is carrying, so the stops tab is where
@@ -738,7 +739,7 @@ function positionChunks(position: AccountPosition, stops: StopRuleView[] = []): 
     const isStop = view.rule.role === "STOP"
     chunks.push(
       fg(isStop ? DOWN_COLOR : UP_COLOR)(`   ${isStop ? "S" : "T"} `),
-      fg("#bbbbbb")(`${formatNumber(view.level)} `),
+      fg(TUI_THEME.textValue)(`${formatNumber(view.level)} `),
       stopMarker(view),
     )
   }

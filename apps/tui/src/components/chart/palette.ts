@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../../theme.ts"
 // Shared color palette for the braille and bitmap candle renderers.
 
 export interface ChartPalette {
@@ -26,21 +27,21 @@ function blendHex(a: string, b: string, ratio: number): string {
   return `#${mix(ar, br)}${mix(ag, bg)}${mix(ab, bb)}`
 }
 
-export const UP_COLOR = "#70d7a1"
-export const DOWN_COLOR = "#ff6b6b"
-const GRID_COLOR = "#303030"
-const UP_GUIDE_COLOR = "#365747"
-const DOWN_GUIDE_COLOR = "#59383a"
+export const UP_COLOR = TUI_THEME.positive
+export const DOWN_COLOR = TUI_THEME.negative
+const GRID_COLOR = TUI_THEME.border
+const UP_GUIDE_COLOR = TUI_THEME.positiveGuide
+const DOWN_GUIDE_COLOR = TUI_THEME.negativeGuide
 // Bright enough to find at a glance, dim enough that the candle it marks still
 // reads as the subject.
-export const SELECTION_COLOR = "#8b93a8"
+export const SELECTION_COLOR = TUI_THEME.chartSelection
 
 // Wicks sit between the body color and plain text so single-dot strokes stay legible.
 export const CHART_PALETTE: ChartPalette = {
   candleUp: UP_COLOR,
   candleDown: DOWN_COLOR,
-  wickUp: blendHex(UP_COLOR, "#cccccc", 0.35),
-  wickDown: blendHex(DOWN_COLOR, "#cccccc", 0.35),
+  wickUp: blendHex(UP_COLOR, TUI_THEME.textBody, 0.35),
+  wickDown: blendHex(DOWN_COLOR, TUI_THEME.textBody, 0.35),
   volumeUp: UP_GUIDE_COLOR,
   volumeDown: DOWN_GUIDE_COLOR,
   gridColor: GRID_COLOR,

@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 // What a fired price alert looks like. It states which level was reached and
 // at what price, and then waits: there is no countdown and nothing to submit,
 // because an alert has never had anything to do with sending an order.
@@ -5,12 +6,12 @@ import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type Rend
 import type { AlertTriggerEvent } from "@trbot/market/alert-monitor.ts"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
 
-const PANEL_BG = "#101010"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const ALERT_COLOR = "#e5c07b"
-const ABOVE_COLOR = "#70d7a1"
-const BELOW_COLOR = "#ff6b6b"
+const PANEL_BG = TUI_THEME.appBackground
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const ALERT_COLOR = TUI_THEME.warning
+const ABOVE_COLOR = TUI_THEME.positive
+const BELOW_COLOR = TUI_THEME.negative
 
 export interface AlertPopupOptions {
   event: AlertTriggerEvent

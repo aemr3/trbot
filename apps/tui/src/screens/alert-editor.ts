@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 // Writes one price level the trader wants to be told about. It only produces a
 // draft — the monitor decides when the level is reached, and nothing here, or
 // anywhere downstream of it, trades.
@@ -19,14 +20,14 @@ import { CANDLE_INTERVAL_LABELS, FUTURES_INTERVALS, type CandleInterval } from "
 import { LEVEL_DIRECTIONS, type LevelDirection } from "@trbot/market/price-level.ts"
 import type { ViopInstrument } from "@trbot/market/instrument.ts"
 
-const PANEL_BG = "#101010"
-const FIELD_BG = "#2b2b2b"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const EMPHASIS_COLOR = "#7c83ff"
-const ABOVE_COLOR = "#70d7a1"
-const BELOW_COLOR = "#ff6b6b"
-const ERROR_COLOR = "#ff806f"
+const PANEL_BG = TUI_THEME.appBackground
+const FIELD_BG = TUI_THEME.fieldBackground
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const EMPHASIS_COLOR = TUI_THEME.accent
+const ABOVE_COLOR = TUI_THEME.positive
+const BELOW_COLOR = TUI_THEME.negative
+const ERROR_COLOR = TUI_THEME.softError
 
 // Only the grains the futures feed actually serves. Offering 5m here would be a
 // lie: the provider would answer with its 10m series and the alert would fire

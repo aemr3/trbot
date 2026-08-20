@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   ScrollBoxRenderable,
@@ -121,7 +122,7 @@ export class SelectableList {
       })
       const indicator = new TextRenderable(this.renderer, {
         content: "  ",
-        fg: this.options.indicatorColor ?? "#70d7a1",
+        fg: this.options.indicatorColor ?? TUI_THEME.positive,
         width: 2,
         flexShrink: 0,
         wrapMode: "none",
@@ -219,7 +220,7 @@ export class SelectableList {
     }
     const currentBox = this.rowBoxes[this.selected]
     if (currentBox) {
-      currentBox.backgroundColor = this.options.selectedBackgroundColor ?? "#243b2f"
+      currentBox.backgroundColor = this.options.selectedBackgroundColor ?? TUI_THEME.defaultSelection
       this.indicators[this.selected]!.content = "▶ "
     }
   }

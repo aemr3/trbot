@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import { TextRenderable, type KeyEvent, type PasteEvent, type RenderContext } from "@opentui/core"
 
 export type PasswordInputAction = "previous" | "submit" | null
@@ -10,8 +11,8 @@ export class PasswordInput {
   constructor(renderer: RenderContext) {
     this.renderable = new TextRenderable(renderer, {
       content: "",
-      fg: "#777777",
-      bg: "#202020",
+      fg: TUI_THEME.textSubdued,
+      bg: TUI_THEME.controlBackground,
       width: 32,
     })
   }
@@ -63,8 +64,8 @@ export class PasswordInput {
     const cursor = this.focused ? "▌" : ""
     const masked = "•".repeat(Array.from(this.password).length)
     this.renderable.content = masked ? `${masked}${cursor}` : cursor
-    this.renderable.fg = masked ? "#ffffff" : "#777777"
-    this.renderable.bg = this.focused ? "#303030" : "#202020"
+    this.renderable.fg = masked ? TUI_THEME.textStrong : TUI_THEME.textSubdued
+    this.renderable.bg = this.focused ? TUI_THEME.border : TUI_THEME.controlBackground
   }
 }
 

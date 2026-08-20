@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   ScrollBoxRenderable,
@@ -9,17 +10,17 @@ import {
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
-import { WORKSPACE_CHROME_BACKGROUND, WORKSPACE_CHROME_MUTED } from "../components/workspace-chrome.ts"
+import { WORKSPACE_CHROME_MUTED, workspaceChromeBackground } from "../components/workspace-chrome.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
 import type { ApplicationLog, LogEntry, LogLevel } from "../logging/application-log.ts"
 
-const BACKGROUND = "#101010"
-const TEXT_COLOR = "#dddddd"
-const MUTED_COLOR = "#888888"
+const BACKGROUND = TUI_THEME.appBackground
+const TEXT_COLOR = TUI_THEME.textPrimary
+const MUTED_COLOR = TUI_THEME.textMuted
 const LEVEL_COLORS = {
-  INFO: "#70d7a1",
-  WARN: "#e5c07b",
-  ERROR: "#ff6b6b",
+  INFO: TUI_THEME.positive,
+  WARN: TUI_THEME.warning,
+  ERROR: TUI_THEME.negative,
 } satisfies Record<LogLevel, string>
 
 interface LogsScreenOptions {
@@ -33,6 +34,7 @@ export class LogsScreen {
   private readonly title: TextRenderable
   private readonly content: TextRenderable
   private readonly scroll: ScrollBoxRenderable
+  private readonly footer: BoxRenderable
   private readonly unsubscribe: () => void
   private destroyed = false
   // An error storm logs many entries at once; the full list is rebuilt once
@@ -70,18 +72,18 @@ export class LogsScreen {
     body.add(this.title)
     body.add(this.scroll)
     this.root.add(body)
-    const footer = new BoxRenderable(renderer, {
+    this.footer = new BoxRenderable(renderer, {
       width: "100%",
       height: 1,
       flexShrink: 0,
-      backgroundColor: WORKSPACE_CHROME_BACKGROUND,
+      backgroundColor: workspaceChromeBackground(null),
     })
-    footer.add(new TextRenderable(renderer, {
+    this.footer.add(new TextRenderable(renderer, {
       content: "T / Esc trade · ↑/↓ scroll · PgUp/PgDn · Home/End jump · c clear",
       fg: WORKSPACE_CHROME_MUTED,
       width: "100%",
     }))
-    this.root.add(footer)
+    this.root.add(this.footer)
     this.unsubscribe = options.logs.subscribe(() => this.liveRender.schedule())
     this.render()
   }
@@ -98,6 +100,12 @@ export class LogsScreen {
     }
     this.scroll.handleKeyPress(key)
     return true
+  }
+
+  setMarketOpen(open: boolean | null): void {
+    if (this.destroyed) return
+    this.footer.backgroundColor = workspaceChromeBackground(open)
+    this.renderer.requestRender()
   }
 
   destroy(): void {
@@ -119,7 +127,7 @@ export class LogsScreen {
 
 function logTitle(entryCount: number): StyledText {
   return new StyledText([
-    bold(fg("#7c83ff")("APPLICATION LOGS")),
+    bold(fg(TUI_THEME.accent)("APPLICATION LOGS")),
     fg(MUTED_COLOR)(`  ·  ${entryCount} entr${entryCount === 1 ? "y" : "ies"}`),
   ])
 }
@@ -133,7 +141,7 @@ function logContent(entries: LogEntry[]): StyledText {
     chunks.push(
       fg(MUTED_COLOR)(`${timestamp}  `),
       fg(LEVEL_COLORS[entry.level])(entry.level.padEnd(5)),
-      fg("#7c83ff")(`  ${entry.scope}`),
+      fg(TUI_THEME.accent)(`  ${entry.scope}`),
       fg(TEXT_COLOR)(`\n${entry.message}`),
     )
     if (entry.details) chunks.push(fg(MUTED_COLOR)(`\n${entry.details}`))

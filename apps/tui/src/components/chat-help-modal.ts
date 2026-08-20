@@ -1,10 +1,11 @@
+import { TUI_THEME } from "../theme.ts"
 import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
 
-const PANEL_BG = "#101010"
-const BORDER_COLOR = "#666666"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const KEY_COLOR = "#7c83ff"
+const PANEL_BG = TUI_THEME.appBackground
+const BORDER_COLOR = TUI_THEME.textFaint
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const KEY_COLOR = TUI_THEME.accent
 
 /** One key and what it does. A blank key is a heading, and a blank pair is a gap. */
 type Entry = [key: string, meaning: string]

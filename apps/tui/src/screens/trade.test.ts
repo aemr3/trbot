@@ -576,6 +576,80 @@ test("applies live price ticks in place and subscribes with instrument symbols",
   renderer.destroy()
 })
 
+test("dims its footer on a closed session and restores it when trading opens", async () => {
+  const { renderer, renderOnce, waitForFrame, captureSpans } = await createTestRenderer({ width: 120, height: 30 })
+  const quotes = new FakeQuoteStream()
+  const marketStates: boolean[] = []
+  const screen = new TradeScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    quotes,
+    now: () => new Date("2026-08-20T12:00:00+03:00"),
+    onMarketOpenChange: (open) => marketStates.push(open),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("THYAO"))
+
+  quotes.emit({ symbol: "F_XU0300826", lastPrice: 15_910, sessionStatus: "CLOSED", timestamp: 1 })
+  await renderOnce()
+  const closedFooter = captureSpans().lines.at(-1)?.spans.map((span) => span.bg.toInts()) ?? []
+  expect(closedFooter).toContainEqual([41, 38, 56, 255])
+
+  quotes.emit({ symbol: "F_XU0300826", lastPrice: 15_911, sessionStatus: "OPEN", timestamp: 2 })
+  await renderOnce()
+  const openFooter = captureSpans().lines.at(-1)?.spans.map((span) => span.bg.toInts()) ?? []
+  expect(openFooter).toContainEqual([63, 47, 212, 255])
+  expect(marketStates).toEqual([true, false, true])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("closes the chrome from Istanbul time when the session ends without another quote", async () => {
+  const { renderer, waitFor } = await createTestRenderer({ width: 120, height: 30 })
+  let now = new Date("2026-08-20T18:09:00+03:00")
+  const marketStates: boolean[] = []
+  const screen = new TradeScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    now: () => now,
+    marketClockIntervalMs: 5,
+    onMarketOpenChange: (open) => marketStates.push(open),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  expect(marketStates).toEqual([true])
+
+  now = new Date("2026-08-20T18:10:00+03:00")
+  await waitFor(() => marketStates.at(-1) === false)
+  expect(marketStates).toEqual([true, false])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("keeps the chrome dim during the evening when stock futures are closed", async () => {
+  const { renderer } = await createTestRenderer({ width: 120, height: 30 })
+  const marketStates: boolean[] = []
+  const screen = new TradeScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    now: () => new Date("2026-08-20T22:00:00+03:00"),
+    onMarketOpenChange: (open) => marketStates.push(open),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  expect(marketStates).toEqual([false])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("sorts VIOP stocks by change or volume and preserves the selected stock", async () => {
   const { renderer, mockInput, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({ width: 120, height: 24 })
   const sortable: ViopInstrumentSource = {

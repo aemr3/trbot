@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   StyledText,
@@ -9,14 +10,14 @@ import {
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import { SelectableList } from "./selectable-list.ts"
 
-const PANEL_BG = "#17191f"
-const BORDER_COLOR = "#555a68"
-const ACTIVE_BORDER_COLOR = "#8491d9"
-const TEXT_COLOR = "#dddddd"
-const MUTED_COLOR = "#888888"
-const ACCENT_COLOR = "#9ab8ff"
-const ERROR_COLOR = "#ff6b6b"
-const SELECTED_BG = "#2b3040"
+const PANEL_BG = TUI_THEME.questionBackground
+const BORDER_COLOR = TUI_THEME.questionBorder
+const ACTIVE_BORDER_COLOR = TUI_THEME.activeBorder
+const TEXT_COLOR = TUI_THEME.textPrimary
+const MUTED_COLOR = TUI_THEME.textMuted
+const ACCENT_COLOR = TUI_THEME.modelAccent
+const ERROR_COLOR = TUI_THEME.negative
+const SELECTED_BG = TUI_THEME.questionSelection
 const CUSTOM_ID = "__custom__"
 
 export interface ChatQuestionPanelOptions {

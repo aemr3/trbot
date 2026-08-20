@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   StyledText,
@@ -11,14 +12,14 @@ import {
 import type { AiAccount, AiAuthType, AiProviderSummary, AiSelectOption } from "@trbot/protocol/ai.ts"
 import { SelectableList } from "./selectable-list.ts"
 
-const PANEL_BG = "#101010"
-const BORDER_COLOR = "#666666"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const EMPHASIS_COLOR = "#7c83ff"
-const SUCCESS_COLOR = "#70d7a1"
-const ERROR_COLOR = "#ff6b6b"
-const SELECTED_BG = "#22252d"
+const PANEL_BG = TUI_THEME.appBackground
+const BORDER_COLOR = TUI_THEME.textFaint
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const EMPHASIS_COLOR = TUI_THEME.accent
+const SUCCESS_COLOR = TUI_THEME.positive
+const ERROR_COLOR = TUI_THEME.negative
+const SELECTED_BG = TUI_THEME.overlaySelection
 
 /**
  * What the flow is waiting for the trader to do.

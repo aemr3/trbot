@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import { bg, fg, type TextChunk } from "@opentui/core"
 
 // A run of text carrying one foreground colour. Rows are built from these so a
@@ -79,4 +80,4 @@ export function truncate(text: string, width: number): string {
   return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`
 }
 
-const FILLER_COLOR = "#888888"
+const FILLER_COLOR = TUI_THEME.textMuted

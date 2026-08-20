@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   StyledText,
@@ -25,20 +26,20 @@ import {
   type Segment,
 } from "./shaded-row.ts"
 
-const PANEL_BG = "#161616"
-const HEADING_COLOR = "#eeeeee"
-const MUTED_COLOR = "#888888"
-const FAINT_COLOR = "#666666"
-const VALUE_COLOR = "#dddddd"
-const BUY_COLOR = "#70d7a1"
-const SELL_COLOR = "#ff6b6b"
-const HOLD_COLOR = "#8f95ff"
-const BUY_BAR_BG = "#16311f"
-const SELL_BAR_BG = "#3a1f1f"
-const HOLD_BAR_BG = "#232445"
-const OTHER_COLOR = "#777777"
-const SELECTED_TAB_BG = "#282828"
-const WARNING_COLOR = "#e5c07b"
+const PANEL_BG = TUI_THEME.panelBackground
+const HEADING_COLOR = TUI_THEME.textHeading
+const MUTED_COLOR = TUI_THEME.textMuted
+const FAINT_COLOR = TUI_THEME.textFaint
+const VALUE_COLOR = TUI_THEME.textPrimary
+const BUY_COLOR = TUI_THEME.positive
+const SELL_COLOR = TUI_THEME.negative
+const HOLD_COLOR = TUI_THEME.hold
+const BUY_BAR_BG = TUI_THEME.positiveBar
+const SELL_BAR_BG = TUI_THEME.negativeBar
+const HOLD_BAR_BG = TUI_THEME.holdBar
+const OTHER_COLOR = TUI_THEME.textSubdued
+const SELECTED_TAB_BG = TUI_THEME.selection
+const WARNING_COLOR = TUI_THEME.warning
 
 const PANEL_PADDING = 1
 const MIN_BROKER_WIDTH = 8
@@ -150,7 +151,7 @@ export class BrokeragePanel {
       paddingRight: PANEL_PADDING,
       backgroundColor: PANEL_BG,
       border: ["top"],
-      borderColor: "#303030",
+      borderColor: TUI_THEME.border,
       onSizeChange: () => this.render(),
       onMouseDown: (event) => {
         if (event.button === 0) this.options.onFocusRequest?.()
@@ -344,14 +345,14 @@ export class BrokeragePanel {
   }
 
   private renderTabs(): void {
-    this.title.fg = this.focused ? "#ffffff" : FAINT_COLOR
+    this.title.fg = this.focused ? TUI_THEME.textStrong : FAINT_COLOR
     for (const view of VIEWS) {
       const active = this.view === view
       const button = this.viewButtons.get(view)
       const label = this.viewButtonLabels.get(view)
       if (!button || !label) continue
       button.backgroundColor = active ? SELECTED_TAB_BG : undefined
-      label.fg = active ? VIEW_COLORS[view] : this.focused ? "#aaaaaa" : FAINT_COLOR
+      label.fg = active ? VIEW_COLORS[view] : this.focused ? TUI_THEME.textSecondary : FAINT_COLOR
     }
     this.rangeLabel.content = describeRange(this.range, this.presets)
     this.rangeLabel.fg = this.focused ? HEADING_COLOR : MUTED_COLOR

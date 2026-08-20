@@ -1,13 +1,14 @@
+import { TUI_THEME } from "../theme.ts"
 import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
 import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import { NotificationCenter } from "../components/notification-center.ts"
 import type { SoundPlayer } from "../components/sound.ts"
 import {
-  WORKSPACE_ACTIVE_BACKGROUND,
-  WORKSPACE_CHROME_BACKGROUND,
   WORKSPACE_CHROME_MUTED,
   WORKSPACE_CHROME_TEXT,
+  workspaceActiveBackground,
+  workspaceChromeBackground,
 } from "../components/workspace-chrome.ts"
 
 export type TradingWorkspaceTab = "trade" | "chat" | "logs"
@@ -33,6 +34,7 @@ interface WorkspacePanel {
   openSession?(sessionId: string): void
   dismissNotification?(notificationId: string): void
   isShowingSession?(sessionId: string): boolean
+  setMarketOpen?(open: boolean | null): void
   destroy(): void
 }
 
@@ -50,7 +52,7 @@ const TABS: { id: TradingWorkspaceTab; label: string; key: string }[] = [
   { id: "logs", label: "LOGS", key: "l" },
 ]
 
-const BACKGROUND = "#101010"
+const BACKGROUND = TUI_THEME.appBackground
 const ACTIVE_COLOR = WORKSPACE_CHROME_TEXT
 const INACTIVE_COLOR = WORKSPACE_CHROME_MUTED
 
@@ -58,6 +60,7 @@ export class TradingWorkspaceScreen {
   readonly root: BoxRenderable
 
   private readonly content: BoxRenderable
+  private readonly tabs: BoxRenderable
   private readonly status: TextRenderable
   private readonly tabBoxes = new Map<TradingWorkspaceTab, BoxRenderable>()
   private readonly tabLabels = new Map<TradingWorkspaceTab, TextRenderable>()
@@ -67,6 +70,7 @@ export class TradingWorkspaceScreen {
   private readonly dismissedQuestionIds = new Set<string>()
   private readonly agentNotifications = new Map<string, ChatNotification>()
   private activeTab: TradingWorkspaceTab = "trade"
+  private marketOpen: boolean | null = null
   private mounted = false
   private destroyed = false
 
@@ -100,13 +104,13 @@ export class TradingWorkspaceScreen {
       flexDirection: "column",
       backgroundColor: BACKGROUND,
     })
-    const tabs = new BoxRenderable(renderer, {
+    this.tabs = new BoxRenderable(renderer, {
       width: "100%",
       height: 1,
       flexShrink: 0,
       flexDirection: "row",
       paddingLeft: 1,
-      backgroundColor: WORKSPACE_CHROME_BACKGROUND,
+      backgroundColor: workspaceChromeBackground(this.marketOpen),
     })
     for (const tab of TABS) {
       const box = new BoxRenderable(renderer, {
@@ -120,17 +124,17 @@ export class TradingWorkspaceScreen {
       })
       const label = new TextRenderable(renderer, { content: tab.label })
       box.add(label)
-      tabs.add(box)
+      this.tabs.add(box)
       this.tabBoxes.set(tab.id, box)
       this.tabLabels.set(tab.id, label)
     }
-    tabs.add(new BoxRenderable(renderer, { flexGrow: 1, height: 1 }))
+    this.tabs.add(new BoxRenderable(renderer, { flexGrow: 1, height: 1 }))
     this.status = new TextRenderable(renderer, {
       content: "",
       fg: INACTIVE_COLOR,
       marginRight: 1,
     })
-    tabs.add(this.status)
+    this.tabs.add(this.status)
     this.content = new BoxRenderable(renderer, {
       width: "100%",
       flexGrow: 1,
@@ -138,7 +142,7 @@ export class TradingWorkspaceScreen {
       backgroundColor: BACKGROUND,
     })
     this.content.add(options.trade.root)
-    this.root.add(tabs)
+    this.root.add(this.tabs)
     this.root.add(this.content)
     this.notifications = new NotificationCenter(renderer)
     this.root.add(this.notifications.root)
@@ -173,6 +177,15 @@ export class TradingWorkspaceScreen {
     if (this.destroyed) return
     this.status.content = content
     this.status.fg = color
+  }
+
+  setMarketOpen(open: boolean | null): void {
+    if (this.destroyed || this.marketOpen === open) return
+    this.marketOpen = open
+    this.tabs.backgroundColor = workspaceChromeBackground(open)
+    for (const tab of TABS) this.options[tab.id].setMarketOpen?.(open)
+    this.renderTabs()
+    this.renderer.requestRender()
   }
 
   /** Announces a durable question without resolving or rejecting it. */
@@ -281,7 +294,11 @@ export class TradingWorkspaceScreen {
       const active = tab.id === this.activeTab
       const box = this.tabBoxes.get(tab.id)
       const label = this.tabLabels.get(tab.id)
-      if (box) box.backgroundColor = active ? WORKSPACE_ACTIVE_BACKGROUND : WORKSPACE_CHROME_BACKGROUND
+      if (box) {
+        box.backgroundColor = active
+          ? workspaceActiveBackground(this.marketOpen)
+          : workspaceChromeBackground(this.marketOpen)
+      }
       if (label) label.fg = active ? ACTIVE_COLOR : INACTIVE_COLOR
     }
   }

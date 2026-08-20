@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   InputRenderable,
@@ -84,7 +85,7 @@ export class LoginScreen {
     })
     this.hint = new TextRenderable(renderer, {
       content: "Tab to move · Enter to submit · Ctrl+C to exit",
-      fg: "#777777",
+      fg: TUI_THEME.textSubdued,
     })
     this.loginForm = new BoxRenderable(renderer, {
       flexDirection: "column",
@@ -98,23 +99,23 @@ export class LoginScreen {
       minLength: 1,
       maxLength: 64,
       placeholder: "+905…",
-      backgroundColor: "#202020",
-      focusedBackgroundColor: "#303030",
-      cursorColor: "#70d7a1",
+      backgroundColor: TUI_THEME.controlBackground,
+      focusedBackgroundColor: TUI_THEME.border,
+      cursorColor: TUI_THEME.positive,
     })
     this.passwordInput = new PasswordInput(renderer)
 
     this.loginForm.add(
       new TextRenderable(renderer, {
         content: "Username",
-        fg: "#aaaaaa",
+        fg: TUI_THEME.textSecondary,
       }),
     )
     this.loginForm.add(this.usernameInput)
     this.loginForm.add(
       new TextRenderable(renderer, {
         content: "Password",
-        fg: "#aaaaaa",
+        fg: TUI_THEME.textSecondary,
       }),
     )
     this.loginForm.add(this.passwordInput.renderable)
@@ -183,7 +184,7 @@ export class LoginScreen {
     this.usernameInput.blur()
     this.passwordInput.blur()
     this.status.content = "Authenticating…"
-    this.status.fg = "#ffffff"
+    this.status.fg = TUI_THEME.textStrong
 
     try {
       await signIn(this.http, username, password)
@@ -200,14 +201,14 @@ export class LoginScreen {
       this.mode = "password"
       this.passwordInput.focus()
       this.status.content = `Authentication failed: ${errorMessage(error)}`
-      this.status.fg = "#ff6b6b"
+      this.status.fg = TUI_THEME.negative
     }
   }
 
   private showOtpInput(): void {
     this.mode = "otp"
     this.status.content = "Enter the verification code sent by SMS:"
-    this.status.fg = "#ffffff"
+    this.status.fg = TUI_THEME.textStrong
     this.hint.content = "Enter to verify · Ctrl+C to exit"
     this.usernameInput.value = ""
     this.passwordInput.clear()
@@ -220,9 +221,9 @@ export class LoginScreen {
       minLength: 4,
       maxLength: 10,
       placeholder: "SMS code",
-      backgroundColor: "#202020",
-      focusedBackgroundColor: "#303030",
-      cursorColor: "#70d7a1",
+      backgroundColor: TUI_THEME.controlBackground,
+      focusedBackgroundColor: TUI_THEME.border,
+      cursorColor: TUI_THEME.positive,
     })
     otpInput.on(InputRenderableEvents.INPUT, (value: string) => {
       const digits = value.replace(/\D/g, "")
@@ -240,7 +241,7 @@ export class LoginScreen {
   private async verifyOtp(input: InputRenderable, value: string): Promise<void> {
     input.blur()
     this.status.content = "Verifying…"
-    this.status.fg = "#ffffff"
+    this.status.fg = TUI_THEME.textStrong
 
     try {
       await submitOtp(this.http, value)
@@ -248,7 +249,7 @@ export class LoginScreen {
     } catch (error) {
       if (this.destroyed) return
       this.status.content = `Verification failed: ${errorMessage(error)}`
-      this.status.fg = "#ff6b6b"
+      this.status.fg = TUI_THEME.negative
       input.value = ""
       input.focus()
     }

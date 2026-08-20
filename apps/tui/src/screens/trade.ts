@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   ScrollBoxRenderable,
@@ -25,9 +26,9 @@ import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.t
 import { isShortcutHelpKey, ShortcutHelp, type ShortcutHelpSection } from "../components/shortcut-help.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
 import {
-  WORKSPACE_CHROME_BACKGROUND,
   WORKSPACE_CHROME_MUTED,
   WORKSPACE_CHROME_TEXT,
+  workspaceChromeBackground,
 } from "../components/workspace-chrome.ts"
 import type { ApplicationLog } from "../logging/application-log.ts"
 import {
@@ -53,6 +54,7 @@ import {
   type ViopInstrumentSource,
 } from "@trbot/market/instrument.ts"
 import type { NewsArticle, NewsSource } from "@trbot/market/news.ts"
+import { isViopSessionScheduledOpen } from "@trbot/market/session.ts"
 import {
   buildOverviewDigest,
   isSameDigest,
@@ -92,17 +94,17 @@ import {
   type AppPreferences,
 } from "@trbot/preferences/app.ts"
 
-const UP_COLOR = "#70d7a1"
-const DOWN_COLOR = "#ff6b6b"
-const NEUTRAL_COLOR = "#999999"
-const SIDE_PANEL_BG = "#161616"
-const SELECTED_ROW_BG = "#282828"
-const HEADER_COLOR = "#dddddd"
-const FOCUSED_HEADER = "#ffffff"
-const UNFOCUSED_HEADER = "#666666"
-const LINK_COLOR = "#6cb6ff"
-const NEWS_TIME_COLOR = "#8a8a8a"
-const NEWS_HEADLINE_COLOR = "#e0e0e0"
+const UP_COLOR = TUI_THEME.positive
+const DOWN_COLOR = TUI_THEME.negative
+const NEUTRAL_COLOR = TUI_THEME.textNeutral
+const SIDE_PANEL_BG = TUI_THEME.panelBackground
+const SELECTED_ROW_BG = TUI_THEME.selection
+const HEADER_COLOR = TUI_THEME.textPrimary
+const FOCUSED_HEADER = TUI_THEME.textStrong
+const UNFOCUSED_HEADER = TUI_THEME.textFaint
+const LINK_COLOR = TUI_THEME.link
+const NEWS_TIME_COLOR = TUI_THEME.newsTime
+const NEWS_HEADLINE_COLOR = TUI_THEME.newsHeadline
 
 const NEWS_POLL_INTERVAL_MS = 60_000
 const INSTRUMENT_POLL_INTERVAL_MS = 60_000
@@ -130,6 +132,7 @@ const OVERVIEW_PANEL_BASIS = 12
 const OVERVIEW_POLL_INTERVAL_MS = 300_000
 // Flipping through tickers should not spend an AI call per keystroke.
 const OVERVIEW_DEBOUNCE_MS = 5_000
+const MARKET_CLOCK_INTERVAL_MS = 60_000
 // The two price-history reads behind the overview digest: the session at a
 // quarter-hour grain and a year of dailies for the standing trend.
 const OVERVIEW_INTRADAY: [CandleRange, CandleInterval] = ["INTRADAY", "MIN_15"]
@@ -327,6 +330,9 @@ export interface TradeScreenOptions {
   aiAccount?: AiAccount
   logs?: ApplicationLog
   manageInput?: boolean
+  onMarketOpenChange?: (open: boolean) => void
+  now?: () => Date
+  marketClockIntervalMs?: number
 }
 
 type Focus = "instruments" | "portfolio" | "chart" | "depth" | "brokers" | "account" | "news" | "overview"
@@ -357,6 +363,7 @@ export class TradeScreen {
   private readonly newsReader: ScrollBoxRenderable
   private readonly newsMessage: TextRenderable
   private readonly hint: TextRenderable
+  private readonly footer: BoxRenderable
   private orderTicket: ViopOrderTicket | null = null
   private shortcutHelp: ShortcutHelp | null = null
   private tickerSearchQuery: string | null = null
@@ -364,6 +371,9 @@ export class TradeScreen {
   private pendingDestructiveAction: DestructiveAction | null = null
 
   private newsContent: Renderable | null = null
+  private marketOpen: boolean
+  private scheduledMarketOpen: boolean
+  private providerMarketOpen: boolean | null = null
   private newsFeed: NewsFeed = "instrument"
   private instruments: ViopInstrument[] = []
   private newsArticles: NewsArticle[] = []
@@ -393,6 +403,7 @@ export class TradeScreen {
   private readerLastClickAt = 0
   private newsTimer: ReturnType<typeof setInterval> | null = null
   private instrumentTimer: ReturnType<typeof setInterval> | null = null
+  private marketClockTimer: ReturnType<typeof setInterval> | null = null
   private instrumentRefreshRequest: AbortController | null = null
   private memberFeatureRequest: AbortController | null = null
   private depthEntitled: boolean | null = null
@@ -580,6 +591,8 @@ export class TradeScreen {
     private readonly renderer: RenderContext,
     private readonly options: TradeScreenOptions,
   ) {
+    this.scheduledMarketOpen = isViopSessionScheduledOpen(this.now())
+    this.marketOpen = this.scheduledMarketOpen
     this.preferences = normalizeAppPreferences(options.preferences ?? DEFAULT_APP_PREFERENCES)
     this.instrumentSort = this.preferences.instrumentSort
     this.sortDirection = this.preferences.sortDirection
@@ -816,7 +829,7 @@ export class TradeScreen {
         }
       },
     })
-    this.newsMessage = new TextRenderable(renderer, { content: "Loading news…", fg: "#777777" })
+    this.newsMessage = new TextRenderable(renderer, { content: "Loading news…", fg: TUI_THEME.textSubdued })
     this.setNewsContent(this.newsMessage)
     this.rightPanel.add(this.newsSection)
     this.overviewPanel = new OverviewPanel(renderer, {
@@ -839,16 +852,16 @@ export class TradeScreen {
       fg: WORKSPACE_CHROME_MUTED,
       width: "100%",
     })
-    const footer = new BoxRenderable(renderer, {
+    this.footer = new BoxRenderable(renderer, {
       width: "100%",
       height: 1,
       flexShrink: 0,
-      backgroundColor: WORKSPACE_CHROME_BACKGROUND,
+      backgroundColor: workspaceChromeBackground(this.marketOpen),
     })
-    footer.add(this.hint)
+    this.footer.add(this.hint)
 
     this.root.add(columns)
-    this.root.add(footer)
+    this.root.add(this.footer)
 
     this.options.quotes?.subscribe((update) => this.onQuote(update))
     this.options.quotes?.onConnectionChange((connected) => this.setConnected(connected))
@@ -870,6 +883,11 @@ export class TradeScreen {
     void this.loadOverviewSnapshots()
     void this.loadStopRules()
     void this.loadPriceAlerts()
+    this.options.onMarketOpenChange?.(this.marketOpen)
+    this.marketClockTimer = setInterval(
+      () => this.refreshMarketClock(),
+      this.options.marketClockIntervalMs ?? MARKET_CLOCK_INTERVAL_MS,
+    )
     this.newsTimer = setInterval(() => void this.refreshNews(), this.options.newsIntervalMs ?? NEWS_POLL_INTERVAL_MS)
     this.instrumentTimer = setInterval(
       () => void this.refreshInstruments(),
@@ -941,6 +959,10 @@ export class TradeScreen {
       clearInterval(this.instrumentTimer)
       this.instrumentTimer = null
     }
+    if (this.marketClockTimer) {
+      clearInterval(this.marketClockTimer)
+      this.marketClockTimer = null
+    }
     if (this.hintTimer) {
       clearTimeout(this.hintTimer)
       this.hintTimer = null
@@ -975,6 +997,13 @@ export class TradeScreen {
     this.handleKeypress(key)
   }
 
+  setMarketOpen(open: boolean | null): void {
+    if (this.destroyed || open === null || this.marketOpen === open) return
+    this.marketOpen = open
+    this.footer.backgroundColor = workspaceChromeBackground(open)
+    this.renderer.requestRender()
+  }
+
   private async load(): Promise<void> {
     try {
       const instruments = await this.options.instruments.listInstruments()
@@ -996,7 +1025,7 @@ export class TradeScreen {
       if (this.destroyed) return
       if (this.reportError("Watchlist", error)) return
       this.chartHeader.content = "Chart  ·  Failed to load instruments · See Logs"
-      this.chartHeader.fg = "#ff6b6b"
+      this.chartHeader.fg = TUI_THEME.negative
     }
   }
 
@@ -1063,7 +1092,7 @@ export class TradeScreen {
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.brokerageRequest !== request || isAbortError(error)) return
       if (this.reportError("Broker distribution", error)) return
-      if (!background) this.brokeragePanel.showMessage(`Failed to load: ${errorMessage(error)}`, "#ff6b6b")
+      if (!background) this.brokeragePanel.showMessage(`Failed to load: ${errorMessage(error)}`, TUI_THEME.negative)
     } finally {
       if (this.brokerageRequest === request) this.brokerageRequest = null
     }
@@ -1091,7 +1120,7 @@ export class TradeScreen {
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.brokerageRequest !== request || isAbortError(error)) return
       if (this.reportError("Settlement analysis", error)) return
-      if (!background) this.brokeragePanel.showMessage(`Failed to load: ${errorMessage(error)}`, "#ff6b6b")
+      if (!background) this.brokeragePanel.showMessage(`Failed to load: ${errorMessage(error)}`, TUI_THEME.negative)
     } finally {
       if (this.brokerageRequest === request) this.brokerageRequest = null
     }
@@ -1107,7 +1136,7 @@ export class TradeScreen {
   private openBrokerageDateModal(): void {
     if (this.destroyed || this.brokerageDateModal) return
     if (this.brokerageDates.length === 0 && this.brokeragePresets.length === 0) {
-      this.showHintStatus("The broker calendar has not loaded yet.", "#e5c07b", 3_000)
+      this.showHintStatus("The broker calendar has not loaded yet.", TUI_THEME.warning, 3_000)
       return
     }
     const modal = new BrokerageDateModal(this.renderer, {
@@ -1191,6 +1220,9 @@ export class TradeScreen {
   // close, which the snapshot poll keeps current across trading days.
   private onQuote(update: QuoteUpdate): void {
     if (this.destroyed) return
+    if (update.symbol === this.instruments[this.instrumentList.selectedIndex]?.symbol) {
+      this.acceptSessionStatus(update.sessionStatus)
+    }
     this.accountPanel.applyQuote(update)
     // All of these run before the watchlist lookup below: a protected position
     // or a watched level need not be a row in the list.
@@ -1339,6 +1371,7 @@ export class TradeScreen {
     void this.loadContractDetails(instrument)
     this.chart.setInstrument(instrument)
     this.selectedEquitySymbol = instrument.underlyingSymbol
+    this.refreshMarketClock(true)
     this.syncChartQuoteSubscription()
     this.depthPanel.selectInstrument({
       displayName: instrument.displayName,
@@ -1445,11 +1478,11 @@ export class TradeScreen {
   private openStopRuleEditor(rule?: StopRule): void {
     if (this.destroyed || this.stopRuleEditor) return
     if (!this.stopMonitor) {
-      this.showHintStatus("Stop rules need a database; none is configured.", "#e5c07b", 4_000)
+      this.showHintStatus("Stop rules need a database; none is configured.", TUI_THEME.warning, 4_000)
       return
     }
     if (this.positions.length === 0) {
-      this.showHintStatus("No open VIOP positions to protect.", "#888888", 3_000)
+      this.showHintStatus("No open VIOP positions to protect.", TUI_THEME.textMuted, 3_000)
       return
     }
     this.stopRuleEditor = new StopRuleEditor(this.renderer, {
@@ -1463,7 +1496,7 @@ export class TradeScreen {
           this.syncQuoteSubscription()
           // A close-based rule reads candles, not ticks, so give it its first
           // read now instead of leaving it blank until the poll comes round.
-          this.showHintStatus(`${draft.role === "STOP" ? "Stop" : "Target"} armed for ${draft.displayName}.`, "#70d7a1", 4_000)
+          this.showHintStatus(`${draft.role === "STOP" ? "Stop" : "Target"} armed for ${draft.displayName}.`, TUI_THEME.positive, 4_000)
         })
         this.closeStopRuleEditor()
       },
@@ -1488,13 +1521,13 @@ export class TradeScreen {
     const monitor = this.stopMonitor
     if (!monitor) return
     if (view.rule.status === "TRIGGERED") {
-      this.showHintStatus("This rule already triggered; edit it to arm a new level.", "#e5c07b", 4_000)
+      this.showHintStatus("This rule already triggered; edit it to arm a new level.", TUI_THEME.warning, 4_000)
       return
     }
     const armed = view.rule.status === "ARMED"
     await monitor.setStatus(view.rule.id, armed ? "PAUSED" : "ARMED")
     if (this.destroyed) return
-    this.showHintStatus(`${view.rule.displayName} ${armed ? "paused" : "armed"}.`, "#888888", 3_000)
+    this.showHintStatus(`${view.rule.displayName} ${armed ? "paused" : "armed"}.`, TUI_THEME.textMuted, 3_000)
   }
 
   private async deleteSelectedStopRule(): Promise<void> {
@@ -1504,7 +1537,7 @@ export class TradeScreen {
     await monitor.removeRule(view.rule.id)
     if (this.destroyed) return
     this.syncQuoteSubscription()
-    this.showHintStatus(`Deleted the ${view.rule.role === "STOP" ? "stop" : "target"} on ${view.rule.displayName}.`, "#888888", 3_000)
+    this.showHintStatus(`Deleted the ${view.rule.role === "STOP" ? "stop" : "target"} on ${view.rule.displayName}.`, TUI_THEME.textMuted, 3_000)
   }
 
   /**
@@ -1547,7 +1580,7 @@ export class TradeScreen {
           this.reportError("Stop decision", cause)
           this.showHintStatus(
             `Could not ${held ? "hold" : "release"} the ${event.rule.displayName} stop: ${errorMessage(cause)}`,
-            "#ff6b6b",
+            TUI_THEME.negative,
             6_000,
           )
         })
@@ -1578,7 +1611,7 @@ export class TradeScreen {
    */
   private async submitStopExit(event: StopTriggerEvent): Promise<void> {
     if (this.destroyed) return
-    this.showHintStatus(`Submitting the ${event.rule.displayName} exit…`, "#e5c07b")
+    this.showHintStatus(`Submitting the ${event.rule.displayName} exit…`, TUI_THEME.warning)
     this.closeStopTrigger()
     this.showNextStopTrigger()
     try {
@@ -1590,7 +1623,7 @@ export class TradeScreen {
       // than a cancellation — and saying nothing would imply the exit went out.
       this.showHintStatus(
         `Could not send the ${event.rule.displayName} exit now: ${errorMessage(error)}`,
-        "#ff6b6b",
+        TUI_THEME.negative,
         6_000,
       )
     }
@@ -1608,13 +1641,13 @@ export class TradeScreen {
     try {
       await this.stopMonitor?.cancel(event.rule.id)
       if (this.destroyed) return
-      this.showHintStatus(`Stood down the ${event.rule.displayName} stop; no order sent.`, "#e5c07b", 4_000)
+      this.showHintStatus(`Stood down the ${event.rule.displayName} stop; no order sent.`, TUI_THEME.warning, 4_000)
     } catch (error) {
       if (this.destroyed) return
       this.reportError("Stop decision", error)
       this.showHintStatus(
         `Could not stand down the ${event.rule.displayName} stop — its countdown is still running: ${errorMessage(error)}`,
-        "#ff6b6b",
+        TUI_THEME.negative,
         8_000,
       )
     } finally {
@@ -1628,12 +1661,12 @@ export class TradeScreen {
     const name = rule?.displayName ?? "stop"
     if (outcome === "SUBMITTED") {
       void this.accountPanel.refresh()
-      this.showHintStatus(`Exited on the ${name} ${rule?.role === "TARGET" ? "target" : "stop"}.`, "#70d7a1", 4_000)
+      this.showHintStatus(`Exited on the ${name} ${rule?.role === "TARGET" ? "target" : "stop"}.`, TUI_THEME.positive, 4_000)
       return
     }
     if (outcome === "FAILED") {
       // The rule stays triggered: nothing was closed, and it must not look done.
-      this.showHintStatus(`The ${name} exit failed; nothing was closed.`, "#ff6b6b", 6_000)
+      this.showHintStatus(`The ${name} exit failed; nothing was closed.`, TUI_THEME.negative, 6_000)
     }
   }
 
@@ -1653,11 +1686,11 @@ export class TradeScreen {
   private openAlertEditor(alert?: PriceAlert): void {
     if (this.destroyed || this.alertEditor) return
     if (!this.alertMonitor) {
-      this.showHintStatus("Price alerts need a database; none is configured.", "#e5c07b", 4_000)
+      this.showHintStatus("Price alerts need a database; none is configured.", TUI_THEME.warning, 4_000)
       return
     }
     if (this.instruments.length === 0) {
-      this.showHintStatus("No contracts to watch yet.", "#888888", 3_000)
+      this.showHintStatus("No contracts to watch yet.", TUI_THEME.textMuted, 3_000)
       return
     }
     this.alertEditor = new AlertEditor(this.renderer, {
@@ -1673,7 +1706,7 @@ export class TradeScreen {
           // Same as a close-based stop rule: read its candles straight away.
           this.showHintStatus(
             `Alert set on ${draft.displayName} ${draft.direction === "ABOVE" ? "above" : "below"} the level.`,
-            "#70d7a1",
+            TUI_THEME.positive,
             4_000,
           )
         })
@@ -1703,7 +1736,7 @@ export class TradeScreen {
     await monitor.setStatus(view.alert.id, armed ? "PAUSED" : "ARMED")
     if (this.destroyed) return
     this.syncQuoteSubscription()
-    this.showHintStatus(`${view.alert.displayName} alert ${armed ? "paused" : "armed"}.`, "#888888", 3_000)
+    this.showHintStatus(`${view.alert.displayName} alert ${armed ? "paused" : "armed"}.`, TUI_THEME.textMuted, 3_000)
   }
 
   private async deleteSelectedAlert(): Promise<void> {
@@ -1713,7 +1746,7 @@ export class TradeScreen {
     await monitor.removeAlert(view.alert.id)
     if (this.destroyed) return
     this.syncQuoteSubscription()
-    this.showHintStatus(`Deleted the ${view.alert.displayName} alert.`, "#888888", 3_000)
+    this.showHintStatus(`Deleted the ${view.alert.displayName} alert.`, TUI_THEME.textMuted, 3_000)
   }
 
   /**
@@ -1746,7 +1779,7 @@ export class TradeScreen {
       onRearm: () => {
         this.closeAlertPopup()
         void this.alertMonitor?.setStatus(event.alert.id, "ARMED").then(() => {
-          if (!this.destroyed) this.showHintStatus(`${event.alert.displayName} alert re-armed.`, "#70d7a1", 3_000)
+          if (!this.destroyed) this.showHintStatus(`${event.alert.displayName} alert re-armed.`, TUI_THEME.positive, 3_000)
         })
         this.showNextAlert()
       },
@@ -1825,6 +1858,36 @@ export class TradeScreen {
     if (book.symbol.toUpperCase() !== this.selectedEquitySymbol?.toUpperCase()) return
     this.latestDepthBook = book
     this.tradeFlow.ingest(book)
+  }
+
+  private acceptSessionStatus(status: string | null): void {
+    if (!status) return
+    const normalized = status.toUpperCase()
+    if (normalized === "OPEN") this.providerMarketOpen = true
+    else if (normalized === "CLOSED") this.providerMarketOpen = false
+    else return
+    this.updateMarketOpen(this.scheduledMarketOpen && this.providerMarketOpen === true)
+  }
+
+  private refreshMarketClock(resetProvider = false): void {
+    const scheduled = isViopSessionScheduledOpen(this.now())
+    if (resetProvider) this.providerMarketOpen = null
+    if (scheduled === this.scheduledMarketOpen && !resetProvider) return
+    // A new scheduled session needs a fresh answer from the provider. Until it
+    // arrives, the clock is the fallback rather than yesterday's closed state.
+    if (scheduled) this.providerMarketOpen = null
+    this.scheduledMarketOpen = scheduled
+    this.updateMarketOpen(scheduled && this.providerMarketOpen !== false)
+  }
+
+  private now(): Date {
+    return this.options.now?.() ?? new Date()
+  }
+
+  private updateMarketOpen(open: boolean): void {
+    if (this.marketOpen === open) return
+    this.setMarketOpen(open)
+    this.options.onMarketOpenChange?.(open)
   }
 
   /**
@@ -1982,7 +2045,7 @@ export class TradeScreen {
       (instrument) => instrument.uid === instrumentUid || instrument.symbol === symbol,
     )
     if (index < 0) {
-      this.showHintStatus(`Position contract ${symbol} is not in the watchlist.`, "#e5c07b", 4_000)
+      this.showHintStatus(`Position contract ${symbol} is not in the watchlist.`, TUI_THEME.warning, 4_000)
       return
     }
     this.setFocus("instruments")
@@ -2014,7 +2077,7 @@ export class TradeScreen {
     const requestKey = feed === "index" ? "INDEX" : instrument.uid
     this.newsRequestUid = requestKey
     this.articleOpen = false
-    this.setMessage("Loading news…", "#777777")
+    this.setMessage("Loading news…", TUI_THEME.textSubdued)
     try {
       const articles = await this.options.news.listNews(feed === "index" ? {} : { instrumentUid: instrument.uid })
       if (this.destroyed || this.newsFeed !== feed || this.newsRequestUid !== requestKey) return
@@ -2022,7 +2085,7 @@ export class TradeScreen {
     } catch (error) {
       if (this.destroyed || this.newsFeed !== feed || this.newsRequestUid !== requestKey) return
       if (this.reportError("News", error)) return
-      this.setMessage(`Failed to load news: ${errorMessage(error)}`, "#ff6b6b")
+      this.setMessage(`Failed to load news: ${errorMessage(error)}`, TUI_THEME.negative)
     }
   }
 
@@ -2183,7 +2246,7 @@ export class TradeScreen {
         : action === "delete-alert"
           ? "delete the selected price alert"
           : "delete the selected stop rule"
-    this.showHintStatus(`Press ${key} again to ${description}.`, "#e5c07b")
+    this.showHintStatus(`Press ${key} again to ${description}.`, TUI_THEME.warning)
     this.destructiveConfirmationTimer = setTimeout(() => {
       if (this.pendingDestructiveAction !== action || this.destroyed) return
       this.clearDestructiveConfirmation()
@@ -2210,15 +2273,15 @@ export class TradeScreen {
     if (!source || this.tradingActionRequest || this.destroyed) return
     const request = new AbortController()
     this.tradingActionRequest = request
-    this.showHintStatus("Loading pending VIOP orders…", "#e5c07b")
+    this.showHintStatus("Loading pending VIOP orders…", TUI_THEME.warning)
     try {
       const orders = await source.listPendingOrders({ signal: request.signal })
       if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request) return
       if (orders.length === 0) {
-        this.showHintStatus("No pending VIOP orders to cancel.", "#888888", 3_000)
+        this.showHintStatus("No pending VIOP orders to cancel.", TUI_THEME.textMuted, 3_000)
         return
       }
-      this.showHintStatus(`Cancelling ${orders.length} pending VIOP order${orders.length === 1 ? "" : "s"}…`, "#e5c07b")
+      this.showHintStatus(`Cancelling ${orders.length} pending VIOP order${orders.length === 1 ? "" : "s"}…`, TUI_THEME.warning)
       const result = await source.cancelPendingOrders({
         orderUids: orders.map((order) => order.uid),
         signal: request.signal,
@@ -2227,19 +2290,19 @@ export class TradeScreen {
       if (result.cancelledOrderUids.length > 0) void this.accountPanel.refresh()
       if (result.failures.length === 0) {
         const count = result.cancelledOrderUids.length
-        this.showHintStatus(`Cancelled ${count} pending VIOP order${count === 1 ? "" : "s"}.`, "#70d7a1", 4_000)
+        this.showHintStatus(`Cancelled ${count} pending VIOP order${count === 1 ? "" : "s"}.`, TUI_THEME.positive, 4_000)
       } else {
         const message = result.failures[0]?.message ?? "Cancellation failed"
         this.showHintStatus(
           `Cancelled ${result.cancelledOrderUids.length}; ${result.failures.length} failed: ${message}`,
-          "#ff6b6b",
+          TUI_THEME.negative,
           6_000,
         )
       }
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request || isAbortError(error)) return
       if (this.reportError("Order cancellation", error)) return
-      this.showHintStatus(`Failed to cancel pending orders: ${errorMessage(error)}`, "#ff6b6b", 6_000)
+      this.showHintStatus(`Failed to cancel pending orders: ${errorMessage(error)}`, TUI_THEME.negative, 6_000)
     } finally {
       if (this.tradingActionRequest === request) this.tradingActionRequest = null
     }
@@ -2250,7 +2313,7 @@ export class TradeScreen {
     if (!source || this.tradingActionRequest || this.destroyed) return
     const request = new AbortController()
     this.tradingActionRequest = request
-    this.showHintStatus("Submitting simulated-market VIOP exits…", "#e5c07b")
+    this.showHintStatus("Submitting simulated-market VIOP exits…", TUI_THEME.warning)
     // Names the exit the trader is trying to send, not the call that carries it.
     this.bulkExitKey ??= crypto.randomUUID()
     try {
@@ -2264,22 +2327,22 @@ export class TradeScreen {
       if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request) return
       if (result.submitted.length > 0) void this.accountPanel.refresh()
       if (result.submitted.length === 0 && result.failures.length === 0) {
-        this.showHintStatus("No open VIOP positions to exit.", "#888888", 3_000)
+        this.showHintStatus("No open VIOP positions to exit.", TUI_THEME.textMuted, 3_000)
       } else if (result.failures.length === 0) {
         const count = result.submitted.length
-        this.showHintStatus(`Submitted exit orders for ${count} VIOP position${count === 1 ? "" : "s"}.`, "#70d7a1", 4_000)
+        this.showHintStatus(`Submitted exit orders for ${count} VIOP position${count === 1 ? "" : "s"}.`, TUI_THEME.positive, 4_000)
       } else {
         const message = result.failures[0]?.message ?? "Position exit failed"
         this.showHintStatus(
           `Submitted ${result.submitted.length} exits; ${result.failures.length} failed: ${message}`,
-          "#ff6b6b",
+          TUI_THEME.negative,
           6_000,
         )
       }
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.tradingActionRequest !== request || isAbortError(error)) return
       if (this.reportError("Position exit", error)) return
-      this.showHintStatus(`Failed to exit positions: ${errorMessage(error)}`, "#ff6b6b", 6_000)
+      this.showHintStatus(`Failed to exit positions: ${errorMessage(error)}`, TUI_THEME.negative, 6_000)
     } finally {
       if (this.tradingActionRequest === request) this.tradingActionRequest = null
     }
@@ -2306,7 +2369,7 @@ export class TradeScreen {
     const highlighted = this.newsArticles[this.newsList.selectedIndex]?.uid
     this.newsArticles = articles
     if (articles.length === 0) {
-      this.setMessage(`No recent news for ${label}.`, "#777777")
+      this.setMessage(`No recent news for ${label}.`, TUI_THEME.textSubdued)
       return
     }
     this.newsList.setRows(
@@ -2321,7 +2384,7 @@ export class TradeScreen {
     if (!article) return
     this.articleOpen = true
     this.articleRequestUid = article.uid
-    this.renderReaderMessage("Loading article…", "#777777")
+    this.renderReaderMessage("Loading article…", TUI_THEME.textSubdued)
     this.setNewsContent(this.newsReader)
     try {
       const full = await this.options.news.getArticle(article.uid)
@@ -2330,7 +2393,7 @@ export class TradeScreen {
     } catch (error) {
       if (this.destroyed || this.articleRequestUid !== article.uid) return
       if (this.reportError("News article", error)) return
-      this.renderReaderMessage(`Failed to load article: ${errorMessage(error)}`, "#ff6b6b")
+      this.renderReaderMessage(`Failed to load article: ${errorMessage(error)}`, TUI_THEME.negative)
     }
   }
 
@@ -2356,13 +2419,13 @@ export class TradeScreen {
 
   private renderReader(article: NewsArticle): void {
     for (const child of this.newsReader.getChildren()) this.newsReader.remove(child)
-    this.newsReader.add(new TextRenderable(this.renderer, { content: article.headline, fg: "#ffffff", wrapMode: "word", width: "100%" }))
-    if (article.tag) this.newsReader.add(new TextRenderable(this.renderer, { content: article.tag, fg: "#888888" }))
-    this.newsReader.add(new TextRenderable(this.renderer, { content: article.body || "(No content)", fg: "#cccccc", wrapMode: "word", width: "100%" }))
+    this.newsReader.add(new TextRenderable(this.renderer, { content: article.headline, fg: TUI_THEME.textStrong, wrapMode: "word", width: "100%" }))
+    if (article.tag) this.newsReader.add(new TextRenderable(this.renderer, { content: article.tag, fg: TUI_THEME.textMuted }))
+    this.newsReader.add(new TextRenderable(this.renderer, { content: article.body || "(No content)", fg: TUI_THEME.textBody, wrapMode: "word", width: "100%" }))
 
     const links = [article.url, ...article.attachments].filter((url): url is string => Boolean(url))
     if (links.length > 0) {
-      this.newsReader.add(new TextRenderable(this.renderer, { content: "Bağlantı:", fg: "#888888" }))
+      this.newsReader.add(new TextRenderable(this.renderer, { content: "Bağlantı:", fg: TUI_THEME.textMuted }))
       for (const url of links) {
         this.newsReader.add(
           new TextRenderable(this.renderer, { content: t`${fg(LINK_COLOR)(link(url)(url))}`, wrapMode: "word", width: "100%" }),
@@ -2432,7 +2495,7 @@ export class TradeScreen {
       const label = this.newsFeedButtonLabels.get(feed)
       if (!button || !label) continue
       button.backgroundColor = selected ? SELECTED_ROW_BG : undefined
-      label.fg = selected ? "#ffffff" : this.focus === "news" ? "#aaaaaa" : "#666666"
+      label.fg = selected ? TUI_THEME.textStrong : this.focus === "news" ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }
   }
 
@@ -2532,7 +2595,7 @@ export class TradeScreen {
       const direction = active ? (this.sortDirection === "desc" ? " ↓" : " ↑") : ""
       button.backgroundColor = active ? SELECTED_ROW_BG : undefined
       label.content = `${SORT_LABELS[sort]}${direction}`
-      label.fg = active ? HEADER_COLOR : this.focus === "instruments" ? "#aaaaaa" : UNFOCUSED_HEADER
+      label.fg = active ? HEADER_COLOR : this.focus === "instruments" ? TUI_THEME.textSecondary : UNFOCUSED_HEADER
     }
   }
 }

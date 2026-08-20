@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   StyledText,
@@ -10,13 +11,13 @@ import {
 import type { ChatSession } from "@trbot/chat/session.ts"
 import { SelectableList } from "./selectable-list.ts"
 
-const PANEL_BG = "#101010"
-const BORDER_COLOR = "#666666"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const ACCENT_COLOR = "#7c83ff"
-const RUNNING_COLOR = "#d7c58a"
-const SELECTED_BG = "#22252d"
+const PANEL_BG = TUI_THEME.appBackground
+const BORDER_COLOR = TUI_THEME.textFaint
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const ACCENT_COLOR = TUI_THEME.accent
+const RUNNING_COLOR = TUI_THEME.running
+const SELECTED_BG = TUI_THEME.overlaySelection
 
 export interface SubagentSessionModalOptions {
   sessions: ChatSession[]

@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   StyledText,
@@ -18,16 +19,16 @@ import {
 } from "./shaded-row.ts"
 import { RenderCoalescer } from "./render-coalescer.ts"
 
-const PANEL_BG = "#161616"
-const HEADING_COLOR = "#eeeeee"
-const MUTED_COLOR = "#888888"
-const FAINT_COLOR = "#666666"
-const VALUE_COLOR = "#dddddd"
-const BID_COLOR = "#70d7a1"
-const ASK_COLOR = "#ff6b6b"
-const BID_BAR_BG = "#16311f"
-const ASK_BAR_BG = "#3a1f1f"
-const WARNING_COLOR = "#e5c07b"
+const PANEL_BG = TUI_THEME.panelBackground
+const HEADING_COLOR = TUI_THEME.textHeading
+const MUTED_COLOR = TUI_THEME.textMuted
+const FAINT_COLOR = TUI_THEME.textFaint
+const VALUE_COLOR = TUI_THEME.textPrimary
+const BID_COLOR = TUI_THEME.positive
+const ASK_COLOR = TUI_THEME.negative
+const BID_BAR_BG = TUI_THEME.positiveBar
+const ASK_BAR_BG = TUI_THEME.negativeBar
+const WARNING_COLOR = TUI_THEME.warning
 
 const PANEL_PADDING = 1
 const PRICE_WIDTH = 7
@@ -155,7 +156,7 @@ export class DepthPanel {
   }
 
   private renderHeader(): void {
-    const titleColor = this.focused ? "#ffffff" : FAINT_COLOR
+    const titleColor = this.focused ? TUI_THEME.textStrong : FAINT_COLOR
     const symbol = this.instrument?.underlyingSymbol
     if (!symbol) {
       this.header.content = new StyledText([fg(titleColor)("Depth")])

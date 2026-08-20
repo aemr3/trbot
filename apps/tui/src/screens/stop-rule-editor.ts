@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 // Writes one protective level for an open position. It only produces a draft —
 // the monitor decides when the level is reached, and nothing here trades.
 import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
@@ -18,14 +19,14 @@ import {
   type StopRuleRole,
 } from "@trbot/trading/stop.ts"
 
-const PANEL_BG = "#101010"
-const FIELD_BG = "#2b2b2b"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const EMPHASIS_COLOR = "#7c83ff"
-const STOP_COLOR = "#ff6b6b"
-const TARGET_COLOR = "#70d7a1"
-const ERROR_COLOR = "#ff806f"
+const PANEL_BG = TUI_THEME.appBackground
+const FIELD_BG = TUI_THEME.fieldBackground
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const EMPHASIS_COLOR = TUI_THEME.accent
+const STOP_COLOR = TUI_THEME.negative
+const TARGET_COLOR = TUI_THEME.positive
+const ERROR_COLOR = TUI_THEME.softError
 
 // Only the grains the futures feed actually serves. Offering 5m here would be
 // a lie: the provider would answer with its 10m series and the rule would act

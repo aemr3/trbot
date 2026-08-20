@@ -1,10 +1,11 @@
+import { TUI_THEME } from "../theme.ts"
 import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
 
-const PANEL_BG = "#101010"
-const COMMAND_COLOR = "#59c8d8"
-const COMMAND_MUTED_COLOR = "#b1b1b5"
-const DESCRIPTION_COLOR = "#737378"
-const SELECTED_DESCRIPTION_COLOR = "#9ed9e0"
+const PANEL_BG = TUI_THEME.appBackground
+const COMMAND_COLOR = TUI_THEME.command
+const COMMAND_MUTED_COLOR = TUI_THEME.commandMuted
+const DESCRIPTION_COLOR = TUI_THEME.commandDescription
+const SELECTED_DESCRIPTION_COLOR = TUI_THEME.selectedDescription
 
 export interface ChatCommand {
   name: `/${string}`

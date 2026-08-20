@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   StyledText,
@@ -10,16 +11,16 @@ import {
 import type { MarketMonitor } from "@trbot/market/market-monitor.ts"
 import { SelectableList } from "./selectable-list.ts"
 
-const PANEL_BG = "#101010"
-const BORDER_COLOR = "#666666"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const ABOVE_COLOR = "#70d7a1"
-const BELOW_COLOR = "#ff6b6b"
-const ARMED_COLOR = "#70d7a1"
-const TRIGGERED_COLOR = "#e5c07b"
-const CONFIRM_COLOR = "#e5c07b"
-const SELECTED_BG = "#22252d"
+const PANEL_BG = TUI_THEME.appBackground
+const BORDER_COLOR = TUI_THEME.textFaint
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const ABOVE_COLOR = TUI_THEME.positive
+const BELOW_COLOR = TUI_THEME.negative
+const ARMED_COLOR = TUI_THEME.positive
+const TRIGGERED_COLOR = TUI_THEME.warning
+const CONFIRM_COLOR = TUI_THEME.warning
+const SELECTED_BG = TUI_THEME.overlaySelection
 
 export interface MarketMonitorModalOptions {
   monitors: MarketMonitor[]

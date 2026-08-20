@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   ScrollBoxRenderable,
@@ -11,14 +12,14 @@ import {
 import { OVERVIEW_MODES, type OverviewMode, type OverviewSnapshot } from "@trbot/market/overview.ts"
 import { RenderCoalescer } from "./render-coalescer.ts"
 
-const PANEL_BG = "#161616"
-const SELECTED_TAB_BG = "#282828"
-const MUTED_COLOR = "#888888"
-const VALUE_COLOR = "#dddddd"
-const WARNING_COLOR = "#e5c07b"
-const ERROR_COLOR = "#ff6b6b"
-const FOCUSED_HEADER = "#ffffff"
-const UNFOCUSED_HEADER = "#666666"
+const PANEL_BG = TUI_THEME.panelBackground
+const SELECTED_TAB_BG = TUI_THEME.selection
+const MUTED_COLOR = TUI_THEME.textMuted
+const VALUE_COLOR = TUI_THEME.textPrimary
+const WARNING_COLOR = TUI_THEME.warning
+const ERROR_COLOR = TUI_THEME.negative
+const FOCUSED_HEADER = TUI_THEME.textStrong
+const UNFOCUSED_HEADER = TUI_THEME.textFaint
 
 const MODE_LABELS = { INTRADAY: "Intraday", DAILY: "Daily" } satisfies Record<OverviewMode, string>
 
@@ -65,7 +66,7 @@ export class OverviewPanel {
     this.root = new BoxRenderable(renderer, {
       flexDirection: "column",
       border: ["top"],
-      borderColor: "#303030",
+      borderColor: TUI_THEME.border,
       backgroundColor: PANEL_BG,
       onMouseDown: (event) => {
         if (event.button === 0) this.options.onFocusRequest?.()
@@ -272,7 +273,7 @@ export class OverviewPanel {
       const label = this.modeLabels.get(mode)
       if (!button || !label) continue
       button.backgroundColor = selected ? SELECTED_TAB_BG : undefined
-      label.fg = selected ? "#ffffff" : this.focused ? "#aaaaaa" : "#666666"
+      label.fg = selected ? TUI_THEME.textStrong : this.focused ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }
   }
 

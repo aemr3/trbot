@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import { BoxRenderable, TextRenderable, type CliRenderer } from "@opentui/core"
 
 export interface ConnectingScreenOptions {
@@ -47,11 +48,11 @@ export class ConnectingScreen {
       height: 7,
     })
     this.heading = new TextRenderable(renderer, { content: this.headingText() })
-    this.detail = new TextRenderable(renderer, { content: options.url, fg: "#777777" })
+    this.detail = new TextRenderable(renderer, { content: options.url, fg: TUI_THEME.textSubdued })
 
     this.panel.add(this.heading)
     this.panel.add(this.detail)
-    this.panel.add(new TextRenderable(renderer, { content: "Ctrl+C to exit", fg: "#777777" }))
+    this.panel.add(new TextRenderable(renderer, { content: "Ctrl+C to exit", fg: TUI_THEME.textSubdued }))
     this.root.add(this.panel)
   }
 
@@ -70,7 +71,7 @@ export class ConnectingScreen {
    */
   reportFailure(message: string): void {
     this.detail.content = `${this.options.url} · ${message}`
-    this.detail.fg = "#e5c07b"
+    this.detail.fg = TUI_THEME.warning
     this.renderer.requestRender()
   }
 

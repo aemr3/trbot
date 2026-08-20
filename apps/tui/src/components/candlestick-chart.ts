@@ -1,3 +1,4 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   ScrollBarRenderable,
@@ -59,10 +60,10 @@ import { rendererOutput } from "../renderer-output.ts"
 import { getCandlePixelX, renderCandleBitmap, type ChartBitmap } from "./chart/raster.ts"
 import { RenderCoalescer } from "./render-coalescer.ts"
 
-const MUTED_COLOR = "#777777"
-const AXIS_COLOR = "#777777"
-const COST_COLOR = "#7c8cff"
-const ACTIVE_BUTTON_BG = "#333333"
+const MUTED_COLOR = TUI_THEME.textSubdued
+const AXIS_COLOR = TUI_THEME.textSubdued
+const COST_COLOR = TUI_THEME.chartCost
+const ACTIVE_BUTTON_BG = TUI_THEME.activeControl
 const PRICE_PADDING_RATIO = 0.02
 const MIN_HEIGHT_WITH_VOLUME = 14
 const MAX_VOLUME_HEIGHT = 8
@@ -391,12 +392,12 @@ export class CandlestickChart {
       height: 1,
       showArrows: true,
       trackOptions: {
-        foregroundColor: "#888888",
-        backgroundColor: "#242424",
+        foregroundColor: TUI_THEME.textMuted,
+        backgroundColor: TUI_THEME.scrollbarActive,
       },
       arrowOptions: {
-        foregroundColor: "#888888",
-        backgroundColor: "#181818",
+        foregroundColor: TUI_THEME.textMuted,
+        backgroundColor: TUI_THEME.scrollbarInactive,
       },
       onChange: (position) => {
         this.scrollTo(this.maxScrollOffset() - position)
@@ -598,7 +599,7 @@ export class CandlestickChart {
     // The candle that was marked belongs to the series being replaced.
     this.selectedTimestamp = null
     this.summary.content = `${CANDLE_INTERVAL_LABELS[this.interval]} · Loading OHLC…`
-    this.summary.fg = "#aaaaaa"
+    this.summary.fg = TUI_THEME.textSecondary
     this.showPlotMessage("Loading candles…", MUTED_COLOR)
 
     void this.options.source
@@ -631,7 +632,7 @@ export class CandlestickChart {
     if (!instrument) return
     if (candles.length === 0) {
       this.summary.content = `${instrument.symbol} — ${instrument.displayName}`
-      this.summary.fg = "#aaaaaa"
+      this.summary.fg = TUI_THEME.textSecondary
       this.showPlotMessage("No candles available for this range and timeframe.", MUTED_COLOR)
       return
     }
@@ -668,7 +669,7 @@ export class CandlestickChart {
       chunks.push(fg(SELECTION_COLOR)(`◆ ${formatTimestamp(picked.timestamp, { ...style, date: true })} · `))
     }
     chunks.push(
-      fg("#aaaaaa")(`${CANDLE_INTERVAL_LABELS[series.interval]} · `),
+      fg(TUI_THEME.textSecondary)(`${CANDLE_INTERVAL_LABELS[series.interval]} · `),
       fg(MUTED_COLOR)("O "),
       fg(candleColor)(formatPrice(last.open)),
       fg(MUTED_COLOR)("  H "),
@@ -756,7 +757,7 @@ export class CandlestickChart {
       this.plotText.visible = false
     } else {
       this.plotText.content = view.plot
-      this.plotText.fg = "#cccccc"
+      this.plotText.fg = TUI_THEME.textBody
       this.plotText.visible = true
       if (this.plotBitmap.visible) {
         this.plotBitmap.visible = false
@@ -943,7 +944,7 @@ export class CandlestickChart {
       const label = this.targetButtonLabels.get(target)
       if (!button || !label) continue
       button.backgroundColor = selected ? ACTIVE_BUTTON_BG : undefined
-      label.fg = selected ? "#ffffff" : this.focused ? "#aaaaaa" : "#666666"
+      label.fg = selected ? TUI_THEME.textStrong : this.focused ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }
     for (const range of CANDLE_RANGES) {
       const selected = this.range === range
@@ -951,7 +952,7 @@ export class CandlestickChart {
       const label = this.rangeButtonLabels.get(range)
       if (!button || !label) continue
       button.backgroundColor = selected ? ACTIVE_BUTTON_BG : undefined
-      label.fg = selected ? "#ffffff" : this.focused ? "#aaaaaa" : "#666666"
+      label.fg = selected ? TUI_THEME.textStrong : this.focused ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }
     for (const indicator of CHART_INDICATORS) {
       const selected = this.activeIndicators.includes(indicator)
@@ -962,7 +963,7 @@ export class CandlestickChart {
       // An active overlay wears its own color, so the row doubles as its legend.
       label.fg = selected
         ? CHART_INDICATOR_COLORS[indicator]
-        : this.focused ? "#aaaaaa" : "#666666"
+        : this.focused ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }
     const availableIntervals = this.availableIntervalsByRange[this.range]
     for (const interval of CANDLE_INTERVALS) {
@@ -973,7 +974,7 @@ export class CandlestickChart {
       if (!button || !label) continue
       button.visible = available
       button.backgroundColor = selected ? ACTIVE_BUTTON_BG : undefined
-      label.fg = selected ? "#ffffff" : this.focused ? "#aaaaaa" : "#666666"
+      label.fg = selected ? TUI_THEME.textStrong : this.focused ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }
   }
 }
