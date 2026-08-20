@@ -282,6 +282,66 @@ describe("chat session store", () => {
     expect(detail?.session.queued).toBe(1)
   })
 
+  test("rebuilds model context from a rolling checkpoint without changing the transcript", async () => {
+    const chats = await store()
+    await chats.create(session())
+    for (const [text, timestamp] of [["old question", 1_000], ["old answer", 2_000], ["recent question", 3_000]] as const) {
+      const role = text.includes("answer") ? "assistant" : "user"
+      await chats.append("chat-1", draftFor(role === "user"
+        ? { role, content: text, timestamp }
+        : {
+            role,
+            content: [{ type: "text", text }],
+            api: "test",
+            provider: "test",
+            model: "test",
+            usage: zeroUsage(),
+            stopReason: "stop",
+            timestamp,
+          }))
+    }
+
+    const before = await chats.context("chat-1")
+    await chats.saveCompaction({
+      sessionId: "chat-1",
+      summary: "The user asked an earlier question and received an answer.",
+      compactedThroughSeq: before.records[1]!.seq,
+      firstKeptSeq: before.records[2]!.seq,
+      tokensBefore: 90_000,
+      createdAt: 4_000,
+    })
+
+    const active = await chats.context("chat-1")
+    expect(active.compaction?.summary).toContain("earlier question")
+    expect(active.records.map((entry) => (entry.record as { content: string }).content)).toEqual(["recent question"])
+    expect((await chats.get("chat-1"))?.messages.map((message) => message.text)).toEqual([
+      "old question",
+      "old answer",
+      "recent question",
+    ])
+    expect(await chats.records("chat-1")).toHaveLength(3)
+  })
+
+  test("includes messages appended after a checkpoint that retained no old tail", async () => {
+    const chats = await store()
+    await chats.create(session())
+    await chats.append("chat-1", draftFor({ role: "user", content: "old", timestamp: 1_000 }))
+    const old = await chats.context("chat-1")
+    await chats.saveCompaction({
+      sessionId: "chat-1",
+      summary: "Old discussion.",
+      compactedThroughSeq: old.records[0]!.seq,
+      firstKeptSeq: null,
+      tokensBefore: 80_000,
+      createdAt: 2_000,
+    })
+    await chats.append("chat-1", draftFor({ role: "user", content: "new", timestamp: 3_000 }))
+
+    expect((await chats.context("chat-1")).records.map((entry) => (
+      entry.record as { content: string }
+    ).content)).toEqual(["new"])
+  })
+
   test("stores one application event key while keeping its model prompt private", async () => {
     const chats = await store()
     await chats.create(session())
@@ -508,5 +568,16 @@ function draftFor(record: unknown, status: ChatMessage["status"] = "COMPLETE"): 
       createdAt: value.timestamp as number,
     },
     record,
+  }
+}
+
+function zeroUsage() {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   }
 }

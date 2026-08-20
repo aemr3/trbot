@@ -12,6 +12,7 @@ import { DrizzleStopRuleStore } from "@trbot/db/stop-rule-store.ts"
 import { DrizzleAppPreferencesStore } from "@trbot/db/app-preferences-store.ts"
 import { createAgentTools } from "@trbot/ai/agent-tools.ts"
 import { ChatAgent } from "@trbot/ai/chat.ts"
+import { ChatCompactor } from "@trbot/ai/compaction.ts"
 import { ChatTitleGenerator } from "@trbot/ai/title.ts"
 import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trbot/ai/harness.ts"
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
@@ -140,35 +141,34 @@ async function startTrbotServer(): Promise<void> {
   // Chat runs belong to the server for the same reason the monitors do: a reply
   // has to survive the terminal that asked for it closing its tab or quitting.
   let chat!: ChatController
+  const chatTools = createAgentTools({
+    models,
+    marketData: {
+      sources: () => session.require(),
+      stops: { list: async () => stops.list() },
+    },
+    marketMonitors: {
+      instruments: {
+        listInstruments: (options) => session.require().instruments.listInstruments(options),
+      },
+      candles,
+      monitors: {
+        list: async () => marketMonitors.list(),
+        save: (draft) => marketMonitors.save(draft),
+        setStatus: (id, status) => marketMonitors.setStatus(id, status),
+        remove: (id) => marketMonitors.remove(id),
+      },
+    },
+    questions,
+    notifications,
+    subagentSessions: {
+      start: (input) => chat.subagentSessions.start(input),
+    },
+  })
   chat = new ChatController({
     store: new DrizzleChatSessionStore(connection.db, { harnessVersion: HARNESS_VERSION }),
-    agent: new ChatAgent({
-      models,
-      tools: createAgentTools({
-        models,
-        marketData: {
-          sources: () => session.require(),
-          stops: { list: async () => stops.list() },
-        },
-        marketMonitors: {
-          instruments: {
-            listInstruments: (options) => session.require().instruments.listInstruments(options),
-          },
-          candles,
-          monitors: {
-            list: async () => marketMonitors.list(),
-            save: (draft) => marketMonitors.save(draft),
-            setStatus: (id, status) => marketMonitors.setStatus(id, status),
-            remove: (id) => marketMonitors.remove(id),
-          },
-        },
-        questions,
-        notifications,
-        subagentSessions: {
-          start: (input) => chat.subagentSessions.start(input),
-        },
-      }),
-    }),
+    agent: new ChatAgent({ models, tools: chatTools }),
+    compaction: new ChatCompactor({ models, tools: chatTools.list() }),
     // A session runs on the model it records, so these read the stored choice per
     // turn rather than closing over one from startup.
     defaultChoice: () => ai.chatDefault(),

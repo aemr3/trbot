@@ -267,6 +267,17 @@ export const chatMessages = sqliteTable(
   (table) => [index("chat_messages_session_seq").on(table.sessionId, table.seq)],
 )
 
+// The complete transcript stays in chat_messages. This checkpoint only changes
+// which prefix is replayed to the model and is replaced after each rolling summary.
+export const chatCompactions = sqliteTable("chat_compactions", {
+  sessionId: text("session_id").primaryKey().references(() => chatSessions.id, { onDelete: "cascade" }),
+  summary: text("summary").notNull(),
+  compactedThroughSeq: integer("compacted_through_seq").notNull(),
+  firstKeptSeq: integer("first_kept_seq"),
+  tokensBefore: integer("tokens_before").notNull(),
+  createdAt: integer("created_at").notNull(),
+})
+
 /**
  * The pieces of a message, in order.
  *

@@ -1,9 +1,11 @@
 import { and, asc, eq, inArray, isNull, max, or, sql } from "drizzle-orm"
 import type {
   ChatBlock,
+  ChatCompaction,
   ChatMessage,
   ChatMessageDraft,
   ChatMessageStatus,
+  ChatModelContext,
   ChatModelChoice,
   ChatRole,
   ChatSession,
@@ -11,7 +13,7 @@ import type {
   ChatSessionStore,
 } from "@trbot/chat/session.ts"
 import type { AppDatabase } from "./client.ts"
-import { chatMessageBlocks, chatMessages, chatSessions } from "./schema.ts"
+import { chatCompactions, chatMessageBlocks, chatMessages, chatSessions } from "./schema.ts"
 import { z } from "zod"
 
 /**
@@ -180,6 +182,52 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
     const rows = (await this.messageRows(sessionId)).filter((row) => row.status !== "QUEUED")
     const blocks = await this.blockRows(rows.map((row) => row.id))
     return rows.map((row) => toRecord(row, blocks.get(row.id) ?? []))
+  }
+
+  async context(sessionId: string): Promise<ChatModelContext> {
+    const [compaction] = await this.db
+      .select()
+      .from(chatCompactions)
+      .where(eq(chatCompactions.sessionId, sessionId))
+      .limit(1)
+    const rows = (await this.messageRows(sessionId)).filter((row) => {
+      if (row.status === "QUEUED") return false
+      if (!compaction) return true
+      const start = compaction.firstKeptSeq ?? compaction.compactedThroughSeq + 1
+      return row.seq >= start
+    })
+    const blocks = await this.blockRows(rows.map((row) => row.id))
+    return {
+      compaction: compaction ? {
+        sessionId: compaction.sessionId,
+        summary: compaction.summary,
+        compactedThroughSeq: compaction.compactedThroughSeq,
+        firstKeptSeq: compaction.firstKeptSeq,
+        tokensBefore: compaction.tokensBefore,
+        createdAt: compaction.createdAt,
+      } : null,
+      records: rows.map((row) => ({
+        id: row.id,
+        seq: row.seq,
+        record: toRecord(row, blocks.get(row.id) ?? []),
+      })),
+    }
+  }
+
+  async saveCompaction(compaction: ChatCompaction): Promise<void> {
+    await this.db
+      .insert(chatCompactions)
+      .values(compaction)
+      .onConflictDoUpdate({
+        target: chatCompactions.sessionId,
+        set: {
+          summary: compaction.summary,
+          compactedThroughSeq: compaction.compactedThroughSeq,
+          firstKeptSeq: compaction.firstKeptSeq,
+          tokensBefore: compaction.tokensBefore,
+          createdAt: compaction.createdAt,
+        },
+      })
   }
 
   async inputText(messageId: string): Promise<string | null> {

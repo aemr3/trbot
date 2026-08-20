@@ -1,11 +1,13 @@
-import type {
-  Api,
-  AssistantMessage,
-  Context,
-  Message,
-  Model,
-  Models,
-  ToolCall,
+import {
+  isContextOverflow,
+  isRecoverableLength,
+  type Api,
+  type AssistantMessage,
+  type Context,
+  type Message,
+  type Model,
+  type Models,
+  type ToolCall,
 } from "@earendil-works/pi-ai"
 import {
   chatMessageText,
@@ -118,6 +120,8 @@ export interface ChatTurnResult {
   completed: boolean
   aborted: boolean
   errorMessage: string | null
+  /** A request with no durable output can be compacted and attempted once more safely. */
+  overflowed?: boolean
 }
 
 /**
@@ -146,9 +150,21 @@ export class ChatAgent {
 
     const asked: Message = { role: "user", content: turn.prompt, timestamp: this.now() }
     context.messages.push(asked)
+    let toolExecuted = false
 
     for (;;) {
       const { reply, timing } = await this.streamReply(context, turn)
+      const retryableOverflow = !toolExecuted && reply.content.length === 0 && (
+        isContextOverflow(reply, turn.model.contextWindow) || isRecoverableLength(reply, turn.model.maxTokens)
+      )
+      if (retryableOverflow) {
+        return {
+          completed: false,
+          aborted: false,
+          errorMessage: reply.errorMessage ?? "The model context is full",
+          overflowed: true,
+        }
+      }
       context.messages.push(reply)
       await turn.events.onMessage(assistantDraft(reply, turn.reasoningEffort ?? null, timing))
 
@@ -170,6 +186,7 @@ export class ChatAgent {
 
       for (const call of calls) {
         turn.events.onToolCall(call.name)
+        toolExecuted = true
         const outcome = await tools.call(call, {
           signal: turn.signal,
           model: turn.model,

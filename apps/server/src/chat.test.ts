@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
-import type { ChatTurnOptions, ChatTurnResult } from "@trbot/ai/chat.ts"
+import type { ChatRecord, ChatTurnOptions, ChatTurnResult } from "@trbot/ai/chat.ts"
+import type { ChatCompactionRunner } from "@trbot/ai/compaction.ts"
 import { chatBlockText, type ChatMessageDraft } from "@trbot/chat/session.ts"
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { openDatabase, type DatabaseConnection } from "@trbot/db/client.ts"
@@ -34,7 +35,9 @@ interface Harness {
 async function harness(options: {
   connected?: boolean
   auto?: boolean
+  compaction?: ChatCompactionRunner
   generateTitle?: (message: string, signal: AbortSignal) => Promise<string | null>
+  run?: (turn: ChatTurnOptions, call: number) => Promise<ChatTurnResult>
 } = {}): Promise<Harness> {
   connection = await openDatabase(":memory:")
   const store = new DrizzleChatSessionStore(connection.db, { harnessVersion: "pi-ai/test" })
@@ -46,6 +49,7 @@ async function harness(options: {
   const runner: ChatTurnRunner = {
     run: async (turn) => {
       turns.push(turn)
+      if (options.run) return await options.run(turn, turns.length)
       // A turn writes its reply the way the agent does, so the transcript a test
       // reads back is the one the real thing would leave.
       await turn.events.onMessage(reply(`answer to ${turn.prompt}`))
@@ -59,6 +63,7 @@ async function harness(options: {
   const chat = new ChatController({
     store,
     agent: runner,
+    compaction: options.compaction,
     defaultChoice: async () => ({ providerId: "test-provider", modelId: "test-model", reasoning: "high" }),
     // The controller only needs something a turn can run on; which model that is
     // belongs to the harness, and none of this is about the model.
@@ -169,6 +174,96 @@ test("the second question sees the first exchange as history", async () => {
   expect(turns[1]?.history.map((record) => (record as { role: string }).role)).toEqual([
     "user",
     "assistant",
+  ])
+})
+
+test("stores a rolling checkpoint without removing the visible transcript", async () => {
+  const summary: ChatRecord = { role: "user", content: "<conversation-summary>first exchange</conversation-summary>", timestamp: 3 }
+  const compaction: ChatCompactionRunner = {
+    history: (context) => context.records.map((entry) => entry.record as ChatRecord),
+    compact: async (input) => {
+      const last = input.context.records.at(-1)
+      if (!last) return null
+      return {
+        checkpoint: {
+          sessionId: input.sessionId,
+          summary: "first exchange",
+          compactedThroughSeq: last.seq,
+          firstKeptSeq: null,
+          tokensBefore: 100,
+          createdAt: 3,
+        },
+        history: [summary],
+      }
+    },
+  }
+  const { chat, store, turns } = await harness({ compaction })
+  const session = await chat.create()
+
+  await chat.send(session.id, "first")
+  await settle()
+  await chat.send(session.id, "second")
+  await settle()
+
+  expect(turns[1]?.history).toEqual([summary])
+  expect((await store.context(session.id)).compaction?.summary).toBe("first exchange")
+  expect((await chat.detail(session.id)).messages.map((message) => message.text)).toEqual([
+    "first",
+    "answer to first",
+    "second",
+    "answer to second",
+  ])
+})
+
+test("compacts and retries one clean overflow without duplicating durable output", async () => {
+  const summary: ChatRecord = { role: "user", content: "<conversation-summary>seed</conversation-summary>", timestamp: 4 }
+  const forceCalls: boolean[] = []
+  const compaction: ChatCompactionRunner = {
+    history: (context) => context.records.map((entry) => entry.record as ChatRecord),
+    compact: async (input) => {
+      forceCalls.push(input.force === true)
+      if (!input.force) return null
+      const last = input.context.records.at(-1)
+      if (!last) return null
+      return {
+        checkpoint: {
+          sessionId: input.sessionId,
+          summary: "seed",
+          compactedThroughSeq: last.seq,
+          firstKeptSeq: null,
+          tokensBefore: 100,
+          createdAt: 4,
+        },
+        history: [summary],
+      }
+    },
+  }
+  let continueAttempts = 0
+  const { chat, turns } = await harness({
+    compaction,
+    run: async (turn) => {
+      if (turn.prompt === "continue" && continueAttempts++ === 0) {
+        return { completed: false, aborted: false, errorMessage: "context full", overflowed: true }
+      }
+      await turn.events.onMessage(reply(`answer to ${turn.prompt}`))
+      return { completed: true, aborted: false, errorMessage: null }
+    },
+  })
+  const session = await chat.create()
+
+  await chat.send(session.id, "seed")
+  await settle()
+  await chat.send(session.id, "continue")
+  await settle()
+
+  expect(turns.map((turn) => turn.prompt)).toEqual(["seed", "continue", "continue"])
+  expect(turns.at(-1)?.history).toEqual([summary])
+  expect(forceCalls).toEqual([false, false, true])
+  expect((await chat.detail(session.id)).messages.map((message) => message.text)).toEqual([
+    "seed",
+    "answer to seed",
+    "continue",
+    "answer to continue",
   ])
 })
 

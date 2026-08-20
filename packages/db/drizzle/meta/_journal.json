@@ -183,6 +183,13 @@
       "when": 1787227508798,
       "tag": "0025_create_chat_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1787230251918,
+      "tag": "0026_create_chat_compactions",
+      "breakpoints": true
     }
   ]
 }

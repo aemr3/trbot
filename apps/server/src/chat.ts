@@ -1,4 +1,5 @@
 import type { ChatRecord, ChatTurnModel, ChatTurnOptions, ChatTurnResult } from "@trbot/ai/chat.ts"
+import type { ChatCompactionRunner } from "@trbot/ai/compaction.ts"
 import type { SubagentSessionRecorder, SubagentSessionRun } from "@trbot/ai/subagent.ts"
 import {
   chatBlockText,
@@ -29,6 +30,8 @@ export interface ChatTurnRunner {
 export interface ChatControllerOptions {
   store: ChatSessionStore
   agent: ChatTurnRunner
+  /** Hidden rolling summaries for long conversations. Omitted by narrow controller tests. */
+  compaction?: ChatCompactionRunner
   /**
    * The model a new session starts on, or null when nobody has chosen one.
    *
@@ -451,10 +454,6 @@ export class ChatController {
     choice: ChatModelChoice,
     sessionTitle: string,
   ): Promise<void> {
-    // Read while the question is still queued, so the history is what came before
-    // it and the model is not handed the same question twice.
-    const history = (await this.options.store.records(sessionId)) as ChatRecord[]
-
     const run: ChatRun = {
       runId: crypto.randomUUID(),
       seq: 0,
@@ -466,61 +465,109 @@ export class ChatController {
     this.options.broadcast({ type: "chatRun", sessionId, runId: run.runId, status: "running" })
     await this.announceSessions()
 
-    // Marked sent before the turn runs: a server that dies mid-turn must not
-    // replay the question on restart, which would answer it twice. This also moves
-    // it to the end of the conversation, which is where it was actually asked.
-    await this.options.store.markSent(asked.id)
-
-    let result: { completed: boolean; aborted: boolean; errorMessage: string | null }
+    let result: ChatTurnResult
     try {
       const turnModel = await this.options.resolveModel(choice)
+      const prompt = await this.options.store.inputText(asked.id) ?? asked.text
+      // Read while the question is still queued, so the context is what came before
+      // it and the model is not handed the same question twice.
+      let modelContext = await this.options.store.context(sessionId)
+      let history = this.options.compaction
+        ? this.options.compaction.history(modelContext)
+        : modelContext.records.map((entry) => entry.record as ChatRecord)
+      if (this.options.compaction) {
+        try {
+          const compacted = await this.options.compaction.compact({
+            sessionId,
+            model: turnModel.model,
+            context: modelContext,
+            prompt,
+            signal: run.controller!.signal,
+          })
+          if (compacted) {
+            await this.options.store.saveCompaction(compacted.checkpoint)
+            modelContext = await this.options.store.context(sessionId)
+            history = compacted.history
+          }
+        } catch (error) {
+          // Predictive compaction is maintenance, not the user's turn. If it fails,
+          // preserve the original request and let overflow recovery make one last try.
+          this.options.onError(error)
+        }
+      }
+
+      // Marked sent before the turn runs: a server that dies mid-turn must not
+      // replay the question on restart, which would answer it twice. This also moves
+      // it to the end of the conversation, which is where it was actually asked.
+      await this.options.store.markSent(asked.id)
+
       if (asked.role === "USER") {
         this.maybeStartTitleGeneration(sessionId, sessionTitle, asked.text, turnModel)
       }
-      const prompt = await this.options.store.inputText(asked.id) ?? asked.text
-      result = await this.options.agent.run({
-        model: turnModel.model,
-        reasoningEffort: turnModel.reasoningEffort,
-        history,
-        prompt,
-        chatSessionId: sessionId,
-        signal: run.controller!.signal,
-        events: {
-          onText: (delta) => {
-            run.text += delta
-            run.seq += 1
-            this.options.broadcast({
-              type: "chatDelta",
-              sessionId,
-              runId: run.runId,
-              seq: run.seq,
-              text: delta,
-            })
+      let recoveryAttempted = false
+      for (;;) {
+        result = await this.options.agent.run({
+          model: turnModel.model,
+          reasoningEffort: turnModel.reasoningEffort,
+          history,
+          prompt,
+          chatSessionId: sessionId,
+          signal: run.controller!.signal,
+          events: {
+            onText: (delta) => {
+              run.text += delta
+              run.seq += 1
+              this.options.broadcast({
+                type: "chatDelta",
+                sessionId,
+                runId: run.runId,
+                seq: run.seq,
+                text: delta,
+              })
+            },
+            onReasoning: (delta) => {
+              run.reasoning += delta
+              run.seq += 1
+              this.options.broadcast({
+                type: "chatDelta",
+                sessionId,
+                runId: run.runId,
+                seq: run.seq,
+                reasoning: delta,
+              })
+            },
+            onToolCall: (name) => {
+              run.seq += 1
+              this.options.broadcast({
+                type: "chatDelta",
+                sessionId,
+                runId: run.runId,
+                seq: run.seq,
+                toolName: name,
+              })
+            },
+            onMessage: (draft) => this.persist(sessionId, draft),
           },
-          onReasoning: (delta) => {
-            run.reasoning += delta
-            run.seq += 1
-            this.options.broadcast({
-              type: "chatDelta",
-              sessionId,
-              runId: run.runId,
-              seq: run.seq,
-              reasoning: delta,
-            })
-          },
-          onToolCall: (name) => {
-            run.seq += 1
-            this.options.broadcast({
-              type: "chatDelta",
-              sessionId,
-              runId: run.runId,
-              seq: run.seq,
-              toolName: name,
-            })
-          },
-          onMessage: (draft) => this.persist(sessionId, draft),
-        },
-      })
+        })
+        if (!result.overflowed || recoveryAttempted || !this.options.compaction) break
+        recoveryAttempted = true
+        let compacted = null
+        try {
+          compacted = await this.options.compaction.compact({
+            sessionId,
+            model: turnModel.model,
+            context: modelContext,
+            prompt,
+            signal: run.controller!.signal,
+            force: true,
+          })
+        } catch (error) {
+          this.options.onError(error)
+        }
+        if (!compacted) break
+        await this.options.store.saveCompaction(compacted.checkpoint)
+        history = compacted.history
+      }
     } catch (error) {
       this.options.onError(error)
       result = { completed: false, aborted: false, errorMessage: errorMessage(error) }

@@ -225,6 +225,29 @@ export interface ChatModelChoice {
   reasoning: string | null
 }
 
+/** Hidden rolling summary used to rebuild model context without rewriting the transcript. */
+export interface ChatCompaction {
+  sessionId: string
+  summary: string
+  compactedThroughSeq: number
+  firstKeptSeq: number | null
+  tokensBefore: number
+  createdAt: number
+}
+
+/** One persisted harness record and its stable position in the complete transcript. */
+export interface ChatContextRecord {
+  id: string
+  seq: number
+  record: unknown
+}
+
+/** The active model-facing slice. The complete transcript remains available through `get`. */
+export interface ChatModelContext {
+  compaction: ChatCompaction | null
+  records: ChatContextRecord[]
+}
+
 export interface ChatSessionStore {
   /** Trader-owned root conversations only; child sessions have their own picker. */
   list(): Promise<ChatSession[]>
@@ -232,6 +255,10 @@ export interface ChatSessionStore {
   get(sessionId: string): Promise<ChatSessionDetail | null>
   /** The harness records of a session's messages, in order, for replay. */
   records(sessionId: string): Promise<unknown[]>
+  /** The rolling summary and verbatim tail currently used for model replay. */
+  context(sessionId: string): Promise<ChatModelContext>
+  /** Replaces the rolling summary without removing any visible transcript rows. */
+  saveCompaction(compaction: ChatCompaction): Promise<void>
   /** Model-facing text for one queued input; application events may hide detail from the transcript. */
   inputText(messageId: string): Promise<string | null>
   create(session: ChatSession): Promise<void>

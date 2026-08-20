@@ -240,6 +240,71 @@ test("keeps a reply that failed part way and reports why", async () => {
   expect(drafts[0]?.message.status).toBe("FAILED")
 })
 
+test("reports a clean context overflow without persisting a disposable error reply", async () => {
+  const { faux, models } = scripted()
+  faux.setResponses([
+    fauxAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Your input exceeds the context window of this model",
+    }),
+  ])
+  const drafts: ChatMessageDraft[] = []
+  const result = await new ChatAgent({ models }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Continue",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onMessage: async (draft) => { drafts.push(draft) },
+    },
+  })
+
+  expect(result.overflowed).toBe(true)
+  expect(drafts).toEqual([])
+})
+
+test("does not retry an overflow after a tool has produced a durable side effect", async () => {
+  let calls = 0
+  const tool: ChatTool = {
+    definition: {
+      name: "remember",
+      description: "Record a durable action",
+      parameters: Type.Object({}),
+    },
+    run: async () => {
+      calls += 1
+      return { blocks: [toolText("Recorded.")], details: null, isError: false }
+    },
+  }
+  const { faux, models } = scripted()
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("remember", {})], { stopReason: "toolUse" }),
+    fauxAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Your input exceeds the context window of this model",
+    }),
+  ])
+  const drafts: ChatMessageDraft[] = []
+  const result = await new ChatAgent({ models, tools: new ChatTools([tool]) }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Remember this and continue",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onMessage: async (draft) => { drafts.push(draft) },
+    },
+  })
+
+  expect(calls).toBe(1)
+  expect(result.overflowed).toBeUndefined()
+  expect(result.errorMessage).toContain("context window")
+  expect(drafts.map((draft) => draft.message.role)).toEqual(["ASSISTANT", "TOOL_RESULT", "ASSISTANT"])
+})
+
 test("stamps a reply with what answered it and the effort it was asked for", async () => {
   // The transcript labels each reply from this, not from the session, so a chat
   // pointed at another model does not relabel what came before.
