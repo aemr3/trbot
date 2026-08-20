@@ -1,12 +1,13 @@
 import type { ApiClient } from "@trbot/api"
 import type { EquityQuoteListener, EquityQuoteStream, EquityQuoteUpdate } from "@trbot/market/equity-quote-stream.ts"
+import { z } from "zod"
 
 const EQUITY_PRICE_STREAM_PATH = "/reactive-market-api/v1/instruments/trade-price/stream"
 const EQUITY_PRICE_STREAM_EVENT = "Ticker"
 const DEFAULT_RECONNECT_DELAYS_MS = [1000, 3000, 5000]
 
 export interface ApiEquityQuoteStreamOptions {
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   reconnectDelaysMs?: number[]
 }
 
@@ -114,26 +115,31 @@ export class ApiEquityQuoteStream implements EquityQuoteStream {
 }
 
 export function parseEquityQuoteUpdates(data: string): EquityQuoteUpdate[] {
-  let decoded: unknown
+  let decoded: z.input<typeof EquityQuoteFramesSchema>
   try {
     decoded = JSON.parse(data)
   } catch {
     return []
   }
-  if (!Array.isArray(decoded)) return []
+  const parsed = EquityQuoteFramesSchema.safeParse(decoded)
+  if (!parsed.success) return []
 
-  return decoded.flatMap((entry): EquityQuoteUpdate[] => {
-    if (!entry || typeof entry !== "object") return []
-    const raw = entry as { c?: unknown; p?: unknown; s?: unknown; ss?: unknown; t?: unknown }
-    if (raw.c !== "TR" || typeof raw.s !== "string") return []
-    const lastPrice = Number(raw.p)
-    const rawTimestamp = Number(raw.t)
-    if (!Number.isFinite(lastPrice) || !Number.isFinite(rawTimestamp)) return []
+  return parsed.data.flatMap((raw): EquityQuoteUpdate[] => {
+    if (raw.c !== "TR") return []
     return [{
       symbol: raw.s.toUpperCase(),
-      lastPrice,
-      timestamp: rawTimestamp < 1_000_000_000_000 ? rawTimestamp * 1000 : rawTimestamp,
-      sessionStatus: typeof raw.ss === "string" ? raw.ss : null,
+      lastPrice: raw.p,
+      timestamp: raw.t < 1_000_000_000_000 ? raw.t * 1000 : raw.t,
+      sessionStatus: raw.ss ?? null,
     }]
   })
 }
+
+const FiniteNumberSchema = z.union([z.number(), z.string()]).transform(Number).refine(Number.isFinite)
+const EquityQuoteFramesSchema = z.array(z.object({
+  c: z.string(),
+  p: FiniteNumberSchema,
+  s: z.string(),
+  ss: z.string().nullable().catch(null).optional(),
+  t: FiniteNumberSchema,
+})).catch([])

@@ -6,13 +6,7 @@ import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type { SoundCue } from "../components/sound.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 
-/**
- * A panel, near enough for the workspace to be driven against.
- *
- * `capturesInput` is the only thing the workspace asks of a panel beyond drawing
- * itself, so a fake that answers it exercises the tab shortcuts without a real screen.
- */
-function panel(renderer: RenderContext, label: string, options: { capturesInput?: boolean; showingSession?: string } = {}): {
+interface TestPanel {
   root: BoxRenderable
   keys: KeyEvent[]
   openedQuestions: string[]
@@ -25,7 +19,19 @@ function panel(renderer: RenderContext, label: string, options: { capturesInput?
   dismissNotification(notificationId: string): void
   isShowingSession(sessionId: string): boolean
   destroy(): void
-} {
+}
+
+/**
+ * A panel, near enough for the workspace to be driven against.
+ *
+ * `capturesInput` is the only thing the workspace asks of a panel beyond drawing
+ * itself, so a fake that answers it exercises the tab shortcuts without a real screen.
+ */
+function panel(
+  renderer: RenderContext,
+  label: string,
+  options: { capturesInput?: boolean; showingSession?: string } = {},
+): TestPanel {
   const root = new BoxRenderable(renderer, { width: "100%", height: "100%" })
   root.add(new TextRenderable(renderer, { content: label }))
   const keys: KeyEvent[] = []

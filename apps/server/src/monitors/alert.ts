@@ -1,5 +1,5 @@
 import { AlertMonitor, type AlertTriggerEvent } from "@trbot/market/alert-monitor.ts"
-import type { PriceAlert, PriceAlertDraft, PriceAlertStatus, PriceAlertStore } from "@trbot/market/alert.ts"
+import { createPriceAlert, type PriceAlert, type PriceAlertDraft, type PriceAlertStatus, type PriceAlertStore } from "@trbot/market/alert.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
 
@@ -7,7 +7,7 @@ export interface AlertControllerOptions {
   store: PriceAlertStore
   candles?: CandleSource
   broadcast: (event: AlertControllerEvent) => void
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   now?: () => number
 }
 
@@ -25,6 +25,7 @@ export class AlertController {
   constructor(private readonly options: AlertControllerOptions) {
     this.monitor = new AlertMonitor({
       store: options.store,
+      create: createPriceAlert,
       candles: options.candles,
       onTrigger: (event) => this.onTrigger(event),
       onChange: () => options.broadcast({ type: "changed" }),
@@ -59,7 +60,7 @@ export class AlertController {
     const alert = await this.monitor.saveAlert(draft)
     // Same as a close-based stop rule: read its candles now instead of leaving
     // it without a level until the poll comes round.
-    void this.monitor.refreshCandleAlerts().catch((error: unknown) => this.options.onError?.(error))
+    void this.monitor.refreshCandleAlerts().catch((cause: unknown) => this.options.onError?.(cause))
     return alert
   }
 
@@ -86,7 +87,7 @@ export class AlertController {
   decide(alertId: string, decision: "dismiss" | "rearm"): void {
     this.fired.delete(alertId)
     if (decision === "rearm") {
-      void this.monitor.setStatus(alertId, "ARMED").catch((error: unknown) => this.options.onError?.(error))
+      void this.monitor.setStatus(alertId, "ARMED").catch((cause: unknown) => this.options.onError?.(cause))
     }
   }
 

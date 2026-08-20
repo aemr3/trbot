@@ -16,11 +16,11 @@ import type { ApplicationLog, LogEntry, LogLevel } from "../logging/application-
 const BACKGROUND = "#101010"
 const TEXT_COLOR = "#dddddd"
 const MUTED_COLOR = "#888888"
-const LEVEL_COLORS: Record<LogLevel, string> = {
+const LEVEL_COLORS = {
   INFO: "#70d7a1",
   WARN: "#e5c07b",
   ERROR: "#ff6b6b",
-}
+} satisfies Record<LogLevel, string>
 
 interface LogsScreenOptions {
   logs: ApplicationLog

@@ -6,7 +6,7 @@ import {
   type ChatGoal,
   type ChatLoop,
 } from "@trbot/chat/automation.ts"
-import { ExecutionPolicySchema } from "@trbot/trading/execution-policy.ts"
+import { ExecutionPolicySchema, type ExecutionPolicy } from "@trbot/trading/execution-policy.ts"
 import type { AppDatabase } from "./client.ts"
 import { chatGoals, chatLoops } from "./schema.ts"
 
@@ -80,6 +80,6 @@ function loopFromRow(row: LoopRow): ChatLoop {
   return ChatLoopSchema.parse({ ...row, executionPolicy: parseExecutionPolicy(row.executionPolicy) })
 }
 
-function parseExecutionPolicy(value: string): unknown {
+function parseExecutionPolicy(value: string): ExecutionPolicy {
   return ExecutionPolicySchema.parse(JSON.parse(value))
 }

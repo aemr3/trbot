@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { PriceAlertDraft } from "@trbot/market/alert.ts"
 import type { ViopInstrument } from "@trbot/market/instrument.ts"
 import { AlertEditor, type AlertEditorOptions } from "./alert-editor.ts"
 
 function key(name: string, sequence?: string): KeyEvent {
-  return { name, sequence: sequence ?? name } as KeyEvent
+  return keyEvent(name, { sequence: sequence ?? name })
 }
 
 function type(editor: AlertEditor, digits: string): void {

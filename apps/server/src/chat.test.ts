@@ -8,6 +8,10 @@ import type { ChatFrame } from "@trbot/protocol/stream.ts"
 import { isProtocolError } from "@trbot/protocol/error.ts"
 import { ChatController, type ChatTurnRunner } from "./chat.ts"
 import type { ExecutionPolicy } from "@trbot/trading/execution-policy.ts"
+import { modelRecord } from "@trbot/ai/compaction.ts"
+import { testModel } from "@trbot/ai/model.test-fixture.ts"
+
+const model = testModel("test-model")
 
 let connection: DatabaseConnection | null = null
 
@@ -67,10 +71,8 @@ async function harness(options: {
     agent: runner,
     compaction: options.compaction,
     defaultChoice: async () => ({ providerId: "test-provider", modelId: "test-model", reasoning: "high" }),
-    // The controller only needs something a turn can run on; which model that is
-    // belongs to the harness, and none of this is about the model.
     resolveModel: async (choice) => ({
-      model: { id: choice.modelId, provider: choice.providerId } as never,
+      model: testModel(choice.modelId),
       reasoningEffort: choice.reasoning,
     }),
     generateTitle: options.generateTitle
@@ -176,7 +178,7 @@ test("the second question sees the first exchange as history", async () => {
 
   // The question itself is passed separately, so it must not also appear in the
   // history — that would ask the model to answer the same thing twice.
-  expect(turns[1]?.history.map((record) => (record as { role: string }).role)).toEqual([
+  expect(turns[1]?.history.map((record) => record.role)).toEqual([
     "user",
     "assistant",
   ])
@@ -185,7 +187,7 @@ test("the second question sees the first exchange as history", async () => {
 test("stores a rolling checkpoint without removing the visible transcript", async () => {
   const summary: ChatRecord = { role: "user", content: "<conversation-summary>first exchange</conversation-summary>", timestamp: 3 }
   const compaction: ChatCompactionRunner = {
-    history: (context) => context.records.map((entry) => entry.record as ChatRecord),
+    history: (context) => context.records.map((entry) => modelRecord(entry.record)),
     compact: async (input) => {
       const last = input.context.records.at(-1)
       if (!last) return null
@@ -223,7 +225,7 @@ test("stores a rolling checkpoint without removing the visible transcript", asyn
 test("manually compacts a settled chat without changing its transcript", async () => {
   const forceCalls: boolean[] = []
   const compaction: ChatCompactionRunner = {
-    history: (context) => context.records.map((entry) => entry.record as ChatRecord),
+    history: (context) => context.records.map((entry) => modelRecord(entry.record)),
     compact: async (input) => {
       forceCalls.push(input.force === true)
       if (!input.force) return null
@@ -264,7 +266,7 @@ test("refuses manual compaction while the chat is answering", async () => {
   await chat.send(session.id, "still running")
   await settle()
 
-  const error = await chat.compact(session.id).catch((caught: unknown) => caught)
+  const error = await chat.compact(session.id).catch((cause: unknown) => cause)
 
   expect(isProtocolError(error) && error.message).toContain("finish before compacting")
   finish()
@@ -275,7 +277,7 @@ test("compacts and retries one clean overflow without duplicating durable output
   const summary: ChatRecord = { role: "user", content: "<conversation-summary>seed</conversation-summary>", timestamp: 4 }
   const forceCalls: boolean[] = []
   const compaction: ChatCompactionRunner = {
-    history: (context) => context.records.map((entry) => entry.record as ChatRecord),
+    history: (context) => context.records.map((entry) => modelRecord(entry.record)),
     compact: async (input) => {
       forceCalls.push(input.force === true)
       if (!input.force) return null
@@ -392,7 +394,7 @@ test("a message already sent cannot be taken back", async () => {
 
   const failure = await chat.cancel(session.id, asked.id).then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   )
   // It has been said. Reporting otherwise would tell the trader a question was
   // withdrawn when the model already answered it.
@@ -431,13 +433,14 @@ test("a turn that fails leaves its question visible to send again", async () => 
   // Marked failed rather than silently consumed: the trader can send it again or
   // drop it, and either way they can see which one it was.
   expect(asked?.status).toBe("FAILED")
-  expect(frames).toContainEqual({
+  const failed = frames.find((frame) => frame.type === "chatRun" && frame.status === "failed")
+  expect(failed).toMatchObject({
     type: "chatRun",
     sessionId: session.id,
-    runId: expect.any(String) as unknown as string,
     status: "failed",
     error: "the model gave up",
   })
+  expect(failed?.type === "chatRun" ? failed.runId : null).toEqual(expect.any(String))
 })
 
 test("a queue survives a restart of the server", async () => {
@@ -464,7 +467,7 @@ test("a queue survives a restart of the server", async () => {
     },
     defaultChoice: async () => ({ providerId: "test-provider", modelId: "test-model", reasoning: "high" }),
     resolveModel: async (choice) => ({
-      model: { id: choice.modelId, provider: choice.providerId } as never,
+      model,
       reasoningEffort: choice.reasoning,
     }),
     requireModel: async () => {},
@@ -605,12 +608,9 @@ test("tells a client that attaches what is running, so it can catch up", async (
 
   const backlog = chat.backlog()
   expect(backlog[0]?.type).toBe("chatSessions")
-  expect(backlog).toContainEqual({
-    type: "chatRun",
-    sessionId: session.id,
-    runId: expect.any(String) as unknown as string,
-    status: "running",
-  })
+  const running = backlog.find((frame) => frame.type === "chatRun" && frame.status === "running")
+  expect(running).toMatchObject({ type: "chatRun", sessionId: session.id, status: "running" })
+  expect(running?.type === "chatRun" ? running.runId : null).toEqual(expect.any(String))
 
   // And the partial is there to be read, which is what a late client renders.
   const detail = await chat.detail(session.id)
@@ -661,7 +661,7 @@ test("records subagents as live child sessions with their complete transcript", 
 
   const failure = await chat.send(worker.sessionId, "continue").then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   )
   expect(isProtocolError(failure) && failure.code).toBe("invalid_request")
 })
@@ -684,7 +684,7 @@ test("reports an unknown session rather than inventing one", async () => {
   const { chat } = await harness()
   const failure = await chat.detail("nope").then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   )
   expect(isProtocolError(failure) && failure.code).toBe("not_found")
 })

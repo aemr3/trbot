@@ -3,50 +3,47 @@ import type { Server } from "bun"
 import { HttpClient } from "@trbot/client/http.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
-import type { ProviderSession, ProviderSources } from "../session.ts"
+import type { ProviderSessionAccess, ProviderSources } from "../session.ts"
+import { providerSources, TestProviderSession } from "../provider.test-fixture.ts"
 import type { SocketData } from "../stream-hub.ts"
 import { startServer } from "./server.ts"
+import { serverDeps } from "./server.test-fixture.ts"
 import { z } from "zod"
 
 const TOKEN = "recovery-token"
 
-const notUsed = new Proxy(
-  {},
-  {
-    get: () => () => {
-      throw new Error("not used in this test")
-    },
-  },
-)
-
-const INSTRUMENTS = [{ uid: "future-1", symbol: "F_XU0300826" }]
+const INSTRUMENTS = [{
+  uid: "future-1",
+  symbol: "F_XU0300826",
+  displayName: "BIST 30 Index Future",
+  underlyingSymbol: "XU030",
+  lastPrice: 12_500,
+  changePercent: 0.5,
+  volume: 1_000,
+  currency: "TRY",
+}]
 
 /**
  * A session that refuses until it is recovered, which is what an expired
  * provider session looks like from a route.
  */
-function lapsedSession(options: { recovers: boolean }) {
+function lapsedSession(options: { recovers: boolean; sources?: ProviderSources }) {
   const state = { recoveries: 0, calls: 0, live: false }
-  const session = {
-    get authenticated() {
-      return state.live
-    },
-    require(): ProviderSources {
+  const sources = options.sources ?? providerSources({
+    instruments: { listInstruments: async () => INSTRUMENTS },
+  })
+  class LapsedSession extends TestProviderSession {
+    override require(): ProviderSources {
       state.calls += 1
-      if (!state.live) throw new ProtocolError("unauthenticated", "The server has no provider session")
-      return {
-        instruments: { listInstruments: async () => INSTRUMENTS },
-      } as unknown as ProviderSources
-    },
-    async recover(): Promise<boolean> {
-      state.recoveries += 1
-      state.live = options.recovers
-      return options.recovers
-    },
-    onExpired(): void {},
-    onSession(): void {},
+      return super.require()
+    }
   }
-  return { session: session as unknown as ProviderSession, state }
+  const session = new LapsedSession(null, async () => {
+    state.recoveries += 1
+    state.live = options.recovers
+    return options.recovers ? sources : null
+  })
+  return { session, state }
 }
 
 const servers: Server<SocketData>[] = []
@@ -55,26 +52,14 @@ afterEach(() => {
   for (const server of servers.splice(0)) void server.stop(true)
 })
 
-function serve(session: ProviderSession): HttpClient {
+function serve(session: ProviderSessionAccess): HttpClient {
   const server = startServer(
     { host: "127.0.0.1", port: 0, token: TOKEN, tls: null },
-    {
+    serverDeps({
       session,
-      hub: notUsed as never,
-      idempotency: notUsed as never,
-      preferences: notUsed as never,
-      overviewSnapshots: notUsed as never,
-      ai: notUsed as never,
-      chat: notUsed as never,
-      questions: notUsed as never,
-    notifications: notUsed as never,
-    automations: notUsed as never,
-    alerts: notUsed as never,
-    marketMonitors: notUsed as never,
-      stops: notUsed as never,
       backlog: () => [],
       onDecision: () => {},
-    },
+    }),
   )
   servers.push(server)
   return new HttpClient({ url: `http://127.0.0.1:${server.port}`, token: TOKEN })
@@ -100,7 +85,7 @@ test("a recovery that fails still reports the expiry, so the trader is asked to 
 
   const failure = await serve(session)
     .get(ROUTES.instruments, z.unknown())
-    .then(() => null, (error: unknown) => error as ProtocolError)
+    .then(() => null, (cause: unknown) => cause instanceof ProtocolError ? cause : null)
 
   expect(failure?.code).toBe("unauthenticated")
   expect(state.recoveries).toBe(1)
@@ -111,25 +96,23 @@ test("a recovery that fails still reports the expiry, so the trader is asked to 
  * a body has to survive the round trip.
  */
 test("a request with a body is retried with that body intact", async () => {
-  const { session, state } = lapsedSession({ recovers: true })
   const seen: unknown[] = []
-  const withOrders = {
-    ...(session as unknown as Record<string, unknown>),
-    require() {
-      state.calls += 1
-      if (state.calls === 1) throw new ProtocolError("unauthenticated", "The server has no provider session")
-      return {
-        orders: {
-          cancelPendingOrders: async (body: unknown) => {
-            seen.push(body)
-            return { cancelled: [], failures: [] }
-          },
-        },
-      } as unknown as ProviderSources
+  const sources = providerSources({
+    orders: {
+      prepareOrder: async () => { throw new Error("unexpected prepare") },
+      placeOrder: async () => { throw new Error("unexpected place") },
+      listPendingOrders: async () => [],
+      cancelPendingOrders: async (body) => {
+        seen.push(body)
+        return { cancelledOrderUids: [], failures: [] }
+      },
+      exitAllPositions: async () => ({ submitted: [], failures: [] }),
+      exitPosition: async () => { throw new Error("unexpected exit") },
     },
-  } as unknown as ProviderSession
+  })
+  const { session } = lapsedSession({ recovers: true, sources })
 
-  await serve(withOrders).post(ROUTES.cancelOrders, z.unknown(), {
+  await serve(session).post(ROUTES.cancelOrders, z.unknown(), {
     body: { orderUids: ["order-1", "order-2"] },
   })
 

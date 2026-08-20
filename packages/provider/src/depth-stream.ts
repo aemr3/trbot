@@ -12,7 +12,7 @@ import { DepthBookAccumulator } from "./depth-book.ts"
 const DEFAULT_RECONNECT_DELAYS_MS = [1000, 3000, 5000]
 
 export interface ApiDepthStreamOptions {
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   reconnectDelaysMs?: number[]
 }
 
@@ -134,6 +134,6 @@ export class ApiDepthStream implements DepthStream {
   }
 }
 
-function isPermanentDepthError(error: unknown): boolean {
-  return error instanceof StreamHttpError && (error.status === 403 || error.status === 404)
+function isPermanentDepthError(cause: unknown): boolean {
+  return cause instanceof StreamHttpError && (cause.status === 403 || cause.status === 404)
 }

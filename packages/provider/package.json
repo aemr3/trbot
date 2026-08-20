@@ -9,7 +9,8 @@
     "@trbot/api": "workspace:*",
     "@trbot/market": "workspace:*",
     "@trbot/member": "workspace:*",
-    "@trbot/trading": "workspace:*"
+    "@trbot/trading": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@trbot/tsconfig": "workspace:*"

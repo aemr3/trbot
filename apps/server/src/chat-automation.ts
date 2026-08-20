@@ -30,13 +30,13 @@ export const DEFAULT_LOOP_PROMPT = [
 export interface ChatAutomationControllerOptions {
   store: ChatAutomationStore
   detail: (sessionId: string) => Promise<ChatSessionDetail>
-  enqueueEvent: (sessionId: string, event: ChatApplicationEvent) => Promise<unknown>
+  enqueueEvent: (sessionId: string, event: ChatApplicationEvent) => Promise<void>
   cancelQueuedEvents?: (sessionId: string, label: string, referenceId: string) => Promise<void>
   resolveModel: (detail: ChatSessionDetail) => Promise<ChatTurnModel>
   evaluator: ChatGoalEvaluatorRunner
   defaultLoopPrompt?: () => Promise<string | null>
-  notify?: (input: { sessionId: string; title: string; message: string }) => Promise<unknown>
-  onError: (error: unknown) => void
+  notify?: (input: { sessionId: string; title: string; message: string }) => Promise<void>
+  onError: (cause: unknown) => void
   now?: () => number
   pollMs?: number
 }

@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import { ChatQuestionPanel } from "./chat-question-panel.ts"
 
 function key(name: string, sequence?: string): KeyEvent {
-  return { name, sequence: sequence ?? name } as KeyEvent
+  return keyEvent(name, { sequence: sequence ?? name })
 }
 
 function request(questions: ChatQuestionRequest["questions"]): ChatQuestionRequest {

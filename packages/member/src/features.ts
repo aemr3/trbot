@@ -12,6 +12,7 @@ const MEMBER_FEATURES = [
 
 export type MemberFeature = (typeof MEMBER_FEATURES)[number]
 export const MemberFeatureSchema = z.enum(MEMBER_FEATURES)
+const MemberFeatureInputSchema = z.preprocess((value) => value, MemberFeatureSchema)
 
 /**
  * What the member is entitled to.
@@ -37,6 +38,6 @@ export function memberFeatureSet(features: Iterable<MemberFeature>): MemberFeatu
   }
 }
 
-export function isMemberFeature(value: unknown): value is MemberFeature {
-  return typeof value === "string" && MEMBER_FEATURES.some((feature) => feature === value)
+export function isMemberFeature(value: z.input<typeof MemberFeatureInputSchema>): value is MemberFeature {
+  return MemberFeatureSchema.safeParse(value).success
 }

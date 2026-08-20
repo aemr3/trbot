@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { AiCredentialRecord, AiCredentialStore } from "./credential-store.ts"
-import { StoredCredentials } from "./credentials.ts"
+import { asCredential, StoredCredentials } from "./credentials.ts"
 
 /**
  * The one part of credential handling that stays ours: where a credential lives.
@@ -42,10 +42,10 @@ describe("the stored credential", () => {
       access: "access-2",
       refresh: "refresh-2",
       expires: 1_200_000,
-      accountId: (current as { accountId?: string } | undefined)?.accountId ?? null,
+      accountId: current?.type === "oauth" ? current.accountId ?? null : null,
     }))
 
-    expect((written as { access: string }).access).toBe("access-2")
+    expect(written?.type === "oauth" ? written.access : null).toBe("access-2")
     const stored = await credentialIn(store)
     expect(stored?.access).toBe("access-2")
     expect(stored?.refresh).toBe("refresh-2")
@@ -64,7 +64,8 @@ describe("the stored credential", () => {
     const rotate = (name: string) =>
       credentials.modify(PROVIDER, async (current) => {
         order.push(`${name}:read`)
-        const previous = (current as { refresh: string }).refresh
+        if (current?.type !== "oauth") throw new Error("Expected an OAuth credential")
+        const previous = current.refresh
         await Bun.sleep(5)
         order.push(`${name}:write`)
         return { type: "oauth", access: "a", refresh: `${previous}+${name}`, expires: 1 }
@@ -86,7 +87,7 @@ describe("the stored credential", () => {
 
     const kept = await credentials.modify(PROVIDER, async () => undefined)
 
-    expect((kept as { access: string }).access).toBe("access-1")
+    expect(kept?.type === "oauth" ? kept.access : null).toBe("access-1")
     expect((await credentialIn(store))?.access).toBe("access-1")
   })
 
@@ -104,7 +105,7 @@ describe("the stored credential", () => {
       refresh: "refresh-2",
       expires: 2,
     }))
-    expect((after as { access: string }).access).toBe("access-2")
+    expect(after?.type === "oauth" ? after.access : null).toBe("access-2")
   })
 
   test("forgets the connection on logout", async () => {
@@ -150,7 +151,8 @@ function connection(): AiCredentialRecord {
 /** What is actually written, read straight back off the record. */
 async function credentialIn(store: AiCredentialStore): Promise<{ access: string; refresh: string } | null> {
   const record = await store.get(PROVIDER)
-  return record ? (record.credential as { access: string; refresh: string }) : null
+  const credential = record ? asCredential(record.credential) : undefined
+  return credential?.type === "oauth" ? { access: credential.access, refresh: credential.refresh } : null
 }
 
 function memoryStore(...initial: AiCredentialRecord[]): AiCredentialStore {

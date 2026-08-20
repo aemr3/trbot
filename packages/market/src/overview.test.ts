@@ -3,6 +3,7 @@ import type { BrokerageDistribution, BrokerageShare } from "./brokerage.ts"
 import type { DepthBook } from "./depth.ts"
 import { buildOverviewDigest, isSameDigest } from "./overview.ts"
 import type { SettlementAnalysis, SettlementHolding } from "./settlement.ts"
+import type { CandleInterval } from "./candle.ts"
 
 // The digest is priced on the underlying; the contract trades four lira over it.
 const INSTRUMENT = {
@@ -175,10 +176,10 @@ test("keeps sections null when their feed is missing", () => {
 })
 
 test("carries both price-history timeframes in exchange-local time", () => {
-  const series = (interval: string, count: number) => ({
+  const series = (interval: CandleInterval, count: number) => ({
     instrumentUid: "u1",
     range: "INTRADAY" as const,
-    interval: interval as never,
+    interval,
     // 2026-08-14 11:00 UTC = 14:00 in Istanbul, one candle per minute.
     candles: Array.from({ length: count }, (_, index) => ({
       timestamp: Date.UTC(2026, 7, 14, 11, index),

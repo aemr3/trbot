@@ -30,9 +30,9 @@ import type { ChatAutomationController } from "../chat-automation.ts"
 import type { AlertController } from "../monitors/alert.ts"
 import type { MarketMonitorController } from "../monitors/market-monitor.ts"
 import type { StopController } from "../monitors/stop.ts"
-import { hashRequest, type IdempotencyStore } from "./idempotency.ts"
+import { hashRequest, type IdempotencyStore, type IdempotentInput } from "./idempotency.ts"
 import { AttemptLimiter, json, ndjson, readJsonObject, readJsonObjectOrEmpty } from "./request.ts"
-import type { ProviderSession } from "../session.ts"
+import type { ProviderSessionAccess } from "../session.ts"
 import * as check from "./validate.ts"
 
 interface AppPreferencesStore {
@@ -41,7 +41,7 @@ interface AppPreferencesStore {
 }
 
 export interface RouteContext {
-  session: ProviderSession
+  session: ProviderSessionAccess
   idempotency: IdempotencyStore
   preferences: AppPreferencesStore
   /** The controllers, not their stores: see the alert and stop routes below. */
@@ -71,8 +71,8 @@ async function once(
   request: Request,
   context: RouteContext,
   route: string,
-  body: unknown,
-  run: () => Promise<unknown>,
+  body: IdempotentInput,
+  run: () => Promise<IdempotentInput>,
 ): Promise<Response> {
   const key = request.headers.get(IDEMPOTENCY_HEADER)
   if (!key) return json(await run())
@@ -80,7 +80,11 @@ async function once(
   return json(await context.idempotency.run(key, route, hashRequest(body), run))
 }
 
-export const HANDLERS: Record<string, Partial<Record<string, Handler>>> = {
+interface HandlerRegistry {
+  [path: string]: Partial<Record<string, Handler>>
+}
+
+export const HANDLERS: HandlerRegistry = {
   [ROUTES.health]: {
     GET: async () => json({ ok: true }),
   },

@@ -36,21 +36,17 @@ export class StreamHttpError extends Error {
   }
 }
 
-export function isTransientStreamError(error: unknown): boolean {
-  const pending: unknown[] = [error]
-  const seen = new Set<object>()
+export function isTransientStreamError(cause: unknown): boolean {
+  const pending: unknown[] = [cause]
+  const seen = new Set<Error>()
   while (pending.length > 0) {
     const value = pending.shift()
-    if (!value || typeof value !== "object" || seen.has(value)) continue
+    if (!(value instanceof Error) || seen.has(value)) continue
     seen.add(value)
     if (value instanceof StreamHttpError && value.status >= 500) return true
-    if (value instanceof Error && value.message.includes("socket connection was closed unexpectedly")) return true
-    const record = value as Record<string, unknown>
-    for (const key of ["cause", "error", "errors"]) {
-      const nested = record[key]
-      if (Array.isArray(nested)) pending.push(...nested)
-      else if (nested !== undefined) pending.push(nested)
-    }
+    if (value.message.includes("socket connection was closed unexpectedly")) return true
+    if (value.cause !== undefined) pending.push(value.cause)
+    if (value instanceof AggregateError) pending.push(...value.errors)
   }
   return false
 }

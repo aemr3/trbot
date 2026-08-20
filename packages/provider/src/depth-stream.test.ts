@@ -33,7 +33,7 @@ class FakeStreamClient {
 test("streams the requested book and follows a new symbol", async () => {
   const client = new FakeStreamClient()
   const books: DepthBook[] = []
-  const stream = new ApiDepthStream(client as never, { reconnectDelaysMs: [1000] })
+  const stream = new ApiDepthStream(client, { reconnectDelaysMs: [1000] })
   stream.subscribe((book) => books.push(book))
 
   stream.start("asels")
@@ -55,7 +55,7 @@ test("streams the requested book and follows a new symbol", async () => {
 test("reports the book as unavailable and stops retrying when the symbol has none", async () => {
   const client = new FakeStreamClient(new StreamHttpError(404))
   const statuses: DepthStatus[] = []
-  const stream = new ApiDepthStream(client as never, { reconnectDelaysMs: [1] })
+  const stream = new ApiDepthStream(client, { reconnectDelaysMs: [1] })
   stream.onStatusChange((status) => statuses.push(status))
 
   stream.start("F_ASELS0826")
@@ -70,7 +70,7 @@ test("reports the book as unavailable and stops retrying when the symbol has non
 test("keeps retrying a transient stream failure", async () => {
   const client = new FakeStreamClient(new StreamHttpError(503))
   const errors: unknown[] = []
-  const stream = new ApiDepthStream(client as never, {
+  const stream = new ApiDepthStream(client, {
     reconnectDelaysMs: [1],
     onError: (error) => errors.push(error),
   })

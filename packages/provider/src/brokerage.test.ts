@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test"
-import type { GraphqlOperation } from "@trbot/api/graphql.ts"
+import { providerApiClient, type ProviderTestRequest } from "@trbot/api/provider-client.test-fixture.ts"
 import { ApiBrokerageDistributionSource } from "./brokerage.ts"
+
+interface BrokerageCall {
+  name: string
+  variables: ProviderTestRequest["variables"]
+}
 
 const distributionPayload = {
   brokerageDistribution: {
@@ -28,22 +33,20 @@ const distributionPayload = {
 }
 
 function fakeClient() {
-  const calls: { name: string; variables: Record<string, unknown> }[] = []
-  const client = {
-    async call(operation: GraphqlOperation<unknown, never>, variables: Record<string, unknown>) {
-      calls.push({ name: operation.name, variables })
-      if (operation.name === "getInstrument") {
+  const calls: BrokerageCall[] = []
+  const client = providerApiClient((request) => {
+      calls.push({ name: request.operationName, variables: request.variables })
+      if (request.operationName === "getInstrument") {
         return { instrument: { __typename: "Future", underlyingInstrumentUid: "stock-uid" } }
       }
       return distributionPayload
-    },
-  }
+  })
   return { client, calls }
 }
 
 test("reads the distribution for the stock behind the contract", async () => {
   const { client, calls } = fakeClient()
-  const source = new ApiBrokerageDistributionSource(client as never)
+  const source = new ApiBrokerageDistributionSource(client)
 
   const distribution = await source.loadDistribution({
     instrumentUid: "future-uid",
@@ -69,7 +72,7 @@ test("reads the distribution for the stock behind the contract", async () => {
 
 test("caches the underlying so repeated loads cost one query", async () => {
   const { client, calls } = fakeClient()
-  const source = new ApiBrokerageDistributionSource(client as never)
+  const source = new ApiBrokerageDistributionSource(client)
 
   await source.loadDistribution({ instrumentUid: "future-uid", side: "BUYER", range: { start: null, end: null } })
   await source.loadDistribution({ instrumentUid: "future-uid", side: "SELLER", range: { start: null, end: null } })
@@ -79,7 +82,7 @@ test("caches the underlying so repeated loads cost one query", async () => {
 
 test("keeps only the presets that carry their own dates", async () => {
   const { client } = fakeClient()
-  const source = new ApiBrokerageDistributionSource(client as never)
+  const source = new ApiBrokerageDistributionSource(client)
 
   const distribution = await source.loadDistribution({
     instrumentUid: "future-uid",

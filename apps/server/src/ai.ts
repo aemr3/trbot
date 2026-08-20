@@ -122,12 +122,12 @@ export class AiService {
     if (this.options.generator) return await this.options.generator.generate(digest, options)
 
     const choice = (await this.connections.preferences()).overview
+    if (!choice) throw new ProtocolError("invalid_request", "Choose an overview model first")
     await this.requireModel("overview", choice?.providerId, choice?.modelId)
-    const chosen = choice as NonNullable<typeof choice>
     const generator = new ModelOverviewGenerator(
       this.options.models,
-      harnessModel(this.options.models, chosen.providerId, chosen.modelId),
-      { reasoningEffort: chosen.reasoning ?? undefined },
+      harnessModel(this.options.models, choice.providerId, choice.modelId),
+      { reasoningEffort: choice.reasoning ?? undefined },
     )
     await generator.generate(digest, options)
   }

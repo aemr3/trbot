@@ -1,10 +1,23 @@
 import { expect, test } from "bun:test"
-import type { GraphqlOperation } from "@trbot/api/graphql.ts"
+import { providerApiClient, type ProviderTestRequest } from "@trbot/api/provider-client.test-fixture.ts"
 import { tradingOperations } from "@trbot/api/trading.ts"
 import { ApiViopOrderSource } from "./order.ts"
+import { z } from "zod"
+
+const RecordedVariablesSchema = z.object({
+  orderId: z.string().nullable().optional(),
+  instrumentId: z.string().nullable().optional(),
+  page: z.number().optional(),
+  quantity: z.number().optional(),
+}).loose()
+
+interface RecordedCall {
+  name: string
+  variables: ProviderTestRequest["variables"]
+}
 
 test("prepares a futures order with exchange limits, quote, collateral, and position intent", async () => {
-  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const calls: RecordedCall[] = []
   const client = fakeClient(calls, 2)
   const source = new ApiViopOrderSource(client)
 
@@ -23,11 +36,13 @@ test("prepares a futures order with exchange limits, quote, collateral, and posi
     currentPositionQuantity: 2,
     positionIntent: "SELL_TO_CLOSE",
   })
-  expect(calls.find((call) => call.name === "prepareOrder")?.variables.positionIntent).toBe("SELL_TO_CLOSE")
+  expect(calls.find((call) => call.name === "prepareOrder")?.variables).toMatchObject({
+    positionIntent: "SELL_TO_CLOSE",
+  })
 })
 
 test("submits futures trades as validated day limit orders", async () => {
-  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const calls: RecordedCall[] = []
   const source = new ApiViopOrderSource(fakeClient(calls, 0))
 
   const placed = await source.placeOrder({ instrumentUid: "future-1", side: "BUY", quantity: 2, limitPrice: 230.1 })
@@ -52,7 +67,7 @@ test("rejects prices outside the prepared exchange limits", async () => {
 })
 
 test("lists every pending futures order page and cancels each order", async () => {
-  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const calls: RecordedCall[] = []
   const source = new ApiViopOrderSource(fakeClient(calls, 0))
 
   const orders = await source.listPendingOrders()
@@ -70,7 +85,7 @@ test("lists every pending futures order page and cancels each order", async () =
 })
 
 test("continues cancelling remaining orders after an individual failure", async () => {
-  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const calls: RecordedCall[] = []
   const source = new ApiViopOrderSource(fakeClient(calls, 0, "pending-1"))
 
   const result = await source.cancelPendingOrders({ orderUids: ["pending-1", "pending-2"] })
@@ -83,7 +98,7 @@ test("continues cancelling remaining orders after an individual failure", async 
 })
 
 test("submits simulated-market close orders for every long and short VIOP position", async () => {
-  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const calls: RecordedCall[] = []
   const source = new ApiViopOrderSource(fakeExitClient(calls))
 
   const result = await source.exitAllPositions()
@@ -118,7 +133,7 @@ test("submits simulated-market close orders for every long and short VIOP positi
 })
 
 test("continues exiting remaining VIOP positions after an individual failure", async () => {
-  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const calls: RecordedCall[] = []
   const source = new ApiViopOrderSource(fakeExitClient(calls, "future-long"))
 
   const result = await source.exitAllPositions()
@@ -134,7 +149,7 @@ test("continues exiting remaining VIOP positions after an individual failure", a
 })
 
 test("exits a single position, closing only what it holds", async () => {
-  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const calls: RecordedCall[] = []
   const source = new ApiViopOrderSource(fakeExitClient(calls))
 
   const submitted = await source.exitPosition({ instrumentUid: "future-short" })
@@ -160,17 +175,18 @@ test("exits a single position, closing only what it holds", async () => {
 })
 
 test("caps a partial exit at the open quantity", async () => {
-  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const calls: RecordedCall[] = []
   const source = new ApiViopOrderSource(fakeExitClient(calls))
 
   expect(await source.exitPosition({ instrumentUid: "future-long", quantity: 1 })).toMatchObject({ quantity: 1 })
   // Asking for more than the position holds would open a reverse position.
   expect(await source.exitPosition({ instrumentUid: "future-long", quantity: 9 })).toMatchObject({ quantity: 2 })
-  expect(calls.filter((call) => call.name === "placeOrder").map((call) => call.variables.quantity)).toEqual([1, 2])
+  expect(calls.filter((call) => call.name === "placeOrder")
+    .map((call) => RecordedVariablesSchema.parse(call.variables).quantity)).toEqual([1, 2])
 })
 
 test("refuses to exit a position that is no longer open", async () => {
-  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
+  const calls: RecordedCall[] = []
   const source = new ApiViopOrderSource(fakeExitClient(calls))
 
   await expect(source.exitPosition({ instrumentUid: "future-gone" })).rejects.toThrow("Position is no longer open")
@@ -178,29 +194,23 @@ test("refuses to exit a position that is no longer open", async () => {
 })
 
 function fakeClient(
-  calls: Array<{ name: string; variables: Record<string, unknown> }>,
+  calls: RecordedCall[],
   positionQuantity: number,
   cancelFailureUid?: string,
 ) {
-  return {
-    async authenticate() {
-      return { accessToken: "token", refreshToken: null, memberUid: "member" }
-    },
-    async call<TData, TVariables extends Record<string, unknown>>(
-      operation: GraphqlOperation<TData, TVariables>,
-      variables: TVariables,
-    ): Promise<TData> {
-      calls.push({ name: operation.name, variables })
-      if (operation.name === "cancelOrder" && variables.orderId === cancelFailureUid) {
+  return providerApiClient((call) => {
+      calls.push({ name: call.operationName, variables: call.variables })
+      const request = RecordedVariablesSchema.parse(call.variables)
+      if (call.operationName === "cancelOrder" && request.orderId === cancelFailureUid) {
         throw new Error("Cancellation rejected")
       }
-      const response = operation.name === "overviewV7"
+      const response = call.operationName === "overviewV7"
         ? { overviewV7: { accounts: [{ accountUid: "try-account", status: "ACTIVE", currency: "TRY" }] } }
-        : operation.name === "viopOverviewPositions"
+          : call.operationName === "viopOverviewPositions"
           ? { viopOverviewPositions: { positions: [{ assetUid: "future-1", quantity: positionQuantity }] } }
-          : operation.name === "assetFuture"
+          : call.operationName === "assetFuture"
             ? { assetFuture: { multiplier: 100, tradePriceAndQuote: { ask: 210, bid: 209.55, futurePrice: 209.55 }, priceFormat: { scale: 2 } } }
-            : operation.name === "prepareOrder"
+            : call.operationName === "prepareOrder"
               ? {
                   orderPreparationV2: {
                     type: "LIMIT",
@@ -212,10 +222,10 @@ function fakeClient(
                     },
                   },
                 }
-              : operation.name === "accountViopMarginHealthDetail"
+              : call.operationName === "accountViopMarginHealthDetail"
                 ? { accountViopMarginHealthDetail: { availableCollateral: 45_000 } }
-                : operation.name === "transactionHistoryForInvestmentType"
-                  ? Number(variables.page) === 0
+                : call.operationName === "transactionHistoryForInvestmentType"
+                  ? Number(request.page) === 0
                     ? {
                         transactionHistoryForInvestmentType: {
                           items: [{ uid: "pending-1", detail: { title: "First order" } }],
@@ -228,36 +238,29 @@ function fakeClient(
                           hasMore: false,
                         },
                       }
-                  : operation.name === "cancelOrder"
-                    ? { cancelOrder: { order: { uid: variables.orderId, status: "PENDING_CANCEL" } } }
-                : operation.name === "placeOrder"
+                  : call.operationName === "cancelOrder"
+                    ? { cancelOrder: { order: { uid: request.orderId, status: "PENDING_CANCEL" } } }
+                : call.operationName === "placeOrder"
                   ? { placeOrderV2: { order: { uid: "order-1", status: "PENDING", statusDescription: "Bekliyor" } } }
                   : null
-      if (!response) throw new Error(`Unexpected operation ${operation.name}`)
-      return response as TData
-    },
-  }
+      if (!response) throw new Error(`Unexpected operation ${call.operationName}`)
+      return response
+  }, { memberUid: "member" })
 }
 
 function fakeExitClient(
-  calls: Array<{ name: string; variables: Record<string, unknown> }>,
+  calls: RecordedCall[],
   failureInstrumentUid?: string,
 ) {
-  return {
-    async authenticate() {
-      return { accessToken: "token", refreshToken: null, memberUid: "member" }
-    },
-    async call<TData, TVariables extends Record<string, unknown>>(
-      operation: GraphqlOperation<TData, TVariables>,
-      variables: TVariables,
-    ): Promise<TData> {
-      calls.push({ name: operation.name, variables })
-      if (operation.name === "placeOrder" && variables.instrumentId === failureInstrumentUid) {
+  return providerApiClient((call) => {
+      calls.push({ name: call.operationName, variables: call.variables })
+      const request = RecordedVariablesSchema.parse(call.variables)
+      if (call.operationName === "placeOrder" && request.instrumentId === failureInstrumentUid) {
         throw new Error("Exit rejected")
       }
-      const response = operation.name === "overviewV7"
+      const response = call.operationName === "overviewV7"
         ? { overviewV7: { accounts: [{ accountUid: "try-account", status: "ACTIVE", currency: "TRY" }] } }
-        : operation.name === "viopOverviewPositions"
+        : call.operationName === "viopOverviewPositions"
           ? {
               viopOverviewPositions: {
                 positions: [
@@ -266,9 +269,9 @@ function fakeExitClient(
                 ],
               },
             }
-          : operation.name === "assetFuture"
+          : call.operationName === "assetFuture"
             ? { assetFuture: { priceFormat: { scale: 2 } } }
-            : operation.name === "prepareOrder"
+            : call.operationName === "prepareOrder"
               ? {
                   orderPreparationV2: {
                     type: "LIMIT",
@@ -279,15 +282,14 @@ function fakeExitClient(
                     },
                   },
                 }
-              : operation.name === "placeOrder"
+              : call.operationName === "placeOrder"
                 ? {
                     placeOrderV2: {
-                      order: { uid: `exit-${String(variables.instrumentId)}`, status: "PENDING" },
+                      order: { uid: `exit-${String(request.instrumentId)}`, status: "PENDING" },
                     },
                   }
                 : null
-      if (!response) throw new Error(`Unexpected operation ${operation.name}`)
-      return response as TData
-    },
-  }
+      if (!response) throw new Error(`Unexpected operation ${call.operationName}`)
+      return response
+  }, { memberUid: "member" })
 }

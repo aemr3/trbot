@@ -4,9 +4,11 @@ import { HttpAlerts, HttpMarketMonitors, HttpStopRules } from "@trbot/client/mon
 import { HttpClient } from "@trbot/client/http.ts"
 import type { PriceAlert, PriceAlertStore } from "@trbot/market/alert.ts"
 import type { MarketMonitor, MarketMonitorStore } from "@trbot/market/market-monitor.ts"
+import { DEFAULT_INTERVALS_BY_RANGE } from "@trbot/market/candle.ts"
 import type { StopRule, StopRuleStore } from "@trbot/trading/stop.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import { startServer } from "../http/server.ts"
+import { serverDeps } from "../http/server.test-fixture.ts"
 import { ProviderSession } from "../session.ts"
 import { StreamHub } from "../stream-hub.ts"
 import type { SocketData } from "../stream-hub.ts"
@@ -16,8 +18,6 @@ import { StopController } from "./stop.ts"
 import { z } from "zod"
 
 const TOKEN = "editing-token"
-
-const notUsed = new Proxy({}, { get: () => () => { throw new Error("not used in this test") } })
 
 function emptyAuthSession() {
   return Promise.resolve({
@@ -131,23 +131,15 @@ describe("editing the rules the server evaluates", () => {
     })
     server = startServer(
       { host: "127.0.0.1", port: 0, token: TOKEN, tls: null },
-      {
+      serverDeps({
         session,
         hub: new StreamHub(session),
-        idempotency: notUsed as never,
-        preferences: notUsed as never,
-        overviewSnapshots: notUsed as never,
-        ai: notUsed as never,
-        chat: notUsed as never,
-        questions: notUsed as never,
-      notifications: notUsed as never,
-      automations: notUsed as never,
         alerts,
         marketMonitors,
         stops,
         backlog: () => [],
         onDecision: () => {},
-      },
+      }),
     )
     client = new HttpClient({ url: `http://127.0.0.1:${server.port}`, token: TOKEN })
   })
@@ -241,7 +233,15 @@ describe("editing the rules the server evaluates", () => {
       candles: {
         async loadCandles(instrumentUid) {
           reads.push(instrumentUid)
-          return { candles: [], interval: "DAY_1", range: "MONTH" } as never
+          return {
+            instrumentUid,
+            candles: [],
+            interval: "DAY_1",
+            range: "MONTH",
+            availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+            intervalMs: null,
+            currency: "TRY",
+          }
         },
       },
       exits: () => null,
@@ -259,7 +259,7 @@ describe("editing the rules the server evaluates", () => {
   test("a draft the server cannot trust is refused before it becomes a rule", async () => {
     const failure = await client
       .put(ROUTES.stops, z.unknown(), { body: { ...STOP_DRAFT, side: "SIDEWAYS" } })
-      .then(() => null, (error: unknown) => error as Error)
+      .then(() => null, (cause: unknown) => cause instanceof Error ? cause : null)
 
     expect(failure?.message).toContain("side")
     expect(stops.rules.views()).toBeEmpty()
@@ -281,7 +281,7 @@ describe("editing the rules the server evaluates", () => {
   ])("refuses %s", async (_name, overrides, expected) => {
     const failure = await client
       .put(ROUTES.stops, z.unknown(), { body: { ...STOP_DRAFT, ...overrides } })
-      .then(() => null, (error: unknown) => error as Error)
+      .then(() => null, (cause: unknown) => cause instanceof Error ? cause : null)
 
     expect(failure?.message).toMatch(expected)
     expect(stops.rules.views()).toBeEmpty()
@@ -290,7 +290,7 @@ describe("editing the rules the server evaluates", () => {
   test("an alert the server cannot evaluate is refused the same way", async () => {
     const failure = await client
       .put(ROUTES.alerts, z.unknown(), { body: { ...ALERT_DRAFT, basis: "CLOSE", interval: null } })
-      .then(() => null, (error: unknown) => error as Error)
+      .then(() => null, (cause: unknown) => cause instanceof Error ? cause : null)
 
     expect(failure?.message).toMatch(/timeframe/)
     expect(alerts.alerts.views()).toBeEmpty()

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import type { BrokerageDistribution, BrokerageSide } from "@trbot/market/brokerage.ts"
 import type { SettlementAnalysis, SettlementMode } from "@trbot/market/settlement.ts"
 import { BrokeragePanel, type BrokerView, type BrokeragePanelOptions } from "./brokerage-panel.ts"
@@ -56,7 +57,7 @@ function analysis(mode: SettlementMode, count = 12): SettlementAnalysis {
 }
 
 function key(name: string): KeyEvent {
-  return { name } as KeyEvent
+  return keyEvent(name)
 }
 
 // The watchlist owns the panel's box, so the test sizes it the same way.

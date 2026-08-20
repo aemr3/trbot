@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { PriceAlertView } from "@trbot/market/alert-monitor.ts"
 import type { AccountPosition, AccountSnapshot } from "@trbot/trading/account.ts"
@@ -11,7 +12,7 @@ import { AccountPanel, type AccountPanelOptions } from "./account-panel.ts"
 const NOW = 1_786_000_000_000
 
 function key(name: string): KeyEvent {
-  return { name } as KeyEvent
+  return keyEvent(name)
 }
 
 function rule(overrides: Partial<StopRuleDraft> = {}, patch: Partial<StopRule> = {}): StopRule {

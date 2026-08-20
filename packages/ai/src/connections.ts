@@ -6,8 +6,11 @@ import type {
   AiProviderSummary,
 } from "@trbot/protocol/ai.ts"
 import type { AiCredentialStore, AiPreferencesStore } from "./credential-store.ts"
-import { asCredential, StoredCredentials } from "./credentials.ts"
+import { asCredential, CredentialInputSchema, StoredCredentials } from "./credentials.ts"
 import type { AiHarness } from "./harness.ts"
+import { z } from "zod"
+
+const CredentialAccountSchema = z.object({ accountId: z.string().min(1).optional() })
 
 /**
  * The model providers a trader has, and which model answers.
@@ -59,7 +62,10 @@ export class AiConnections {
   }
 
   /** Records what a login produced, and picks up a dynamic catalogue if there is one. */
-  async connect(providerId: string, credential: unknown): Promise<AiProviderSummary> {
+  async connect(
+    providerId: string,
+    credential: z.input<typeof CredentialInputSchema>,
+  ): Promise<AiProviderSummary> {
     const valid = asCredential(credential)
     if (!valid) throw new Error("That is not a credential this harness recognises")
     if (!this.harness.getProvider(providerId)) throw new Error(`No provider named "${providerId}"`)
@@ -119,10 +125,10 @@ export class AiConnections {
   }
 }
 
-function accountIdOf(credential: unknown): string | null {
+function accountIdOf(credential: z.input<typeof CredentialInputSchema>): string | null {
   const valid = asCredential(credential)
-  const accountId = (valid as { accountId?: unknown } | undefined)?.accountId
-  return typeof accountId === "string" && accountId.length > 0 ? accountId : null
+  const parsed = CredentialAccountSchema.safeParse(valid)
+  return parsed.success ? parsed.data.accountId ?? null : null
 }
 
 /** Connected providers first, so a trader's own list is at the top. */

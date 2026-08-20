@@ -1,8 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import type { AuthSession } from "@trbot/auth/session.ts"
+import type { AuthSession, OpenAuthSession } from "@trbot/auth/session.ts"
 import type { AuthState } from "@trbot/auth/state.ts"
 import type { AuthStore } from "@trbot/auth/store.ts"
-import { ProviderSession } from "./session.ts"
+import type { AppCredentials } from "@trbot/config"
+import { ProtocolError } from "@trbot/protocol/error.ts"
+import { providerSources } from "./provider.test-fixture.ts"
+import {
+  ProviderSession,
+  type ProviderSessionConnector,
+  type ProviderSessionHandle,
+  type ProviderSourceOptions,
+  type ProviderSources,
+} from "./session.ts"
 
 function authState(): AuthState {
   return {
@@ -21,8 +30,8 @@ function authState(): AuthState {
   }
 }
 
-/** An auth store holding `state`, so `resumeApiClient` builds a client from it. */
-function sessionWith(state: AuthState | null, opened: { count: number }): () => Promise<AuthSession> {
+/** An auth store holding `state`, so the default connector can rebuild a client from it. */
+function sessionWith(state: AuthState | null, opened: { count: number }): OpenAuthSession {
   const store: AuthStore = {
     async get(): Promise<AuthState | null> {
       return state
@@ -32,16 +41,74 @@ function sessionWith(state: AuthState | null, opened: { count: number }): () => 
     },
     async put(): Promise<void> {},
   }
-  return async () => {
+  return async (): Promise<AuthSession> => {
     opened.count += 1
     return { store, close() {} }
   }
 }
 
-/** Takes the session through what a sign-in or a recovery does to it. */
-function adopt(session: ProviderSession): void {
-  const internals = session as unknown as { adopt(handle: { client: unknown; close(): void }): void }
-  internals.adopt({ client: {}, close() {} })
+class TestHandle implements ProviderSessionHandle {
+  closed = 0
+
+  constructor(
+    private readonly sourceFactory: (options: ProviderSourceOptions) => ProviderSources = () => providerSources(),
+    private readonly authenticateResult: () => Promise<void> = async () => {},
+    private readonly reauthenticateResult: () => Promise<void> = async () => {},
+    private readonly completeLoginResult: () => Promise<void> = async () => {},
+  ) {}
+
+  authenticate(): Promise<void> {
+    return this.authenticateResult()
+  }
+
+  reauthenticate(): Promise<void> {
+    return this.reauthenticateResult()
+  }
+
+  completeLogin(): Promise<void> {
+    return this.completeLoginResult()
+  }
+
+  sources(options: ProviderSourceOptions): ProviderSources {
+    return this.sourceFactory(options)
+  }
+
+  close(): void {
+    this.closed += 1
+  }
+}
+
+class TestConnector implements ProviderSessionConnector {
+  openCalls = 0
+  resumeCalls = 0
+
+  constructor(
+    private readonly opened: TestHandle[] = [],
+    private readonly resumed: Array<TestHandle | null> = [],
+  ) {}
+
+  async open(_openAuthSession: OpenAuthSession, _credentials: AppCredentials): Promise<ProviderSessionHandle> {
+    this.openCalls += 1
+    const handle = this.opened.shift()
+    if (!handle) throw new Error("No test provider handle was queued for login")
+    return handle
+  }
+
+  async resume(
+    _openAuthSession: OpenAuthSession,
+    _credentials: AppCredentials | null,
+  ): Promise<ProviderSessionHandle | null> {
+    this.resumeCalls += 1
+    return this.resumed.shift() ?? null
+  }
+}
+
+const noAuthSession: OpenAuthSession = async () => {
+  throw new Error("The test connector must not open auth storage")
+}
+
+function testSession(connector: ProviderSessionConnector): ProviderSession {
+  return new ProviderSession({ openAuthSession: noAuthSession, credentials: null, connector })
 }
 
 describe("provider session recovery", () => {
@@ -57,7 +124,7 @@ describe("provider session recovery", () => {
       credentials: null,
     })
 
-    const error = await session.login(username, "password").catch((reason: unknown) => reason)
+    const error = await session.login(username, "password").catch((cause: unknown) => cause)
 
     expect(error).toMatchObject({ code: "otp_required" })
     expect(session.authenticated).toBe(false)
@@ -75,113 +142,114 @@ describe("provider session recovery", () => {
   })
 
   test("a signed-out session reports unauthenticated rather than throwing something opaque", () => {
-    const session = new ProviderSession({ openAuthSession: sessionWith(null, { count: 0 }), credentials: null })
+    const session = testSession(new TestConnector())
     expect(() => session.require()).toThrow(/no provider session/)
   })
 
   test("concurrent recoveries share one attempt", async () => {
-    const opened = { count: 0 }
-    const session = new ProviderSession({
-      openAuthSession: sessionWith(authState(), opened),
-      // Credentials make it try, and the attempt fails because no provider is
-      // reachable from a test — which is the path being measured.
-      credentials: { username: "u", password: "p" },
-    })
+    const failed = new TestHandle(
+      undefined,
+      async () => {
+        throw new Error("provider unavailable")
+      },
+    )
+    const connector = new TestConnector([], [failed])
+    const session = testSession(connector)
 
     const [first, second, third] = await Promise.all([session.recover(), session.recover(), session.recover()])
 
     expect([first, second, third]).toEqual([false, false, false])
-    // One shared attempt, not three: a burst of failing requests must not start
-    // a login storm against the provider.
-    expect(opened.count).toBe(1)
+    expect(connector.resumeCalls).toBe(1)
   })
 
   test("a later recovery starts a fresh attempt", async () => {
-    const opened = { count: 0 }
-    const session = new ProviderSession({
-      openAuthSession: sessionWith(authState(), opened),
-      credentials: { username: "u", password: "p" },
-    })
+    const failure = (): TestHandle => new TestHandle(
+      undefined,
+      async () => {
+        throw new Error("provider unavailable")
+      },
+    )
+    const connector = new TestConnector([], [failure(), failure()])
+    const session = testSession(connector)
 
     await session.recover()
     await session.recover()
 
-    expect(opened.count).toBe(2)
+    expect(connector.resumeCalls).toBe(2)
   })
 
-  /**
-   * A recovery happens on its own, so nothing afterwards would resubscribe: the
-   * old streams have been stopped, every source object has been replaced, and
-   * any client is still attached to a socket that has simply gone quiet.
-   *
-   * This drives the real adoption rather than a stand-in for it, with a handle
-   * carrying no client — building the sources touches nothing.
-   */
-  test("adopting a session tells its listeners, so the streams can be taken out again", () => {
-    const session = new ProviderSession({ openAuthSession: sessionWith(null, { count: 0 }), credentials: null })
+  test("adopting a session tells listeners, so streams can be subscribed again", async () => {
+    const connector = new TestConnector([new TestHandle(), new TestHandle()])
+    const session = testSession(connector)
     let adopted = 0
     session.onSession(() => (adopted += 1))
 
-    adopt(session)
+    await session.login("user", "password")
     expect(adopted).toBe(1)
     expect(session.authenticated).toBe(true)
 
-    // A second sign-in replaces the sources again, so it has to be announced again.
-    adopt(session)
+    await session.login("user", "password")
     expect(adopted).toBe(2)
   })
 
-  /**
-   * A sign-in over a session that is still live — the trader signing in again
-   * while the server holds a working session — must not leave the old streams
-   * connected. They would keep a second set of subscriptions open against the
-   * provider, and the per-symbol ones would never be stopped by anything.
-   */
-  test("adopting a session stops the streams the last one handed out", () => {
-    const session = new ProviderSession({ openAuthSession: sessionWith(null, { count: 0 }), credentials: null })
+  test("adopting a session stops every stream owned by the previous one", async () => {
     const stopped: string[] = []
-    const previous = {
-      quotes: { stop: () => stopped.push("quotes") },
-      accountStream: { stop: () => stopped.push("account") },
-    }
-    ;(session as unknown as { current: unknown }).current = previous
-    ;(session as unknown as { opened: { stop(): void }[] }).opened = [
-      { stop: () => stopped.push("depth") },
-      { stop: () => stopped.push("equity") },
-    ]
+    const first = new TestHandle((options) => {
+      const sources = providerSources({
+        quotes: { subscribe() {}, onConnectionChange() {}, start() {}, stop: () => stopped.push("quotes") },
+        accountStream: {
+          subscribe() {},
+          onConnectionChange() {},
+          setPendingOrders() {},
+          start() {},
+          stop: () => stopped.push("account"),
+        },
+      })
+      const depth = sources.openDepthStream()
+      const equity = sources.openEquityQuoteStream()
+      sources.openDepthStream = () => {
+        options.track(depth)
+        return depth
+      }
+      sources.openEquityQuoteStream = () => {
+        options.track(equity)
+        return equity
+      }
+      depth.stop = () => stopped.push("depth")
+      equity.stop = () => stopped.push("equity")
+      return sources
+    })
+    const session = testSession(new TestConnector([first, new TestHandle()]))
 
-    adopt(session)
+    await session.login("user", "password")
+    session.require().openDepthStream()
+    session.require().openEquityQuoteStream()
+    await session.login("user", "password")
 
     expect(stopped.sort()).toEqual(["account", "depth", "equity", "quotes"])
-    // And the per-symbol streams are no longer tracked, so a later sign-out
-    // does not stop them a second time.
-    expect((session as unknown as { opened: unknown[] }).opened).toBeEmpty()
+    session.close()
+    expect(stopped).toHaveLength(4)
   })
 
-  /**
-   * A half-finished sign-in is stale the moment any session replaces it. Left
-   * redeemable, a second terminal completing an older challenge would replace
-   * the live session with one built from a login the trader had moved on from.
-   */
-  test("adopting a session closes a verification challenge still outstanding", () => {
-    const session = new ProviderSession({ openAuthSession: sessionWith(null, { count: 0 }), credentials: null })
-    let closed = 0
-    ;(session as unknown as { pendingOtp: unknown }).pendingOtp = {
-      client: {},
-      close: () => (closed += 1),
-    }
+  test("a successful sign-in closes an older verification challenge", async () => {
+    const challenge = new TestHandle(
+      undefined,
+      undefined,
+      async () => {
+        throw new ProtocolError("otp_required", "verification required")
+      },
+    )
+    const session = testSession(new TestConnector([challenge, new TestHandle()]))
 
-    adopt(session)
+    await expect(session.login("user", "password")).rejects.toMatchObject({ code: "otp_required" })
+    await session.login("user", "password")
 
-    expect(closed).toBe(1)
-    expect((session as unknown as { pendingOtp: unknown }).pendingOtp).toBeNull()
-    // And the challenge is gone, so completing it now is refused rather than
-    // quietly taking over.
-    expect(() => session.completeOtp("123456")).toThrow(/No sign-in is waiting/)
+    expect(challenge.closed).toBe(1)
+    await expect(session.completeOtp("123456")).rejects.toThrow(/No sign-in is waiting/)
   })
 
-  test("expiring twice still notifies, so a client that reconnects is told", async () => {
-    const session = new ProviderSession({ openAuthSession: sessionWith(null, { count: 0 }), credentials: null })
+  test("expiring twice still notifies, so a client that reconnects is told", () => {
+    const session = testSession(new TestConnector())
     let expired = 0
     session.onExpired(() => (expired += 1))
 

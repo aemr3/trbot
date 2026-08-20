@@ -23,12 +23,20 @@ test("a dynamic loop can choose its next delay only from its own wake-up turn", 
     createdAt: 1_000,
     updatedAt: 1_000,
   }
-  const client = {
+  const unavailable = async (): Promise<never> => {
+    throw new Error("Only rescheduling is used in this test")
+  }
+  const client: ChatAutomationToolsClient = {
+    state: unavailable,
+    createGoal: unavailable,
+    finishGoal: unavailable,
+    createLoop: unavailable,
     rescheduleLoop: async (sessionId: string, loopId: string, intervalMs: number) => {
       calls.push({ sessionId, loopId, intervalMs })
       return { ...loop, intervalMs }
     },
-  } as ChatAutomationToolsClient
+    cancelLoop: unavailable,
+  }
   const tools = new ChatTools(automationTools(client))
   const call = {
     type: "toolCall" as const,

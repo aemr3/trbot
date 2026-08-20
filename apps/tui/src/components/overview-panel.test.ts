@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import { buildOverviewDigest } from "@trbot/market/overview.ts"
 import { OverviewPanel, type OverviewPanelOptions } from "./overview-panel.ts"
 
@@ -11,7 +12,7 @@ const DIGEST = buildOverviewDigest({
 })
 
 function key(name: string): KeyEvent {
-  return { name } as KeyEvent
+  return keyEvent(name)
 }
 
 // The watchlist owns the panel's box, so the test sizes it the same way.

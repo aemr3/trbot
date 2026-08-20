@@ -42,7 +42,6 @@ import type {
 } from "@trbot/trading/order.ts"
 import { createStopRule, type StopRule, type StopRuleDraft, type StopRuleStatus } from "@trbot/trading/stop.ts"
 import { createPriceAlert, type PriceAlert, type PriceAlertDraft, type PriceAlertStatus } from "@trbot/market/alert.ts"
-import type { MonitorClient } from "@trbot/client/stream.ts"
 import type { StopRuleView, StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
 import { RemoteAlerts, RemoteStopRules } from "../remote-monitors.ts"
 import { LogsScreen } from "./logs.ts"
@@ -2001,10 +2000,10 @@ function stopTrigger(rule: StopRule): StopTriggerEvent {
 }
 
 /** Records what the terminal asks the server to do about a fired rule. */
-function fakeMonitorClient(decisions: string[]): MonitorClient {
+function fakeMonitorClient(decisions: string[]) {
   return {
     decideAlert: (alertId: string, decision: string) => decisions.push(`alert:${alertId}:${decision}`),
-  } as unknown as MonitorClient
+  }
 }
 
 test("subscribes to the contracts the server's stop rules protect, not only the watchlist", async () => {
@@ -2261,11 +2260,13 @@ test("the rules a fired stop shows come from the server, not local evaluation", 
  * A stand-in for the AI tab, which this file is not testing. The workspace mounts
  * every panel, so it needs something there.
  */
-function idlePanel(renderer: RenderContext): {
+interface IdlePanel {
   root: BoxRenderable
   handleKey(): void
   destroy(): void
-} {
+}
+
+function idlePanel(renderer: RenderContext): IdlePanel {
   const root = new BoxRenderable(renderer, { width: "100%", height: "100%" })
   return {
     root,

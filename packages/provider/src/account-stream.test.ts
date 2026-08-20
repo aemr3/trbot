@@ -50,7 +50,7 @@ test("streams positions, collateral, and pending order status with the captured 
     async authenticate() {
       return { accessToken: "token", refreshToken: null, memberUid: "member 1" }
     },
-    async *stream(options: { path: string; query?: Record<string, string> }): AsyncGenerator<SseFrame> {
+    async *stream(options: { path: string; query?: Record<string, string>; signal?: AbortSignal }): AsyncGenerator<SseFrame> {
       calls.push({ path: options.path, query: options.query })
       const key = options.path.includes("reactive-position")
         ? "position"
@@ -63,7 +63,7 @@ test("streams positions, collateral, and pending order status with the captured 
   }
   const updates: AccountLiveUpdate[] = []
   const connections: boolean[] = []
-  const stream = new ApiAccountStream(client as never, { reconnectDelaysMs: [1000] })
+  const stream = new ApiAccountStream(client, { reconnectDelaysMs: [1000] })
   stream.subscribe((update) => updates.push(update))
   stream.onConnectionChange((connected) => connections.push(connected))
   stream.setPendingOrders(["order/1"])

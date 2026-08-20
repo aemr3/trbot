@@ -7,7 +7,14 @@ export interface HttpClientOptions {
   token: string
   /** Certificate authority to trust, for a server using a self-signed certificate. */
   ca?: string | null
+  /** Request transport override for tests and embedded clients. */
+  fetch?: HttpFetch
 }
+
+export type HttpFetch = (
+  input: string | URL | Request,
+  init?: RequestInit & { tls?: { ca: string } },
+) => Promise<Response>
 
 export interface RequestOptions {
   query?: Record<string, string | undefined>
@@ -23,9 +30,11 @@ export interface RequestOptions {
  */
 export class HttpClient {
   private readonly tls: { ca: string } | undefined
+  private readonly fetch: HttpFetch
 
   constructor(private readonly options: HttpClientOptions) {
     this.tls = options.ca ? { ca: options.ca } : undefined
+    this.fetch = options.fetch ?? fetch
   }
 
   get<T>(path: string, schema: ZodType<T>, options: RequestOptions = {}): Promise<T> {
@@ -79,18 +88,19 @@ export class HttpClient {
       if (value !== undefined) url.searchParams.set(key, value)
     }
 
-    const headers: Record<string, string> = { Authorization: `Bearer ${this.options.token}` }
-    if (options.body !== undefined) headers["Content-Type"] = "application/json"
-    if (options.idempotencyKey) headers[IDEMPOTENCY_HEADER] = options.idempotencyKey
+    const headers = new Headers({ Authorization: `Bearer ${this.options.token}` })
+    if (options.body !== undefined) headers.set("Content-Type", "application/json")
+    if (options.idempotencyKey) headers.set(IDEMPOTENCY_HEADER, options.idempotencyKey)
 
     let response: Response
     try {
-      response = await fetch(url, {
+      const tls = this.tls ? { tls: this.tls } : {}
+      response = await this.fetch(url, {
         method,
         headers,
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
         signal: options.signal,
-        ...(this.tls ? { tls: this.tls } : {}),
+        ...tls,
       })
     } catch (error) {
       // An aborted request is the caller's own doing, so it passes through
@@ -108,8 +118,8 @@ export class HttpClient {
   }
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError"
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === "AbortError"
 }
 
 /** A fresh key per mutation attempt chain; a retry reuses it deliberately. */

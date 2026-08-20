@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import { ndjson } from "./request.ts"
+import { z } from "zod"
+
+const JsonValueSchema = z.json()
+type JsonValue = z.output<typeof JsonValueSchema>
 
 /** Every frame the response carried, in order. */
-async function framesOf(response: Response): Promise<unknown[]> {
+async function framesOf(response: Response): Promise<JsonValue[]> {
   const text = await response.text()
-  return text.trim().split("\n").map((line) => JSON.parse(line) as unknown)
+  return text.trim().split("\n").map((line) => JsonValueSchema.parse(JSON.parse(line)))
 }
 
 describe("streamed responses", () => {
@@ -35,7 +39,8 @@ describe("streamed responses", () => {
     }, 10)
 
     const frames = await framesOf(response)
-    expect(frames.filter((frame) => (frame as { heartbeat?: boolean }).heartbeat)).not.toBeEmpty()
+    const heartbeat = z.object({ heartbeat: z.literal(true) })
+    expect(frames.filter((frame) => heartbeat.safeParse(frame).success)).not.toBeEmpty()
     expect(frames.at(-1)).toEqual({ delta: "done" })
   })
 

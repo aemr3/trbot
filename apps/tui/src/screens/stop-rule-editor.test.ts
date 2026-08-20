@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { AccountPosition } from "@trbot/trading/account.ts"
 import type { StopRuleDraft } from "@trbot/trading/stop.ts"
 import { StopRuleEditor, type StopRuleEditorOptions } from "./stop-rule-editor.ts"
 
 function key(name: string, sequence?: string): KeyEvent {
-  return { name, sequence: sequence ?? name } as KeyEvent
+  return keyEvent(name, { sequence: sequence ?? name })
 }
 
 function type(editor: StopRuleEditor, digits: string): void {

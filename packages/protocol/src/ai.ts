@@ -113,7 +113,7 @@ export const AiPreferencesSchema: z.ZodType<AiPreferences> = z.object({
  */
 export interface AiCredentials {
   providerId: string
-  credential: Record<string, unknown>
+  credential: z.output<typeof AiCredentialSchema>
 }
 
 export const AiCredentialSchema = z.object({
@@ -151,7 +151,7 @@ export interface AiLoginOptions {
   signal?: AbortSignal
   /** Reported so a trader whose browser did not open can follow the link. */
   onAuthorizationUrl?: (url: string) => void
-  onBrowserError?: (error: unknown) => void
+  onBrowserError?: (cause: unknown) => void
   /** A secret to type: an API key, or a token pasted from a provider's console. */
   onSecret?: (message: string) => Promise<string>
   /** A choice to make, such as browser or device-code login. */

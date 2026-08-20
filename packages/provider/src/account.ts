@@ -191,8 +191,8 @@ export function normalizeOrders(
   })
 }
 
-function finiteNumber(value: unknown): number | null {
-  if (typeof value !== "number" && typeof value !== "string") return null
+function finiteNumber(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }

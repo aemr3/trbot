@@ -37,7 +37,7 @@ describe("idempotency store", () => {
     await store.record("key-1", ROUTE, hash, { orderUid: "order-1" })
     connection.db.$client.run("UPDATE idempotency_keys SET response_body = 'not json'")
 
-    const error = await store.replay("key-1", ROUTE, hash).catch((caught: unknown) => caught)
+    const error = await store.replay("key-1", ROUTE, hash).catch((cause: unknown) => cause)
 
     expect(isProtocolError(error) && error.code).toBe("internal")
     expect(isProtocolError(error) && error.message).toContain("corrupt")
@@ -48,7 +48,7 @@ describe("idempotency store", () => {
 
     const error = await store
       .replay("key-1", ROUTE, hashRequest({ ...ORDER, quantity: 99 }))
-      .catch((caught: unknown) => caught)
+      .catch((cause: unknown) => cause)
 
     expect(isProtocolError(error) && error.code).toBe("conflict")
   })
@@ -57,7 +57,7 @@ describe("idempotency store", () => {
     const hash = hashRequest(ORDER)
     await store.record("key-1", ROUTE, hash, { orderUid: "order-1" })
 
-    const error = await store.replay("key-1", "/v1/positions/exit", hash).catch((caught: unknown) => caught)
+    const error = await store.replay("key-1", "/v1/positions/exit", hash).catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("conflict")
   })
 
@@ -135,7 +135,7 @@ describe("idempotency store", () => {
 
     const error = await store
       .run("key-1", ROUTE, hashRequest({ ...ORDER, quantity: 99 }), async () => ({ orderUid: "order-2" }))
-      .catch((caught: unknown) => caught)
+      .catch((cause: unknown) => cause)
 
     expect(isProtocolError(error) && error.code).toBe("conflict")
     release()
@@ -145,13 +145,9 @@ describe("idempotency store", () => {
   // An order the provider read and rejected is not an order, so the key is free.
   test("a mutation the provider definitely refused leaves the key open", async () => {
     const hash = hashRequest(ORDER)
-    const failure = await store
-      .run("key-1", ROUTE, hash, () =>
-        Promise.reject(new ProtocolError("invalid_request", "the provider rejected the order")),
-      )
-      .catch((caught: unknown) => caught as Error)
-
-    expect(failure.message).toBe("the provider rejected the order")
+    await expect(store.run("key-1", ROUTE, hash, () =>
+      Promise.reject(new ProtocolError("invalid_request", "the provider rejected the order")),
+    )).rejects.toThrow("the provider rejected the order")
     expect(await store.run("key-1", ROUTE, hash, async () => ({ orderUid: "order-1" }))).toEqual({
       orderUid: "order-1",
     })
@@ -175,12 +171,10 @@ describe("idempotency store", () => {
     await store.run("key-1", ROUTE, hash, dropped).catch(() => {})
     expect(attempts).toBe(1)
 
-    const retry = await store
-      .run("key-1", ROUTE, hash, dropped)
-      .catch((caught: unknown) => caught as ProtocolError)
-
-    expect(isProtocolError(retry) && retry.code).toBe("outcome_unknown")
-    expect(retry.message).toMatch(/never reported whether it took effect/)
+    await expect(store.run("key-1", ROUTE, hash, dropped)).rejects.toMatchObject({
+      code: "outcome_unknown",
+      message: expect.stringMatching(/never reported whether it took effect/),
+    })
     // And it was not sent a second time.
     expect(attempts).toBe(1)
   })
@@ -193,7 +187,7 @@ describe("idempotency store", () => {
 
     const retry = await store
       .run("key-1", ROUTE, hash, async () => ({ orderUid: "order-1" }))
-      .catch((caught: unknown) => caught as ProtocolError)
+      .catch((cause: unknown) => cause instanceof ProtocolError ? cause : null)
 
     expect(isProtocolError(retry) && retry.code).toBe("outcome_unknown")
   })

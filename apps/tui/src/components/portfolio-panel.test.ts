@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { PortfolioPerformance, PortfolioRange, PortfolioSummary } from "@trbot/trading/account.ts"
 import { PortfolioPanel } from "./portfolio-panel.ts"
 
 function key(name: string): KeyEvent {
-  return { name } as KeyEvent
+  return keyEvent(name)
 }
 
 const portfolio: PortfolioSummary = {

@@ -2,16 +2,24 @@ import { expect, test } from "bun:test"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type { ServerFrame } from "@trbot/protocol/stream.ts"
 import { ChatClient } from "./chat.ts"
-import type { StreamConnection } from "./stream.ts"
+
+class FakeChatStream {
+  private listener: ((frame: ServerFrame) => void) | null = null
+
+  on(listener: (frame: ServerFrame) => void): () => void {
+    this.listener = listener
+    return () => {
+      this.listener = null
+    }
+  }
+
+  emit(frame: ServerFrame): void {
+    this.listener?.(frame)
+  }
+}
 
 test("delivers notification creation and dismissal frames", () => {
-  let receive: ((frame: ServerFrame) => void) | null = null
-  const connection = {
-    on(listener: (frame: ServerFrame) => void) {
-      receive = listener
-      return () => {}
-    },
-  } as StreamConnection
+  const connection = new FakeChatStream()
   const seen: ChatNotification[] = []
   const dismissed: string[] = []
   new ChatClient(connection, {
@@ -27,9 +35,8 @@ test("delivers notification creation and dismissal frames", () => {
     createdAt: 1_000,
   }
 
-  const dispatch = receive as ((frame: ServerFrame) => void) | null
-  dispatch?.({ type: "chatNotification", notification })
-  dispatch?.({ type: "chatNotificationDismissed", notificationId: notification.id })
+  connection.emit({ type: "chatNotification", notification })
+  connection.emit({ type: "chatNotificationDismissed", notificationId: notification.id })
 
   expect(seen).toEqual([notification])
   expect(dismissed).toEqual([notification.id])

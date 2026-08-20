@@ -81,7 +81,7 @@ test("keeps tool results with the turn that called them", () => {
   expect(selectRecentTurns(records, 1)).toBe(4)
 })
 
-function record(seq: number, value: unknown): ChatContextRecord {
+function record<T>(seq: number, value: T): ChatContextRecord {
   return { id: `message-${seq}`, seq, record: value }
 }
 

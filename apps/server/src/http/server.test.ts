@@ -1,8 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Server } from "bun"
-import type { AuthSession } from "@trbot/auth/session.ts"
-import type { AuthState } from "@trbot/auth/state.ts"
-import type { AuthStore } from "@trbot/auth/store.ts"
 import { createHarness } from "@trbot/ai/harness.ts"
 import type { AiCredentialRecord, AiCredentialStore, AiPreferencesRecord, AiPreferencesStore } from "@trbot/ai/credential-store.ts"
 import { HttpAiAccount, HttpOverviewGenerator } from "@trbot/client/ai.ts"
@@ -10,38 +7,26 @@ import { HttpChatSessions } from "@trbot/client/chat.ts"
 import { HttpClient } from "@trbot/client/http.ts"
 import type { ChatNotification, ChatNotificationStore } from "@trbot/chat/notification.ts"
 import { HttpInstrumentSource, HttpMemberFeatureSource, HttpOrderSource } from "@trbot/client/sources.ts"
-import { buildOverviewDigest, type MarketOverviewDigest } from "@trbot/market/overview.ts"
+import { buildOverviewDigest } from "@trbot/market/overview.ts"
 import { memberFeatureSet, type MemberFeatureSet } from "@trbot/member/features.ts"
 import { AiProviderSummarySchema, type AiPreferences } from "@trbot/protocol/ai.ts"
-import { isProtocolError, requiresAuthentication } from "@trbot/protocol/error.ts"
+import { isProtocolError, requiresAuthentication, type ProtocolError } from "@trbot/protocol/error.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import { openDatabase, type DatabaseConnection } from "@trbot/db/client.ts"
+import { DrizzleAppPreferencesStore } from "@trbot/db/app-preferences-store.ts"
+import { DrizzleOverviewSnapshotStore } from "@trbot/db/overview-snapshot-store.ts"
 import { AiService } from "../ai.ts"
 import { IdempotencyStore } from "./idempotency.ts"
 import { startServer } from "./server.ts"
-import { ProviderSession } from "../session.ts"
+import { serverDeps } from "./server.test-fixture.ts"
+import { providerSources, TestProviderSession } from "../provider.test-fixture.ts"
 import { ChatNotificationController } from "../chat-notification.ts"
 import { StreamHub } from "../stream-hub.ts"
 import type { SocketData } from "../stream-hub.ts"
 import { z } from "zod"
+import type { ChatController } from "../chat.ts"
 
 const TOKEN = "integration-token"
-
-/** An auth store with nothing in it, so the session resumes to "signed out". */
-function emptyAuthSession(): Promise<AuthSession> {
-  const store: AuthStore = {
-    async get(): Promise<AuthState | null> {
-      return null
-    },
-    async latest(): Promise<AuthState | null> {
-      return null
-    },
-    async put(): Promise<void> {},
-  }
-  return Promise.resolve({ store, close() {} })
-}
-
-const notUsed = new Proxy({}, { get: () => () => { throw new Error("not used in this test") } })
 
 const DIGEST = buildOverviewDigest({
   mode: "DAILY",
@@ -91,14 +76,14 @@ describe("server and client over the wire", () => {
   let client: HttpClient
   let url: string
   let connection: DatabaseConnection
-  let session: ProviderSession
+  let session: TestProviderSession
   let overviewFailure: Error | null = null
   let notifications: ChatNotificationController
   const compactedChats: string[] = []
 
   beforeAll(async () => {
     connection = await openDatabase(":memory:")
-    session = new ProviderSession({ openAuthSession: emptyAuthSession, credentials: null })
+    session = new TestProviderSession()
     const hub = new StreamHub(session)
     const credentials = memoryCredentials()
     const ai = new AiService({
@@ -125,28 +110,25 @@ describe("server and client over the wire", () => {
     notifications = new ChatNotificationController({ store: notificationStore, broadcast: () => {} })
     server = startServer(
       { host: "127.0.0.1", port: 0, token: TOKEN, tls: null },
-      {
+      serverDeps({
         session,
         hub,
         idempotency: new IdempotencyStore(connection.db),
-        preferences: notUsed as never,
-        alerts: notUsed as never,
-        marketMonitors: notUsed as never,
-        stops: notUsed as never,
-        overviewSnapshots: notUsed as never,
+        preferences: new DrizzleAppPreferencesStore(connection.db),
+        overviewSnapshots: new DrizzleOverviewSnapshotStore(connection.db),
         ai,
+        // SAFETY: this integration suite only invokes ChatController.compact;
+        // every other chat route remains behind an unused dependency.
         chat: {
           async compact(sessionId: string) {
             compactedChats.push(sessionId)
             return { compacted: true, tokensBefore: 24_000 }
           },
-        } as never,
-        questions: notUsed as never,
+        } as ChatController,
         notifications,
-        automations: notUsed as never,
         backlog: () => [],
         onDecision: () => {},
-      },
+      }),
     )
     url = `http://127.0.0.1:${server.port}`
     client = new HttpClient({ url, token: TOKEN })
@@ -164,20 +146,20 @@ describe("server and client over the wire", () => {
 
   test("a wrong token is rejected with a protocol code", async () => {
     const wrong = new HttpClient({ url, token: "not-the-token" })
-    const error = await wrong.get(ROUTES.session, z.unknown()).catch((caught: unknown) => caught)
+    const error = await wrong.get(ROUTES.session, z.unknown()).catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("unauthorized")
   })
 
   test("a signed-out server tells the client to sign in", async () => {
     const instruments = new HttpInstrumentSource(client)
-    const error = await instruments.listInstruments().catch((caught: unknown) => caught)
+    const error = await instruments.listInstruments().catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("unauthenticated")
     // This is the check the terminal uses to decide to show the login screen.
     expect(requiresAuthentication(error)).toBe(true)
   })
 
   test("an unknown route reports not_found rather than hanging", async () => {
-    const error = await client.get("/v1/nope", z.unknown()).catch((caught: unknown) => caught)
+    const error = await client.get("/v1/nope", z.unknown()).catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("not_found")
   })
 
@@ -204,7 +186,7 @@ describe("server and client over the wire", () => {
   })
 
   test("a rejected sign-in reports invalid_request for a missing field", async () => {
-    const error = await client.post(ROUTES.login, z.unknown(), { body: { username: "someone" } }).catch((c: unknown) => c)
+    const error = await client.post(ROUTES.login, z.unknown(), { body: { username: "someone" } }).catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
 
@@ -212,7 +194,7 @@ describe("server and client over the wire", () => {
     const orders = new HttpOrderSource(client)
     const error = await orders
       .placeOrder({ instrumentUid: "x", side: "BUY", quantity: 1, limitPrice: 10 })
-      .catch((caught: unknown) => caught)
+      .catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("unauthenticated")
   })
 
@@ -221,7 +203,7 @@ describe("server and client over the wire", () => {
       .post(ROUTES.placeOrder, z.unknown(), {
         body: { instrumentUid: "x", side: "SIDEWAYS", quantity: 1, limitPrice: 1 },
       })
-      .catch((caught: unknown) => caught)
+      .catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
 
@@ -230,22 +212,28 @@ describe("server and client over the wire", () => {
     // client receives is rebuilt from the enabled list rather than parsed whole.
     const granted = memberFeatureSet(["MARKET_DEPTH", "SUBSCRIPTION"])
     const sources = { memberFeatures: { async loadFeatures(): Promise<MemberFeatureSet> { return granted } } }
-    ;(session as unknown as { current: unknown }).current = sources
+    session.setSources(providerSources({ memberFeatures: sources.memberFeatures }))
 
     const features = await new HttpMemberFeatureSource(client).loadFeatures()
 
-    expect(typeof features.has).toBe("function")
     expect(features.has("MARKET_DEPTH")).toBe(true)
     expect(features.has("SUBSCRIPTION")).toBe(true)
     expect(features.has("SETTLEMENT_ANALYSIS")).toBe(false)
-    ;(session as unknown as { current: unknown }).current = null
+    session.setSources(null)
   })
 
   // Guessing a six-digit code is cheap; guessing a password is not. The plan
   // said every sign-in route is throttled, and this is the one that matters.
   test("repeated verification-code attempts are refused", async () => {
-    const attempt = (): Promise<unknown> =>
-      client.post(ROUTES.otp, z.unknown(), { body: { code: "000000" } }).catch((caught: unknown) => caught)
+    const attempt = async (): Promise<ProtocolError> => {
+      try {
+        await client.post(ROUTES.otp, z.unknown(), { body: { code: "000000" } })
+        throw new Error("Expected verification to fail")
+      } catch (cause) {
+        if (isProtocolError(cause)) return cause
+        throw cause
+      }
+    }
 
     for (let index = 0; index < 5; index += 1) {
       const error = await attempt()
@@ -291,7 +279,7 @@ describe("server and client over the wire", () => {
       .post(ROUTES.aiProvider("groq"), z.unknown(), {
         body: { providerId: "groq", credential: { key: "no-type" } },
       })
-      .catch((caught: unknown) => caught)
+      .catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
 
@@ -338,7 +326,7 @@ describe("server and client over the wire", () => {
     const deltas: string[] = []
     const error = await new HttpOverviewGenerator(client)
       .generate(DIGEST, { onDelta: (text) => deltas.push(text) })
-      .catch((caught: unknown) => caught)
+      .catch((cause: unknown) => cause)
 
     expect(deltas).toEqual(["Flow is "])
     expect(isProtocolError(error) && error.message).toContain("the model gave up")
@@ -346,9 +334,9 @@ describe("server and client over the wire", () => {
   })
 
   test("an overview for an unknown mode is refused before anything streams", async () => {
-    const error = await new HttpOverviewGenerator(client)
-      .generate({ mode: "HOURLY" } as unknown as MarketOverviewDigest, { onDelta: () => {} })
-      .catch((caught: unknown) => caught)
+    const error = await client
+      .stream(ROUTES.overview, { body: { mode: "HOURLY" } })
+      .catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
 
@@ -363,7 +351,7 @@ describe("server and client over the wire", () => {
     await account.setPreferences({ overview: null, chat: null })
     const unchosen = await new HttpOverviewGenerator(client)
       .generate(DIGEST, { onDelta: () => {} })
-      .catch((caught: unknown) => caught)
+      .catch((cause: unknown) => cause)
     expect(isProtocolError(unchosen) && unchosen.code).toBe("invalid_request")
     expect(isProtocolError(unchosen) && unchosen.message).toContain("No model chosen")
 
@@ -375,7 +363,7 @@ describe("server and client over the wire", () => {
     await account.disconnect("groq")
     const gone = await new HttpOverviewGenerator(client)
       .generate(DIGEST, { onDelta: () => {} })
-      .catch((caught: unknown) => caught)
+      .catch((cause: unknown) => cause)
     expect(isProtocolError(gone) && gone.code).toBe("invalid_request")
     expect(isProtocolError(gone) && gone.message).toContain("not connected")
   })
@@ -398,7 +386,7 @@ describe("server and client over the wire", () => {
     }
     const error = await client
       .put(ROUTES.appPreferences, z.unknown(), { body: preferences })
-      .catch((caught: unknown) => caught)
+      .catch((cause: unknown) => cause)
 
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
     expect(isProtocolError(error) && error.message).toContain("instrumentSort")
@@ -407,14 +395,14 @@ describe("server and client over the wire", () => {
   test("an overview snapshot without the fields it is stored under is refused", async () => {
     const error = await client
       .put(ROUTES.overviewSnapshots, z.unknown(), { body: { commentary: "words", digest: {} } })
-      .catch((caught: unknown) => caught)
+      .catch((cause: unknown) => cause)
 
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
 
   test("an unreachable server surfaces as a transient error", async () => {
     const offline = new HttpClient({ url: "http://127.0.0.1:1", token: TOKEN })
-    const error = await offline.get(ROUTES.session, z.unknown()).catch((caught: unknown) => caught)
+    const error = await offline.get(ROUTES.session, z.unknown()).catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("upstream_unavailable")
   })
 })

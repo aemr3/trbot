@@ -50,15 +50,15 @@ async function startTrbotServer(): Promise<void> {
   const serverConfig = loadServerConfig()
   const connection = await openDatabase(config.databaseUrl)
 
-  const log = (label: string, error: unknown): void => {
-    console.error(`[${label}]`, error instanceof Error ? error.message : error)
+  const log = (label: string, cause: unknown): void => {
+    console.error(`[${label}]`, cause instanceof Error ? cause.message : cause)
   }
 
   // A stream that stops being accepted is the other way a dead session shows up,
   // and the one that matters with no client attached.
-  const reportProviderError = (label: string, error: unknown): void => {
-    log(label, error)
-    if (requiresAuthentication(toProtocolError(error))) void session.recover()
+  const reportProviderError = (label: string, cause: unknown): void => {
+    log(label, cause)
+    if (requiresAuthentication(toProtocolError(cause))) void session.recover()
   }
 
   const session = new ProviderSession({
@@ -206,7 +206,9 @@ async function startTrbotServer(): Promise<void> {
   automations = new ChatAutomationController({
     store: chatAutomationStore,
     detail: (sessionId) => chat.detail(sessionId),
-    enqueueEvent: (sessionId, event) => chat.enqueueEvent(sessionId, event),
+    enqueueEvent: async (sessionId, event) => {
+      await chat.enqueueEvent(sessionId, event)
+    },
     cancelQueuedEvents: async (sessionId, label, referenceId) => {
       const detail = await chat.detail(sessionId)
       for (const message of detail.messages) {
@@ -234,7 +236,9 @@ async function startTrbotServer(): Promise<void> {
     },
     evaluator: goalEvaluator,
     defaultLoopPrompt: loadDefaultLoopPrompt,
-    notify: (input) => notifications.notify({ ...input, urgency: "IMPORTANT" }),
+    notify: async (input) => {
+      await notifications.notify({ ...input, urgency: "IMPORTANT" })
+    },
     onError: (error) => log("Chat automation", error),
   })
 
@@ -298,9 +302,9 @@ async function startTrbotServer(): Promise<void> {
   // monitors here, the server must.
   const refreshCandles = (): void => {
     if (!session.authenticated) return
-    void stops.rules.refreshCandleRules().catch((error: unknown) => log("Stop candles", error))
-    void alerts.alerts.refreshCandleAlerts().catch((error: unknown) => log("Alert candles", error))
-    void marketMonitors.refreshCandles().catch((error: unknown) => log("Market monitor candles", error))
+    void stops.rules.refreshCandleRules().catch((cause: unknown) => log("Stop candles", cause))
+    void alerts.alerts.refreshCandleAlerts().catch((cause: unknown) => log("Alert candles", cause))
+    void marketMonitors.refreshCandles().catch((cause: unknown) => log("Market monitor candles", cause))
   }
   refreshCandles()
   const candleTimer = setInterval(refreshCandles, CANDLE_REFRESH_MS)
@@ -330,7 +334,8 @@ async function startTrbotServer(): Promise<void> {
           ? { type: "stopTriggered", event: event.event, remainingMs: event.remainingMs, held: event.held }
           : event,
       ),
-      ...alerts.outstanding().map((event) => ({ type: "alertTriggered", event: (event as { event: unknown }).event })),
+      ...alerts.outstanding().flatMap((event) =>
+        event.type === "triggered" ? [{ type: "alertTriggered" as const, event: event.event }] : []),
       { type: "stops", views: stops.rules.views() },
       { type: "alerts", views: alerts.alerts.views() },
     ],

@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import { SelectableList } from "./selectable-list.ts"
 
 function key(name: string): KeyEvent {
-  return { name } as KeyEvent
+  return keyEvent(name)
 }
 
 test("navigates rows with wrap-around, home/end, and reports selection", async () => {

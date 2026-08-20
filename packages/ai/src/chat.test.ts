@@ -106,17 +106,18 @@ test("replays the stored history rather than only the new question", async () =>
 })
 
 test("runs the tools a reply asks for and answers with their results", async () => {
-  const quote: ChatTool = {
+  const QuoteParameters = Type.Object({ symbol: Type.String() })
+  const quote: ChatTool<typeof QuoteParameters> = {
     definition: {
       name: "quote",
       description: "The last price of a symbol",
-      parameters: Type.Object({ symbol: Type.String() }),
+      parameters: QuoteParameters,
     },
     run: async (args, options) => {
       expect(options.chatSessionId).toBe("chat-1")
       return {
-        blocks: [toolText(`Fetched ${(args as { symbol: string }).symbol} quote.`)],
-        modelBlocks: [toolText(`${(args as { symbol: string }).symbol} 390.00`)],
+        blocks: [toolText(`Fetched ${args.symbol} quote.`)],
+        modelBlocks: [toolText(`${args.symbol} 390.00`)],
         details: { last: 390 },
         isError: false,
         usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costTotal: 0.01 },

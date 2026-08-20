@@ -1,9 +1,17 @@
 import { expect, test } from "bun:test"
-import { marketOperations, type ScreenerResult } from "@trbot/api/market.ts"
+import {
+  marketOperations,
+  type FutureDetailVariables,
+  type ScreenerResult,
+  type ScreenerResultV2Variables,
+} from "@trbot/api/market.ts"
 import { ApiViopInstrumentSource } from "./instruments.ts"
+import { providerApiClient } from "@trbot/api/provider-client.test-fixture.ts"
+import { z } from "zod"
 
-interface Op {
-  name: string
+interface ScreenerCalls {
+  result: number
+  variables: ScreenerResultV2Variables[]
 }
 
 function instrument(
@@ -29,19 +37,28 @@ function instrument(
 }
 
 function fakeClient(pages: ScreenerResult[]) {
-  const calls: { result: number; variables: Record<string, unknown>[] } = { result: 0, variables: [] }
+  const calls: ScreenerCalls = { result: 0, variables: [] }
   let page = 0
-  const client = {
-    call(op: Op, variables: Record<string, unknown>) {
-      expect(op.name).toBe(marketOperations.screenerRetrieveResultV2.name)
+  const client = providerApiClient((request) => {
+      expect(request.operationName).toBe(marketOperations.screenerRetrieveResultV2.name)
       calls.result++
-      calls.variables.push(variables)
+      calls.variables.push(ScreenerResultVariablesSchema.parse(request.variables))
       const current = pages[page++]
-      return Promise.resolve({ screenerRetrieveResultV2: current })
-    },
-  }
+      return { screenerRetrieveResultV2: current }
+  })
   return { client, calls }
 }
+
+const ScreenerResultVariablesSchema = z.object({
+  pitId: z.string().nullable(),
+  searchAfter: z.string().nullable(),
+  sortBy: z.string().nullable(),
+  sortDirection: z.string().nullable(),
+  assetVertical: z.string(),
+  investmentType: z.string(),
+  filters: z.array(z.unknown()),
+  columns: z.array(z.object({ id: z.string(), field: z.string() })),
+})
 
 test("aggregates all pages, dedupes by uid, and parses Turkish-formatted values", async () => {
   const pages: ScreenerResult[] = [
@@ -70,7 +87,7 @@ test("aggregates all pages, dedupes by uid, and parses Turkish-formatted values"
   ]
 
   const { client, calls } = fakeClient(pages)
-  const source = new ApiViopInstrumentSource(client as never)
+  const source = new ApiViopInstrumentSource(client)
   const instruments = await source.listInstruments()
 
   expect(instruments.map((i) => i.uid)).toEqual(["u1", "u2", "u3"])
@@ -109,7 +126,7 @@ test("keeps only the nearest-expiry contract per underlying", async () => {
   ]
 
   const { client } = fakeClient(pages)
-  const source = new ApiViopInstrumentSource(client as never)
+  const source = new ApiViopInstrumentSource(client)
   const instruments = await source.listInstruments()
 
   expect(instruments.map((i) => i.symbol)).toEqual(["F_USDTRY0826", "F_XU0300826"])
@@ -127,7 +144,7 @@ test("stops paginating when totalSize is reached", async () => {
     },
   ]
   const { client, calls } = fakeClient(pages)
-  const source = new ApiViopInstrumentSource(client as never)
+  const source = new ApiViopInstrumentSource(client)
   const instruments = await source.listInstruments()
 
   expect(instruments).toHaveLength(1)
@@ -135,11 +152,10 @@ test("stops paginating when totalSize is reached", async () => {
 })
 
 test("loads and normalizes contract details and statistics", async () => {
-  const client = {
-    call(op: Op, variables: Record<string, unknown>) {
-      expect(op.name).toBe(marketOperations.futureDetail.name)
-      expect(variables).toEqual({ instrumentUid: "future-1" })
-      return Promise.resolve({
+  const client = providerApiClient((request) => {
+      expect(request.operationName).toBe(marketOperations.futureDetail.name)
+      expect(request.variables).toEqual({ instrumentUid: "future-1" } satisfies FutureDetailVariables)
+      return {
         futureDetail: {
           contractDetails: {
             title: "Kontrat Detayları",
@@ -164,11 +180,10 @@ test("loads and normalizes contract details and statistics", async () => {
             ],
           },
         },
-      })
-    },
-  }
+      }
+  })
 
-  const details = await new ApiViopInstrumentSource(client as never).loadContractDetails("future-1")
+  const details = await new ApiViopInstrumentSource(client).loadContractDetails("future-1")
 
   expect(details).toEqual({
     initialCollateral: 7_991.91,

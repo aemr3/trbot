@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm"
 import type { AiCredentialRecord, AiCredentialStore } from "@trbot/ai/credential-store.ts"
+import { asCredential } from "@trbot/ai/credentials.ts"
 import type { AppDatabase } from "./client.ts"
 import { aiCredentials } from "./schema.ts"
 
@@ -61,9 +62,9 @@ function toRecord(row: typeof aiCredentials.$inferSelect): AiCredentialRecord | 
   }
 }
 
-function parseJson(value: string): unknown {
+function parseJson(value: string): ReturnType<typeof asCredential> {
   try {
-    return JSON.parse(value)
+    return asCredential(JSON.parse(value))
   } catch {
     return undefined
   }

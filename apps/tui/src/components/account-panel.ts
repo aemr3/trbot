@@ -41,30 +41,30 @@ const DEFAULT_REFRESH_INTERVAL_MS = 15_000
 const TABS = ["positions", "orders", "stops", "alerts"] as const
 export type AccountTab = (typeof TABS)[number]
 
-const TAB_LABELS: Record<AccountTab, string> = {
+const TAB_LABELS = {
   positions: "Positions",
   orders: "Orders",
   stops: "Stops",
   alerts: "Alerts",
-}
+} satisfies Record<AccountTab, string>
 
-const STATUS_LABELS: Record<StopRuleStatus, string> = {
+const STATUS_LABELS = {
   ARMED: "armed",
   PAUSED: "paused",
   TRIGGERED: "triggered",
   DONE: "done",
-}
+} satisfies Record<StopRuleStatus, string>
 
-const ALERT_STATUS_LABELS: Record<PriceAlertStatus, string> = {
+const ALERT_STATUS_LABELS = {
   ARMED: "armed",
   PAUSED: "paused",
   TRIGGERED: "fired",
-}
+} satisfies Record<PriceAlertStatus, string>
 
 export interface AccountPanelOptions {
   source?: AccountSource
   stream?: AccountStream
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   onFocusRequest?: () => void
   onPositionSelect?: (position: AccountPosition) => void
   // The stops and alerts tabs report; the screen owns every action they name.
@@ -501,13 +501,11 @@ export class AccountPanel {
       const background = selected === index ? ACTIVE_BUTTON_BG : PANEL_BG
       const existing = this.rows[index]
       if (existing) {
-        existing.item = item
         existing.text.content = new StyledText(chunks(item))
         existing.row.backgroundColor = background
         return
       }
       const entry: PanelRow = {
-        item,
         row: new BoxRenderable(this.renderer, {
           width: "100%",
           height: 1,
@@ -549,7 +547,10 @@ export class AccountPanel {
       if (view) this.options.onAlertEdit?.(view)
       return
     }
-    if (this.tab === "positions") this.options.onPositionSelect?.(entry.item as AccountPosition)
+    if (this.tab === "positions") {
+      const position = this.snapshot?.positions[index]
+      if (position) this.options.onPositionSelect?.(position)
+    }
   }
 
   private showTextContent(content: StyledText | string, color: string): void {
@@ -569,13 +570,9 @@ export class AccountPanel {
   }
 }
 
-// One reused row. `item` is whatever the current list holds; the tab decides
-// how to read it, so it stays untyped here rather than making the whole panel
-// generic over one list at a time.
 interface PanelRow {
   row: BoxRenderable
   text: TextRenderable
-  item: unknown
 }
 
 function renderOrders(orders: AccountOrder[]): StyledText | string {
@@ -790,10 +787,10 @@ function positionProfitLoss(position: AccountPosition): number | null {
   return (position.currentPrice - position.averageCost) * position.quantity * (position.multiplier ?? 1)
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError"
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === "AbortError"
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }

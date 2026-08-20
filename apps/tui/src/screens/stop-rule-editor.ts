@@ -1,6 +1,7 @@
 // Writes one protective level for an open position. It only produces a draft —
 // the monitor decides when the level is reached, and nothing here trades.
 import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
+import { z } from "zod"
 import { CANDLE_INTERVAL_LABELS, FUTURES_INTERVALS, type CandleInterval } from "@trbot/market/candle.ts"
 import type { AccountPosition } from "@trbot/trading/account.ts"
 import {
@@ -32,13 +33,13 @@ const ERROR_COLOR = "#ff806f"
 const RULE_INTERVALS: CandleInterval[] = FUTURES_INTERVALS
 const DEFAULT_RULE_INTERVAL: CandleInterval = FUTURES_INTERVALS[0] ?? "MIN_10"
 
-const KIND_LABELS: Record<StopRuleKind, string> = {
+const KIND_LABELS = {
   PRICE: "Price",
   PERCENT: "Percent from entry",
   ATR: "ATR from entry",
   TRAILING_PERCENT: "Trailing percent",
   TRAILING_ATR: "Trailing ATR",
-}
+} satisfies Record<StopRuleKind, string>
 
 type EditorField = "position" | "role" | "kind" | "value" | "basis" | "interval" | "quantity" | "action"
 
@@ -51,7 +52,7 @@ export interface StopRuleEditorOptions {
   atr?: (instrumentUid: string, interval: CandleInterval) => Promise<number | null>
   onSave: (draft: StopRuleDraft) => void
   onClose: () => void
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
 }
 
 export class StopRuleEditor {
@@ -412,5 +413,6 @@ function formatQuantity(value: number): string {
 
 function isDigitKey(key: KeyEvent): boolean {
   const value = key.sequence || key.name
-  return typeof value === "string" && value.length === 1 && value >= "0" && value <= "9"
+  const parsed = z.string().length(1).safeParse(value)
+  return parsed.success && parsed.data >= "0" && parsed.data <= "9"
 }

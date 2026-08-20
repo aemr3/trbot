@@ -1,13 +1,19 @@
 import { expect, test } from "bun:test"
 import { marketOperations } from "@trbot/api/market.ts"
+import { providerApiClient, type ProviderTestRequest } from "@trbot/api/provider-client.test-fixture.ts"
 import { ApiCandleSource } from "./candles.ts"
+import { z } from "zod"
+
+interface CandleCall {
+  operation: string
+  variables: ProviderTestRequest["variables"]
+}
 
 test("loads and normalizes advanced stock candle data", async () => {
-  const calls: { operation: string; variables: Record<string, unknown> }[] = []
-  const client = {
-    async call(operation: { name: string }, variables: Record<string, unknown>) {
-      calls.push({ operation: operation.name, variables })
-      if (operation.name === marketOperations.getInstrument.name) {
+  const calls: CandleCall[] = []
+  const client = providerApiClient((request) => {
+      calls.push({ operation: request.operationName, variables: request.variables })
+      if (request.operationName === marketOperations.getInstrument.name) {
         return { instrument: { __typename: "Future", underlyingInstrumentUid: "stock-1" } }
       }
       return {
@@ -33,10 +39,9 @@ test("loads and normalizes advanced stock candle data", async () => {
           currency: "TRY",
         },
       }
-    },
-  }
+  })
 
-  const series = await new ApiCandleSource(client as never).loadCandles("future-1", "WEEK", "HOUR_1")
+  const series = await new ApiCandleSource(client).loadCandles("future-1", "WEEK", "HOUR_1")
 
   expect(calls).toEqual([
     { operation: "getInstrument", variables: { instrumentId: "future-1" } },
@@ -60,9 +65,8 @@ test("loads and normalizes advanced stock candle data", async () => {
 })
 
 test("rejects malformed candles without failing the entire series", async () => {
-  const client = {
-    async call(operation: { name: string }) {
-      if (operation.name === marketOperations.getInstrument.name) {
+  const client = providerApiClient((request) => {
+      if (request.operationName === marketOperations.getInstrument.name) {
         return { instrument: { __typename: "StockV2", underlyingInstrumentUid: null } }
       }
       return {
@@ -78,36 +82,33 @@ test("rejects malformed candles without failing the entire series", async () => 
           currency: null,
         },
       }
-    },
-  }
+  })
 
-  const series = await new ApiCandleSource(client as never).loadCandles("future-1", "INTRADAY", "MIN_5")
+  const series = await new ApiCandleSource(client).loadCandles("future-1", "INTRADAY", "MIN_5")
   expect(series.candles).toEqual([])
 })
 
 test("caches the resolved underlying stock uid between range requests", async () => {
   let instrumentCalls = 0
   const chartInstrumentUids: string[] = []
-  const client = {
-    async call(operation: { name: string }, variables: { instrumentUid?: string; timeRange?: string }) {
-      if (operation.name === marketOperations.getInstrument.name) {
+  const client = providerApiClient((request) => {
+      if (request.operationName === marketOperations.getInstrument.name) {
         instrumentCalls++
         return { instrument: { __typename: "Future", underlyingInstrumentUid: "stock-1" } }
       }
-      chartInstrumentUids.push(variables.instrumentUid ?? "")
+      chartInstrumentUids.push(z.string().parse(request.variables.instrumentUid))
       return {
         advancedChart: {
           data: [],
-          timeRange: variables.timeRange,
+          timeRange: request.variables.timeRange,
           selectedInterval: null,
           availableIntervalsByTimeRange: [],
           intervalMs: 600_000,
           currency: "TRY",
         },
       }
-    },
-  }
-  const source = new ApiCandleSource(client as never)
+  })
+  const source = new ApiCandleSource(client)
 
   await source.loadCandles("future-1", "INTRADAY", "MIN_5")
   await source.loadCandles("future-1", "WEEK", "HOUR_1")
@@ -117,11 +118,10 @@ test("caches the resolved underlying stock uid between range requests", async ()
 })
 
 test("resolves and caches BIST index instruments for advanced charts", async () => {
-  const calls: Array<{ operation: string; variables: Record<string, unknown> }> = []
-  const client = {
-    async call(operation: { name: string }, variables: Record<string, unknown>) {
-      calls.push({ operation: operation.name, variables })
-      if (operation.name === marketOperations.searchByAdvancedTools.name) {
+  const calls: CandleCall[] = []
+  const client = providerApiClient((request) => {
+      calls.push({ operation: request.operationName, variables: request.variables })
+      if (request.operationName === marketOperations.searchByAdvancedTools.name) {
         return {
           searchByAdvancedTools: {
             results: [
@@ -132,19 +132,20 @@ test("resolves and caches BIST index instruments for advanced charts", async () 
           },
         }
       }
+      const timeRange = z.string().parse(request.variables.timeRange)
+      const intervalId = z.string().parse(request.variables.intervalId)
       return {
         advancedChart: {
           data: [],
-          timeRange: variables.timeRange,
-          selectedInterval: { id: variables.intervalId, displayName: "" },
+          timeRange,
+          selectedInterval: { id: intervalId, displayName: "" },
           availableIntervalsByTimeRange: [],
           intervalMs: 600_000,
           currency: "TRY",
         },
       }
-    },
-  }
-  const source = new ApiCandleSource(client as never)
+  })
+  const source = new ApiCandleSource(client)
 
   const first = await source.loadCandles("XU100", "INTRADAY", "MIN_10", { target: "BIST_100" })
   await source.loadCandles("XU100", "WEEK", "HOUR_1", { target: "BIST_100" })
@@ -178,25 +179,25 @@ test("resolves and caches BIST index instruments for advanced charts", async () 
 
 test("loads the selected futures contract without resolving its underlying stock", async () => {
   const calls: Array<{ operation: string; instrumentId?: string; timeRange?: string }> = []
-  const client = {
-    async call(operation: { name: string }, variables: { instrumentId?: string; timeRange?: string }) {
-      calls.push({ operation: operation.name, instrumentId: variables.instrumentId, timeRange: variables.timeRange })
+  const client = providerApiClient((request) => {
+      const instrumentId = z.string().parse(request.variables.instrumentId)
+      const timeRange = z.string().parse(request.variables.timeRange)
+      calls.push({ operation: request.operationName, instrumentId, timeRange })
       return {
         candlestickChartV2: {
           data: [
             { o: 210, h: 212, l: 209, c: 211, d: 2000, v: 20, ed: 3000, ts: "REGULAR" },
             { o: 208, h: 211, l: 207, c: 210, d: 1000, v: 10, ed: 2000, ts: "REGULAR" },
           ],
-          timeRange: variables.timeRange,
+          timeRange,
           availableTimeRanges: ["INTRADAY", "WEEK", "MONTH", "THREE_MONTH", "ALL_TIME"],
           intervalMs: 600_000,
           currency: "TRY",
         },
       }
-    },
-  }
+  })
 
-  const series = await new ApiCandleSource(client as never).loadCandles(
+  const series = await new ApiCandleSource(client).loadCandles(
     "future-1",
     "INTRADAY",
     "MIN_5",
@@ -213,9 +214,8 @@ test("loads the selected futures contract without resolving its underlying stock
 
 test("maps unsupported long futures ranges to the contract's all-time history", async () => {
   const requestedRanges: string[] = []
-  const client = {
-    async call(_operation: { name: string }, variables: { timeRange: string }) {
-      requestedRanges.push(variables.timeRange)
+  const client = providerApiClient((request) => {
+      requestedRanges.push(z.string().parse(request.variables.timeRange))
       return {
         candlestickChartV2: {
           data: [],
@@ -225,10 +225,9 @@ test("maps unsupported long futures ranges to the contract's all-time history", 
           currency: "TRY",
         },
       }
-    },
-  }
+  })
 
-  const series = await new ApiCandleSource(client as never).loadCandles(
+  const series = await new ApiCandleSource(client).loadCandles(
     "future-1",
     "FIVE_YEAR",
     "WEEK_1",

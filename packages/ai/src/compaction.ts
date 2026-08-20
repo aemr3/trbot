@@ -1,4 +1,4 @@
-import type { Api, Context, Message, Model, Models, Tool } from "@earendil-works/pi-ai"
+import type { Api, Context, Message, Model, Models, Tool, ToolCall } from "@earendil-works/pi-ai"
 import type {
   ChatCompaction,
   ChatContextRecord,
@@ -92,7 +92,7 @@ export class ChatCompactor implements ChatCompactionRunner {
   history(context: ChatModelContext): ChatRecord[] {
     return [
       ...(context.compaction ? [summaryRecord(context.compaction)] : []),
-      ...context.records.map((entry) => entry.record as ChatRecord),
+      ...context.records.map((entry) => modelRecord(entry.record)),
     ]
   }
 
@@ -130,7 +130,7 @@ export class ChatCompactor implements ChatCompactionRunner {
     }
     return {
       checkpoint,
-      history: [summaryRecord(checkpoint), ...tail.map((entry) => entry.record as ChatRecord)],
+      history: [summaryRecord(checkpoint), ...tail.map((entry) => modelRecord(entry.record))],
     }
   }
 
@@ -141,7 +141,7 @@ export class ChatCompactor implements ChatCompactionRunner {
     signal?: AbortSignal
   }): Promise<string | null> {
     const conversation = input.records
-      .map((entry) => serializeRecord(entry.record as ChatRecord))
+      .map((entry) => serializeRecord(modelRecord(entry.record)))
       .filter(Boolean)
       .join("\n\n")
     const previous = input.previous
@@ -177,7 +177,7 @@ export class ChatCompactor implements ChatCompactionRunner {
 /** Keeps the newest complete turns inside the verbatim tail. */
 export function selectRecentTurns(records: readonly ChatContextRecord[], keepTokens: number): number {
   const starts = records.flatMap((entry, index) => (
-    (entry.record as { role?: unknown }).role === "user" ? [index] : []
+    modelRecord(entry.record).role === "user" ? [index] : []
   ))
   if (starts.length === 0) return records.length
 
@@ -188,7 +188,7 @@ export function selectRecentTurns(records: readonly ChatContextRecord[], keepTok
     const end = starts[turn + 1] ?? records.length
     const turnTokens = records
       .slice(start, end)
-      .reduce((total, entry) => total + estimateMessageTokens(entry.record as ChatRecord), 0)
+      .reduce((total, entry) => total + estimateMessageTokens(modelRecord(entry.record)), 0)
     if (keptTokens + turnTokens > keepTokens) break
     keptTokens += turnTokens
     keepFrom = start
@@ -207,9 +207,9 @@ export function estimateRequestTokens(context: Context): number {
 
 function estimateMessageTokens(message: Message): number {
   if (message.role === "user" || message.role === "toolResult") {
-    const text = typeof message.content === "string"
-      ? message.content
-      : message.content.map((block) => block.type === "text" ? block.text : "[image]").join("")
+    const text = Array.isArray(message.content)
+      ? message.content.map((block) => block.type === "text" ? block.text : "[image]").join("")
+      : message.content
     return estimateTextTokens(text)
   }
   return estimateTextTokens(message.content.map((block) => {
@@ -225,9 +225,9 @@ function estimateTextTokens(text: string): number {
 
 function serializeRecord(message: ChatRecord): string {
   if (message.role === "user") {
-    const content = typeof message.content === "string"
-      ? message.content
-      : message.content.map((block) => block.type === "text" ? block.text : "[Attached image]").join("\n")
+    const content = Array.isArray(message.content)
+      ? message.content.map((block) => block.type === "text" ? block.text : "[Attached image]").join("\n")
+      : message.content
     return `[User]: ${content}`
   }
   if (message.role === "toolResult") {
@@ -259,10 +259,18 @@ function userRecord(content: string, timestamp: number): ChatRecord {
   return { role: "user", content, timestamp }
 }
 
-function safeJson(value: unknown): string {
+function safeJson(value: Context["tools"] | ToolCall["arguments"]): string {
   try {
     return JSON.stringify(value) ?? ""
   } catch {
     return "[unserializable]"
   }
+}
+
+/** Restores the harness-owned message that ChatContextRecord stores opaquely. */
+export function modelRecord(record: ChatContextRecord["record"]): ChatRecord {
+  // SAFETY: Chat context records are written only from harness ChatRecord values
+  // and are replayed unchanged; the chat domain keeps the field opaque to avoid
+  // depending on a model-provider package.
+  return record as ChatRecord
 }

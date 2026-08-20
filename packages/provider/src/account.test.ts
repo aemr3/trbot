@@ -1,27 +1,27 @@
 import { expect, test } from "bun:test"
-import type { GraphqlOperation } from "@trbot/api/graphql.ts"
+import { providerApiClient, type ProviderTestRequest } from "@trbot/api/provider-client.test-fixture.ts"
 import { ApiAccountSource, normalizeOrders, normalizePerformance, normalizePosition } from "./account.ts"
 
 test("loads the TRY portfolio with VIOP orders and positions", async () => {
-  const calls: Array<{ name: string; variables: Record<string, unknown> }> = []
-  const responses: Record<string, unknown[]> = {
-    overviewV7: [{
+  const calls: Array<{ name: string; variables: ProviderTestRequest["variables"] }> = []
+  const responses = new Map<string, object[]>([
+    ["overviewV7", [{
       overviewV7: {
         accounts: [
           { accountUid: "usd", status: "ACTIVE", currency: "USD" },
           { accountUid: "try", status: "ACTIVE", currency: "TRY" },
         ],
       },
-    }],
-    viopRealizedProfitLoss: [{
+    }]],
+    ["viopRealizedProfitLoss", [{
       viopRealizedProfitLoss: {
         totalCollateral: 125_000,
         dailyProfitLoss: { value: 2_500, percentage: 2.04 },
         profitLoss: { value: 5_000, percentage: 4.17 },
       },
-    }],
-    accountViopMarginHealthDetail: [{ accountViopMarginHealthDetail: { availableCollateral: 45_000 } }],
-    viopOverviewPositions: [{
+    }]],
+    ["accountViopMarginHealthDetail", [{ accountViopMarginHealthDetail: { availableCollateral: 45_000 } }]],
+    ["viopOverviewPositions", [{
       viopOverviewPositions: {
         positions: [{
           assetUid: "future-1",
@@ -34,8 +34,8 @@ test("loads the TRY portfolio with VIOP orders and positions", async () => {
           tradePriceV3: { price: 312, extendedPrice: null },
         }],
       },
-    }],
-    transactionHistoryForInvestmentType: [
+    }]],
+    ["transactionHistoryForInvestmentType", [
       {
         transactionHistoryForInvestmentType: {
           items: [{
@@ -54,22 +54,14 @@ test("loads the TRY portfolio with VIOP orders and positions", async () => {
           items: [{ uid: "done-1", typeV2: "ORDER", detail: { title: "EREGL satış" } }],
         },
       },
-    ],
-  }
-  const client = {
-    async authenticate() {
-      return { accessToken: "token", refreshToken: null, memberUid: "member" }
-    },
-    async call<TData, TVariables extends Record<string, unknown>>(
-      operation: GraphqlOperation<TData, TVariables>,
-      variables: TVariables,
-    ): Promise<TData> {
-      calls.push({ name: operation.name, variables })
-      const response = responses[operation.name]?.shift()
-      if (!response) throw new Error(`Missing response for ${operation.name}`)
-      return response as TData
-    },
-  }
+    ]],
+  ])
+  const client = providerApiClient((request) => {
+    calls.push({ name: request.operationName, variables: request.variables })
+    const response = responses.get(request.operationName)?.shift()
+    if (!response) throw new Error(`Missing response for ${request.operationName}`)
+    return response
+  }, { memberUid: "member" })
 
   const source = new ApiAccountSource(client, () => 1234)
   const snapshot = await source.loadAccount()
@@ -91,9 +83,12 @@ test("loads the TRY portfolio with VIOP orders and positions", async () => {
   })
   expect(snapshot.orders.map((order) => order.status)).toEqual(["pending", "completed"])
   expect(snapshot.updatedAt).toBe(1234)
-  expect(calls.filter((call) => call.name === "transactionHistoryForInvestmentType").map((call) => call.variables.status))
-    .toEqual(["PENDING", "COMPLETED"])
-  expect(calls.find((call) => call.name === "viopOverviewPositions")?.variables.accountId).toBe("member")
+  expect(calls.filter((call) => call.name === "transactionHistoryForInvestmentType").map((call) => call.variables))
+    .toEqual([
+      expect.objectContaining({ status: "PENDING" }),
+      expect.objectContaining({ status: "COMPLETED" }),
+    ])
+  expect(calls.find((call) => call.name === "viopOverviewPositions")?.variables).toMatchObject({ accountId: "member" })
 })
 
 test("drops malformed provider rows without losing valid account data", () => {
@@ -139,37 +134,30 @@ test("keeps the real performance bars and drops the padded ones", () => {
 })
 
 test("reads performance for the range it was asked for", async () => {
-  const variables: Array<Record<string, unknown>> = []
-  const client = {
-    async authenticate() {
-      return { accessToken: "token", refreshToken: null, memberUid: "member" }
-    },
-    async call<TData>(operation: GraphqlOperation<TData>, vars: Record<string, unknown>): Promise<TData> {
-      variables.push({ name: operation.name, ...vars })
-      if (operation.name === "overviewV7") {
-        return { overviewV7: { accounts: [{ accountUid: "try", status: "ACTIVE", currency: "TRY" }] } } as TData
-      }
-      return {} as TData
-    },
-  }
+  const variables: object[] = []
+  const client = providerApiClient((request) => {
+    variables.push({ name: request.operationName, ...request.variables })
+    if (request.operationName === "overviewV7") {
+      return { overviewV7: { accounts: [{ accountUid: "try", status: "ACTIVE", currency: "TRY" }] } }
+    }
+    return {}
+  }, { memberUid: "member" })
 
   const snapshot = await new ApiAccountSource(client).loadAccount({ portfolioRange: "THREE_MONTH" })
 
   // The provider takes the member uid here; an account uid is refused outright.
-  const portfolio = variables.find((entry) => entry.name === "viopRealizedProfitLoss")
-  expect(portfolio).toMatchObject({ accountId: "member", period: "THREE_MONTH" })
+  expect(variables).toContainEqual(expect.objectContaining({
+    name: "viopRealizedProfitLoss",
+    accountId: "member",
+    period: "THREE_MONTH",
+  }))
   expect(snapshot.performance.range).toBe("THREE_MONTH")
 })
 
 test("fails clearly when there is no active TRY account", async () => {
-  const client = {
-    async authenticate() {
-      return { accessToken: "token", refreshToken: null, memberUid: "member" }
-    },
-    async call<TData>(): Promise<TData> {
-      return { overviewV7: { accounts: [{ accountUid: "usd", status: "ACTIVE", currency: "USD" }] } } as TData
-    },
-  }
+  const client = providerApiClient(() => ({
+    overviewV7: { accounts: [{ accountUid: "usd", status: "ACTIVE", currency: "USD" }] },
+  }), { memberUid: "member" })
 
   expect(new ApiAccountSource(client).loadAccount()).rejects.toThrow("No active TRY investment account")
 })

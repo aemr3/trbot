@@ -12,11 +12,11 @@ type SettlementApiClient = Pick<ApiClient, "call">
 
 // The provider names the register's three readings after the direction of the
 // move rather than after what they show.
-const PROVIDER_TYPE_BY_MODE: Record<SettlementMode, SettlementAnalysisType> = {
+const PROVIDER_TYPE_BY_MODE = {
   HELD: "TOTAL",
   GAINED: "UP",
   LOST: "DOWN",
-}
+} satisfies Record<SettlementMode, SettlementAnalysisType>
 
 // Reads the settlement register for the stock behind a VIOP contract: what each
 // brokerage house was left holding once the range's trades cleared.

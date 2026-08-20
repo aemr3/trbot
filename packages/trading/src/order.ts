@@ -261,9 +261,9 @@ export function viopPositionIntent(positionQuantity: number, side: ViopOrderSide
 }
 
 function positiveFinite(value: number | null): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null
+  return value !== null && Number.isFinite(value) && value > 0 ? value : null
 }
 
 function nonNegativeFinite(value: number | null): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null
+  return value !== null && Number.isFinite(value) && value >= 0 ? value : null
 }

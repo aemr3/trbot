@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Server } from "bun"
-import type { ServerFrame } from "@trbot/protocol/stream.ts"
+import { parseClientFrame, type ServerFrame } from "@trbot/protocol/stream.ts"
 import { StreamConnection } from "./stream.ts"
 
 /**
@@ -68,7 +68,8 @@ test("reports an unreachable server once, not once per retry", async () => {
   await Bun.sleep(150)
 
   expect(failures).toHaveLength(1)
-  expect((failures[0] as Error).message).toMatch(/trbot server/)
+  expect(failures[0]).toBeInstanceOf(Error)
+  expect(failures[0] instanceof Error ? failures[0].message : "").toMatch(/trbot server/)
 })
 
 /**
@@ -125,7 +126,12 @@ test("a subscription taken out again before the socket opens survives", async ()
   await waitFor(() => received.length > 0)
   await Bun.sleep(50)
 
-  expect(received.map((frame) => JSON.parse(frame) as unknown)).toEqual([
+  const sent = received.map((payload) => {
+    const frame = parseClientFrame(payload)
+    if (!frame) throw new Error("The client emitted an invalid stream frame")
+    return frame
+  })
+  expect(sent).toEqual([
     { type: "subscribe", channel: "depth", symbol: "F_THYAO0826" },
   ])
 })

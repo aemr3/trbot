@@ -1,4 +1,4 @@
-import { createApiClient, resumeApiClient, type ApiClientHandle } from "@trbot/api"
+import { createApiClient, resumeApiClient, type ApiClient, type ApiClientHandle } from "@trbot/api"
 import type { OpenAuthSession } from "@trbot/auth/session.ts"
 import type { AppCredentials } from "@trbot/config"
 import type { BrokerageDistributionSource } from "@trbot/market/brokerage.ts"
@@ -55,7 +55,43 @@ export interface ProviderSources {
 export interface ProviderSessionOptions {
   openAuthSession: OpenAuthSession
   credentials: AppCredentials | null
-  onError?: (label: string, error: unknown) => void
+  onError?: (label: string, cause: unknown) => void
+  connector?: ProviderSessionConnector
+}
+
+interface StoppableProviderStream {
+  stop(): void
+}
+
+export interface ProviderSourceOptions {
+  track(stream: StoppableProviderStream): void
+  report(label: string, cause: unknown): void
+}
+
+/** A provider login plus the source objects that login owns. */
+export interface ProviderSessionHandle {
+  authenticate(): Promise<void>
+  reauthenticate(): Promise<void>
+  completeLogin(code: string): Promise<void>
+  sources(options: ProviderSourceOptions): ProviderSources
+  close(): void
+}
+
+/** Opens provider handles; tests replace this boundary without imitating ApiClient internals. */
+export interface ProviderSessionConnector {
+  open(openAuthSession: OpenAuthSession, credentials: AppCredentials): Promise<ProviderSessionHandle>
+  resume(openAuthSession: OpenAuthSession, credentials: AppCredentials | null): Promise<ProviderSessionHandle | null>
+}
+
+/** Provider-session surface consumed by HTTP routing and stream fan-out. */
+export interface ProviderSessionAccess {
+  readonly authenticated: boolean
+  onExpired(listener: () => void): void
+  onSession(listener: () => void): void
+  login(username: string, password: string): Promise<void>
+  completeOtp(code: string): Promise<void>
+  require(): ProviderSources
+  recover(): Promise<boolean>
 }
 
 /**
@@ -63,16 +99,20 @@ export interface ProviderSessionOptions {
  * which is what keeps refresh-token rotation from racing: no other component
  * holds an API client.
  */
-export class ProviderSession {
-  private handle: ApiClientHandle | null = null
+export class ProviderSession implements ProviderSessionAccess {
+  private handle: ProviderSessionHandle | null = null
   private current: ProviderSources | null = null
-  private pendingOtp: ApiClientHandle | null = null
+  private pendingOtp: ProviderSessionHandle | null = null
   private recovering: Promise<boolean> | null = null
   private opened: { stop(): void }[] = []
   private readonly expiryListeners: (() => void)[] = []
   private readonly sessionListeners: (() => void)[] = []
 
-  constructor(private readonly options: ProviderSessionOptions) {}
+  private readonly connector: ProviderSessionConnector
+
+  constructor(private readonly options: ProviderSessionOptions) {
+    this.connector = options.connector ?? defaultProviderSessionConnector
+  }
 
   get authenticated(): boolean {
     return this.current !== null
@@ -97,11 +137,11 @@ export class ProviderSession {
 
   /** Rebuilds a session from stored credentials. Returns false when none works. */
   async resume(): Promise<boolean> {
-    const handle = await resumeApiClient(this.options.openAuthSession, this.options.credentials)
+    const handle = await this.connector.resume(this.options.openAuthSession, this.options.credentials)
     if (!handle) return false
 
     try {
-      await handle.client.authenticate()
+      await handle.authenticate()
       this.adopt(handle)
       return true
     } catch {
@@ -116,9 +156,9 @@ export class ProviderSession {
    * half-built session is held for `completeOtp`.
    */
   async login(username: string, password: string): Promise<void> {
-    const handle = await createApiClient(this.options.openAuthSession, { username, password })
+    const handle = await this.connector.open(this.options.openAuthSession, { username, password })
     try {
-      await handle.client.reauthenticate()
+      await handle.reauthenticate()
       this.adopt(handle)
     } catch (error) {
       const protocolError = toProtocolError(error)
@@ -137,7 +177,7 @@ export class ProviderSession {
     if (!handle) throw new ProtocolError("invalid_request", "No sign-in is waiting for a verification code")
 
     try {
-      await handle.client.completeLogin(code)
+      await handle.completeLogin(code)
       this.pendingOtp = null
       this.adopt(handle)
     } catch (error) {
@@ -202,12 +242,11 @@ export class ProviderSession {
     this.handle = null
   }
 
-  private track<T extends { stop(): void }>(stream: T): T {
+  private track(stream: StoppableProviderStream): void {
     this.opened.push(stream)
-    return stream
   }
 
-  private adopt(handle: ApiClientHandle): void {
+  private adopt(handle: ProviderSessionHandle): void {
     // Every stream the last session handed out is still connected and still
     // tracked. Replacing `current` alone would leave them running against the
     // provider — a second set of quote and account subscriptions, and per-symbol
@@ -222,26 +261,64 @@ export class ProviderSession {
       this.pendingOtp = null
     }
     this.handle = handle
-    const client = handle.client
-    const orders = new ApiViopOrderSource(client)
-    const report = (label: string) => (error: unknown) => this.options.onError?.(label, error)
-
-    this.current = {
-      instruments: new ApiViopInstrumentSource(client),
-      candles: new ApiCandleSource(client),
-      news: new ApiNewsSource(client),
-      account: new ApiAccountSource(client),
-      orders,
-      brokerage: new ApiBrokerageDistributionSource(client),
-      settlement: new ApiSettlementSource(client),
-      memberFeatures: new ApiMemberFeatureSource(client),
-      quotes: new ApiQuoteStream(client, { onError: report("Quote stream") }),
-      accountStream: new ApiAccountStream(client, { onError: report("Account stream") }),
-      openDepthStream: () => this.track(new ApiDepthStream(client, { onError: report("Depth stream") })),
-      openEquityQuoteStream: () =>
-        this.track(new ApiEquityQuoteStream(client, { onError: report("Equity quote stream") })),
-    }
+    this.current = handle.sources({
+      track: (stream) => this.track(stream),
+      report: (label, cause) => this.options.onError?.(label, cause),
+    })
 
     for (const listener of this.sessionListeners) listener()
+  }
+}
+
+const defaultProviderSessionConnector: ProviderSessionConnector = {
+  async open(openAuthSession, credentials) {
+    return providerHandle(await createApiClient(openAuthSession, credentials))
+  },
+  async resume(openAuthSession, credentials) {
+    const handle = await resumeApiClient(openAuthSession, credentials)
+    return handle ? providerHandle(handle) : null
+  },
+}
+
+function providerHandle(handle: ApiClientHandle): ProviderSessionHandle {
+  return {
+    async authenticate(): Promise<void> {
+      await handle.client.authenticate()
+    },
+    async reauthenticate(): Promise<void> {
+      await handle.client.reauthenticate()
+    },
+    async completeLogin(code: string): Promise<void> {
+      await handle.client.completeLogin(code)
+    },
+    sources: (options) => providerSources(handle.client, options),
+    close: () => handle.close(),
+  }
+}
+
+function providerSources(client: ApiClient, options: ProviderSourceOptions): ProviderSources {
+  const orders = new ApiViopOrderSource(client)
+  const report = (label: string) => (cause: unknown) => options.report(label, cause)
+  return {
+    instruments: new ApiViopInstrumentSource(client),
+    candles: new ApiCandleSource(client),
+    news: new ApiNewsSource(client),
+    account: new ApiAccountSource(client),
+    orders,
+    brokerage: new ApiBrokerageDistributionSource(client),
+    settlement: new ApiSettlementSource(client),
+    memberFeatures: new ApiMemberFeatureSource(client),
+    quotes: new ApiQuoteStream(client, { onError: report("Quote stream") }),
+    accountStream: new ApiAccountStream(client, { onError: report("Account stream") }),
+    openDepthStream: () => {
+      const stream = new ApiDepthStream(client, { onError: report("Depth stream") })
+      options.track(stream)
+      return stream
+    },
+    openEquityQuoteStream: () => {
+      const stream = new ApiEquityQuoteStream(client, { onError: report("Equity quote stream") })
+      options.track(stream)
+      return stream
+    },
   }
 }

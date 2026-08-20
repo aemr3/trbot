@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import type { ChatSession } from "@trbot/chat/session.ts"
 import { ChatSessionModal } from "./chat-session-modal.ts"
 
 function key(name: string, sequence?: string): KeyEvent {
-  return { name, sequence: sequence ?? name } as KeyEvent
+  return keyEvent(name, { sequence: sequence ?? name })
 }
 
 // Local-time timestamps, so the strings below hold in any timezone.
@@ -188,7 +189,7 @@ test("keeps the cursor where it is when a chat updates underneath it", async () 
 
 async function mountedPress(
   modal: ChatSessionModal,
-  renderOnce: () => Promise<unknown>,
+  renderOnce: () => Promise<void>,
   name: string,
 ): Promise<void> {
   modal.handleKey(key(name))

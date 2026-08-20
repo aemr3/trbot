@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { HttpClient, type HttpClientOptions } from "@trbot/client/http.ts"
+import { StreamConnection, type StreamConnectionOptions } from "@trbot/client/stream.ts"
 import { createServerSession } from "./server-session.ts"
 
 const AUTHORITY = "-----BEGIN CERTIFICATE-----\nnot-a-real-one\n-----END CERTIFICATE-----\n"
@@ -26,28 +28,32 @@ afterEach(() => {
  * alike. Trusting it in one place only is worse than not trusting it at all: the
  * terminal appears to connect and then never receives a quote.
  *
- * Both clients keep the authority privately, so it is read back through a cast
- * rather than through a getter that exists only for this.
+ * The transport factory records the public constructor options, so this checks
+ * the wiring without reaching into either client's private state.
  */
 describe("reaching a server with a self-signed certificate", () => {
   test("the configured authority reaches both the requests and the socket", () => {
+    const captured = captureTransports()
     const session = createServerSession({
       config: { url: "https://trbot.example:8443", token: "test-token", caPath: authorityFile() },
+      transports: captured.transports,
     })
 
-    expect(requestAuthority(session.http)).toBe(AUTHORITY)
-    expect(socketAuthority(session.stream)).toBe(AUTHORITY)
+    expect(captured.httpOptions[0]?.ca).toBe(AUTHORITY)
+    expect(captured.streamOptions[0]?.ca).toBe(AUTHORITY)
 
     session.close()
   })
 
   test("no configured authority leaves both on the system trust store", () => {
+    const captured = captureTransports()
     const session = createServerSession({
       config: { url: "http://127.0.0.1:8080", token: "test-token", caPath: null },
+      transports: captured.transports,
     })
 
-    expect(requestAuthority(session.http)).toBeUndefined()
-    expect(socketAuthority(session.stream)).toBeNull()
+    expect(captured.httpOptions[0]?.ca).toBeNull()
+    expect(captured.streamOptions[0]?.ca).toBeNull()
 
     session.close()
   })
@@ -63,7 +69,6 @@ describe("reaching a server with a self-signed certificate", () => {
   })
 })
 
-/** What `fetch` would be handed as `tls.ca`, or undefined when there is none. */
 /**
  * The socket reports a failure to whoever the application put there. Nothing
  * supplied that handler for a while, which made every stream failure silent —
@@ -85,11 +90,21 @@ test("a stream failure reaches the listener the application set", async () => {
   session.close()
 })
 
-function requestAuthority(http: object): string | undefined {
-  return (http as { tls?: { ca: string } }).tls?.ca
-}
-
-/** What the WebSocket would be opened with. */
-function socketAuthority(stream: object): string | null | undefined {
-  return (stream as { options: { ca?: string | null } }).options.ca
+function captureTransports() {
+  const httpOptions: HttpClientOptions[] = []
+  const streamOptions: StreamConnectionOptions[] = []
+  return {
+    httpOptions,
+    streamOptions,
+    transports: {
+      http(options: HttpClientOptions): HttpClient {
+        httpOptions.push(options)
+        return new HttpClient(options)
+      },
+      stream(options: StreamConnectionOptions): StreamConnection {
+        streamOptions.push(options)
+        return new StreamConnection(options)
+      },
+    },
+  }
 }

@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import type { AiModelChoice, AiModelSummary } from "@trbot/protocol/ai.ts"
 import { AiModelModal } from "./ai-model-modal.ts"
 
 function key(name: string): KeyEvent {
-  return { name } as KeyEvent
+  return keyEvent(name)
 }
 
 function model(overrides: Partial<AiModelSummary> = {}): AiModelSummary {

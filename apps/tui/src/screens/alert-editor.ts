@@ -2,6 +2,7 @@
 // draft — the monitor decides when the level is reached, and nothing here, or
 // anywhere downstream of it, trades.
 import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
+import { z } from "zod"
 import {
   ALERT_BASES,
   ALERT_KINDS,
@@ -33,13 +34,13 @@ const ERROR_COLOR = "#ff806f"
 const ALERT_INTERVALS: CandleInterval[] = FUTURES_INTERVALS
 const DEFAULT_ALERT_INTERVAL: CandleInterval = FUTURES_INTERVALS[0] ?? "MIN_10"
 
-const KIND_LABELS: Record<PriceAlertKind, string> = {
+const KIND_LABELS = {
   PRICE: "Price",
   PERCENT: "Percent from market",
   ATR: "ATR from market",
   TRAILING_PERCENT: "Trailing percent",
   TRAILING_ATR: "Trailing ATR",
-}
+} satisfies Record<PriceAlertKind, string>
 
 type EditorField = "instrument" | "direction" | "kind" | "value" | "basis" | "interval" | "repeat" | "action"
 
@@ -55,7 +56,7 @@ export interface AlertEditorOptions {
   atr?: (instrumentUid: string, interval: CandleInterval) => Promise<number | null>
   onSave: (draft: PriceAlertDraft) => void
   onClose: () => void
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
 }
 
 export class AlertEditor {
@@ -422,5 +423,6 @@ function formatNumber(value: number | null): string {
 
 function isDigitKey(key: KeyEvent): boolean {
   const value = key.sequence || key.name
-  return typeof value === "string" && value.length === 1 && value >= "0" && value <= "9"
+  const parsed = z.string().length(1).safeParse(value)
+  return parsed.success && parsed.data >= "0" && parsed.data <= "9"
 }

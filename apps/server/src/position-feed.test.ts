@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
-import type { AccountLiveUpdate, AccountSnapshot, AccountStream } from "@trbot/trading/account.ts"
+import type { AccountLiveUpdate, AccountSnapshot } from "@trbot/trading/account.ts"
 import type { StopRule, StopRuleStore } from "@trbot/trading/stop.ts"
 import { StopController } from "./monitors/stop.ts"
-import { ProviderSession, type ProviderSources } from "./session.ts"
+import { providerSources, TestProviderSession } from "./provider.test-fixture.ts"
 import { StreamHub } from "./stream-hub.ts"
 
 /**
@@ -31,10 +31,36 @@ test("a position closing on the stream reaches the stop monitor", async () => {
   const account = {
     async loadAccount(): Promise<AccountSnapshot> {
       return {
+        portfolio: {
+          currency: "TRY",
+          totalCollateral: null,
+          availableCollateral: null,
+          dailyProfitLoss: null,
+          dailyProfitLossPercent: null,
+          periodProfitLoss: null,
+          periodProfitLossPercent: null,
+        },
+        performance: {
+          range: "WEEK",
+          points: [],
+          profitLoss: null,
+          profitLossPercent: null,
+        },
+        orders: [],
         positions: held > 0
-          ? [{ uid: "future-1", symbol: "F_XU0300826", quantity: held } as never]
+          ? [{
+              uid: "future-1",
+              symbol: "F_XU0300826",
+              displayName: "XU030 08/26",
+              quantity: held,
+              averageCost: 310,
+              currentPrice: 310,
+              unrealizedProfitLoss: 0,
+              currency: "TRY",
+            }]
           : [],
-      } as unknown as AccountSnapshot
+        updatedAt: 0,
+      }
     },
   }
 
@@ -65,22 +91,13 @@ test("a position closing on the stream reaches the stop monitor", async () => {
     atrValue: null,
   })
 
-  const sources = {
+  const sources = providerSources({
     quotes: { subscribe() {}, onConnectionChange() {}, start() {}, stop() {} },
-    accountStream: accountStream as unknown as AccountStream,
+    accountStream,
     account,
-    openDepthStream: () => ({ subscribe() {}, onStatusChange() {}, start() {}, stop() {} }),
-    openEquityQuoteStream: () => ({ subscribe() {}, onConnectionChange() {}, start() {}, stop() {} }),
-  } as unknown as ProviderSources
-
-  const session = new ProviderSession({
-    openAuthSession: async () => ({
-      store: { async get() { return null }, async latest() { return null }, async put() {} },
-      close() {},
-    }),
-    credentials: null,
   })
-  ;(session as unknown as { current: ProviderSources }).current = sources
+
+  const session = new TestProviderSession(sources)
 
   const refresh = async (): Promise<void> => {
     stops.setPositions((await session.require().account.loadAccount()).positions)

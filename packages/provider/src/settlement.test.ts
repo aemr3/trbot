@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test"
-import type { GraphqlOperation } from "@trbot/api/graphql.ts"
+import { providerApiClient, type ProviderTestRequest } from "@trbot/api/provider-client.test-fixture.ts"
 import { ApiSettlementSource } from "./settlement.ts"
+
+interface SettlementCall {
+  name: string
+  variables: ProviderTestRequest["variables"]
+}
 
 const settlementPayload = {
   settlementAnalysis: {
@@ -28,22 +33,20 @@ const settlementPayload = {
 }
 
 function fakeClient() {
-  const calls: { name: string; variables: Record<string, unknown> }[] = []
-  const client = {
-    async call(operation: GraphqlOperation<unknown, never>, variables: Record<string, unknown>) {
-      calls.push({ name: operation.name, variables })
-      if (operation.name === "getInstrument") {
+  const calls: SettlementCall[] = []
+  const client = providerApiClient((request) => {
+      calls.push({ name: request.operationName, variables: request.variables })
+      if (request.operationName === "getInstrument") {
         return { instrument: { __typename: "Future", underlyingInstrumentUid: "stock-uid" } }
       }
       return settlementPayload
-    },
-  }
+  })
   return { client, calls }
 }
 
 test("reads the settlement register for the stock behind the contract", async () => {
   const { client, calls } = fakeClient()
-  const source = new ApiSettlementSource(client as never)
+  const source = new ApiSettlementSource(client)
 
   const analysis = await source.loadSettlement({
     instrumentUid: "future-uid",
@@ -75,7 +78,7 @@ test("reads the settlement register for the stock behind the contract", async ()
 
 test("asks for the standing positions under the held view", async () => {
   const { client, calls } = fakeClient()
-  const source = new ApiSettlementSource(client as never)
+  const source = new ApiSettlementSource(client)
 
   await source.loadSettlement({ instrumentUid: "future-uid", mode: "HELD", range: { start: null, end: null } })
 
@@ -84,7 +87,7 @@ test("asks for the standing positions under the held view", async () => {
 
 test("caches the underlying so repeated readings cost one query", async () => {
   const { client, calls } = fakeClient()
-  const source = new ApiSettlementSource(client as never)
+  const source = new ApiSettlementSource(client)
 
   await source.loadSettlement({ instrumentUid: "future-uid", mode: "GAINED", range: { start: null, end: null } })
   await source.loadSettlement({ instrumentUid: "future-uid", mode: "LOST", range: { start: null, end: null } })
@@ -94,7 +97,7 @@ test("caches the underlying so repeated readings cost one query", async () => {
 
 test("keeps only the presets that carry their own dates", async () => {
   const { client } = fakeClient()
-  const source = new ApiSettlementSource(client as never)
+  const source = new ApiSettlementSource(client)
 
   const analysis = await source.loadSettlement({
     instrumentUid: "future-uid",

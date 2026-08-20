@@ -3,6 +3,7 @@ import { chmod, mkdir } from "node:fs/promises"
 import { dirname, isAbsolute, resolve } from "node:path"
 import { drizzle } from "drizzle-orm/bun-sqlite"
 import { migrate } from "drizzle-orm/bun-sqlite/migrator"
+import { z } from "zod"
 import * as schema from "./schema.ts"
 
 // Resolved against this module rather than the working directory so any
@@ -63,9 +64,10 @@ async function retryWhileDatabaseIsBusy<T>(operation: () => T): Promise<T> {
   }
 }
 
-function isTransientDatabaseLock(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false
-  const code = "code" in error && typeof error.code === "string" ? error.code : ""
+function isTransientDatabaseLock(cause: unknown): boolean {
+  const parsed = z.object({ code: z.string() }).safeParse(cause)
+  if (!parsed.success) return false
+  const code = parsed.data.code
   return code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED")
 }
 

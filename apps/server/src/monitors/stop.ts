@@ -23,13 +23,13 @@ export interface StopControllerOptions {
    * Whether a failed exit definitely never reached the provider. Injected so the
    * domain controller does not have to know about provider error types.
    */
-  isDefiniteRefusal?: (error: unknown) => boolean
+  isDefiniteRefusal?: (cause: unknown) => boolean
   broadcast: (event: StopControllerEvent) => void
   countdownMs?: number
   /** How long to wait before retrying an exit that found no session. */
   submitRetryMs?: number
   maxSubmitAttempts?: number
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   now?: () => number
 }
 
@@ -104,7 +104,7 @@ export class StopController {
     // read it shows no level at all. Reading now rather than waiting out the
     // poll is the difference between a rule that looks armed and one that looks
     // broken. Not awaited: the rule is saved either way.
-    void this.monitor.refreshCandleRules().catch((error: unknown) => this.options.onError?.(error))
+    void this.monitor.refreshCandleRules().catch((cause: unknown) => this.options.onError?.(cause))
     return rule
   }
 
@@ -236,7 +236,7 @@ export class StopController {
       this.options.onError?.(new Error(`No provider session; the ${stop.event.rule.displayName} exit was not sent`))
       // Stood down as well as reported: a rule left triggered watches nothing
       // and still reads as a protected position.
-      await this.monitor.resolveTrigger(ruleId, "FAILED").catch((error: unknown) => this.options.onError?.(error))
+      await this.monitor.resolveTrigger(ruleId, "FAILED").catch((cause: unknown) => this.options.onError?.(cause))
       this.options.broadcast({ type: "resolved", ruleId, outcome: "FAILED" })
       return
     }
@@ -259,7 +259,7 @@ export class StopController {
       // a timeout — means an exit may be live, and saying "failed" would tell a
       // trader their position is still open when it may not be.
       const outcome = this.options.isDefiniteRefusal?.(error) === false ? "UNKNOWN" : "FAILED"
-      await this.monitor.resolveTrigger(ruleId, outcome).catch((caught: unknown) => this.options.onError?.(caught))
+      await this.monitor.resolveTrigger(ruleId, outcome).catch((cause: unknown) => this.options.onError?.(cause))
       this.options.broadcast({ type: "resolved", ruleId, outcome })
       return
     }
@@ -269,7 +269,7 @@ export class StopController {
     // would be the one wrong answer.
     await this.monitor
       .resolveTrigger(ruleId, "SUBMITTED", orderUid)
-      .catch((error: unknown) => this.options.onError?.(error))
+      .catch((cause: unknown) => this.options.onError?.(cause))
     this.options.broadcast({ type: "resolved", ruleId, outcome: "SUBMITTED" })
   }
 }

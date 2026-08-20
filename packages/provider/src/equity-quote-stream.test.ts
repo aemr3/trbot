@@ -14,7 +14,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
 class FakeStreamClient {
   calls: { path: string; query?: Record<string, string> }[] = []
 
-  async *stream(options: { path: string; query?: Record<string, string> }): AsyncGenerator<SseFrame> {
+  async *stream(options: { path: string; query?: Record<string, string>; signal?: AbortSignal }): AsyncGenerator<SseFrame> {
     this.calls.push(options)
     const symbol = options.query?.TR ?? ""
     yield {
@@ -34,7 +34,7 @@ test("parses the abbreviated Turkish equity ticker payload", () => {
 test("subscribes to the active underlying stock and replaces it on selection changes", async () => {
   const client = new FakeStreamClient()
   const updates: EquityQuoteUpdate[] = []
-  const stream = new ApiEquityQuoteStream(client as never, { reconnectDelaysMs: [1000] })
+  const stream = new ApiEquityQuoteStream(client, { reconnectDelaysMs: [1000] })
   stream.subscribe((update) => updates.push(update))
 
   stream.start("tuprs")

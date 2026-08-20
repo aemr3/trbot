@@ -7,7 +7,11 @@ type MemberApiClient = Pick<ApiClient, "call" | "authenticate">
 // The provider names its flags after the market they were launched in
 // (`TR_DEPTH`) and after its own subscription brand (`MIDAS_PRO`). Only this
 // boundary knows those names; the rest of the app uses the neutral ones.
-const FEATURE_BY_PROVIDER_NAME: Record<string, MemberFeature> = {
+interface ProviderFeatureNames {
+  [name: string]: MemberFeature | undefined
+}
+
+const FEATURE_BY_PROVIDER_NAME: ProviderFeatureNames = {
   TR_DEPTH: "MARKET_DEPTH",
   INSTANT_BROKERAGE_DISTRIBUTION: "BROKERAGE_DISTRIBUTION",
   SETTLEMENT: "SETTLEMENT_ANALYSIS",

@@ -411,26 +411,25 @@ function orderErrorMessage(data: { placeOrderV2?: { orderSuccess?: { messageCard
   return message?.description ?? message?.title ?? null
 }
 
-function finiteNumber(value: unknown): number | null {
-  if (typeof value !== "number" && typeof value !== "string") return null
+function finiteNumber(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function boundedScale(value: unknown): number {
+function boundedScale(value: number | string | null | undefined): number {
   const parsed = finiteNumber(value)
   return parsed === null ? 2 : Math.max(0, Math.min(8, Math.floor(parsed)))
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }
 
-function providerOrderListError(error: unknown): string {
-  if (typeof error === "string" && error) return error
-  return "Provider could not list pending VIOP orders"
+function providerOrderListError(message: string | null | undefined): string {
+  return message || "Provider could not list pending VIOP orders"
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError"
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === "AbortError"
 }

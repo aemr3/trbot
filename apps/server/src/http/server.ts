@@ -111,7 +111,7 @@ export function startServer(config: ServerConfig, deps: ServerDeps): Server<Sock
         for (const frame of deps.backlog()) socket.send(JSON.stringify(frame))
       },
       message(socket: ServerWebSocket<SocketData>, message) {
-        const frame = parseClientFrame(typeof message === "string" ? message : message.toString())
+        const frame = parseClientFrame(message.toString())
         if (!frame) return
         if (frame.type === "alertDecision") {
           deps.onDecision(frame)

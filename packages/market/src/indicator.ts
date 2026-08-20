@@ -7,31 +7,37 @@ import type { Candle } from "./candle.ts"
 export const CHART_INDICATORS = ["EMA_20", "EMA_50", "EMA_100", "VWAP", "BOLLINGER"] as const
 export type ChartIndicator = (typeof CHART_INDICATORS)[number]
 
-export const CHART_INDICATOR_LABELS: Record<ChartIndicator, string> = {
+export const CHART_INDICATOR_LABELS = {
   EMA_20: "EMA20",
   EMA_50: "EMA50",
   EMA_100: "EMA100",
   VWAP: "VWAP",
   BOLLINGER: "BB",
-}
+} satisfies Record<ChartIndicator, string>
 
 // Distinct from the up/down colors, so an overlay is never read as a candle.
-export const CHART_INDICATOR_COLORS: Record<ChartIndicator, string> = {
+export const CHART_INDICATOR_COLORS = {
   EMA_20: "#e5c07b",
   EMA_50: "#61afef",
   EMA_100: "#c678dd",
   VWAP: "#56b6c2",
   BOLLINGER: "#7a8699",
-}
+} satisfies Record<ChartIndicator, string>
 
-const EMA_PERIODS: Record<"EMA_20" | "EMA_50" | "EMA_100", number> = {
+const EMA_PERIODS = {
   EMA_20: 20,
   EMA_50: 50,
   EMA_100: 100,
-}
+} satisfies Record<"EMA_20" | "EMA_50" | "EMA_100", number>
 
 const BOLLINGER_PERIOD = 20
 const BOLLINGER_DEVIATIONS = 2
+
+export interface BollingerBands {
+  upper: (number | null)[]
+  middle: (number | null)[]
+  lower: (number | null)[]
+}
 
 const DAY_MS = 86_400_000
 
@@ -100,7 +106,7 @@ export function bollingerBands(
   candles: Candle[],
   period = BOLLINGER_PERIOD,
   deviations = BOLLINGER_DEVIATIONS,
-): { upper: (number | null)[]; middle: (number | null)[]; lower: (number | null)[] } {
+): BollingerBands {
   const upper: (number | null)[] = candles.map(() => null)
   const middle: (number | null)[] = candles.map(() => null)
   const lower: (number | null)[] = candles.map(() => null)

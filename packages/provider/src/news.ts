@@ -77,7 +77,11 @@ function toDetailArticle(article: ArticleDetail): NewsArticle {
   }
 }
 
-const NAMED_ENTITIES: Record<string, string> = {
+interface NamedEntities {
+  [name: string]: string | undefined
+}
+
+const NAMED_ENTITIES: NamedEntities = {
   amp: "&",
   lt: "<",
   gt: ">",

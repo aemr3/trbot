@@ -618,12 +618,10 @@ test("compacts the selected chat without sending a message", async () => {
   const { renderer, mockInput, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const session = await chats.create()
-  let finishCompaction: ((result: Awaited<ReturnType<ChatSessions["compact"]>>) => void) | null = null
+  const compacting = Promise.withResolvers<Awaited<ReturnType<ChatSessions["compact"]>>>()
   chats.compact = async (sessionId) => {
     chats.compacted.push(sessionId)
-    return await new Promise((resolve) => {
-      finishCompaction = resolve
-    })
+    return await compacting.promise
   }
   const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
   renderer.root.add(screen.root)
@@ -643,9 +641,7 @@ test("compacts the selected chat without sending a message", async () => {
   expect(second).toBeDefined()
   expect(second).not.toBe(first)
 
-  const complete = finishCompaction as ((result: Awaited<ReturnType<ChatSessions["compact"]>>) => void) | null
-  if (!complete) throw new Error("compaction did not start")
-  complete({ compacted: true, tokensBefore: 24_000 })
+  compacting.resolve({ compacted: true, tokensBefore: 24_000 })
   await Bun.sleep(0)
   const frame = await waitForFrame((value) => value.includes("24.0K estimated tokens summarized"))
 
@@ -1074,11 +1070,13 @@ test("a hidden chat releases its input focus and cannot receive another panel's 
   renderer.destroy()
 })
 
-function labelledPanel(renderer: RenderContext, label: string): {
+interface LabelledPanel {
   root: BoxRenderable
   handleKey(): void
   destroy(): void
-} {
+}
+
+function labelledPanel(renderer: RenderContext, label: string): LabelledPanel {
   const root = new BoxRenderable(renderer, { width: "100%", height: "100%" })
   root.add(new TextRenderable(renderer, { content: label }))
   return {

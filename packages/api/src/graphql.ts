@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto"
 
 export interface GraphqlOperation<
-  TData = Record<string, unknown>,
-  TVariables extends Record<string, unknown> = Record<string, unknown>,
+  TData = never,
+  TVariables extends object = Record<string, never>,
 > {
   name: string
   type: "query" | "mutation"
@@ -14,7 +14,7 @@ export interface GraphqlOperation<
 
 export function defineOperation<
   TData,
-  TVariables extends Record<string, unknown> = Record<string, unknown>,
+  TVariables extends object = Record<string, never>,
 >(name: string, type: "query" | "mutation", document: string): GraphqlOperation<TData, TVariables> {
   return {
     name,

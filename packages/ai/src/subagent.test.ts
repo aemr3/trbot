@@ -12,6 +12,7 @@ import type { ChatMessageDraft } from "@trbot/chat/session.ts"
 import { ChatAgent } from "./chat.ts"
 import { subagentTool, type SubagentSessionRecorder } from "./subagent.ts"
 import { ChatTools, toolText, type ChatTool } from "./tool.ts"
+import { z } from "zod"
 
 function harness(responseCount: number, response: Parameters<ReturnType<typeof fauxProvider>["setResponses"]>[0][number]) {
   const faux = fauxProvider({ models: [{ id: "worker-model", reasoning: true }] })
@@ -49,7 +50,12 @@ test("records a worker's complete isolated session when a parent chat is availab
     fauxText("Worker result."),
   ]))
   const started: unknown[] = []
-  const deltas = { text: "", reasoning: "", tools: [] as string[] }
+  interface RecordedDeltas {
+    text: string
+    reasoning: string
+    tools: string[]
+  }
+  const deltas: RecordedDeltas = { text: "", reasoning: "", tools: [] }
   const messages: ChatMessageDraft[] = []
   const finishes: Array<string | null> = []
   const recorder: SubagentSessionRecorder = {
@@ -85,7 +91,8 @@ test("records a worker's complete isolated session when a parent chat is availab
   }])
   expect(deltas).toEqual({ text: "Worker result.", reasoning: "Checking the market.", tools: [] })
   expect(messages.map((draft) => draft.message.role)).toEqual(["ASSISTANT"])
-  expect((outcome.details as { results: Array<{ sessionId: string }> }).results[0]?.sessionId).toBe("child-1")
+  const details = z.object({ results: z.array(z.object({ sessionId: z.string().nullable() })) }).parse(outcome.details)
+  expect(details.results[0]?.sessionId).toBe("child-1")
   expect(finishes).toEqual([null])
 })
 

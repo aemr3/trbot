@@ -21,15 +21,18 @@ import type {
 } from "@trbot/protocol/ai.ts"
 import {
   AiPreferencesSchema,
+  AiCredentialSchema,
   AiProviderSummarySchema,
   AiModelSummarySchema,
   OverviewStreamFrameSchema,
 } from "@trbot/protocol/ai.ts"
-import { ProtocolError, parseErrorBody } from "@trbot/protocol/error.ts"
+import { parseErrorBody, ProtocolError } from "@trbot/protocol/error.ts"
 import { OkResponseSchema, ROUTES } from "@trbot/protocol/routes.ts"
 import { openExternalUrl } from "./browser.ts"
 import type { HttpClient } from "./http.ts"
 import { z } from "zod"
+
+const OverviewErrorMarkerSchema = z.object({ error: z.unknown() })
 
 /**
  * Running a provider's authorization flow on this machine.
@@ -130,16 +133,19 @@ export class HttpAiAccount implements AiAccount {
           // The harness only reports the address; opening it is this side's job. A
           // machine with no browser is not a failure: the modal shows the link, and
           // the prompt below takes a code pasted back by hand.
-          void this.openUrl(event.url).catch((error: unknown) => options.onBrowserError?.(error))
+          void this.openUrl(event.url).catch((cause: unknown) => options.onBrowserError?.(cause))
           if (event.instructions) options.onInfo?.(event.instructions)
           return
         }
         if (event.type === "device_code") {
-          options.onDeviceCode?.({
-            userCode: event.userCode,
-            verificationUri: event.verificationUri,
-            ...(event.expiresInSeconds === undefined ? {} : { expiresInSeconds: event.expiresInSeconds }),
-          })
+          const deviceCode = event.expiresInSeconds === undefined
+            ? { userCode: event.userCode, verificationUri: event.verificationUri }
+            : {
+                userCode: event.userCode,
+                verificationUri: event.verificationUri,
+                expiresInSeconds: event.expiresInSeconds,
+              }
+          options.onDeviceCode?.(deviceCode)
           return
         }
         options.onInfo?.(event.message)
@@ -162,11 +168,14 @@ export class HttpAiAccount implements AiAccount {
       },
     })
 
-    const credentials: AiCredentials = { providerId, credential: credential as unknown as Record<string, unknown> }
-    return await this.http.post(ROUTES.aiProvider(providerId), AiProviderSummarySchema, {
-      body: credentials,
-      ...(options.signal ? { signal: options.signal } : {}),
-    })
+    const credentials: AiCredentials = {
+      providerId,
+      credential: AiCredentialSchema.parse(credential),
+    }
+    const request = options.signal
+      ? { body: credentials, signal: options.signal }
+      : { body: credentials }
+    return await this.http.post(ROUTES.aiProvider(providerId), AiProviderSummarySchema, request)
   }
 
   async disconnect(providerId: string): Promise<void> {
@@ -191,8 +200,11 @@ export class HttpOverviewGenerator implements OverviewGenerator {
 
       // A failure part way through a response arrives as a frame, since the
       // status was already sent.
-      if (decoded && typeof decoded === "object" && "error" in decoded) {
-        throw parseErrorBody(decoded) ?? new ProtocolError("internal", "The overview stream failed")
+      const streamError = parseErrorBody(decoded)
+      if (streamError) throw streamError
+
+      if (OverviewErrorMarkerSchema.safeParse(decoded).success) {
+        throw new ProtocolError("internal", "The server sent an invalid error frame")
       }
 
       // Anything else is a heartbeat, or a frame from a newer server. Both are

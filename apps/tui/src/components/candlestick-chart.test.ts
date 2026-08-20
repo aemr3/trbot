@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test"
-import { RGBA, StyledText, type KeyEvent } from "@opentui/core"
+import { RGBA, StyledText } from "@opentui/core"
 import { createMockMouse, createTestRenderer } from "@opentui/core/testing"
 import { DEFAULT_INTERVALS_BY_RANGE, type Candle, type CandleSeries, type CandleSource } from "@trbot/market/candle.ts"
 import {
   CandlestickChart,
+  isChartMessage,
   renderCandleChart,
   renderCandleChartBitmapView,
   selectVisibleCandles,
@@ -12,6 +13,7 @@ import {
 } from "./candlestick-chart.ts"
 import { CHART_INDICATOR_COLORS, indicatorLines } from "@trbot/market/indicator.ts"
 import { CHART_PALETTE, SELECTION_COLOR } from "./chart/palette.ts"
+import { keyEvent } from "../key-event.test-fixture.ts"
 
 const candles: Candle[] = [
   { timestamp: 1000, open: 10, high: 13, low: 9, close: 12, volume: 10 },
@@ -38,8 +40,18 @@ function view(
   reserveScrollbarRow = false,
 ): BrailleChartView {
   const result = renderCandleChart(input, width, height, grainMs, scrollOffset, reserveScrollbarRow)
-  expect(typeof result).not.toBe("string")
-  return result as BrailleChartView
+  if (isChartMessage(result)) throw new Error(result)
+  return result
+}
+
+function brailleView(result: BrailleChartView | string): BrailleChartView {
+  if (isChartMessage(result)) throw new Error(result)
+  return result
+}
+
+function bitmapView(result: BitmapChartView | string): BitmapChartView {
+  if (isChartMessage(result)) throw new Error(result)
+  return result
 }
 
 function toText(styled: StyledText): string {
@@ -204,32 +216,29 @@ test("marks the picked candle in both renderers", () => {
 
   // Braille: the marker runs down the picked candle's own column, under the
   // candle itself, so it shows in the empty rows above and below it.
-  const marked = renderCandleChart(candles, 40, 20, MIN_5_MS, 0, false, 3, picked.timestamp)
-  expect(typeof marked).not.toBe("string")
-  const markerCells = cellsWithColor((marked as BrailleChartView).plot, RGBA.fromHex(SELECTION_COLOR))
+  const marked = brailleView(renderCandleChart(candles, 40, 20, MIN_5_MS, 0, false, 3, picked.timestamp))
+  const markerCells = cellsWithColor(marked.plot, RGBA.fromHex(SELECTION_COLOR))
   expect(markerCells.length).toBeGreaterThan(0)
   expect(new Set(markerCells.map((cell) => cell.column)).size).toBe(1)
 
   // Nothing is marked until something is picked.
-  const plain = renderCandleChart(candles, 40, 20, MIN_5_MS, 0, false, 3)
-  expect(cellsWithColor((plain as BrailleChartView).plot, RGBA.fromHex(SELECTION_COLOR))).toHaveLength(0)
+  const plain = brailleView(renderCandleChart(candles, 40, 20, MIN_5_MS, 0, false, 3))
+  expect(cellsWithColor(plain.plot, RGBA.fromHex(SELECTION_COLOR))).toHaveLength(0)
 
   // Kitty: the same column, drawn as pixels.
-  const bitmap = renderCandleChartBitmapView(
-    candles, 40, 20, MIN_5_MS, 0, false, { width: 8, height: 16 }, 3, picked.timestamp)
-  expect(typeof bitmap).not.toBe("string")
-  const bitmapView = bitmap as BitmapChartView
-  const markedColumns = bitmapColumns(bitmapView, SELECTION_COLOR)
+  const bitmap = bitmapView(renderCandleChartBitmapView(
+    candles, 40, 20, MIN_5_MS, 0, false, { width: 8, height: 16 }, 3, picked.timestamp))
+  const markedColumns = bitmapColumns(bitmap, SELECTION_COLOR)
   expect(markedColumns.length).toBeGreaterThan(0)
   expect(Math.max(...markedColumns) - Math.min(...markedColumns)).toBeLessThanOrEqual(1)
 
-  const plainBitmap = renderCandleChartBitmapView(
-    candles, 40, 20, MIN_5_MS, 0, false, { width: 8, height: 16 }, 3)
-  expect(bitmapColumns(plainBitmap as BitmapChartView, SELECTION_COLOR)).toHaveLength(0)
+  const plainBitmap = bitmapView(renderCandleChartBitmapView(
+    candles, 40, 20, MIN_5_MS, 0, false, { width: 8, height: 16 }, 3))
+  expect(bitmapColumns(plainBitmap, SELECTION_COLOR)).toHaveLength(0)
 
   // A candle outside the visible window takes its marker with it.
-  const offWindow = renderCandleChart(candles.slice(2), 40, 20, MIN_5_MS, 0, false, 3, picked.timestamp)
-  expect(cellsWithColor((offWindow as BrailleChartView).plot, RGBA.fromHex(SELECTION_COLOR))).toHaveLength(0)
+  const offWindow = brailleView(renderCandleChart(candles.slice(2), 40, 20, MIN_5_MS, 0, false, 3, picked.timestamp))
+  expect(cellsWithColor(offWindow.plot, RGBA.fromHex(SELECTION_COLOR))).toHaveLength(0)
 })
 
 test("draws indicator overlays in both renderers", () => {
@@ -245,27 +254,25 @@ test("draws indicator overlays in both renderers", () => {
   const line = indicatorLines(trend, ["EMA_20"], MIN_5_MS)
   expect(line).toHaveLength(1)
 
-  const braille = renderCandleChart(trend, 60, 20, MIN_5_MS, 0, false, 3, null, line)
-  expect(typeof braille).not.toBe("string")
+  const braille = brailleView(renderCandleChart(trend, 60, 20, MIN_5_MS, 0, false, 3, null, line))
   const overlayCells = cellsWithColor(
-    (braille as BrailleChartView).plot,
+    braille.plot,
     RGBA.fromHex(CHART_INDICATOR_COLORS.EMA_20),
   )
   expect(overlayCells.length).toBeGreaterThan(0)
 
-  const bitmap = renderCandleChartBitmapView(
-    trend, 60, 20, MIN_5_MS, 0, false, { width: 8, height: 16 }, 3, null, line)
-  expect(typeof bitmap).not.toBe("string")
-  expect(bitmapColumns(bitmap as BitmapChartView, CHART_INDICATOR_COLORS.EMA_20).length).toBeGreaterThan(0)
+  const bitmap = bitmapView(renderCandleChartBitmapView(
+    trend, 60, 20, MIN_5_MS, 0, false, { width: 8, height: 16 }, 3, null, line))
+  expect(bitmapColumns(bitmap, CHART_INDICATOR_COLORS.EMA_20).length).toBeGreaterThan(0)
 
   // Nothing is drawn for an indicator nobody switched on.
-  const plain = renderCandleChart(trend, 60, 20, MIN_5_MS, 0, false, 3)
-  expect(cellsWithColor((plain as BrailleChartView).plot, RGBA.fromHex(CHART_INDICATOR_COLORS.EMA_20))).toHaveLength(0)
+  const plain = brailleView(renderCandleChart(trend, 60, 20, MIN_5_MS, 0, false, 3))
+  expect(cellsWithColor(plain.plot, RGBA.fromHex(CHART_INDICATOR_COLORS.EMA_20))).toHaveLength(0)
 
   // Scrolled back, the overlay follows its candles rather than starting over:
   // the window is a slice of a series measured across the whole history.
-  const scrolled = renderCandleChart(trend, 60, 20, MIN_5_MS, 20, false, 3, null, line)
-  expect(cellsWithColor((scrolled as BrailleChartView).plot, RGBA.fromHex(CHART_INDICATOR_COLORS.EMA_20)).length)
+  const scrolled = brailleView(renderCandleChart(trend, 60, 20, MIN_5_MS, 20, false, 3, null, line))
+  expect(cellsWithColor(scrolled.plot, RGBA.fromHex(CHART_INDICATOR_COLORS.EMA_20)).length)
     .toBeGreaterThan(0)
 })
 
@@ -312,21 +319,19 @@ test("keeps the indicator toggles, and reports what they turn on", async () => {
 test("aligns the price guide with the close edge of the last bitmap candle", () => {
   for (const close of [38.24, 38.5, 38.79, 38.93, 37.94, 37.62]) {
     const rising = close >= 38.1
-    const result = renderCandleChartBitmapView([
+    const chart = bitmapView(renderCandleChartBitmapView([
       { timestamp: 1000, open: 38.0, high: 39.2, low: 37.5, close: 38.5, volume: null },
       { timestamp: 2000, open: 38.5, high: 39.2, low: 37.2, close: 38.1, volume: null },
       { timestamp: 3000, open: 38.1, high: Math.max(38.1, close) + 0.05, low: Math.min(38.1, close) - 0.05, close, volume: null },
-    ], 60, 24, MIN_5_MS, 0, false, { width: 8, height: 16 })
-    expect(typeof result).not.toBe("string")
-    const view = result as BitmapChartView
+    ], 60, 24, MIN_5_MS, 0, false, { width: 8, height: 16 }))
 
     // The guide spans the full width; only the last candle reaches the right edge.
-    const guideRows = bitmapRows(view, rising ? CHART_PALETTE.guideUp : CHART_PALETTE.guideDown, 0, 4)
+    const guideRows = bitmapRows(chart, rising ? CHART_PALETTE.guideUp : CHART_PALETTE.guideDown, 0, 4)
     const bodyRows = bitmapRows(
-      view,
+      chart,
       rising ? CHART_PALETTE.candleUp : CHART_PALETTE.candleDown,
-      view.bitmap.width - 6,
-      view.bitmap.width - 1,
+      chart.bitmap.width - 6,
+      chart.bitmap.width - 1,
     )
     const closeEdge = rising ? Math.min(...bodyRows) : Math.max(...bodyRows) + 1
 
@@ -447,9 +452,7 @@ test("keeps a blank row above the native scrollbar when history scrolls", () => 
 })
 
 test("rasterizes a true-pixel bitmap for kitty terminals", () => {
-  const result = renderCandleChartBitmapView(candles, 40, 10, MIN_5_MS, 0, false, { width: 8, height: 16 })
-  expect(typeof result).not.toBe("string")
-  const chart = result as BitmapChartView
+  const chart = bitmapView(renderCandleChartBitmapView(candles, 40, 10, MIN_5_MS, 0, false, { width: 8, height: 16 }))
   expect(chart.kind).toBe("bitmap")
   expect(chart.bitmap.width).toBe(30 * 8)
   expect(chart.bitmap.height).toBe(9 * 16)
@@ -501,10 +504,10 @@ test("pins the OHLC line to a clicked candle until it is cleared", async () => {
   expect(pinned).toMatch(/◆ \d{2} \w{3} \d{2}:\d{2}/)
 
   // Esc hands the line back to the market, and only then does it fall through.
-  expect(chart.handleKey({ name: "escape" } as KeyEvent)).toBeTrue()
+  expect(chart.handleKey(keyEvent("escape"))).toBeTrue()
   const live = await setup.waitForFrame((value) => value.includes("O 43,00"))
   expect(live).not.toContain("◆")
-  expect(chart.handleKey({ name: "escape" } as KeyEvent)).toBeFalse()
+  expect(chart.handleKey(keyEvent("escape"))).toBeFalse()
 
   chart.destroy()
   setup.renderer.destroy()
@@ -512,7 +515,10 @@ test("pins the OHLC line to a clicked candle until it is cleared", async () => {
 
 test("applies a live tick that arrives while candle history is loading", async () => {
   const setup = await createTestRenderer({ width: 60, height: 16 })
-  const deferred: { resolve?: (series: CandleSeries) => void } = {}
+  interface DeferredSeries {
+    resolve?: (series: CandleSeries) => void
+  }
+  const deferred: DeferredSeries = {}
   const source: CandleSource = {
     loadCandles() {
       return new Promise((resolve) => {
@@ -601,7 +607,7 @@ test("updates OHLC from the current candle for the selected timeframe", async ()
   chart.setInstrument({ uid: "future-1", symbol: "F_TUPRS0826", displayName: "TUPRS" })
 
   await setup.waitForFrame((value) => value.includes("5m · O 12,00") && value.includes("-25.00%"))
-  chart.handleKey({ name: "down" } as KeyEvent)
+  chart.handleKey(keyEvent("down"))
   const frame = await setup.waitForFrame((value) => value.includes("10m · O 22,00"))
   expect(frame).toContain("H 25,00")
   expect(frame).toContain("L 20,00")
@@ -641,60 +647,55 @@ test("wheel zooms around the cursor and horizontal scroll pans", async () => {
   await setup.waitForFrame((value) => value.includes("O 10,00"))
   await setup.renderOnce()
 
-  const internals = chart as unknown as {
-    scrollOffset: number
-    horizontalScrollBar: { x: number; y: number; viewportSize: number; slider: { viewPortSize: number } }
-  }
   const mouse = createMockMouse(setup.renderer)
-  const bar = internals.horizontalScrollBar
-  const initialViewport = bar.viewportSize
+  const initialViewport = chart.viewport.viewportSize
   expect(initialViewport).toBeGreaterThan(0)
 
   // Wheel up at the right edge of the plot zooms in while the newest candle
   // stays anchored; wheel down zooms back out.
   await mouse.scroll(69, 10, "up")
-  const zoomedViewport = bar.viewportSize
+  const zoomedViewport = chart.viewport.viewportSize
   expect(zoomedViewport).toBeLessThan(initialViewport)
-  expect(internals.scrollOffset).toBe(0)
+  expect(chart.viewport.scrollOffset).toBe(0)
   await mouse.scroll(69, 10, "down")
-  expect(bar.viewportSize).toBeGreaterThan(zoomedViewport)
+  expect(chart.viewport.viewportSize).toBeGreaterThan(zoomedViewport)
 
   // Wheel up at the left edge anchors the oldest visible candle instead, so
   // the window slides back in history.
   await mouse.scroll(0, 10, "up")
-  expect(internals.scrollOffset).toBeGreaterThan(0)
+  expect(chart.viewport.scrollOffset).toBeGreaterThan(0)
 
   // Trackpad-style horizontal scroll pans, over the plot and scrollbar alike.
   await settleWheelAxis()
-  const beforePan = internals.scrollOffset
+  const beforePan = chart.viewport.scrollOffset
   await mouse.scroll(30, 10, "left")
-  const panned = internals.scrollOffset
+  const panned = chart.viewport.scrollOffset
   expect(panned).toBeGreaterThan(beforePan)
-  await mouse.scroll(bar.x + 10, bar.y, "right")
-  expect(internals.scrollOffset).toBeLessThan(panned)
+  await mouse.scroll(chart.viewport.x + 10, chart.viewport.y, "right")
+  expect(chart.viewport.scrollOffset).toBeLessThan(panned)
 
   // Vertical drift right after a horizontal swipe must not zoom.
-  const viewportBeforeDrift = bar.viewportSize
+  const viewportBeforeDrift = chart.viewport.viewportSize
   await mouse.scroll(30, 10, "up")
-  expect(bar.viewportSize).toBe(viewportBeforeDrift)
+  expect(chart.viewport.viewportSize).toBe(viewportBeforeDrift)
 
   // Zooming out stops once the whole history fits in the viewport.
   await settleWheelAxis()
   for (let i = 0; i < 40; i++) await mouse.scroll(30, 10, "down")
-  expect(bar.viewportSize).toBe(200)
-  expect(internals.scrollOffset).toBe(0)
+  expect(chart.viewport.viewportSize).toBe(200)
+  expect(chart.viewport.scrollOffset).toBe(0)
 
   // Zooming back in from the fully-out state must not leave the slider thumb
   // clamped to a stale sliver (OpenTUI clamps against the pre-update range).
   await mouse.scroll(30, 10, "up")
-  expect(internals.horizontalScrollBar.slider.viewPortSize).toBe(bar.viewportSize)
+  expect(chart.viewport.sliderViewportSize).toBe(chart.viewport.viewportSize)
 
   // Double-clicking the plot resets the zoom to the default candle width.
   for (let i = 0; i < 10; i++) await mouse.scroll(30, 10, "up")
-  expect(bar.viewportSize).toBeLessThan(initialViewport)
+  expect(chart.viewport.viewportSize).toBeLessThan(initialViewport)
   await mouse.doubleClick(30, 10)
-  expect(bar.viewportSize).toBe(initialViewport)
-  expect(internals.horizontalScrollBar.slider.viewPortSize).toBe(initialViewport)
+  expect(chart.viewport.viewportSize).toBe(initialViewport)
+  expect(chart.viewport.sliderViewportSize).toBe(initialViewport)
 
   chart.destroy()
   setup.renderer.destroy()
@@ -767,30 +768,30 @@ test("starts with saved chart choices and reports subsequent changes", async () 
   expect(targetFrame).toContain("XU100")
   expect(targetFrame).toContain("XU030")
 
-  chart.handleKey({ name: "down" } as KeyEvent)
+  chart.handleKey(keyEvent("down"))
   await setup.waitForFrame((frame) => frame.includes("30m · O"))
   expect(selected.at(-1)).toEqual({ range: "WEEK", interval: "MIN_30" })
 
-  chart.handleKey({ name: "f" } as KeyEvent)
+  chart.handleKey(keyEvent("f"))
   await setup.waitForFrame(() => requested.length === 3)
   expect(requested.at(-1)?.target).toBe("BIST_100")
   expect(targets).toEqual(["BIST_100"])
 
-  chart.handleKey({ name: "f" } as KeyEvent)
+  chart.handleKey(keyEvent("f"))
   await setup.waitForFrame(() => requested.length === 4)
   expect(requested.at(-1)?.target).toBe("BIST_30")
 
-  chart.handleKey({ name: "f" } as KeyEvent)
+  chart.handleKey(keyEvent("f"))
   await setup.waitForFrame(() => requested.length === 5)
   expect(requested.at(-1)?.target).toBe("UNDERLYING")
   expect(targets).toEqual(["BIST_100", "BIST_30", "UNDERLYING"])
 
   // F walks the same ring the other way, whichever form the terminal reports.
-  chart.handleKey({ name: "f", shift: true } as KeyEvent)
+  chart.handleKey(keyEvent("f", { shift: true }))
   await setup.waitForFrame(() => requested.length === 6)
   expect(requested.at(-1)?.target).toBe("BIST_30")
 
-  chart.handleKey({ name: "f", sequence: "F" } as KeyEvent)
+  chart.handleKey(keyEvent("f", { sequence: "F" }))
   await setup.waitForFrame(() => requested.length === 7)
   expect(requested.at(-1)?.target).toBe("BIST_100")
   expect(targets).toEqual(["BIST_100", "BIST_30", "UNDERLYING", "BIST_30", "BIST_100"])
@@ -839,10 +840,10 @@ test("scrolls through raw candle windows and jumps back to the newest candles", 
   await setup.waitForFrame((frame) => frame.includes("history"))
   expect(requestCount).toBe(1)
 
-  chart.handleKey({ name: "home", shift: true } as KeyEvent)
+  chart.handleKey(keyEvent("home", { shift: true }))
   await setup.waitForFrame((frame) => frame.includes("09:55") && frame.includes("history · 5m · O 204,50"))
 
-  chart.handleKey({ name: "end", shift: true } as KeyEvent)
+  chart.handleKey(keyEvent("end", { shift: true }))
   await setup.waitForFrame((frame) => frame.includes("14:25") && frame.includes("5m · O 209,90") && !frame.includes("history"))
   expect(requestCount).toBe(1)
 

@@ -868,8 +868,14 @@ export class ChatScreen {
       this.automationNotice = "goal"
       if (!action) {
         this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "goal")
-      } else if (["pause", "resume", "clear"].includes(action.toLowerCase())) {
-        await this.options.chats.updateGoal(session.id, { action: action.toUpperCase() as "PAUSE" | "RESUME" | "CLEAR" })
+      } else if (action.toLowerCase() === "pause") {
+        await this.options.chats.updateGoal(session.id, { action: "PAUSE" })
+        this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "goal")
+      } else if (action.toLowerCase() === "resume") {
+        await this.options.chats.updateGoal(session.id, { action: "RESUME" })
+        this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "goal")
+      } else if (action.toLowerCase() === "clear") {
+        await this.options.chats.updateGoal(session.id, { action: "CLEAR" })
         this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "goal")
       } else {
         await this.options.chats.createGoal(session.id, { objective: action })
@@ -1510,23 +1516,26 @@ function parseLoopCommand(argumentsText: string):
     if (words.length < 5) throw new Error("Usage: /loop cron <5 fields> [task]")
     const cronExpression = words.slice(0, 5).join(" ")
     const prompt = words.slice(5).join(" ").trim()
-    return { action: "CREATE", input: { schedule: "CRON", cronExpression, ...(prompt ? { prompt } : {}) } }
+    const promptOption = prompt ? { prompt } : {}
+    return { action: "CREATE", input: { schedule: "CRON", cronExpression, ...promptOption } }
   }
   if (/^at\s/iu.test(text)) {
     const [, timestamp = "", ...promptWords] = text.split(/\s+/u)
     const runAt = Date.parse(timestamp)
     if (!Number.isFinite(runAt)) throw new Error("Usage: /loop at <ISO timestamp> [task]")
     const prompt = promptWords.join(" ").trim()
-    return { action: "CREATE", input: { schedule: "ONCE", runAt, ...(prompt ? { prompt } : {}) } }
+    const promptOption = prompt ? { prompt } : {}
+    return { action: "CREATE", input: { schedule: "ONCE", runAt, ...promptOption } }
   }
 
   const [first = "", ...rest] = text.split(/\s+/u)
   const leadingInterval = parseLoopInterval(first)
   if (leadingInterval) {
     const prompt = rest.join(" ").trim()
+    const promptOption = prompt ? { prompt } : {}
     return {
       action: "CREATE",
-      input: { schedule: "INTERVAL", intervalMs: leadingInterval, ...(prompt ? { prompt } : {}) },
+      input: { schedule: "INTERVAL", intervalMs: leadingInterval, ...promptOption },
     }
   }
 
@@ -1535,13 +1544,15 @@ function parseLoopCommand(argumentsText: string):
     const prompt = trailing[1]?.trim() ?? ""
     const intervalMs = parseNaturalLoopInterval(trailing[2] ?? "", trailing[3] ?? "")
     if (!intervalMs) throw new Error("Loop interval must be at least one minute")
+    const promptOption = prompt ? { prompt } : {}
     return {
       action: "CREATE",
-      input: { schedule: "INTERVAL", intervalMs, ...(prompt ? { prompt } : {}) },
+      input: { schedule: "INTERVAL", intervalMs, ...promptOption },
     }
   }
 
-  return { action: "CREATE", input: { schedule: "DYNAMIC", ...(text ? { prompt: text } : {}) } }
+  const promptOption = text ? { prompt: text } : {}
+  return { action: "CREATE", input: { schedule: "DYNAMIC", ...promptOption } }
 }
 
 function parseNaturalLoopInterval(amount: string, unit: string): number | null {
@@ -1614,10 +1625,11 @@ function messageBlock(message: ChatMessage, current: StyledText, showThoughts: b
     showThoughts,
     thinkingMs: message.thinkingMs,
   })
+  const header = thought ? { header: thought } : {}
   return {
     id: message.id,
     marker: new StyledText([fg(TURN_MARKER_COLOR)("•")]),
-    ...(thought ? { header: thought } : {}),
+    ...header,
     bodyVisible: chunks.length > 0,
     content: new StyledText(chunks),
     footer: signature(message, current),
@@ -1661,10 +1673,11 @@ function streamingBlock(
   })
   const footer: TextChunk[] = [fg(MODEL_COLOR)(`${live.spinner} `), ...current.chunks]
   if (live.elapsedMs !== null) footer.push(fg(FAINT_COLOR)(` · ${formatDuration(live.elapsedMs)}`))
+  const header = thought ? { header: thought } : {}
   return {
     id: `streaming-${streaming.runId}`,
     marker: new StyledText([fg(TURN_MARKER_COLOR)("•")]),
-    ...(thought ? { header: thought } : {}),
+    ...header,
     bodyVisible: chunks.length > 0,
     content: new StyledText(chunks),
     footer: new StyledText(footer),

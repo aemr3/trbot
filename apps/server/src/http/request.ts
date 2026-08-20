@@ -1,6 +1,10 @@
 import type { OverviewStreamFrame } from "@trbot/protocol/ai.ts"
 import { ProtocolError, statusForErrorCode, type ProtocolErrorBody } from "@trbot/protocol/error.ts"
 import { toProtocolError } from "../errors.ts"
+import { z } from "zod"
+
+const JsonObjectSchema = z.record(z.string(), z.json())
+export type JsonObject = z.output<typeof JsonObjectSchema>
 
 export function json<T>(value: T, status = 200): Response {
   return Response.json(value, { status })
@@ -61,8 +65,8 @@ export function ndjson(
   return new Response(body, { headers: { "Content-Type": "application/x-ndjson" } })
 }
 
-export function errorResponse(error: unknown): Response {
-  const protocolError = toProtocolError(error)
+export function errorResponse(cause: unknown): Response {
+  const protocolError = toProtocolError(cause)
   const body: ProtocolErrorBody = { error: { code: protocolError.code, message: protocolError.message } }
   return Response.json(body, { status: statusForErrorCode(protocolError.code) })
 }
@@ -88,32 +92,34 @@ export function bearerToken(request: Request): string | null {
  * For requests where sending nothing is meaningful — starting a chat session on the
  * current default rather than a named model — so an absent body is not an error.
  */
-export async function readJsonObjectOrEmpty(request: Request): Promise<Record<string, unknown> | null> {
+export async function readJsonObjectOrEmpty(request: Request): Promise<JsonObject | null> {
   const raw = await request.text()
   if (raw.trim().length === 0) return null
-  let decoded: unknown
+  let decoded: z.input<typeof JsonObjectSchema>
   try {
     decoded = JSON.parse(raw)
   } catch {
     throw new ProtocolError("invalid_request", "Expected a JSON body")
   }
-  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+  const parsed = JsonObjectSchema.safeParse(decoded)
+  if (!parsed.success) {
     throw new ProtocolError("invalid_request", "Expected a JSON object")
   }
-  return decoded as Record<string, unknown>
+  return parsed.data
 }
 
-export async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
-  let decoded: unknown
+export async function readJsonObject(request: Request): Promise<JsonObject> {
+  let decoded: z.input<typeof JsonObjectSchema>
   try {
     decoded = await request.json()
   } catch {
     throw new ProtocolError("invalid_request", "Expected a JSON body")
   }
-  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+  const parsed = JsonObjectSchema.safeParse(decoded)
+  if (!parsed.success) {
     throw new ProtocolError("invalid_request", "Expected a JSON object")
   }
-  return decoded as Record<string, unknown>
+  return parsed.data
 }
 
 /**

@@ -15,24 +15,24 @@ export interface PortfolioSummary {
 export const PORTFOLIO_RANGES = ["WEEK", "MONTH", "THREE_MONTH", "YEAR_TO_DATE", "YEAR", "ALL_TIME"] as const
 export type PortfolioRange = (typeof PORTFOLIO_RANGES)[number]
 
-export const PORTFOLIO_RANGE_LABELS: Record<PortfolioRange, string> = {
+export const PORTFOLIO_RANGE_LABELS = {
   WEEK: "1W",
   MONTH: "1M",
   THREE_MONTH: "3M",
   YEAR_TO_DATE: "YTD",
   YEAR: "1Y",
   ALL_TIME: "All",
-}
+} satisfies Record<PortfolioRange, string>
 
 /** What the range's own profit-and-loss figure should be called. */
-export const PORTFOLIO_RANGE_METRIC_LABELS: Record<PortfolioRange, string> = {
+export const PORTFOLIO_RANGE_METRIC_LABELS = {
   WEEK: "Week P/L",
   MONTH: "Month P/L",
   THREE_MONTH: "3M P/L",
   YEAR_TO_DATE: "YTD P/L",
   YEAR: "Year P/L",
   ALL_TIME: "All P/L",
-}
+} satisfies Record<PortfolioRange, string>
 
 export function isPortfolioRange(value: string): value is PortfolioRange {
   return PORTFOLIO_RANGES.some((range) => range === value)

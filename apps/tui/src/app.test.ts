@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { type BoxRenderable, MouseEvent } from "@opentui/core"
+import { MouseEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { App } from "./app.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
@@ -52,29 +52,28 @@ test("copies selected text by keyboard or mouse without exiting", async () => {
   const copied: string[] = []
   let selectionCleared = false
   let exitRequested = false
+  const selection = {
+    currentFocusedRenderable: null,
+    getSelection: () => ({
+      getSelectedText: () => "823abd65-02b7-46f3-852d-36146a7280a2",
+      selectedRenderables: [],
+    }),
+    clearSelection: () => {
+      selectionCleared = true
+    },
+  }
   const app = new App(
     renderer,
     { session: offlineSession(), authenticated: false },
     {
       clipboard: { write: async (text) => void copied.push(text) },
+      selection,
       exit: () => {
         exitRequested = true
       },
     },
   )
   app.mount()
-
-  const selectionRenderer = renderer as unknown as {
-    getSelection(): { getSelectedText(): string; selectedRenderables: [] }
-    clearSelection(): void
-  }
-  selectionRenderer.getSelection = () => ({
-    getSelectedText: () => "823abd65-02b7-46f3-852d-36146a7280a2",
-    selectedRenderables: [],
-  })
-  selectionRenderer.clearSelection = () => {
-    selectionCleared = true
-  }
 
   mockInput.pressCtrlC()
 
@@ -83,8 +82,7 @@ test("copies selected text by keyboard or mouse without exiting", async () => {
   expect(exitRequested).toBe(false)
   expect(renderer.isDestroyed).toBe(false)
 
-  const root = (app as unknown as { root: BoxRenderable }).root
-  root.processMouseEvent(new MouseEvent(root, {
+  app.root.processMouseEvent(new MouseEvent(app.root, {
     type: "up",
     button: 0,
     x: 0,
@@ -230,7 +228,7 @@ test("reads the stored settings when the server appears, rather than defaulting 
   expect(loads).toBe(0)
 
   // The workspace opens only once the settings behind it are known.
-  await openWorkspace(app)
+  await app.openWorkspace()
   expect(loads).toBe(1)
 
   app.dispose()
@@ -255,13 +253,13 @@ test("opens the workspace even when the settings cannot be read, and writes noth
   )
   app.mount()
 
-  await openWorkspace(app)
+  await app.openWorkspace()
 
   // Trading is not blocked by a layout the terminal could not read.
   expect(logs.list().map((entry) => entry.scope)).toContain("Preferences")
   // And the settings stay unknown, which is what stops them being written back:
   // the change hook only persists once a load has succeeded.
-  expect(loadedFlag(app)).toBe(false)
+  expect(app.preferencesReady).toBe(false)
   expect(saved).toBeEmpty()
 
   app.dispose()
@@ -276,7 +274,7 @@ test("opens the workspace even when the settings cannot be read, and writes noth
 test("a stream failure is written to the log the trader can open", async () => {
   const { renderer } = await createTestRenderer({ width: 80, height: 20 })
   const session = offlineSession()
-  const reporters: ((error: unknown) => void)[] = []
+  const reporters: ((cause: unknown) => void)[] = []
   const logs = new ApplicationLog()
   const app = new App(
     renderer,
@@ -299,17 +297,3 @@ test("a stream failure is written to the log the trader can open", async () => {
   app.dispose()
   session.close()
 })
-
-/**
- * Drives the transition the connecting and sign-in screens make on their own
- * once the server answers. Private because nothing outside the application
- * decides it; reached here to avoid standing up a whole server per assertion.
- */
-function openWorkspace(app: App): Promise<void> {
-  return (app as unknown as { showWorkspace(): Promise<void> }).showWorkspace()
-}
-
-/** Whether the settings are known, which is what gates writing them back. */
-function loadedFlag(app: App): boolean {
-  return (app as unknown as { preferencesLoaded: boolean }).preferencesLoaded
-}

@@ -1,5 +1,6 @@
 import type { ApiClient } from "@trbot/api"
 import type { AccountLiveUpdate, AccountLiveUpdateListener, AccountOrderStatus, AccountStream } from "@trbot/trading/account.ts"
+import { z } from "zod"
 
 const POSITION_STREAM_PATH = "/reactive-position-api/v2/stream/members"
 const OVERVIEW_STREAM_PATH = "/reactive-portfolio-api/v1/stream/overview-sse"
@@ -22,7 +23,7 @@ type CollateralLiveUpdate = Extract<AccountLiveUpdate, { type: "collateral" }>
 type OrderLiveUpdate = Extract<AccountLiveUpdate, { type: "order" }>
 
 export interface ApiAccountStreamOptions {
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   reconnectDelaysMs?: number[]
 }
 
@@ -195,19 +196,16 @@ export class ApiAccountStream implements AccountStream {
 }
 
 export function parseAccountPositionUpdates(data: string): PositionLiveUpdate[] {
-  const decoded = parseJson(data)
-  if (!Array.isArray(decoded)) return []
-  return decoded.flatMap((value): PositionLiveUpdate[] => {
-    const entry = record(value)
-    const uid = stringValue(entry.su)
-    const quantity = finiteNumber(entry.q)
-    if (!uid || quantity === null) return []
+  const decoded = PositionFramesSchema.safeParse(parseJson(data))
+  if (!decoded.success) return []
+  return decoded.data.flatMap((entry): PositionLiveUpdate[] => {
+    if (!entry.su || entry.q === null) return []
     return [{
       type: "position",
-      uid,
-      quantity,
-      averageCost: finiteNumber(entry.ac),
-      country: stringValue(entry.c),
+      uid: entry.su,
+      quantity: entry.q,
+      averageCost: entry.ac,
+      country: entry.c,
     }]
   })
 }
@@ -219,15 +217,17 @@ export function parseAccountCollateralUpdate(data: string): CollateralLiveUpdate
 }
 
 export function parseAccountOrderUpdate(data: string, uid: string): OrderLiveUpdate | null {
-  const entry = record(parseJson(data))
-  const providerStatus = stringValue(entry.status)
+  const parsed = OrderFrameSchema.safeParse(parseJson(data))
+  if (!parsed.success) return null
+  const entry = parsed.data
+  const providerStatus = entry.status
   if (!providerStatus) return null
   return {
     type: "order",
     uid,
     status: orderStatus(providerStatus),
     providerStatus,
-    description: stringValue(entry.statusDescription),
+    description: entry.statusDescription,
   }
 }
 
@@ -235,17 +235,44 @@ function orderStatus(providerStatus: string): AccountOrderStatus {
   return TERMINAL_ORDER_STATUSES.has(providerStatus.toUpperCase()) ? "completed" : "pending"
 }
 
-function findNumericField(value: unknown, keys: Set<string>): number | null {
-  if (Array.isArray(value)) {
-    for (const item of value) {
+const JsonValueSchema = z.json()
+type JsonValue = z.output<typeof JsonValueSchema>
+const JsonArraySchema = z.array(JsonValueSchema)
+const JsonObjectSchema = z.record(z.string(), JsonValueSchema)
+
+const FiniteNumberSchema = z.union([z.number(), z.string()])
+  .transform((value) => Number(value))
+  .refine(Number.isFinite)
+  .nullable()
+  .catch(null)
+const NonBlankStringSchema = z.string().trim().min(1).nullable().catch(null)
+
+const PositionFramesSchema = z.array(z.object({
+  su: NonBlankStringSchema,
+  q: FiniteNumberSchema,
+  ac: FiniteNumberSchema.optional().default(null),
+  c: NonBlankStringSchema.optional().default(null),
+}))
+
+const OrderFrameSchema = z.object({
+  status: NonBlankStringSchema,
+  statusDescription: NonBlankStringSchema.optional().default(null),
+})
+
+function findNumericField(value: JsonValue | null, keys: Set<string>): number | null {
+  const array = JsonArraySchema.safeParse(value)
+  if (array.success) {
+    for (const item of array.data) {
       const found = findNumericField(item, keys)
       if (found !== null) return found
     }
     return null
   }
-  const entry = record(value)
+  const object = JsonObjectSchema.safeParse(value)
+  if (!object.success) return null
+  const entry = object.data
   for (const key of keys) {
-    const found = finiteNumber(entry[key])
+    const found = FiniteNumberSchema.parse(entry[key])
     if (found !== null) return found
   }
   for (const child of Object.values(entry)) {
@@ -255,26 +282,13 @@ function findNumericField(value: unknown, keys: Set<string>): number | null {
   return null
 }
 
-function parseJson(data: string): unknown {
+function parseJson(data: string): JsonValue | null {
   try {
-    return JSON.parse(data)
+    const parsed = JsonValueSchema.safeParse(JSON.parse(data))
+    return parsed.success ? parsed.data : null
   } catch {
     return null
   }
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
-}
-
-function stringValue(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value : null
-}
-
-function finiteNumber(value: unknown): number | null {
-  if (typeof value !== "number" && typeof value !== "string") return null
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
 }
 
 function pause(milliseconds: number, signal: AbortSignal): Promise<void> {

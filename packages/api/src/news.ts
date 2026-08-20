@@ -25,7 +25,6 @@ export interface ArticlesV2Variables {
   pageSize: number
   type: string
   cryptoCurrencySymbol: string | null
-  [key: string]: unknown
 }
 
 export interface ArticleDetail {
@@ -44,7 +43,6 @@ export interface ArticleData {
 export interface ArticleVariables {
   newsId: string
   cryptoCurrencySymbol: string | null
-  [key: string]: unknown
 }
 
 export const newsOperations = {

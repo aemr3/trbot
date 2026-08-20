@@ -1,16 +1,18 @@
 import { and, asc, eq, inArray, isNull, max, or, sql } from "drizzle-orm"
-import type {
-  ChatBlock,
-  ChatCompaction,
-  ChatMessage,
-  ChatMessageDraft,
-  ChatMessageStatus,
-  ChatModelContext,
-  ChatModelChoice,
-  ChatRole,
-  ChatSession,
-  ChatSessionDetail,
-  ChatSessionStore,
+import {
+  ChatBlockKindSchema,
+  ChatMessageStatusSchema,
+  ChatRoleSchema,
+  type ChatBlock,
+  type ChatCompaction,
+  type ChatMessage,
+  type ChatMessageDraft,
+  type ChatMessageStatus,
+  type ChatModelContext,
+  type ChatModelChoice,
+  type ChatSession,
+  type ChatSessionDetail,
+  type ChatSessionStore,
 } from "@trbot/chat/session.ts"
 import type { AppDatabase } from "./client.ts"
 import { chatCompactions, chatMessageBlocks, chatMessages, chatSessions } from "./schema.ts"
@@ -466,10 +468,12 @@ function toRows(
   harnessVersion: string,
 ): MessageRows {
   const { message } = draft
-  const record = asObject(draft.record)
+  const parsedRecord = JsonObjectSchema.safeParse(draft.record)
+  const record = parsedRecord.success ? parsedRecord.data : null
   const usage = asObject(record?.usage)
   const cost = asObject(usage?.cost)
   const content = Array.isArray(record?.content) ? record.content : []
+  const appEventContent = z.string().safeParse(record?.content)
 
   return {
     row: {
@@ -479,8 +483,8 @@ function toRows(
       role: message.role,
       status: message.status,
       text: message.text,
-      modelContent: message.role === "APP_EVENT" && typeof record?.content === "string"
-        ? record.content
+      modelContent: message.role === "APP_EVENT" && appEventContent.success
+        ? appEventContent.data
         : null,
       api: stringOrNull(record?.api),
       provider: stringOrNull(record?.provider),
@@ -514,7 +518,7 @@ function toRows(
   }
 }
 
-function toBlockRow(messageId: string, idx: number, value: unknown): BlockInsert {
+function toBlockRow(messageId: string, idx: number, value: JsonEntry): BlockInsert {
   const block = asObject(value) ?? {}
   const kind = blockKind(stringOrNull(block.type))
   return {
@@ -540,13 +544,13 @@ function toBlockRow(messageId: string, idx: number, value: unknown): BlockInsert
  * never had a `responseId` does not come back carrying a null one — a round trip
  * has to produce the same object, not an equivalent-looking one.
  */
-function toRecord(row: MessageRow, blocks: BlockRow[]): unknown {
+function toRecord(row: MessageRow, blocks: BlockRow[]): JsonObject {
   const role = row.role === "USER" || row.role === "APP_EVENT"
     ? "user"
     : row.role === "TOOL_RESULT"
       ? "toolResult"
       : "assistant"
-  const record: Record<string, unknown> = { role, timestamp: row.createdAt }
+  const record: JsonObject = { role, timestamp: row.createdAt }
 
   if (role === "user") {
     // A trader's message is text, which the harness accepts as a plain string.
@@ -577,7 +581,7 @@ function toRecord(row: MessageRow, blocks: BlockRow[]): unknown {
   return withExtra(record, row.extra)
 }
 
-function usageOf(row: MessageRow): Record<string, unknown> {
+function usageOf(row: MessageRow): JsonObject {
   return {
     input: row.inputTokens ?? 0,
     output: row.outputTokens ?? 0,
@@ -594,43 +598,46 @@ function usageOf(row: MessageRow): Record<string, unknown> {
   }
 }
 
-function toContentBlock(row: BlockRow): unknown {
+function toContentBlock(row: BlockRow): JsonObject {
   const extra = parseObjectJson(row.extra) ?? {}
   if (row.kind === "THINKING") {
-    return {
+    const block: JsonObject = {
       type: "thinking",
       thinking: row.text ?? "",
-      ...(row.signature !== null ? { thinkingSignature: row.signature } : {}),
-      ...(row.redacted !== null ? { redacted: row.redacted === 1 } : {}),
       ...extra,
     }
+    if (row.signature !== null) block.thinkingSignature = row.signature
+    if (row.redacted !== null) block.redacted = row.redacted === 1
+    return block
   }
   if (row.kind === "TOOL_CALL") {
-    return {
+    const block: JsonObject = {
       type: "toolCall",
       id: row.toolCallId ?? "",
       name: row.toolName ?? "",
       arguments: parseJson(row.toolArguments) ?? {},
-      ...(row.signature !== null ? { thoughtSignature: row.signature } : {}),
       ...extra,
     }
+    if (row.signature !== null) block.thoughtSignature = row.signature
+    return block
   }
   if (row.kind === "IMAGE") {
     return { type: "image", data: row.data ?? "", mimeType: row.mimeType ?? "", ...extra }
   }
-  return {
+  const block: JsonObject = {
     type: "text",
     text: row.text ?? "",
-    ...(row.signature !== null ? { textSignature: row.signature } : {}),
     ...extra,
   }
+  if (row.signature !== null) block.textSignature = row.signature
+  return block
 }
 
 function toMessage(row: MessageRow, blocks: BlockRow[]): ChatMessage {
   return {
     id: row.id,
-    role: row.role as ChatRole,
-    status: row.status as ChatMessageStatus,
+    role: ChatRoleSchema.parse(row.role),
+    status: ChatMessageStatusSchema.parse(row.status),
     text: row.text,
     blocks: blocks.map(toChatBlock),
     toolName: row.toolName,
@@ -655,7 +662,7 @@ function toMessage(row: MessageRow, blocks: BlockRow[]): ChatMessage {
 
 function toChatBlock(row: BlockRow): ChatBlock {
   return {
-    kind: row.kind as ChatBlock["kind"],
+    kind: ChatBlockKindSchema.parse(row.kind),
     text: row.text,
     toolName: row.toolName,
     toolCallId: row.toolCallId,
@@ -670,16 +677,16 @@ function blockKind(type: string | null): string {
   return "TEXT"
 }
 
-function unmappedJson(value: Record<string, unknown> | null, mapped: Set<string>): string | null {
+function unmappedJson(value: JsonObject | null, mapped: Set<string>): string | null {
   const extra = unmappedEntries(value, mapped)
   return Object.keys(extra).length > 0 ? JSON.stringify(extra) : null
 }
 
 function unmappedEntries(
-  value: Record<string, unknown> | null,
+  value: JsonObject | null,
   mapped: Set<string>,
-): Record<string, unknown> {
-  const extra: Record<string, unknown> = {}
+): JsonObject {
+  const extra: JsonObject = {}
   if (!value) return extra
   for (const [key, entry] of Object.entries(value)) {
     if (!mapped.has(key)) extra[key] = entry
@@ -695,9 +702,9 @@ function unmappedEntries(
  * `withExtra`.
  */
 function messageExtraJson(
-  record: Record<string, unknown> | null,
-  usage: Record<string, unknown> | null,
-  cost: Record<string, unknown> | null,
+  record: JsonObject | null,
+  usage: JsonObject | null,
+  cost: JsonObject | null,
 ): string | null {
   const extra = unmappedEntries(record, MAPPED_MESSAGE_KEYS)
   const usageExtra = unmappedEntries(usage, MAPPED_USAGE_KEYS)
@@ -714,7 +721,7 @@ function messageExtraJson(
  * columns, so its stored remainder has to merge into it. Overwriting it with the
  * remainder would trade one lost field for five.
  */
-function withExtra(record: Record<string, unknown>, stored: string | null): unknown {
+function withExtra(record: JsonObject, stored: string | null): JsonObject {
   const extra = parseObjectJson(stored)
   if (!extra) return record
 
@@ -725,38 +732,46 @@ function withExtra(record: Record<string, unknown>, stored: string | null): unkn
 
   const costExtra = asObject(usageExtra.cost)
   const cost = asObject(usage.cost)
+  const mergedCost: JsonObject = {}
+  if (costExtra && cost) mergedCost.cost = { ...cost, ...costExtra }
   merged.usage = {
     ...usage,
     ...usageExtra,
-    ...(costExtra && cost ? { cost: { ...cost, ...costExtra } } : {}),
+    ...mergedCost,
   }
   return merged
 }
 
-const JsonObjectSchema = z.record(z.string(), z.unknown())
+const JsonEntrySchema = z.json()
+type JsonEntry = z.output<typeof JsonEntrySchema>
+const JsonObjectSchema = z.record(z.string(), JsonEntrySchema)
+type JsonObject = z.output<typeof JsonObjectSchema>
 
-function asObject(value: unknown): Record<string, unknown> | null {
+function asObject(value: JsonEntry | undefined): JsonObject | null {
   const parsed = JsonObjectSchema.safeParse(value)
   return parsed.success ? parsed.data : null
 }
 
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" ? value : null
+function stringOrNull(value: JsonEntry | undefined): string | null {
+  const parsed = z.string().safeParse(value)
+  return parsed.success ? parsed.data : null
 }
 
-function numberOrNull(value: unknown): number | null {
-  return typeof value === "number" ? value : null
+function numberOrNull(value: JsonEntry | undefined): number | null {
+  const parsed = z.number().safeParse(value)
+  return parsed.success ? parsed.data : null
 }
 
-function parseJson(value: string | null): unknown {
+function parseJson(value: string | null): JsonEntry | null {
   if (value === null) return null
   try {
-    return JSON.parse(value)
+    const parsed = JsonEntrySchema.safeParse(JSON.parse(value))
+    return parsed.success ? parsed.data : null
   } catch {
     return null
   }
 }
 
-function parseObjectJson(value: string | null): Record<string, unknown> | null {
+function parseObjectJson(value: string | null): JsonObject | null {
   return asObject(parseJson(value))
 }

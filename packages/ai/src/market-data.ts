@@ -1,5 +1,5 @@
 import { Type } from "@earendil-works/pi-ai"
-import type { BrokerageDistributionSource, BrokerageSide } from "@trbot/market/brokerage.ts"
+import type { BrokerageDistributionSource } from "@trbot/market/brokerage.ts"
 import type { BrokerageDateRange } from "@trbot/market/broker-calendar.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import type { DepthBook, DepthStream } from "@trbot/market/depth.ts"
@@ -10,7 +10,7 @@ import {
   type ViopInstrumentSource,
 } from "@trbot/market/instrument.ts"
 import type { NewsSource } from "@trbot/market/news.ts"
-import type { SettlementMode, SettlementSource } from "@trbot/market/settlement.ts"
+import type { SettlementSource } from "@trbot/market/settlement.ts"
 import type { MemberFeatureSource } from "@trbot/member/features.ts"
 import type { AccountSource } from "@trbot/trading/account.ts"
 import type { ViopOrderCancellationSource, ViopOrderSource } from "@trbot/trading/order.ts"
@@ -467,7 +467,7 @@ function brokerageTool(clients: MarketDataToolClients): ChatTool<typeof Brokerag
       const range = dateRange(start, end)
       const distribution = await sources.brokerage.loadDistribution({
         instrumentUid: instrument.uid,
-        side: side as BrokerageSide,
+        side,
         range,
         signal: options.signal,
       })
@@ -509,7 +509,7 @@ function settlementTool(clients: MarketDataToolClients): ChatTool<typeof Settlem
       const range = dateRange(start, end)
       const settlement = await sources.settlement.loadSettlement({
         instrumentUid: instrument.uid,
-        mode: mode as SettlementMode,
+        mode,
         range,
         signal: options.signal,
       })
@@ -610,7 +610,7 @@ function stopRulesTool(clients: MarketDataToolClients): ChatTool<typeof EmptyPar
   }
 }
 
-function dataOutcome(summary: string, data: unknown) {
+function dataOutcome<T>(summary: string, data: T) {
   return {
     blocks: [toolText(summary)],
     modelBlocks: [toolText(JSON.stringify(data))],

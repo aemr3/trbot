@@ -311,8 +311,8 @@ function isPrintable(sequence: string): boolean {
   return [...sequence].length === 1 && sequence >= " " && sequence !== "\x7f"
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }
 
 function customAnswers(

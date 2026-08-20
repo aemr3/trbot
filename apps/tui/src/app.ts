@@ -25,7 +25,8 @@ import { loadClientConfig } from "@trbot/config"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
 import { isTransientError, requiresAuthentication } from "@trbot/protocol/error.ts"
 import { SystemSoundPlayer, type SoundPlayer } from "./components/sound.ts"
-import { copySelection, SystemClipboard, type ClipboardWriter } from "./clipboard.ts"
+import { rendererOutput } from "./renderer-output.ts"
+import { copySelection, SystemClipboard, type ClipboardWriter, type SelectionReader } from "./clipboard.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
 import type { OverviewGenerator, OverviewSnapshotStore } from "@trbot/market/overview.ts"
 import { ConnectingScreen } from "./screens/connecting.ts"
@@ -75,6 +76,7 @@ interface AppOptions {
   overviewSnapshots?: OverviewSnapshotStore
   sound?: SoundPlayer
   clipboard?: ClipboardWriter
+  selection?: SelectionReader
   logs?: ApplicationLog
   /** How often to re-ask whether the server has a session. Tests shorten it. */
   sessionPollMs?: number
@@ -122,7 +124,7 @@ export async function startApp(): Promise<void> {
       overview: new HttpOverviewGenerator(http),
       // Cues are written through the renderer so a bell never races a frame.
       sound: new SystemSoundPlayer({
-        write: (data) => (renderer as unknown as { writeOut(data: string): void }).writeOut(data),
+        write: (data) => rendererOutput(renderer).writeOut(data),
       }),
     })
     app.mount()
@@ -150,7 +152,7 @@ async function resolveInitialState(): Promise<InitialState> {
 }
 
 export class App {
-  private readonly root: BoxRenderable
+  readonly root: BoxRenderable
   private screen: Screen | null = null
   private session: ServerSession
   private disposed = false
@@ -167,6 +169,7 @@ export class App {
   private readonly overviewSnapshots: OverviewSnapshotStore | undefined
   private readonly sound: SoundPlayer | undefined
   private readonly clipboard: ClipboardWriter
+  private readonly selection: SelectionReader
   private readonly logs: ApplicationLog
   private readonly stops: RemoteStopRules
   private readonly alerts: RemoteAlerts
@@ -208,6 +211,7 @@ export class App {
     this.overviewSnapshots = options.overviewSnapshots
     this.sound = options.sound
     this.clipboard = options.clipboard ?? new SystemClipboard(renderer)
+    this.selection = options.selection ?? renderer
     this.logs = options.logs ?? new ApplicationLog()
     this.sessionPollMs = options.sessionPollMs ?? SESSION_POLL_MS
 
@@ -281,7 +285,7 @@ export class App {
    * is restarting has no settings yet, and building on defaults would replace
    * them the first time the trader adjusted anything.
    */
-  private async showWorkspace(): Promise<void> {
+  async openWorkspace(): Promise<void> {
     if (this.disposed) return
     this.stopWatchingForSession()
     if (!this.preferencesLoaded && this.fetchPreferences) {
@@ -358,10 +362,11 @@ export class App {
     // other tabs: a reply the server is generating has to keep arriving while the
     // trader is watching the market.
     const chats = new HttpChatSessions(http)
+    const accountOption = this.aiAccount ? { account: this.aiAccount } : {}
     const chat = new ChatScreen(this.renderer, {
       chats,
       marketMonitors: new HttpMarketMonitors(http),
-      ...(this.aiAccount ? { account: this.aiAccount } : {}),
+      ...accountOption,
       sound: this.sound,
       logs: this.logs,
       initialSessionId: this.preferences?.selectedChatSessionId,
@@ -409,7 +414,7 @@ export class App {
   private createLogin(): LoginScreen {
     return new LoginScreen(this.renderer, this.session.http, {
       credentials: null,
-      onAuthenticated: () => void this.showWorkspace(),
+      onAuthenticated: () => void this.openWorkspace(),
     })
   }
 
@@ -436,7 +441,7 @@ export class App {
       }
       void serverAuthenticated(this.session.http).then(
         (authenticated) => this.onSessionAnswer(authenticated),
-        (error: unknown) => this.onNoAnswer(error),
+        (cause: unknown) => this.onNoAnswer(cause),
       )
     }, this.sessionPollMs)
   }
@@ -444,7 +449,7 @@ export class App {
   private onSessionAnswer(authenticated: boolean): void {
     if (this.disposed || this.screen instanceof TradingWorkspaceScreen) return
     if (authenticated) {
-      void this.showWorkspace()
+      void this.openWorkspace()
       return
     }
     // The server is reachable and holds nothing, so now there is something for
@@ -453,11 +458,11 @@ export class App {
     if (this.screen instanceof ConnectingScreen) this.replaceScreen(this.createLogin())
   }
 
-  private onNoAnswer(error: unknown): void {
+  private onNoAnswer(cause: unknown): void {
     if (this.disposed) return
     // A sign-in screen the server asked for stays put — the trader may be part
     // way through it, and the poll keeps running underneath either way.
-    if (this.screen instanceof ConnectingScreen) this.screen.reportFailure(errorMessage(error))
+    if (this.screen instanceof ConnectingScreen) this.screen.reportFailure(errorMessage(cause))
   }
 
   private stopWatchingForSession(): void {
@@ -466,12 +471,12 @@ export class App {
     this.sessionWatch = null
   }
 
-  private handleStreamError(scope: string, error: unknown): void {
-    if (requiresAuthentication(error)) {
+  private handleStreamError(scope: string, cause: unknown): void {
+    if (requiresAuthentication(cause)) {
       this.showLogin()
       return
     }
-    if (!isTransientError(error)) this.logs.error(scope, error)
+    if (!isTransientError(cause)) this.logs.error(scope, cause)
   }
 
   /** Only ever called because the server said the session is gone. */
@@ -482,7 +487,7 @@ export class App {
       new LoginScreen(this.renderer, this.session.http, {
         initialStatus: "Session expired · Sign in",
         credentials: null,
-        onAuthenticated: () => void this.showWorkspace(),
+        onAuthenticated: () => void this.openWorkspace(),
       }),
     )
   }
@@ -504,7 +509,11 @@ export class App {
   }
 
   private copySelection(): boolean {
-    return copySelection(this.renderer, this.clipboard, (error) => this.logs.error("Clipboard", error))
+    return copySelection(this.selection, this.clipboard, (error) => this.logs.error("Clipboard", error))
+  }
+
+  get preferencesReady(): boolean {
+    return this.preferencesLoaded
   }
 }
 
@@ -512,6 +521,6 @@ function exitWithSigint(): void {
   process.kill(process.pid, "SIGINT")
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }

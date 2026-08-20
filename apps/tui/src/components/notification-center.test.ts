@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import { createTestRenderer } from "@opentui/core/testing"
 import { NotificationCenter } from "./notification-center.ts"
 
 function key(name: string): KeyEvent {
-  return { name, sequence: name } as KeyEvent
+  return keyEvent(name)
 }
 
 test("stacks notifications and runs the selected action", async () => {

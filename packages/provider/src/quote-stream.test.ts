@@ -23,7 +23,7 @@ class FakeStreamClient {
   lastQuery: Record<string, string> | undefined
   constructor(private readonly scripts: Script[]) {}
 
-  async *stream(options: { query?: Record<string, string> }): AsyncGenerator<SseFrame> {
+  async *stream(options: { path: string; query?: Record<string, string>; signal?: AbortSignal }): AsyncGenerator<SseFrame> {
     this.lastQuery = options.query
     const script = this.scripts[this.calls] ?? []
     this.calls++
@@ -52,7 +52,7 @@ test("parseFuturePriceUpdate rejects payloads without a symbol or with bad JSON"
 test("emits parsed updates and subscribes with the comma-joined symbols", async () => {
   const client = new FakeStreamClient([[priceFrame("F_AKBNK0825", 68.68)]])
   const updates: QuoteUpdate[] = []
-  const stream = new ApiQuoteStream(client as never, { reconnectDelaysMs: [0] })
+  const stream = new ApiQuoteStream(client, { reconnectDelaysMs: [0] })
   stream.subscribe((update) => {
     updates.push(update)
     stream.stop()
@@ -69,7 +69,7 @@ test("emits parsed updates and subscribes with the comma-joined symbols", async 
 test("skips frames whose event name is not PriceUpdate", async () => {
   const client = new FakeStreamClient([[priceFrame("F_AKBNK0825", 1, "Heartbeat"), priceFrame("F_AKBNK0825", 2)]])
   const updates: QuoteUpdate[] = []
-  const stream = new ApiQuoteStream(client as never, { reconnectDelaysMs: [0] })
+  const stream = new ApiQuoteStream(client, { reconnectDelaysMs: [0] })
   stream.subscribe((update) => {
     updates.push(update)
     stream.stop()
@@ -85,7 +85,7 @@ test("skips frames whose event name is not PriceUpdate", async () => {
 test("reconnects after the stream ends and resubscribes", async () => {
   const client = new FakeStreamClient([[priceFrame("F_AKBNK0825", 10)], [priceFrame("F_AKBNK0825", 11)]])
   const updates: QuoteUpdate[] = []
-  const stream = new ApiQuoteStream(client as never, { reconnectDelaysMs: [0] })
+  const stream = new ApiQuoteStream(client, { reconnectDelaysMs: [0] })
   stream.subscribe((update) => {
     updates.push(update)
     if (updates.length >= 2) stream.stop()
@@ -101,7 +101,7 @@ test("reconnects after the stream ends and resubscribes", async () => {
 test("reports connected on the first tick and disconnected when the stream ends", async () => {
   const client = new FakeStreamClient([[priceFrame("F_AKBNK0825", 10)]])
   const states: boolean[] = []
-  const stream = new ApiQuoteStream(client as never, { reconnectDelaysMs: [0] })
+  const stream = new ApiQuoteStream(client, { reconnectDelaysMs: [0] })
   stream.onConnectionChange((connected) => {
     states.push(connected)
     if (states.length >= 2) stream.stop()
@@ -117,7 +117,7 @@ test("reports connection errors and keeps retrying", async () => {
   const client = new FakeStreamClient([{ error: new Error("boom") }, [priceFrame("F_AKBNK0825", 5)]])
   const errors: unknown[] = []
   const updates: QuoteUpdate[] = []
-  const stream = new ApiQuoteStream(client as never, {
+  const stream = new ApiQuoteStream(client, {
     reconnectDelaysMs: [0],
     onError: (error) => errors.push(error),
   })
@@ -137,7 +137,7 @@ test("resubscribes when the symbol set changes and ignores an identical one", as
   // The stream stays open until the symbols change, so one script is enough.
   const client = new FakeStreamClient([[priceFrame("F_AKBNK0825", 68.68)]])
   const updates: QuoteUpdate[] = []
-  const stream = new ApiQuoteStream(client as never, { reconnectDelaysMs: [10_000] })
+  const stream = new ApiQuoteStream(client, { reconnectDelaysMs: [10_000] })
   stream.subscribe((update) => updates.push(update))
 
   stream.start(["F_AKBNK0825"])

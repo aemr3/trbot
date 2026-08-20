@@ -1,5 +1,5 @@
 import type { ChatRecord, ChatTurnModel, ChatTurnOptions, ChatTurnResult } from "@trbot/ai/chat.ts"
-import type { ChatCompactionRunner } from "@trbot/ai/compaction.ts"
+import { modelRecord, type ChatCompactionRunner } from "@trbot/ai/compaction.ts"
 import type { SubagentSessionRecorder, SubagentSessionRun } from "@trbot/ai/subagent.ts"
 import {
   chatBlockText,
@@ -63,7 +63,7 @@ export interface ChatControllerOptions {
     referenceId: string | null,
   ) => Promise<ExecutionPolicy>
   broadcast: (frame: ChatFrame) => void
-  onError: (error: unknown) => void
+  onError: (cause: unknown) => void
   now?: () => number
 }
 
@@ -319,8 +319,9 @@ export class ChatController {
     }
 
     const choice = choiceOf(detail.session)
+    if (!choice) throw new ProtocolError("invalid_request", "Choose a chat model before compacting this session")
     await this.options.requireModel(choice)
-    const turnModel = await this.options.resolveModel(choice as ChatModelChoice)
+    const turnModel = await this.options.resolveModel(choice)
     const compacted = await this.options.compaction.compact({
       sessionId,
       model: turnModel.model,
@@ -412,13 +413,14 @@ export class ChatController {
       onMessage: (draft) => this.persist(session.id, draft),
       finish: async (error) => {
         if (this.runs.get(session.id)?.runId === runId) this.runs.delete(session.id)
-        this.options.broadcast({
+        const frame: Extract<ChatFrame, { type: "chatRun" }> = {
           type: "chatRun",
           sessionId: session.id,
           runId,
           status: error ? "failed" : "done",
-          ...(error ? { error } : {}),
-        })
+        }
+        if (error) frame.error = error
+        this.options.broadcast(frame)
       },
     }
   }
@@ -466,6 +468,16 @@ export class ChatController {
       if (!next) return
 
       const choice = choiceOf(detail.session)
+      if (!choice) {
+        this.options.broadcast({
+          type: "chatRun",
+          sessionId,
+          runId: next.id,
+          status: "failed",
+          error: "Choose a model before sending a message",
+        })
+        return
+      }
       try {
         await this.options.requireModel(choice)
       } catch (error) {
@@ -482,7 +494,7 @@ export class ChatController {
         return
       }
 
-      await this.runTurn(sessionId, next, choice as ChatModelChoice, detail.session.title)
+      await this.runTurn(sessionId, next, choice, detail.session.title)
     }
   }
 
@@ -515,7 +527,7 @@ export class ChatController {
       let modelContext = await this.options.store.context(sessionId)
       let history = this.options.compaction
         ? this.options.compaction.history(modelContext)
-        : modelContext.records.map((entry) => entry.record as ChatRecord)
+        : modelContext.records.map((entry) => modelRecord(entry.record))
       if (this.options.compaction) {
         try {
           const compacted = await this.options.compaction.compact({
@@ -547,6 +559,9 @@ export class ChatController {
       }
       let recoveryAttempted = false
       for (;;) {
+        const automationEvent = asked.role === "APP_EVENT"
+          ? { label: asked.toolName, referenceId: asked.toolCallId }
+          : undefined
         result = await this.options.agent.run({
           model: turnModel.model,
           reasoningEffort: turnModel.reasoningEffort,
@@ -554,9 +569,7 @@ export class ChatController {
           prompt,
           chatSessionId: sessionId,
           executionPolicy,
-          ...(asked.role === "APP_EVENT" ? {
-            automationEvent: { label: asked.toolName, referenceId: asked.toolCallId },
-          } : {}),
+          automationEvent,
           signal: run.controller!.signal,
           events: {
             onText: (delta) => {
@@ -734,6 +747,6 @@ function choiceOf(session: ChatSession): ChatModelChoice | null {
   return { providerId: session.provider, modelId: session.model, reasoning: session.reasoning }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }

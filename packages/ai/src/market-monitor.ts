@@ -303,7 +303,7 @@ function requireChatSession(options: ChatToolRunOptions): string {
 }
 
 function cleanContinuation(value: string | undefined): string | undefined {
-  return typeof value === "string" ? value.trim() : value
+  return value?.trim()
 }
 
 interface AlertUpdatePatch {

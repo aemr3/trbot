@@ -48,8 +48,9 @@ const ProtocolErrorPayloadSchema = z.object({
     message: z.string().optional(),
   }),
 })
+const ProtocolErrorPayloadInputSchema = z.preprocess((value) => value, ProtocolErrorPayloadSchema)
 
-const STATUS_BY_CODE: Record<ProtocolErrorCode, number> = {
+const STATUS_BY_CODE = {
   unauthorized: 401,
   unauthenticated: 419,
   otp_required: 409,
@@ -60,7 +61,7 @@ const STATUS_BY_CODE: Record<ProtocolErrorCode, number> = {
   upstream_error: 502,
   upstream_unavailable: 503,
   internal: 500,
-}
+} satisfies Record<ProtocolErrorCode, number>
 
 export function statusForErrorCode(code: ProtocolErrorCode): number {
   return STATUS_BY_CODE[code]
@@ -78,22 +79,22 @@ export class ProtocolError extends Error {
   }
 }
 
-export function isProtocolError(error: unknown): error is ProtocolError {
-  return error instanceof ProtocolError
+export function isProtocolError(cause: unknown): cause is ProtocolError {
+  return cause instanceof ProtocolError
 }
 
 /** True when the server has no usable provider session and the client must sign in. */
-export function requiresAuthentication(error: unknown): boolean {
-  return isProtocolError(error) && (error.code === "unauthenticated" || error.code === "otp_required")
+export function requiresAuthentication(cause: unknown): boolean {
+  return isProtocolError(cause) && (cause.code === "unauthenticated" || cause.code === "otp_required")
 }
 
 /** True when retrying is reasonable rather than surfacing a failure to the trader. */
-export function isTransientError(error: unknown): boolean {
-  return isProtocolError(error) && error.code === "upstream_unavailable"
+export function isTransientError(cause: unknown): boolean {
+  return isProtocolError(cause) && cause.code === "upstream_unavailable"
 }
 
-export function parseErrorBody(body: unknown): ProtocolError | null {
-  const parsed = ProtocolErrorPayloadSchema.safeParse(body)
+export function parseErrorBody(body: z.input<typeof ProtocolErrorPayloadInputSchema>): ProtocolError | null {
+  const parsed = ProtocolErrorPayloadInputSchema.safeParse(body)
   if (!parsed.success) return null
   return new ProtocolError(parsed.data.error.code, parsed.data.error.message ?? parsed.data.error.code)
 }

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { AccountPosition } from "@trbot/trading/account.ts"
 import type { StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
@@ -9,7 +10,7 @@ import { StopTriggerConfirmation } from "./stop-trigger-confirmation.ts"
 const NOW = 1_786_000_000_000
 
 function key(name: string): KeyEvent {
-  return { name } as KeyEvent
+  return keyEvent(name)
 }
 
 function position(): AccountPosition {

@@ -81,6 +81,7 @@ async function monitorWith(
   const triggers: AlertTriggerEvent[] = []
   const monitor = new AlertMonitor({
     store,
+    create: createPriceAlert,
     onTrigger: (event) => triggers.push(event),
     now: () => NOW,
     ...overrides,
@@ -112,6 +113,7 @@ test("uses a live quote seen before saving to arm the first crossing", async () 
   const triggers: AlertTriggerEvent[] = []
   const monitor = new AlertMonitor({
     store,
+    create: createPriceAlert,
     onTrigger: (event) => triggers.push(event),
     now: () => NOW,
   })
@@ -237,6 +239,7 @@ test("tells the panel to repaint when what a row shows has moved", async () => {
   let repaints = 0
   const monitor = new AlertMonitor({
     store,
+    create: createPriceAlert,
     candles,
     onTrigger: () => {},
     onChange: () => (repaints += 1),

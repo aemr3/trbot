@@ -9,6 +9,7 @@ import {
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
+import { z } from "zod"
 import {
   CANDLE_CHART_TARGETS,
   CANDLE_INTERVALS,
@@ -21,6 +22,7 @@ import {
   type Candle,
   type CandleChartTarget,
   type CandleInterval,
+  type CandleIntervalsByRange,
   type CandleRange,
   type CandleSeries,
   type CandleSource,
@@ -53,6 +55,7 @@ import {
   drawMarkerColumn,
 } from "./chart/pixel-buffer.ts"
 import { KittyPlaceholderImages } from "./chart/kitty-placeholder.ts"
+import { rendererOutput } from "../renderer-output.ts"
 import { getCandlePixelX, renderCandleBitmap, type ChartBitmap } from "./chart/raster.ts"
 import { RenderCoalescer } from "./render-coalescer.ts"
 
@@ -93,12 +96,12 @@ const MIN_HEIGHT_FOR_INDICATOR_ROW = 14
 // Trackpad swipes drift across axes, so a wheel gesture stays locked to the
 // axis it started on while events keep arriving within this window.
 const WHEEL_AXIS_LOCK_MS = 200
-const CHART_TARGET_LABELS: Record<CandleChartTarget, string> = {
+const CHART_TARGET_LABELS = {
   UNDERLYING: "Stock",
   INSTRUMENT: "Futures",
   BIST_100: "XU100",
   BIST_30: "XU030",
-}
+} satisfies Record<CandleChartTarget, string>
 
 export interface CandlestickChartOptions {
   source: CandleSource
@@ -109,7 +112,7 @@ export interface CandlestickChartOptions {
   onSelectionChange?: (range: CandleRange, interval: CandleInterval) => void
   onTargetChange?: (target: CandleChartTarget) => void
   onIndicatorsChange?: (indicators: ChartIndicator[]) => void
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   onFocusRequest?: () => void
 }
 
@@ -117,6 +120,14 @@ interface ChartInstrument {
   uid: string
   symbol: string
   displayName: string
+}
+
+export interface ChartViewportSnapshot {
+  scrollOffset: number
+  x: number
+  y: number
+  viewportSize: number
+  sliderViewportSize: number
 }
 
 export class CandlestickChart {
@@ -153,7 +164,7 @@ export class CandlestickChart {
   private range: CandleRange
   private interval: CandleInterval
   private target: CandleChartTarget
-  private availableIntervalsByRange: Record<CandleRange, CandleInterval[]> = { ...DEFAULT_INTERVALS_BY_RANGE }
+  private availableIntervalsByRange: CandleIntervalsByRange = { ...DEFAULT_INTERVALS_BY_RANGE }
   private scrollOffset = 0
   // Braille dots one candle occupies; wheel zoom shrinks/grows it.
   private zoomDots: number = CANDLE_SPACING_DOTS
@@ -420,6 +431,17 @@ export class CandlestickChart {
   /** The overlays currently drawn, in the order the toolbar lists them. */
   get indicators(): ChartIndicator[] {
     return [...this.activeIndicators]
+  }
+
+  /** Read-only viewport geometry used by interaction diagnostics. */
+  get viewport(): ChartViewportSnapshot {
+    return {
+      scrollOffset: this.scrollOffset,
+      x: this.horizontalScrollBar.x,
+      y: this.horizontalScrollBar.y,
+      viewportSize: this.horizontalScrollBar.viewportSize,
+      sliderViewportSize: this.horizontalScrollBar.slider.viewPortSize,
+    }
   }
 
   /**
@@ -705,7 +727,7 @@ export class CandlestickChart {
       : renderCandleChart(
           candles, width, height, grainMs, this.scrollOffset, reserveScrollbarRow, this.zoomDots,
           this.selectedTimestamp, lines)
-    if (typeof view === "string") {
+    if (isChartMessage(view)) {
       this.showPlotMessage(view, MUTED_COLOR)
       this.syncScrollbar()
       return
@@ -720,7 +742,7 @@ export class CandlestickChart {
       // sequences mid-frame. writeOut is private in the typings but is the
       // channel OpenTUI uses for its own out-of-frame sequences.
       this.placeholderImages ??= new KittyPlaceholderImages((data) =>
-        (this.renderer as unknown as { writeOut(data: string): void }).writeOut(data),
+        rendererOutput(this.renderer).writeOut(data),
       )
       this.plotText.content = this.placeholderImages.render(view.bitmap, view.plotWidth, view.rows)
       this.plotText.visible = true
@@ -1049,7 +1071,12 @@ function computeChartFrame(
 }
 
 /** Grows a price span around its midpoint until it is at least `minSpan` wide. */
-function expandPriceSpan(floor: number, ceiling: number, minSpan: number): { floor: number; ceiling: number } {
+interface PriceSpan {
+  floor: number
+  ceiling: number
+}
+
+function expandPriceSpan(floor: number, ceiling: number, minSpan: number): PriceSpan {
   const span = ceiling - floor
   if (!Number.isFinite(minSpan) || minSpan <= span) return { floor, ceiling }
   const middle = (floor + ceiling) / 2
@@ -1093,7 +1120,7 @@ export function renderCandleChart(
   indicators: IndicatorLine[] = [],
 ): BrailleChartView | string {
   const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow, dotsPerCandle)
-  if (typeof frame === "string") return frame
+  if (isChartMessage(frame)) return frame
   const { layout, visible, slots, plotRows, volumeRows, totalRows, floor, ceiling, latest, gridRows } = frame
 
   const buf = createPixelBuffer(layout.plotWidth * BRAILLE_X, totalRows * BRAILLE_Y)
@@ -1150,7 +1177,7 @@ export function renderCandleChartBitmapView(
   indicators: IndicatorLine[] = [],
 ): BitmapChartView | string {
   const frame = computeChartFrame(candles, width, height, scrollOffset, reserveScrollbarRow, dotsPerCandle)
-  if (typeof frame === "string") return frame
+  if (isChartMessage(frame)) return frame
   const { layout, visible, slots, plotRows, volumeRows, totalRows, floor, ceiling, latest, gridRows } = frame
 
   const pixelWidth = Math.max(1, Math.round(layout.plotWidth * cellPixel.width))
@@ -1378,6 +1405,10 @@ function formatPrice(price: number): string {
   return price.toLocaleString("tr-TR", { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
+}
+
+export function isChartMessage<T>(value: string | T): value is string {
+  return z.string().safeParse(value).success
 }

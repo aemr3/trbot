@@ -11,14 +11,14 @@ export function isCandleChartTarget(value: string): value is CandleChartTarget {
   return CANDLE_CHART_TARGETS.some((target) => target === value)
 }
 
-export const CANDLE_RANGE_LABELS: Record<CandleRange, string> = {
+export const CANDLE_RANGE_LABELS = {
   INTRADAY: "1D",
   WEEK: "1W",
   MONTH: "1M",
   THREE_MONTH: "3M",
   YEAR: "1Y",
   FIVE_YEAR: "5Y",
-}
+} satisfies Record<CandleRange, string>
 
 export const CANDLE_INTERVALS = [
   "MIN_5",
@@ -34,7 +34,9 @@ export const CANDLE_INTERVALS = [
 
 export type CandleInterval = (typeof CANDLE_INTERVALS)[number]
 
-export const CANDLE_INTERVAL_LABELS: Record<CandleInterval, string> = {
+export interface CandleIntervalsByRange extends Record<CandleRange, CandleInterval[]> {}
+
+export const CANDLE_INTERVAL_LABELS = {
   MIN_5: "5m",
   MIN_10: "10m",
   MIN_15: "15m",
@@ -44,18 +46,18 @@ export const CANDLE_INTERVAL_LABELS: Record<CandleInterval, string> = {
   DAY_1: "1D",
   WEEK_1: "1W",
   MONTH_1: "1M",
-}
+} satisfies Record<CandleInterval, string>
 
-export const DEFAULT_INTERVAL_BY_RANGE: Record<CandleRange, CandleInterval> = {
+export const DEFAULT_INTERVAL_BY_RANGE = {
   INTRADAY: "MIN_5",
   WEEK: "HOUR_1",
   MONTH: "HOUR_1",
   THREE_MONTH: "HOUR_4",
   YEAR: "DAY_1",
   FIVE_YEAR: "WEEK_1",
-}
+} satisfies Record<CandleRange, CandleInterval>
 
-export const DEFAULT_INTERVALS_BY_RANGE: Record<CandleRange, CandleInterval[]> = {
+export const DEFAULT_INTERVALS_BY_RANGE: CandleIntervalsByRange = {
   INTRADAY: ["MIN_5", "MIN_10", "MIN_15", "MIN_30", "HOUR_1"],
   WEEK: ["MIN_10", "MIN_15", "MIN_30", "HOUR_1"],
   MONTH: ["HOUR_1", "HOUR_4", "DAY_1"],
@@ -67,7 +69,7 @@ export const DEFAULT_INTERVALS_BY_RANGE: Record<CandleRange, CandleInterval[]> =
 // Futures candles are served one grain per range: the provider infers the
 // interval from the range instead of taking a requested one, so these are the
 // only grains a contract can actually be watched at.
-export const FUTURES_INTERVALS_BY_RANGE: Record<CandleRange, CandleInterval[]> = {
+export const FUTURES_INTERVALS_BY_RANGE: CandleIntervalsByRange = {
   INTRADAY: ["MIN_10"],
   WEEK: ["HOUR_1"],
   MONTH: ["HOUR_4"],

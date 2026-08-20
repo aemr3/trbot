@@ -350,5 +350,5 @@ function multiplyFinite(left: number | null, right: number): number | null {
 }
 
 function positiveFinite(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null
+  return value !== null && value !== undefined && Number.isFinite(value) && value > 0 ? value : null
 }

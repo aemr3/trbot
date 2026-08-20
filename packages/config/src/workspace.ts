@@ -1,6 +1,9 @@
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { z } from "zod"
+
+const WorkspaceManifestSchema = z.object({ workspaces: z.unknown() })
 
 /**
  * Locates the workspace root by walking up from this module until it finds the
@@ -25,8 +28,7 @@ function findWorkspaceRoot(): string {
 
 function declaresWorkspaces(manifestPath: string): boolean {
   try {
-    const manifest: unknown = JSON.parse(readFileSync(manifestPath, "utf8"))
-    return typeof manifest === "object" && manifest !== null && "workspaces" in manifest
+    return WorkspaceManifestSchema.safeParse(JSON.parse(readFileSync(manifestPath, "utf8"))).success
   } catch {
     return false
   }
@@ -44,7 +46,7 @@ export function workspaceRoot(): string {
  * Parses `.env` contents into plain values. Blank lines and `#` comments are
  * skipped, and a single layer of matching quotes is stripped from values.
  */
-export function parseEnvFile(contents: string): Record<string, string> {
+export function parseEnvFile(contents: string) {
   const values: Record<string, string> = {}
 
   for (const line of contents.split("\n")) {
@@ -85,6 +87,6 @@ function workspaceEnvFile(): Record<string, string> {
  * auto-loads `.env` from the working directory, so reading it here is what lets
  * a process start from anywhere and still see the same settings.
  */
-export function environment(): Record<string, string | undefined> {
+export function environment() {
   return { ...workspaceEnvFile(), ...process.env }
 }

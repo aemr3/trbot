@@ -19,7 +19,7 @@ interface WorkspacePanel {
   activate?(): void
   /** Releases focused controls before the panel root is removed. */
   deactivate?(): void
-  handleKey(key: KeyEvent): unknown
+  handleKey(key: KeyEvent): boolean | void
   /**
    * Whether this panel is taking typed text right now — a composer, a search, a
    * modal with a field in it.

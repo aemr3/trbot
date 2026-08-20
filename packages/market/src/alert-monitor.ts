@@ -14,7 +14,6 @@ import {
 import {
   advanceAlertTrail,
   alertNeedsCandles,
-  createPriceAlert,
   isAlertReached,
   isAtrAlert,
   isTrailingAlert,
@@ -80,13 +79,13 @@ export interface AlertMonitorOptions<
   TDraft extends PriceAlertDraft = PriceAlertDraft,
 > {
   store: PriceRuleStore<TAlert>
-  create?: (draft: TDraft, now: number) => TAlert
+  create: (draft: TDraft, now: number) => TAlert
   candles?: CandleSource
   onTrigger: (event: AlertTriggerEvent<TAlert>) => void
   /** Called only after the fired state is durable; suitable for retryable downstream work. */
   onTriggerPersisted?: (event: AlertTriggerEvent<TAlert>) => void
   onChange?: () => void
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   stalePriceMs?: number
   now?: () => number
 }
@@ -252,14 +251,8 @@ export class AlertMonitor<
 
   async saveAlert(draft: TDraft): Promise<TAlert> {
     const existing = draft.id ? this.alerts.get(draft.id) : undefined
-    const alert = {
-      ...(this.options.create?.(draft, this.now()) ?? createPriceAlert(draft, this.now()) as TAlert),
-      ...(existing
-        ? {
-            createdAt: existing.createdAt,
-          }
-        : {}),
-    }
+    const alert = this.options.create(draft, this.now())
+    if (existing) alert.createdAt = existing.createdAt
     this.alerts.set(alert.id, alert)
     // An edited alert earns its near-side latch again: its level moved. A fresh
     // cached quote can establish that side immediately, so the first trade through
@@ -291,8 +284,12 @@ export class AlertMonitor<
     const updated: TAlert = {
       ...alert,
       status,
-      ...(status === "ARMED" ? { triggeredAt: null, triggeredPrice: null, triggerId: null } : {}),
       updatedAt: this.now(),
+    }
+    if (status === "ARMED") {
+      updated.triggeredAt = null
+      updated.triggeredPrice = null
+      updated.triggerId = null
     }
     this.alerts.set(id, updated)
     await this.persist(updated)
@@ -398,9 +395,9 @@ export class AlertMonitor<
     }
   }
 
-  private report(error: unknown): void {
+  private report(cause: unknown): void {
     if (this.destroyed) return
-    this.options.onError?.(error)
+    this.options.onError?.(cause)
   }
 
   private now(): number {
@@ -422,6 +419,6 @@ function sampleState(sample: QuoteSample | undefined, now: number, staleAfter: n
   return now - sample.timestamp > staleAfter ? "stale" : "live"
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError"
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === "AbortError"
 }

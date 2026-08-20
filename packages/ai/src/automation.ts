@@ -60,6 +60,11 @@ export interface ChatAutomationToolsClient {
   cancelLoop(sessionId: string, loopId: string): Promise<void>
 }
 
+interface CreateLoopCommonInput {
+  prompt?: string
+  maxRuns?: number
+}
+
 /** Goal and schedule tools share the originating root chat, including when called by a subagent. */
 export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
   return [
@@ -86,11 +91,10 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         parameters: CreateGoalParameters,
       },
       run: async ({ objective, max_turns, token_budget }, options) => {
-        const goal = await client.createGoal(requireSession(options.chatSessionId), {
-          objective,
-          ...(max_turns === undefined ? {} : { maxTurns: max_turns }),
-          ...(token_budget === undefined ? {} : { tokenBudget: token_budget }),
-        })
+        const input: CreateChatGoal = { objective }
+        if (max_turns !== undefined) input.maxTurns = max_turns
+        if (token_budget !== undefined) input.tokenBudget = token_budget
+        const goal = await client.createGoal(requireSession(options.chatSessionId), input)
         return outcome(`Created goal ${goal.id}: ${goal.objective}`, { goal })
       },
     },
@@ -125,10 +129,9 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         parameters: CreateLoopParameters,
       },
       run: async ({ prompt, schedule, interval_minutes, cron_expression, run_at, max_runs }, options) => {
-        const common = {
-          ...(prompt === undefined ? {} : { prompt }),
-          ...(max_runs === undefined ? {} : { maxRuns: max_runs }),
-        }
+        const common: CreateLoopCommonInput = {}
+        if (prompt !== undefined) common.prompt = prompt
+        if (max_runs !== undefined) common.maxRuns = max_runs
         let input: CreateChatLoop
         if (schedule === "INTERVAL") {
           if (interval_minutes === undefined) throw new Error("INTERVAL requires interval_minutes")
@@ -137,11 +140,9 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
           if (interval_minutes !== undefined && interval_minutes > 60) {
             throw new Error("DYNAMIC interval_minutes must be between 1 and 60")
           }
-          input = {
-            ...common,
-            schedule,
-            ...(interval_minutes === undefined ? {} : { initialDelayMs: interval_minutes * 60_000 }),
-          }
+          input = interval_minutes === undefined
+            ? { ...common, schedule }
+            : { ...common, schedule, initialDelayMs: interval_minutes * 60_000 }
         } else if (schedule === "CRON") {
           if (!cron_expression) throw new Error("CRON requires cron_expression")
           input = { ...common, schedule, cronExpression: cron_expression }
@@ -231,6 +232,6 @@ function scheduleText(loop: ChatLoop): string {
   return `every ${formatInterval(loop.intervalMs ?? 60_000)}`
 }
 
-function outcome(text: string, details: unknown) {
+function outcome<T>(text: string, details: T) {
   return { blocks: [toolText(text)], details, isError: false }
 }

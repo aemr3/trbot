@@ -33,7 +33,7 @@ export interface ViopOrderTicketOptions {
   onClose: () => void
   onKindChange?: (kind: ViopOrderKind) => void
   onPlaced?: (order: PlacedViopOrder) => void
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
 }
 
 export interface TicketQuoteUpdate {
@@ -550,10 +550,10 @@ function isDigitKey(key: KeyEvent): boolean {
   return /^\d$/.test(key.sequence || key.name)
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError"
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === "AbortError"
 }

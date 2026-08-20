@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import type { BrokerageDatePreset, BrokerageDateRange } from "@trbot/market/broker-calendar.ts"
 import { BrokerageDateModal } from "./brokerage-date-modal.ts"
 
@@ -11,7 +12,7 @@ const presets: BrokerageDatePreset[] = [
 const availableDates = ["2026-08-13", "2026-08-12", "2026-08-11"]
 
 function key(name: string): KeyEvent {
-  return { name } as KeyEvent
+  return keyEvent(name)
 }
 
 async function mountModal() {

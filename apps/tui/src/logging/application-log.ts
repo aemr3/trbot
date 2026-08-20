@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 export type LogLevel = "INFO" | "WARN" | "ERROR"
 
 export interface LogEntry {
@@ -19,6 +21,19 @@ const ERROR_DETAIL_KEYS = [
   "data",
 ] as const
 
+const JsonValueSchema = z.json()
+const JsonValueInputSchema = z.preprocess((value) => value, JsonValueSchema)
+type JsonValue = z.output<typeof JsonValueSchema>
+const JsonObjectSchema = z.record(z.string(), JsonValueSchema)
+type JsonObject = z.output<typeof JsonObjectSchema>
+const ErrorExtensionsSchema = z.object({
+  statusCode: JsonValueSchema.optional(),
+  url: JsonValueSchema.optional(),
+  responseBody: JsonValueSchema.optional(),
+  isRetryable: JsonValueSchema.optional(),
+  data: JsonValueSchema.optional(),
+})
+
 export class ApplicationLog {
   private readonly entries: LogEntry[] = []
   private readonly listeners = new Set<LogListener>()
@@ -29,16 +44,16 @@ export class ApplicationLog {
     private readonly now: () => number = Date.now,
   ) {}
 
-  info(scope: string, message: string, details?: unknown): void {
+  info(scope: string, message: string, details?: z.input<typeof JsonValueInputSchema>): void {
     this.add("INFO", scope, message, details)
   }
 
-  warn(scope: string, message: string, details?: unknown): void {
+  warn(scope: string, message: string, details?: z.input<typeof JsonValueInputSchema>): void {
     this.add("WARN", scope, message, details)
   }
 
-  error(scope: string, error: unknown, message = errorMessage(error)): void {
-    this.add("ERROR", scope, message, errorDetails(error))
+  error(scope: string, cause: unknown, message = errorMessage(cause)): void {
+    this.add("ERROR", scope, message, errorDetails(cause))
   }
 
   list(): LogEntry[] {
@@ -56,7 +71,7 @@ export class ApplicationLog {
     return () => this.listeners.delete(listener)
   }
 
-  private add(level: LogLevel, scope: string, message: string, details?: unknown): void {
+  private add(level: LogLevel, scope: string, message: string, details?: z.input<typeof JsonValueInputSchema>): void {
     this.entries.push({
       id: this.nextId++,
       timestamp: this.now(),
@@ -74,28 +89,31 @@ export class ApplicationLog {
   }
 }
 
-function errorDetails(error: unknown): unknown {
-  if (!(error instanceof Error)) return error
-  const record = error as Error & Record<string, unknown>
-  const details: Record<string, unknown> = {
-    name: error.name,
-    message: error.message,
+function errorDetails(cause: unknown): JsonValue {
+  if (!(cause instanceof Error)) return jsonValue(cause)
+  const details: JsonObject = {
+    name: cause.name,
+    message: cause.message,
   }
+  const parsedExtensions = ErrorExtensionsSchema.safeParse(cause)
+  const extensions = parsedExtensions.success ? parsedExtensions.data : {}
   for (const key of ERROR_DETAIL_KEYS) {
-    if (record[key] !== undefined) {
-      details[key] = key === "responseBody" && typeof record[key] === "string"
-        ? parseJson(record[key])
-        : record[key]
+    const value = extensions[key]
+    if (value !== undefined) {
+      details[key] = key === "responseBody" && z.string().safeParse(value).success
+        ? parseJson(String(value))
+        : value
     }
   }
-  if (error.cause !== undefined) details.cause = errorDetails(error.cause)
-  if (error.stack) details.stack = error.stack
+  if (cause.cause !== undefined) details.cause = errorDetails(cause.cause)
+  if (cause.stack) details.stack = cause.stack
   return details
 }
 
-function formatDetails(details: unknown): string | null {
+function formatDetails(details: z.input<typeof JsonValueInputSchema>): string | null {
   if (details === undefined || details === null) return null
-  if (typeof details === "string") return prettyJson(details)
+  const text = z.string().safeParse(details)
+  if (text.success) return prettyJson(text.data)
   try {
     return JSON.stringify(details, null, 2)
   } catch {
@@ -111,14 +129,19 @@ function prettyJson(value: string): string {
   }
 }
 
-function parseJson(value: string): unknown {
+function parseJson(value: string): JsonValue {
   try {
-    return JSON.parse(value)
+    return jsonValue(JSON.parse(value))
   } catch {
     return value
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function jsonValue(value: z.input<typeof JsonValueInputSchema>): JsonValue {
+  const parsed = JsonValueSchema.safeParse(value)
+  return parsed.success ? parsed.data : String(value)
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }

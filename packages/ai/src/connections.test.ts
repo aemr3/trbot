@@ -172,11 +172,11 @@ function memoryPreferences(): AiPreferencesStore {
   }
 }
 
-function attempt(run: () => unknown): Error | null {
+function attempt(run: () => void): Error | null {
   try {
     run()
     return null
-  } catch (error) {
-    return error as Error
+  } catch (cause) {
+    return cause instanceof Error ? cause : new Error(String(cause))
   }
 }

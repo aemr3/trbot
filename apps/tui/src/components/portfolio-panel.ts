@@ -19,6 +19,7 @@ import {
 import { renderBarBitmap } from "./chart/bar-raster.ts"
 import { ChartBitmapRenderable, chartBitmapSupport } from "./chart/bitmap-renderable.ts"
 import { KittyPlaceholderImages } from "./chart/kitty-placeholder.ts"
+import { rendererOutput } from "../renderer-output.ts"
 import { RenderCoalescer } from "./render-coalescer.ts"
 
 // What the account is worth, how it is doing, and how it got there. It stands
@@ -285,7 +286,7 @@ export class PortfolioPanel {
         // Kitty payloads must go through the renderer's serialized write queue;
         // a raw stdout write races the render thread mid-frame.
         this.placeholderImages ??= new KittyPlaceholderImages((data) =>
-          (this.renderer as unknown as { writeOut(data: string): void }).writeOut(data),
+          rendererOutput(this.renderer).writeOut(data),
         )
         this.barsText.content = this.placeholderImages.render(bitmap, columns, rows)
         this.barsText.visible = true

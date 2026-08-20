@@ -8,11 +8,22 @@ type SelectionTarget = Renderable & {
   getClipboardText?: (text: string) => string
 }
 
+interface SelectionSnapshot {
+  getSelectedText(): string
+  selectedRenderables: Renderable[]
+}
+
+export interface SelectionReader {
+  currentFocusedRenderable: Renderable | null
+  getSelection(): SelectionSnapshot | null
+  clearSelection(): void
+}
+
 /** Copies the renderer selection and clears its highlight once it is captured. */
 export function copySelection(
-  renderer: Pick<CliRenderer, "clearSelection" | "currentFocusedRenderable" | "getSelection">,
+  renderer: SelectionReader,
   clipboard: ClipboardWriter,
-  onError?: (error: unknown) => void,
+  onError?: (cause: unknown) => void,
 ): boolean {
   const selection = renderer.getSelection()
   if (!selection) return false
@@ -20,12 +31,14 @@ export function copySelection(
   const selectedText = selection.getSelectedText()
   if (!selectedText) return false
 
+  // SAFETY: OpenTUI exposes the focused renderable through its base type, while
+  // trbot's selectable controls optionally add SelectionTarget.getClipboardText.
   const focused = renderer.currentFocusedRenderable as SelectionTarget | null
   const text = focused?.getClipboardText && selection.selectedRenderables.includes(focused)
     ? focused.getClipboardText(selectedText)
     : selectedText
 
-  void clipboard.write(text).catch((error: unknown) => onError?.(error))
+  void clipboard.write(text).catch((cause: unknown) => onError?.(cause))
   renderer.clearSelection()
   return true
 }

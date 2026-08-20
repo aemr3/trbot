@@ -124,8 +124,12 @@ export interface ChatSessionDetail {
   partial: ChatPartial | null
 }
 
+export const ChatRoleSchema = z.enum(["USER", "APP_EVENT", "ASSISTANT", "TOOL_RESULT"])
+export const ChatMessageStatusSchema = z.enum(["QUEUED", "SENT", "COMPLETE", "PARTIAL", "FAILED"])
+export const ChatBlockKindSchema = z.enum(["TEXT", "THINKING", "TOOL_CALL", "IMAGE"])
+
 const ChatBlockSchema: z.ZodType<ChatBlock> = z.object({
-  kind: z.enum(["TEXT", "THINKING", "TOOL_CALL", "IMAGE"]),
+  kind: ChatBlockKindSchema,
   text: z.string().nullable(),
   toolName: z.string().nullable(),
   toolCallId: z.string().nullable(),
@@ -141,8 +145,8 @@ const ChatUsageSchema: z.ZodType<ChatUsage> = z.object({
 
 export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
   id: z.string(),
-  role: z.enum(["USER", "APP_EVENT", "ASSISTANT", "TOOL_RESULT"]),
-  status: z.enum(["QUEUED", "SENT", "COMPLETE", "PARTIAL", "FAILED"]),
+  role: ChatRoleSchema,
+  status: ChatMessageStatusSchema,
   text: z.string(),
   blocks: z.array(ChatBlockSchema),
   toolName: z.string().nullable(),

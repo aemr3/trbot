@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
-import { HttpClient } from "@trbot/client/http.ts"
-import { StreamConnection } from "@trbot/client/stream.ts"
+import { HttpClient, type HttpClientOptions } from "@trbot/client/http.ts"
+import { StreamConnection, type StreamConnectionOptions } from "@trbot/client/stream.ts"
 import type { ClientConfig } from "@trbot/config"
 import { ROUTES, SessionStateSchema } from "@trbot/protocol/routes.ts"
 
@@ -19,7 +19,7 @@ export interface ServerSession {
    * rather than passing it in, because the session is opened before there is
    * anywhere to report to.
    */
-  onStreamError(listener: (error: unknown) => void): void
+  onStreamError(listener: (cause: unknown) => void): void
   close(): void
 }
 
@@ -27,19 +27,31 @@ export interface ServerSessionOptions {
   config: ClientConfig
   /** The authority itself, overriding the one `config.caPath` names. */
   ca?: string | null
+  transports?: ServerSessionTransports
+}
+
+export interface ServerSessionTransports {
+  http(options: HttpClientOptions): HttpClient
+  stream(options: StreamConnectionOptions): StreamConnection
+}
+
+const defaultTransports: ServerSessionTransports = {
+  http: (options) => new HttpClient(options),
+  stream: (options) => new StreamConnection(options),
 }
 
 export function createServerSession(options: ServerSessionOptions): ServerSession {
   // Both the requests and the socket need it: a remote server presents the same
   // self-signed certificate to each, and nothing else trusts that authority.
   const ca = options.ca ?? readAuthority(options.config.caPath)
-  const http = new HttpClient({
+  const transports = options.transports ?? defaultTransports
+  const http = transports.http({
     url: options.config.url,
     token: options.config.token,
     ca,
   })
-  let report: ((error: unknown) => void) | null = null
-  const stream = new StreamConnection({
+  let report: ((cause: unknown) => void) | null = null
+  const stream = transports.stream({
     url: options.config.url,
     token: options.config.token,
     ca,
@@ -50,7 +62,7 @@ export function createServerSession(options: ServerSessionOptions): ServerSessio
     url: options.config.url,
     http,
     stream,
-    onStreamError(listener: (error: unknown) => void): void {
+    onStreamError(listener: (cause: unknown) => void): void {
       report = listener
     },
     close(): void {
@@ -69,8 +81,9 @@ function readAuthority(path: string | null): string | null {
   if (!path) return null
   try {
     return readFileSync(path, "utf8")
-  } catch (error) {
-    throw new Error(`TRBOT_SERVER_CA names ${path}, which could not be read: ${(error as Error).message}`)
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause)
+    throw new Error(`TRBOT_SERVER_CA names ${path}, which could not be read: ${message}`)
   }
 }
 

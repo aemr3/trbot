@@ -16,7 +16,7 @@ export interface MarketMonitorControllerOptions {
   candles?: CandleSource
   onTrigger: (event: MarketMonitorTriggerEvent) => Promise<void>
   onChange?: () => void
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   now?: () => number
 }
 
@@ -52,7 +52,7 @@ export class MarketMonitorController {
 
   async save(draft: MarketMonitorDraft): Promise<MarketMonitor> {
     const monitor = await this.engine.saveAlert(draft)
-    void this.engine.refreshCandleAlerts().catch((error: unknown) => this.options.onError?.(error))
+    void this.engine.refreshCandleAlerts().catch((cause: unknown) => this.options.onError?.(cause))
     return monitor
   }
 
@@ -81,6 +81,6 @@ export class MarketMonitorController {
   }
 
   private wakeChat(event: MarketMonitorTriggerEvent): void {
-    void this.options.onTrigger(event).catch((error: unknown) => this.options.onError?.(error))
+    void this.options.onTrigger(event).catch((cause: unknown) => this.options.onError?.(cause))
   }
 }

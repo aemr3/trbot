@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
-import type { HttpClient } from "./http.ts"
-import { DEFAULT_APP_PREFERENCES, type AppPreferences } from "@trbot/preferences/app.ts"
+import { HttpClient } from "./http.ts"
+import { AppPreferencesSchema, DEFAULT_APP_PREFERENCES, type AppPreferences } from "@trbot/preferences/app.ts"
 import { HttpAppPreferences } from "./sources.ts"
 
 /**
@@ -16,13 +16,17 @@ interface Write {
 
 /** An HTTP client whose writes finish only when the test says so. */
 function controllable(writes: Write[]): HttpClient {
-  return {
-    put(_path: string, _schema: unknown, options: { body?: unknown }) {
-      return new Promise<void>((resolve) => {
-        writes.push({ body: options.body as AppPreferences, settle: resolve })
+  return new HttpClient({
+    url: "http://preferences.test",
+    token: "test",
+    fetch(_input, init) {
+      const decoded: unknown = JSON.parse(String(init?.body))
+      const body = AppPreferencesSchema.parse(decoded)
+      return new Promise<Response>((resolve) => {
+        writes.push({ body, settle: () => resolve(Response.json(body)) })
       })
     },
-  } as unknown as HttpClient
+  })
 }
 
 function preferences(sort: AppPreferences["instrumentSort"]): AppPreferences {
@@ -55,12 +59,15 @@ test("a save waits for the one in flight rather than racing it", async () => {
 
 test("a failed save does not wedge the ones after it", async () => {
   const attempts: AppPreferences[] = []
-  const failing = {
-    put(_path: string, _schema: unknown, options: { body?: unknown }) {
-      attempts.push(options.body as AppPreferences)
+  const failing = new HttpClient({
+    url: "http://preferences.test",
+    token: "test",
+    fetch(_input, init) {
+      const decoded: unknown = JSON.parse(String(init?.body))
+      attempts.push(AppPreferencesSchema.parse(decoded))
       return Promise.reject(new Error("the server refused"))
     },
-  } as unknown as HttpClient
+  })
   const store = new HttpAppPreferences(failing)
 
   store.save(preferences("name"))

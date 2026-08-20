@@ -3,14 +3,19 @@ import type { AppDatabase } from "@trbot/db/client.ts"
 import { idempotencyKeys } from "@trbot/db/schema.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import { isDefiniteRefusal } from "../errors.ts"
+import { z } from "zod"
 
 const RETENTION_MS = 24 * 60 * 60 * 1000
 const IN_DOUBT = "IN_DOUBT"
+const JsonValueSchema = z.json()
+const JsonInputSchema = z.preprocess((value) => value, JsonValueSchema)
+export type IdempotentInput = z.input<typeof JsonInputSchema>
+type JsonValue = z.output<typeof JsonValueSchema>
 
 interface RunningMutation {
   route: string
   requestHash: string
-  result: Promise<unknown>
+  result: Promise<JsonValue>
 }
 
 /**
@@ -50,14 +55,19 @@ export class IdempotencyStore {
    * doubt, and a retry is refused: rerunning it is how a lost response becomes a
    * second live order.
    */
-  async run<T>(key: string, route: string, requestHash: string, mutate: () => Promise<T>): Promise<T> {
+  async run(
+    key: string,
+    route: string,
+    requestHash: string,
+    mutate: () => Promise<IdempotentInput>,
+  ): Promise<JsonValue> {
     const replayed = await this.replay(key, route, requestHash)
-    if (replayed !== null) return replayed as T
+    if (replayed !== null) return replayed
 
     const running = this.running.get(key)
     if (running) {
       if (running.route !== route || running.requestHash !== requestHash) throw conflict(key)
-      return (await running.result) as T
+      return running.result
     }
 
     const result = this.execute(key, route, requestHash, mutate)
@@ -69,15 +79,15 @@ export class IdempotencyStore {
     }
   }
 
-  private async execute<T>(
+  private async execute(
     key: string,
     route: string,
     requestHash: string,
-    mutate: () => Promise<T>,
-  ): Promise<T> {
-    let response: T
+    mutate: () => Promise<IdempotentInput>,
+  ): Promise<JsonValue> {
+    let response: JsonValue
     try {
-      response = await mutate()
+      response = jsonValue(await mutate())
     } catch (error) {
       if (!isDefiniteRefusal(error)) await this.recordInDoubt(key, route, requestHash)
       throw error
@@ -96,7 +106,7 @@ export class IdempotencyStore {
    * A repeat carrying a different body is a client bug, so it is rejected rather
    * than silently treated as either the first or a fresh request.
    */
-  async replay(key: string, route: string, requestHash: string): Promise<unknown | null> {
+  async replay(key: string, route: string, requestHash: string): Promise<JsonValue | null> {
     const [stored] = await this.db.select().from(idempotencyKeys).where(eq(idempotencyKeys.key, key)).limit(1)
     if (!stored) return null
 
@@ -110,7 +120,7 @@ export class IdempotencyStore {
     }
 
     try {
-      return JSON.parse(stored.responseBody)
+      return JsonValueSchema.parse(JSON.parse(stored.responseBody))
     } catch (error) {
       throw new ProtocolError("internal", "The stored idempotency response is corrupt", { cause: error })
     }
@@ -131,12 +141,12 @@ export class IdempotencyStore {
     })
   }
 
-  async record(key: string, route: string, requestHash: string, response: unknown): Promise<void> {
+  async record(key: string, route: string, requestHash: string, response: IdempotentInput): Promise<void> {
     await this.db.insert(idempotencyKeys).values({
       key,
       route,
       requestHash,
-      responseBody: JSON.stringify(response ?? null),
+      responseBody: JSON.stringify(jsonValue(response)),
       createdAt: this.now(),
     })
   }
@@ -146,6 +156,13 @@ function conflict(key: string): ProtocolError {
   return new ProtocolError("conflict", `Idempotency key "${key}" was already used with a different request`)
 }
 
-export function hashRequest(body: unknown): string {
+export function hashRequest(body: IdempotentInput): string {
   return new Bun.CryptoHasher("sha256").update(JSON.stringify(body ?? null)).digest("hex")
+}
+
+function jsonValue(input: IdempotentInput): JsonValue {
+  const encoded = JSON.stringify(input ?? null)
+  const parsed = JsonValueSchema.safeParse(JSON.parse(encoded))
+  if (!parsed.success) throw new ProtocolError("internal", "Idempotent responses must be JSON serializable")
+  return parsed.data
 }

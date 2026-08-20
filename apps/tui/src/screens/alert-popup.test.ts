@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { AlertTriggerEvent } from "@trbot/market/alert-monitor.ts"
 import { createPriceAlert } from "@trbot/market/alert.ts"
@@ -8,7 +9,7 @@ import { AlertPopup } from "./alert-popup.ts"
 const NOW = 1_786_000_000_000
 
 function key(name: string): KeyEvent {
-  return { name } as KeyEvent
+  return keyEvent(name)
 }
 
 function event(): AlertTriggerEvent {

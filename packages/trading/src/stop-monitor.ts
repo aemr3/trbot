@@ -101,7 +101,7 @@ export interface StopMonitorOptions {
   candles?: CandleSource
   onTrigger: (event: StopTriggerEvent) => void
   onChange?: () => void
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   stalePriceMs?: number
   now?: () => number
 }
@@ -288,7 +288,8 @@ export class StopMonitor {
 
   async saveRule(draft: StopRuleDraft): Promise<StopRule> {
     const existing = draft.id ? this.rules.get(draft.id) : undefined
-    const rule = { ...createStopRule(draft, this.now()), ...(existing ? { createdAt: existing.createdAt } : {}) }
+    const rule = createStopRule(draft, this.now())
+    if (existing) rule.createdAt = existing.createdAt
     this.rules.set(rule.id, rule)
     // An edited rule earns its safe-tick latch again: its level moved.
     this.safe.delete(rule.id)
@@ -431,9 +432,9 @@ export class StopMonitor {
     }
   }
 
-  private report(error: unknown): void {
+  private report(cause: unknown): void {
     if (this.destroyed) return
-    this.options.onError?.(error)
+    this.options.onError?.(cause)
   }
 
   private now(): number {
@@ -459,6 +460,6 @@ function sampleState(sample: QuoteSample | undefined, now: number, staleAfter: n
   return now - sample.timestamp > staleAfter ? "stale" : "live"
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError"
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === "AbortError"
 }

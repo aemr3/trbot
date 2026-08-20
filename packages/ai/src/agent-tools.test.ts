@@ -1,6 +1,20 @@
 import { expect, test } from "bun:test"
 import { createModels, fauxProvider } from "@earendil-works/pi-ai"
 import { createAgentTools } from "./agent-tools.ts"
+import type { ChatAutomationToolsClient } from "./automation.ts"
+
+const unavailableAutomation = async (): Promise<never> => {
+  throw new Error("Automation execution is not part of this registry test")
+}
+
+const automations: ChatAutomationToolsClient = {
+  state: unavailableAutomation,
+  createGoal: unavailableAutomation,
+  finishGoal: unavailableAutomation,
+  createLoop: unavailableAutomation,
+  rescheduleLoop: unavailableAutomation,
+  cancelLoop: unavailableAutomation,
+}
 
 test("gives parents and subagents the complete chat toolset", () => {
   const faux = fauxProvider({ models: [{ id: "chat-model" }] })
@@ -86,7 +100,7 @@ test("adds persistent goal and loop tools to the shared registry", () => {
   const models = createModels()
   models.setProvider(faux.provider)
 
-  const tools = createAgentTools({ models, automations: {} as never })
+  const tools = createAgentTools({ models, automations })
 
   expect(tools.list().map((tool) => tool.name)).toEqual([
     "web_search",

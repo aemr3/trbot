@@ -14,7 +14,6 @@ export interface AccountOverviewVariables {
   memberId: string
   currencyCode: "TRY"
   period: "DAY"
-  [key: string]: unknown
 }
 
 interface ViopProfitLossPoint {
@@ -57,7 +56,6 @@ export interface ViopPortfolioVariables {
   // is refused outright.
   accountId: string
   period: string
-  [key: string]: unknown
 }
 
 export interface ViopMarginData {
@@ -68,7 +66,6 @@ export interface ViopMarginData {
 
 export interface ViopMarginVariables {
   accountId: string
-  [key: string]: unknown
 }
 
 export interface AccountPositionEntry {
@@ -93,7 +90,6 @@ export interface AccountPositionsData {
 
 export interface AccountPositionsVariables {
   accountId: string
-  [key: string]: unknown
 }
 
 interface AccountOrderDetail {
@@ -117,7 +113,7 @@ export interface AccountOrderEntry {
 export interface AccountOrdersData {
   transactionHistoryForInvestmentType?: {
     items?: AccountOrderEntry[] | null
-    error?: unknown
+    error?: string | null
     hasMore?: boolean | null
   } | null
 }
@@ -129,7 +125,6 @@ export interface AccountOrdersVariables {
   size: number
   assetVertical: "TR"
   investmentType: "FUTURES"
-  [key: string]: unknown
 }
 
 export const accountOperations = {

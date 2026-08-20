@@ -51,29 +51,29 @@ const FIXED_ROWS = 1 + 2 + 1 + 3 + 1 + 1
 const VIEWS = ["BUYER", "SELLER", "HELD", "GAINED", "LOST"] as const
 export type BrokerView = (typeof VIEWS)[number]
 
-const VIEW_LABELS: Record<BrokerView, string> = {
+const VIEW_LABELS = {
   BUYER: "Buyers",
   SELLER: "Sellers",
   HELD: "Held",
   GAINED: "Gained",
   LOST: "Lost",
-}
+} satisfies Record<BrokerView, string>
 
-const VIEW_COLORS: Record<BrokerView, string> = {
+const VIEW_COLORS = {
   BUYER: BUY_COLOR,
   SELLER: SELL_COLOR,
   HELD: HOLD_COLOR,
   GAINED: BUY_COLOR,
   LOST: SELL_COLOR,
-}
+} satisfies Record<BrokerView, string>
 
-const VIEW_BAR_BACKGROUNDS: Record<BrokerView, string> = {
+const VIEW_BAR_BACKGROUNDS = {
   BUYER: BUY_BAR_BG,
   SELLER: SELL_BAR_BG,
   HELD: HOLD_BAR_BG,
   GAINED: BUY_BAR_BG,
   LOST: SELL_BAR_BG,
-}
+} satisfies Record<BrokerView, string>
 
 // Which feed backs a view. Exactly one of the two answers a view, so a caller
 // can route a load by asking both.

@@ -11,7 +11,6 @@ export interface MemberFeaturesData {
 
 export interface MemberFeaturesVariables {
   memberUid: string
-  [key: string]: unknown
 }
 
 export const memberOperations = {

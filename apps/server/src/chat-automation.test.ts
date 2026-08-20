@@ -5,6 +5,9 @@ import { DrizzleChatAutomationStore } from "@trbot/db/chat-automation-store.ts"
 import { openDatabase, type DatabaseConnection } from "@trbot/db/client.ts"
 import { chatSessions } from "@trbot/db/schema.ts"
 import { ChatAutomationController } from "./chat-automation.ts"
+import { testModel } from "@trbot/ai/model.test-fixture.ts"
+
+const model = testModel("model")
 
 let connection: DatabaseConnection | null = null
 let controller: ChatAutomationController | null = null
@@ -58,7 +61,7 @@ async function harness(options: {
     detail: async () => detail(),
     enqueueEvent: async (_sessionId, event) => { events.push(event) },
     cancelQueuedEvents: async (_sessionId, label) => { cancelledLabels.push(label) },
-    resolveModel: async () => ({ model: { id: "model", provider: "provider", maxTokens: 8_000 } as never }),
+    resolveModel: async () => ({ model }),
     evaluator: {
       evaluate: async () => evaluations.shift() ?? { verdict: "COMPLETE", reason: "Done." },
     },

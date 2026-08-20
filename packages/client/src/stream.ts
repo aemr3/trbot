@@ -10,6 +10,11 @@ import type { StopRuleView, StopTriggerEvent } from "@trbot/trading/stop-monitor
 
 const DEFAULT_RECONNECT_DELAYS_MS = [1000, 3000, 5000]
 
+function webSocketProtocols<T extends NonNullable<object>>(options: T): string[] {
+  // SAFETY: Bun accepts its headers/TLS socket options in WebSocket's second argument.
+  return options as string[]
+}
+
 export interface StreamConnectionOptions {
   url: string
   token: string
@@ -24,7 +29,7 @@ export interface StreamConnectionOptions {
    * loop never gives up, so reporting each attempt would fill the log with one
    * fact repeated. A reconnect arms it again.
    */
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   reconnectDelaysMs?: number[]
 }
 
@@ -53,10 +58,12 @@ export class StreamConnection {
     if (this.closed || this.socket) return
 
     const url = this.options.url.replace(/^http/, "ws") + ROUTES.stream
-    const socket = new WebSocket(url, {
+    const tls = this.options.ca ? { tls: { ca: this.options.ca } } : {}
+    const socketOptions = {
       headers: { Authorization: `Bearer ${this.options.token}` },
-      ...(this.options.ca ? { tls: { ca: this.options.ca } } : {}),
-    } as unknown as string[])
+      ...tls,
+    }
+    const socket = new WebSocket(url, webSocketProtocols(socketOptions))
     this.socket = socket
 
     socket.onopen = () => {

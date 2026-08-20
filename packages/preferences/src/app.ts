@@ -20,11 +20,11 @@ export type SortDirection = (typeof SORT_DIRECTIONS)[number]
 
 // Which way a sort reads when it is first picked: the biggest movers and the
 // busiest contracts lead, but a list by name reads A to Z.
-export const DEFAULT_SORT_DIRECTIONS: Record<InstrumentSort, SortDirection> = {
+export const DEFAULT_SORT_DIRECTIONS = {
   change: "desc",
   volume: "desc",
   name: "asc",
-}
+} satisfies Record<InstrumentSort, SortDirection>
 
 export function isInstrumentSort(value: string): value is InstrumentSort {
   return INSTRUMENT_SORTS.some((sort) => sort === value)
@@ -52,9 +52,10 @@ export interface AppPreferences {
 const RequiredTextSchema = z.string().refine((value) => value.trim().length > 0)
 const ChartIndicatorListSchema = z.preprocess(
   (value) => value === null || value === undefined ? [] : value,
-  z.array(z.unknown()).transform((values) =>
-    values.filter((value): value is ChartIndicator => typeof value === "string" && isChartIndicator(value))
-  ),
+  z.array(z.unknown()).transform((values) => values.flatMap((value): ChartIndicator[] => {
+    const parsed = z.string().safeParse(value)
+    return parsed.success && isChartIndicator(parsed.data) ? [parsed.data] : []
+  })),
 )
 
 /** Full preferences payload accepted from a client before range normalization. */

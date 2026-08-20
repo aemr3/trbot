@@ -1,18 +1,30 @@
 import { describe, expect, test } from "bun:test"
-import type { MarketOverviewDigest } from "@trbot/market/overview.ts"
+import { buildOverviewDigest } from "@trbot/market/overview.ts"
 import { isProtocolError } from "@trbot/protocol/error.ts"
 import type { AiProviderSummary } from "@trbot/protocol/ai.ts"
 import { HttpAiAccount, HttpOverviewGenerator } from "./ai.ts"
-import type { HttpClient } from "./http.ts"
+import { HttpClient } from "./http.ts"
 
-const DIGEST = { mode: "DAILY" } as unknown as MarketOverviewDigest
+const DIGEST = buildOverviewDigest({
+  mode: "DAILY",
+  instrument: {
+    symbol: "ASELS",
+    displayName: "Aselsan",
+    lastPrice: 390,
+    contractSymbol: "F_ASELS0826",
+    contractLastPrice: 394,
+  },
+  range: { start: null, end: null },
+})
 
 /** A client that answers the overview route with exactly these frames. */
 function clientStreaming(frames: unknown[]): HttpClient {
   const body = frames.map((frame) => `${JSON.stringify(frame)}\n`).join("")
-  return {
-    stream: () => Promise.resolve(new Response(body).body as ReadableStream<Uint8Array>),
-  } as unknown as HttpClient
+  return new HttpClient({
+    url: "http://overview.test",
+    token: "test",
+    fetch: () => Promise.resolve(new Response(body)),
+  })
 }
 
 async function collect(frames: unknown[]): Promise<{ text: string; failure: Error | null }> {
@@ -21,7 +33,7 @@ async function collect(frames: unknown[]): Promise<{ text: string; failure: Erro
     .generate(DIGEST, { onDelta: (text) => deltas.push(text) })
     .then(
       () => null,
-      (error: unknown) => error as Error,
+      (cause: unknown) => cause instanceof Error ? cause : new Error(String(cause)),
     )
   return { text: deltas.join(""), failure }
 }
@@ -89,12 +101,24 @@ describe("connecting a provider", () => {
   }
 
   function recordingHttp(posted: { path: string; body: unknown }[]): HttpClient {
-    return {
-      post: (path: string, _schema: unknown, options: { body?: unknown }) => {
-        posted.push({ path, body: options.body })
-        return Promise.resolve(summary)
+    return new HttpClient({
+      url: "http://ai.test",
+      token: "test",
+      fetch: (input, init) => {
+        const body: unknown = init?.body ? JSON.parse(String(init.body)) : null
+        const url = input instanceof Request ? new URL(input.url) : new URL(input)
+        posted.push({ path: url.pathname, body })
+        return Promise.resolve(Response.json(summary))
       },
-    } as unknown as HttpClient
+    })
+  }
+
+  function unreachableHttp(): HttpClient {
+    return new HttpClient({
+      url: "http://ai.test",
+      token: "test",
+      fetch: () => Promise.reject(new Error("must not reach the server")),
+    })
   }
 
   test("hands the server the credential a subscription login produced", async () => {
@@ -207,7 +231,7 @@ describe("connecting a provider", () => {
   test("a trader who answers a prompt with nothing cancels the login", async () => {
     // Answering with nothing means "stop", and must not be sent to the server as a
     // login that half happened.
-    const http = { post: () => Promise.reject(new Error("must not reach the server")) } as unknown as HttpClient
+    const http = unreachableHttp()
     const account = new HttpAiAccount(http, {
       login: async (_providerId, _authType, interaction) => {
         await interaction.prompt({ type: "secret", message: "Enter API key" })
@@ -217,14 +241,14 @@ describe("connecting a provider", () => {
 
     const failure = await account
       .connect("groq", "api_key", { onSecret: async () => "" })
-      .then(() => null, (error: unknown) => error as Error)
+      .then(() => null, (cause: unknown) => cause instanceof Error ? cause : new Error(String(cause)))
     expect(failure?.name).toBe("AbortError")
   })
 
   test("a prompt nothing is listening for cancels rather than hanging", async () => {
     // A flow can ask for something this screen has no field for. Cancelling is the
     // honest outcome; waiting forever would look like a frozen terminal.
-    const http = { post: () => Promise.reject(new Error("must not reach the server")) } as unknown as HttpClient
+    const http = unreachableHttp()
     const account = new HttpAiAccount(http, {
       login: async (_providerId, _authType, interaction) => {
         await interaction.prompt({ type: "secret", message: "Enter API key" })
@@ -234,7 +258,7 @@ describe("connecting a provider", () => {
 
     const failure = await account
       .connect("groq", "api_key")
-      .then(() => null, (error: unknown) => error as Error)
+      .then(() => null, (cause: unknown) => cause instanceof Error ? cause : new Error(String(cause)))
     expect(failure?.name).toBe("AbortError")
   })
 })

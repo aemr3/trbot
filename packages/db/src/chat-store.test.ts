@@ -2,12 +2,38 @@ import { afterEach, describe, expect, test } from "bun:test"
 import {
   chatBlockText,
   chatMessageText,
+  type ChatBlock,
   type ChatMessage,
   type ChatMessageDraft,
   type ChatSession,
 } from "@trbot/chat/session.ts"
 import { DrizzleChatSessionStore } from "./chat-store.ts"
 import { openDatabase, type DatabaseConnection } from "./client.ts"
+import { z } from "zod"
+
+const DraftBlockSchema = z.object({
+  type: z.enum(["text", "thinking", "toolCall", "image"]),
+  text: z.string().optional(),
+  thinking: z.string().optional(),
+  id: z.string().optional(),
+  name: z.string().optional(),
+  arguments: z.unknown().optional(),
+}).loose()
+const DraftRecordSchema = z.object({
+  role: z.enum(["user", "assistant", "toolResult"]),
+  content: z.union([z.string(), z.array(DraftBlockSchema)]),
+  toolName: z.string().optional(),
+  toolCallId: z.string().optional(),
+  isError: z.boolean().optional(),
+  errorMessage: z.string().optional(),
+  responseModel: z.string().optional(),
+  model: z.string().optional(),
+  reasoning: z.string().optional(),
+  elapsedMs: z.number().optional(),
+  thinkingMs: z.number().optional(),
+  timestamp: z.number(),
+}).loose()
+const DraftRecordInputSchema = z.preprocess((value) => value, DraftRecordSchema)
 
 describe("chat session store", () => {
   let connection: DatabaseConnection | null = null
@@ -313,7 +339,8 @@ describe("chat session store", () => {
 
     const active = await chats.context("chat-1")
     expect(active.compaction?.summary).toContain("earlier question")
-    expect(active.records.map((entry) => (entry.record as { content: string }).content)).toEqual(["recent question"])
+    expect(active.records.map((entry) => z.string().parse(DraftRecordInputSchema.parse(entry.record).content)))
+      .toEqual(["recent question"])
     expect((await chats.get("chat-1"))?.messages.map((message) => message.text)).toEqual([
       "old question",
       "old answer",
@@ -337,9 +364,9 @@ describe("chat session store", () => {
     })
     await chats.append("chat-1", draftFor({ role: "user", content: "new", timestamp: 3_000 }))
 
-    expect((await chats.context("chat-1")).records.map((entry) => (
-      entry.record as { content: string }
-    ).content)).toEqual(["new"])
+    expect((await chats.context("chat-1")).records.map((entry) =>
+      z.string().parse(DraftRecordInputSchema.parse(entry.record).content)))
+      .toEqual(["new"])
   })
 
   test("stores one application event key while keeping its model prompt private", async () => {
@@ -400,7 +427,7 @@ describe("chat session store", () => {
       "answer to first",
       "second",
     ])
-    expect((await chats.records("chat-1")).map((record) => (record as { role: string }).role)).toEqual([
+    expect((await chats.records("chat-1")).map((record) => DraftRecordInputSchema.parse(record).role)).toEqual([
       "user",
       "assistant",
     ])
@@ -531,23 +558,25 @@ function session(): ChatSession {
  * Builds the message a client renders beside the harness record it was made from.
  * The controller does this for real; here it only has to be consistent.
  */
-function draftFor(record: unknown, status: ChatMessage["status"] = "COMPLETE"): ChatMessageDraft {
-  const value = record as Record<string, unknown>
+function draftFor(
+  record: z.input<typeof DraftRecordInputSchema>,
+  status: ChatMessage["status"] = "COMPLETE",
+): ChatMessageDraft {
+  const value = DraftRecordInputSchema.parse(record)
   const role = value.role === "user" ? "USER" : value.role === "toolResult" ? "TOOL_RESULT" : "ASSISTANT"
-  const blocks = typeof value.content === "string"
-    ? [chatBlockText(value.content)]
-    : (value.content as { type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: unknown }[])
-      .map((block) => ({
+  const blocks = Array.isArray(value.content)
+    ? value.content.map((block): ChatBlock => ({
         kind: block.type === "thinking"
-          ? ("THINKING" as const)
+          ? "THINKING"
           : block.type === "toolCall"
-            ? ("TOOL_CALL" as const)
-            : ("TEXT" as const),
+            ? "TOOL_CALL"
+            : "TEXT",
         text: block.type === "thinking" ? block.thinking ?? null : block.text ?? null,
         toolName: block.name ?? null,
         toolCallId: block.id ?? null,
         toolArguments: block.arguments ?? null,
       }))
+    : [chatBlockText(value.content)]
 
   return {
     message: {
@@ -556,18 +585,18 @@ function draftFor(record: unknown, status: ChatMessage["status"] = "COMPLETE"): 
       status,
       text: chatMessageText(blocks),
       blocks,
-      toolName: (value.toolName as string | undefined) ?? null,
-      toolCallId: (value.toolCallId as string | undefined) ?? null,
+      toolName: value.toolName ?? null,
+      toolCallId: value.toolCallId ?? null,
       isError: value.isError === true,
-      errorMessage: (value.errorMessage as string | undefined) ?? null,
+      errorMessage: value.errorMessage ?? null,
       usage: null,
-      model: (value.responseModel as string | undefined) ?? (value.model as string | undefined) ?? null,
-      reasoning: (value.reasoning as string | undefined) ?? null,
-      elapsedMs: (value.elapsedMs as number | undefined) ?? null,
-      thinkingMs: (value.thinkingMs as number | undefined) ?? null,
-      createdAt: value.timestamp as number,
+      model: value.responseModel ?? value.model ?? null,
+      reasoning: value.reasoning ?? null,
+      elapsedMs: value.elapsedMs ?? null,
+      thinkingMs: value.thinkingMs ?? null,
+      createdAt: value.timestamp,
     },
-    record,
+    record: value,
   }
 }
 

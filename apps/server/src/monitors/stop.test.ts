@@ -260,10 +260,13 @@ describe("stop controller", () => {
     const controller = new StopController({
       store,
       exits: () => ({
+        async exitAllPositions() {
+          throw new Error("bulk exits are not used by this controller")
+        },
         async exitPosition() {
           throw new Error("The socket connection was closed unexpectedly")
         },
-      }) as unknown as ViopPositionExitSource,
+      } satisfies ViopPositionExitSource),
       isDefiniteRefusal: () => false,
       broadcast: (event) => events.push(event),
       countdownMs: COUNTDOWN_MS,

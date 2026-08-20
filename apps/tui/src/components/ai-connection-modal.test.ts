@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KeyEvent } from "@opentui/core"
+import { keyEvent } from "../key-event.test-fixture.ts"
 import type { AiAccount, AiAuthType, AiLoginOptions, AiProviderSummary } from "@trbot/protocol/ai.ts"
 import { AiConnectionModal } from "./ai-connection-modal.ts"
 
@@ -12,7 +13,7 @@ import { AiConnectionModal } from "./ai-connection-modal.ts"
  * harness upgrade has to work here with no change.
  */
 function key(name: string, sequence?: string): KeyEvent {
-  return { name, sequence: sequence ?? name } as KeyEvent
+  return keyEvent(name, { sequence: sequence ?? name })
 }
 
 function typeText(modal: AiConnectionModal, text: string): void {

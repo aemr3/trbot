@@ -1,26 +1,21 @@
 import { expect, test } from "bun:test"
 import { marketOperations } from "@trbot/api/market.ts"
-import type { ArticlePreview } from "@trbot/api/news.ts"
+import type { ArticlePreview, ArticleVariables } from "@trbot/api/news.ts"
+import { providerApiClient, type ProviderTestRequest } from "@trbot/api/provider-client.test-fixture.ts"
 import { ApiNewsSource } from "./news.ts"
-
-interface Op {
-  name: string
-}
 
 function fakeClient(articles: ArticlePreview[], underlyingUid: string | null = "stock-1") {
   const calls = { getInstrument: 0, articlesV2: 0 }
-  let lastArticlesVars: Record<string, unknown> | undefined
-  const client = {
-    call(op: Op, vars: Record<string, unknown>) {
-      if (op.name === marketOperations.getInstrument.name) {
+  let lastArticlesVars: ProviderTestRequest["variables"] | undefined
+  const client = providerApiClient((request) => {
+      if (request.operationName === marketOperations.getInstrument.name) {
         calls.getInstrument++
-        return Promise.resolve({ instrument: { __typename: "Future", underlyingInstrumentUid: underlyingUid } })
+        return { instrument: { __typename: "Future", underlyingInstrumentUid: underlyingUid } }
       }
       calls.articlesV2++
-      lastArticlesVars = vars
-      return Promise.resolve({ articlesV2: { articles, page: 0, hasMore: false } })
-    },
-  }
+      lastArticlesVars = request.variables
+      return { articlesV2: { articles, page: 0, hasMore: false } }
+  })
   return { client, calls, lastArticlesVars: () => lastArticlesVars }
 }
 
@@ -29,7 +24,7 @@ test("resolves the underlying uid and maps articles", async () => {
     { uid: "a1", type: "MIDAS_NEWS", title: "Headline 1", description: null, publishedAt: "2026-08-08T18:22:45Z" },
     { uid: "a2", type: "MIDAS_NEWS", title: "Headline 2", description: "Body 2", publishedAt: null },
   ])
-  const source = new ApiNewsSource(client as never)
+  const source = new ApiNewsSource(client)
 
   const news = await source.listNews({ instrumentUid: "fut-1" })
 
@@ -44,7 +39,7 @@ test("resolves the underlying uid and maps articles", async () => {
 
 test("caches the underlying uid across calls for the same instrument", async () => {
   const { client, calls } = fakeClient([])
-  const source = new ApiNewsSource(client as never)
+  const source = new ApiNewsSource(client)
 
   await source.listNews({ instrumentUid: "fut-1" })
   await source.listNews({ instrumentUid: "fut-1" })
@@ -55,11 +50,10 @@ test("caches the underlying uid across calls for the same instrument", async () 
 
 test("fetches a full article body via getArticle and converts HTML to text", async () => {
   const html = "<html><body><p>BIST 100 y&uuml;zde 0,14 d&#252;&#351;t&#252;.</p><p>&#304;kinci paragraf.</p></body></html>"
-  const client = {
-    call(op: Op, vars: Record<string, unknown>) {
-      expect(op.name).toBe("article")
-      expect(vars.newsId).toBe("a1")
-      return Promise.resolve({
+  const client = providerApiClient((request) => {
+      expect(request.operationName).toBe("article")
+      expect(request.variables).toMatchObject({ newsId: "a1" } satisfies Partial<ArticleVariables>)
+      return {
         article: {
           uid: "a1",
           title: "Full headline",
@@ -68,10 +62,9 @@ test("fetches a full article body via getArticle and converts HTML to text", asy
           url: "https://www.kap.org.tr/tr/api/BildirimPdf/1643171",
           attachmentUrls: ["https://example.com/ek.pdf"],
         },
-      })
-    },
-  }
-  const source = new ApiNewsSource(client as never)
+      }
+  })
+  const source = new ApiNewsSource(client)
 
   const article = await source.getArticle("a1")
 
@@ -85,7 +78,7 @@ test("fetches a full article body via getArticle and converts HTML to text", asy
 
 test("fetches general news with no instrument (no underlying lookup)", async () => {
   const { client, calls, lastArticlesVars } = fakeClient([])
-  const source = new ApiNewsSource(client as never)
+  const source = new ApiNewsSource(client)
 
   await source.listNews({})
 

@@ -27,7 +27,6 @@ export interface AssetFutureData {
 export interface AssetFutureVariables {
   instrumentId: string
   memberId: string
-  [key: string]: unknown
 }
 
 export interface OrderPreparationData {
@@ -65,7 +64,6 @@ export interface OrderPreparationVariables {
   orderSide: ProviderOrderSide
   orderType: ProviderOrderType
   positionIntent: ProviderPositionIntent
-  [key: string]: unknown
 }
 
 export interface PlaceOrderData {
@@ -108,7 +106,6 @@ export interface PlaceOrderVariables {
   endingDate: null
   investmentType: "FUTURES"
   positionIntent: ProviderPositionIntent
-  [key: string]: unknown
 }
 
 export interface CancelOrderData {
@@ -125,7 +122,6 @@ export interface CancelOrderVariables {
   accountId: string
   orderId: string
   instrumentId: string | null
-  [key: string]: unknown
 }
 
 export const tradingOperations = {

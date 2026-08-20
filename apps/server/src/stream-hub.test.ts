@@ -1,14 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import type { ServerWebSocket } from "bun"
-import type { AuthSession } from "@trbot/auth/session.ts"
-import type { AuthState } from "@trbot/auth/state.ts"
 import type { DepthBook, DepthBookListener, DepthStatusListener, DepthStream } from "@trbot/market/depth.ts"
-import type { EquityQuoteStream } from "@trbot/market/equity-quote-stream.ts"
 import type { ConnectionListener, QuoteStream, QuoteUpdate, QuoteUpdateListener } from "@trbot/market/quote-stream.ts"
-import type { ServerFrame } from "@trbot/protocol/stream.ts"
-import type { AccountLiveUpdate, AccountStream } from "@trbot/trading/account.ts"
-import { ProviderSession, type ProviderSources } from "./session.ts"
-import { newSocketData, StreamHub, type SocketData } from "./stream-hub.ts"
+import { parseServerFrame, type ServerFrame } from "@trbot/protocol/stream.ts"
+import type { AccountLiveUpdate } from "@trbot/trading/account.ts"
+import { providerSources, TestProviderSession } from "./provider.test-fixture.ts"
+import type { ProviderSources } from "./session.ts"
+import { newSocketData, StreamHub, type StreamSocket } from "./stream-hub.ts"
 
 class FakeQuoteStream implements QuoteStream {
   listener: QuoteUpdateListener | null = null
@@ -68,66 +65,46 @@ class FakeDepthFactory {
 const idleStream = {
   subscribe() {},
   onConnectionChange() {},
+  onStatusChange() {},
   start() {},
   stop() {},
   setPendingOrders() {},
 }
 
 function sourcesWith(quotes: FakeQuoteStream, depth: FakeDepthFactory): ProviderSources {
-  return {
+  return providerSources({
     quotes,
-    accountStream: idleStream as unknown as AccountStream,
+    accountStream: idleStream,
     openDepthStream: () => depth.open(),
-    openEquityQuoteStream: () => idleStream as unknown as EquityQuoteStream,
-  } as unknown as ProviderSources
+    openEquityQuoteStream: () => idleStream,
+  })
 }
 
 /** A session already holding the given sources, without touching a provider. */
-function sessionWith(sources: ProviderSources): ProviderSession {
-  const store = {
-    async get(): Promise<AuthState | null> {
-      return null
-    },
-    async latest(): Promise<AuthState | null> {
-      return null
-    },
-    async put(): Promise<void> {},
+function sessionWith(sources: ProviderSources): TestProviderSession {
+  return new TestProviderSession(sources)
+}
+
+class FakeSocket implements StreamSocket {
+  readonly sent: ServerFrame[] = []
+  data = newSocketData()
+
+  constructor(public buffered = 0) {}
+
+  send(payload: string): number {
+    const frame = parseServerFrame(payload)
+    if (!frame) throw new Error("The stream hub emitted an invalid server frame")
+    this.sent.push(frame)
+    return payload.length
   }
-  const session = new ProviderSession({
-    openAuthSession: async (): Promise<AuthSession> => ({ store, close() {} }),
-    credentials: null,
-  })
-  ;(session as unknown as { current: ProviderSources }).current = sources
-  return session
+
+  getBufferedAmount(): number {
+    return this.buffered
+  }
 }
 
-interface FakeSocket {
-  sent: ServerFrame[]
-  buffered: number
-  data: SocketData
-}
-
-function socket(buffered = 0): FakeSocket & ServerWebSocket<SocketData> {
-  const fake: FakeSocket = { sent: [], buffered, data: newSocketData() }
-  return {
-    ...fake,
-    send(payload: string) {
-      fake.sent.push(JSON.parse(payload) as ServerFrame)
-      return payload.length
-    },
-    getBufferedAmount() {
-      return fake.buffered
-    },
-    get sent() {
-      return fake.sent
-    },
-    get data() {
-      return fake.data
-    },
-    set buffered(value: number) {
-      fake.buffered = value
-    },
-  } as unknown as FakeSocket & ServerWebSocket<SocketData>
+function socket(buffered = 0): FakeSocket {
+  return new FakeSocket(buffered)
 }
 
 function quote(symbol: string, lastPrice = 100): QuoteUpdate {
@@ -135,7 +112,17 @@ function quote(symbol: string, lastPrice = 100): QuoteUpdate {
 }
 
 function book(symbol: string): DepthBook {
-  return { symbol, bids: [], asks: [], buyLots: null, sellLots: null } as unknown as DepthBook
+  return {
+    symbol,
+    bids: [],
+    asks: [],
+    buyLots: null,
+    sellLots: null,
+    trades: [],
+    marketClosed: false,
+    maintenance: false,
+    infoMessage: null,
+  }
 }
 
 describe("stream hub", () => {
@@ -479,10 +466,8 @@ describe("the orders being followed", () => {
  * its listeners told. `session.test.ts` covers the real adoption raising that
  * notification; this drives what the hub does with it.
  */
-function adoptSources(session: ProviderSession, sources: ProviderSources): void {
-  const internals = session as unknown as { current: ProviderSources; sessionListeners: (() => void)[] }
-  internals.current = sources
-  for (const listener of internals.sessionListeners) listener()
+function adoptSources(session: TestProviderSession, sources: ProviderSources): void {
+  session.setSources(sources)
 }
 
 class FakeAccountStream {
@@ -506,10 +491,10 @@ class FakeAccountStream {
 }
 
 function sourcesWithAccount(account: FakeAccountStream): ProviderSources {
-  return {
+  return providerSources({
     quotes: new FakeQuoteStream(),
-    accountStream: account as unknown as AccountStream,
+    accountStream: account,
     openDepthStream: () => idleStream,
-    openEquityQuoteStream: () => idleStream as unknown as EquityQuoteStream,
-  } as unknown as ProviderSources
+    openEquityQuoteStream: () => idleStream,
+  })
 }

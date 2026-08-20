@@ -11,7 +11,8 @@
     "@trbot/member": "workspace:*",
     "@trbot/preferences": "workspace:*",
     "@trbot/protocol": "workspace:*",
-    "@trbot/trading": "workspace:*"
+    "@trbot/trading": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@trbot/tsconfig": "workspace:*"

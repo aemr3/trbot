@@ -36,7 +36,10 @@ import {
 } from "@trbot/preferences/app.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import { isPortfolioRange, type PortfolioRange } from "@trbot/trading/account.ts"
-import type { ZodType } from "zod"
+import type { JsonObject } from "./request.ts"
+import { z, type ZodType } from "zod"
+
+const RequestValueSchema = z.preprocess((value) => value, z.json())
 
 function invalid(field: string, detail: string): ProtocolError {
   return new ProtocolError("invalid_request", `"${field}" ${detail}`)
@@ -51,7 +54,7 @@ function invalidSchema(
   return invalid(path || fallbackField, detail)
 }
 
-export function payload<T>(value: unknown, schema: ZodType<T>, name = "request"): T {
+export function payload<T>(value: z.input<typeof RequestValueSchema>, schema: ZodType<T>, name = "request"): T {
   const parsed = schema.safeParse(value)
   if (!parsed.success) throw invalidSchema(parsed.error, name, "is not valid")
   return parsed.data
@@ -69,15 +72,17 @@ export function chartTarget(value: string | null): CandleChartTarget | undefined
   return value
 }
 
+export interface CandleSelection {
+  range: CandleRange
+  interval: CandleInterval
+}
+
 /**
  * Candle requests carry a range and an interval that must go together — the
  * provider rejects a mismatched pair, so it is caught here with a clearer
  * message than the upstream one.
  */
-export function candleSelection(rangeValue: string | null, intervalValue: string | null): {
-  range: CandleRange
-  interval: CandleInterval
-} {
+export function candleSelection(rangeValue: string | null, intervalValue: string | null): CandleSelection {
   if (!rangeValue || !isCandleRange(rangeValue)) throw invalid("range", "is not a known candle range")
   if (!intervalValue || !isCandleInterval(intervalValue)) throw invalid("interval", "is not a known candle interval")
   if (!DEFAULT_INTERVALS_BY_RANGE[rangeValue].includes(intervalValue)) {
@@ -87,7 +92,7 @@ export function candleSelection(rangeValue: string | null, intervalValue: string
 }
 
 /** A complete client-built digest, checked before it reaches the model or storage. */
-export function overviewDigest(value: unknown): MarketOverviewDigest {
+export function overviewDigest(value: z.input<typeof RequestValueSchema>): MarketOverviewDigest {
   const parsed = MarketOverviewDigestSchema.safeParse(value)
   if (!parsed.success) throw invalidSchema(parsed.error, "digest", "is not a valid market overview")
   return parsed.data
@@ -117,7 +122,7 @@ function checkDraft(problem: string | null): void {
  * that can send an exit order, and the server creates the identifier and the
  * timestamps itself so its own clock decides when a rule was made.
  */
-export function stopRuleDraft(body: Record<string, unknown>): StopRuleDraft {
+export function stopRuleDraft(body: JsonObject): StopRuleDraft {
   const parsed = StopRuleDraftSchema.safeParse(body)
   if (!parsed.success) throw invalidSchema(parsed.error, "rule", "is not a valid stop rule")
   const draft = parsed.data
@@ -125,7 +130,7 @@ export function stopRuleDraft(body: Record<string, unknown>): StopRuleDraft {
   return draft
 }
 
-export function priceAlertDraft(body: Record<string, unknown>): PriceAlertDraft {
+export function priceAlertDraft(body: JsonObject): PriceAlertDraft {
   const parsed = UserPriceAlertDraftSchema.safeParse(body)
   if (!parsed.success) throw invalidSchema(parsed.error, "alert", "is not a valid price alert")
   const draft = parsed.data
@@ -138,7 +143,7 @@ export function priceAlertDraft(body: Record<string, unknown>): PriceAlertDraft 
  * defaults when it reads something it does not recognise, so an unchecked write
  * would not fail — it would quietly reset the trader's settings on next launch.
  */
-export function appPreferences(body: Record<string, unknown>): AppPreferences {
+export function appPreferences(body: JsonObject): AppPreferences {
   const parsed = AppPreferencesSchema.safeParse(body)
   if (!parsed.success) {
     throw invalidSchema(parsed.error, "preferences", "is not a valid preferences payload")
@@ -146,14 +151,14 @@ export function appPreferences(body: Record<string, unknown>): AppPreferences {
   return normalizeAppPreferences(parsed.data)
 }
 
-export function overviewSnapshot(body: Record<string, unknown>): StoredOverviewSnapshot {
+export function overviewSnapshot(body: JsonObject): StoredOverviewSnapshot {
   const snapshot = payload(body, StoredOverviewSnapshotSchema, "snapshot")
   if (snapshot.mode !== snapshot.digest.mode) throw invalid("mode", "must match digest.mode")
   return snapshot
 }
 
 /** Which model answers. The ids stay free-form: they are the harness's vocabulary. */
-export function aiModelChoice(body: Record<string, unknown>): AiModelChoice {
+export function aiModelChoice(body: JsonObject): AiModelChoice {
   const parsed = AiModelChoiceSchema.safeParse({ ...body, reasoning: body.reasoning ?? null })
   if (!parsed.success) throw invalidSchema(parsed.error, "model", "is not a valid model choice")
   return parsed.data
@@ -165,7 +170,7 @@ export function aiModelChoice(body: Record<string, unknown>): AiModelChoice {
  * Null is a real value here — it is how a trader clears a choice — so it is accepted
  * rather than treated as a missing field.
  */
-export function aiPreferences(body: Record<string, unknown>): AiPreferences {
+export function aiPreferences(body: JsonObject): AiPreferences {
   const parsed = AiPreferencesSchema.safeParse({
     overview: body.overview ?? null,
     chat: body.chat ?? null,

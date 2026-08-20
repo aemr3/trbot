@@ -1,5 +1,9 @@
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai"
 import type { AiCredentialRecord, AiCredentialStore } from "./credential-store.ts"
+import { z } from "zod"
+
+const CredentialTagSchema = z.object({ type: z.enum(["oauth", "api_key"]) }).loose()
+export const CredentialInputSchema = z.preprocess((value) => value, CredentialTagSchema)
 
 interface StoredCredentialsOptions {
   now?: () => number
@@ -104,8 +108,10 @@ export class StoredCredentials implements CredentialStore {
  * a build that has learnt a new field must not have it validated away by an older
  * idea of the shape.
  */
-export function asCredential(value: unknown): Credential | undefined {
-  if (typeof value !== "object" || value === null) return undefined
-  const type = (value as { type?: unknown }).type
-  return type === "oauth" || type === "api_key" ? (value as Credential) : undefined
+export function asCredential(value: z.input<typeof CredentialInputSchema>): Credential | undefined {
+  const parsed = CredentialInputSchema.safeParse(value)
+  if (!parsed.success) return undefined
+  // SAFETY: The harness explicitly owns credential fields beyond the validated
+  // discriminator and accepts forward-compatible provider-specific additions.
+  return parsed.data as Credential
 }

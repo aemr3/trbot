@@ -27,7 +27,11 @@ const INTERVAL_BY_DURATION_MS = new Map<number, CandleInterval>([
   [30 * 24 * 60 * 60_000, "MONTH_1"],
 ])
 
-const INDEX_SYMBOL_BY_TARGET: Partial<Record<CandleChartTarget, string>> = {
+interface IndexSymbols {
+  [target: string]: string | undefined
+}
+
+const INDEX_SYMBOL_BY_TARGET: IndexSymbols = {
   BIST_100: "XU100",
   BIST_30: "XU030",
 }
@@ -152,5 +156,5 @@ function toCandle(raw: {
 }
 
 function finiteNumber(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null
+  return value !== null && value !== undefined && Number.isFinite(value) ? value : null
 }

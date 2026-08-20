@@ -20,7 +20,7 @@ const ERROR_COLOR = "#ff6b6b"
 const FOCUSED_HEADER = "#ffffff"
 const UNFOCUSED_HEADER = "#666666"
 
-const MODE_LABELS: Record<OverviewMode, string> = { INTRADAY: "Intraday", DAILY: "Daily" }
+const MODE_LABELS = { INTRADAY: "Intraday", DAILY: "Daily" } satisfies Record<OverviewMode, string>
 
 type PanelState = "locked" | "disconnected" | "idle" | "collecting" | "streaming" | "ready" | "error"
 

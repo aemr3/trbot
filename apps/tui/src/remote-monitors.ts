@@ -8,6 +8,8 @@ import type { StopOutcome } from "@trbot/protocol/stream.ts"
 import type { StopRuleView, StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
 import type { StopRule, StopRuleDraft, StopRuleStatus } from "@trbot/trading/stop.ts"
 
+type AlertDecisionClient = Pick<MonitorClient, "decideAlert">
+
 /**
  * The terminal's view of the stop rules the server evaluates.
  *
@@ -130,7 +132,7 @@ export class RemoteAlerts {
 
   constructor(
     private readonly alerts: AlertClient,
-    private readonly monitors: MonitorClient,
+    private readonly monitors: AlertDecisionClient,
   ) {}
 
   acceptViews(views: PriceAlertView[]): void {

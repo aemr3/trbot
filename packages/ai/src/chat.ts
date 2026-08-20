@@ -152,8 +152,9 @@ export class ChatAgent {
     const context: Context = {
       systemPrompt: this.options.systemPrompt ?? CHAT_SYSTEM_PROMPT,
       messages: [...turn.history],
-      ...(tools && tools.list().length > 0 ? { tools: tools.list() } : {}),
     }
+    const availableTools = tools?.list() ?? []
+    if (availableTools.length > 0) context.tools = availableTools
 
     const asked: Message = { role: "user", content: turn.prompt, timestamp: this.now() }
     context.messages.push(asked)
@@ -212,10 +213,10 @@ export class ChatAgent {
             .filter((block) => block.kind === "TEXT")
             .map((block) => ({ type: "text" as const, text: block.text ?? "" })),
           details: outcome.details,
-          ...(outcome.usage ? { usage: harnessUsage(outcome.usage) } : {}),
           isError: outcome.isError,
           timestamp: this.now(),
         }
+        if (outcome.usage) result.usage = harnessUsage(outcome.usage)
         context.messages.push(result)
         await turn.events.onMessage(toolResultDraft(result, outcome.blocks, outcome.usage ?? null))
       }
@@ -235,12 +236,10 @@ export class ChatAgent {
     const started = this.now()
     let thought = false
     let thinkingMs: number | null = null
-    const events = this.options.models.stream(turn.model, context, {
-      signal: turn.signal,
-      // Named for what the provider calls it; a provider that does not know the
-      // option ignores it, and the harness maps a level the model renames.
-      ...(turn.reasoningEffort ? { reasoningEffort: turn.reasoningEffort } : {}),
-    })
+    const streamOptions = turn.reasoningEffort
+      ? { signal: turn.signal, reasoningEffort: turn.reasoningEffort }
+      : { signal: turn.signal }
+    const events = this.options.models.stream(turn.model, context, streamOptions)
     for await (const event of events) {
       if (event.type === "text_delta") {
         // The first word is where thinking ended, whatever the model does afterwards.

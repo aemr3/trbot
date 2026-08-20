@@ -2,6 +2,7 @@ import { constants, generateKeyPairSync, randomUUID, sign } from "node:crypto"
 import type { AuthState } from "@trbot/auth/state.ts"
 import type { AuthStore } from "@trbot/auth/store.ts"
 import { authOperations, type GraphqlOperation } from "./graphql.ts"
+import { z } from "zod"
 import type { HttpResponse, SseFrame, Transport } from "./transport.ts"
 
 const AUTH_ERROR_CODES = new Set([9002, 9008, 9010])
@@ -26,6 +27,15 @@ export interface ApiSession {
   accessToken: string
   refreshToken: string | null
   memberUid: string
+}
+
+interface LoginCredentials {
+  username: string
+  password: string
+}
+
+interface ApiRequestHeaders {
+  [name: string]: string
 }
 
 export class OtpRequiredError extends Error {
@@ -74,11 +84,11 @@ class GraphqlError extends Error {
   ) {
     super(`API operation ${operationName} failed: ${JSON.stringify(errors)}`)
     this.name = "GraphqlError"
-    this.codes = errors.flatMap((error) => {
-      if (!error || typeof error !== "object") return []
-      const code = (error as { extensions?: { code?: unknown } }).extensions?.code
-      const numericCode = typeof code === "string" ? Number(code) : code
-      return typeof numericCode === "number" && Number.isFinite(numericCode) ? [numericCode] : []
+    this.codes = errors.flatMap((entry) => {
+      const parsed = GraphqlErrorCodeSchema.safeParse(entry)
+      if (!parsed.success || parsed.data.extensions?.code === undefined) return []
+      const numericCode = Number(parsed.data.extensions.code)
+      return Number.isFinite(numericCode) ? [numericCode] : []
     })
   }
 }
@@ -126,7 +136,7 @@ export class ApiClient {
     })
   }
 
-  async call<TData, TVariables extends Record<string, unknown>>(
+  async call<TData, TVariables extends object>(
     operation: GraphqlOperation<TData, TVariables>,
     variables: TVariables,
     options: { signal?: AbortSignal } = {},
@@ -324,7 +334,7 @@ export class ApiClient {
     return Boolean(this.options.username && this.options.password)
   }
 
-  private credentials(): { username: string; password: string } {
+  private credentials(): LoginCredentials {
     const { username, password } = this.options
     if (!username || !password) throw new CredentialsRequiredError()
     return {
@@ -333,7 +343,7 @@ export class ApiClient {
     }
   }
 
-  private async request<TData, TVariables extends Record<string, unknown>>(
+  private async request<TData, TVariables extends object>(
     operation: GraphqlOperation<TData, TVariables>,
     variables: TVariables,
     accessToken?: string,
@@ -343,24 +353,25 @@ export class ApiClient {
     const checksum = new Bun.CryptoHasher("sha256")
       .update(`${operation.operationId}:${timestamp}:${CHECKSUM_SECRET}`)
       .digest("hex")
+    const headers: ApiRequestHeaders = {
+      accept: "multipart/mixed;deferSpec=20220824, application/graphql-response+json, application/json",
+      "accept-language": "tr",
+      "apollographql-client-name": "Midas",
+      "apollographql-client-version": "v3.2.1",
+      "content-type": "application/json",
+      "user-agent": USER_AGENT,
+      "x-midas-app-id": "main",
+      "x-version": "2",
+      "x-user-agent-uid": (await this.loadOrCreateState()).userAgentUid,
+      "x-apollo-operation-name": operation.name,
+      "x-apollo-operation-id": operation.operationId,
+      "x-timestamp": timestamp,
+      "x-api-checksum": checksum,
+    }
+    if (accessToken) headers.authorization = `Bearer ${accessToken}`
     const response = await this.options.transport.request({
       url: `${API_URL}/router-graphql`,
-      headers: {
-        accept: "multipart/mixed;deferSpec=20220824, application/graphql-response+json, application/json",
-        "accept-language": "tr",
-        "apollographql-client-name": "Midas",
-        "apollographql-client-version": "v3.2.1",
-        "content-type": "application/json",
-        "user-agent": USER_AGENT,
-        "x-midas-app-id": "main",
-        "x-version": "2",
-        "x-user-agent-uid": (await this.loadOrCreateState()).userAgentUid,
-        "x-apollo-operation-name": operation.name,
-        "x-apollo-operation-id": operation.operationId,
-        "x-timestamp": timestamp,
-        "x-api-checksum": checksum,
-        ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
-      },
+      headers,
       body: JSON.stringify({
         operationName: operation.name,
         query: operation.document,
@@ -374,14 +385,14 @@ export class ApiClient {
   private runAuthentication(work: () => Promise<ApiSession>): Promise<ApiSession> {
     if (this.authenticationInFlight) return this.authenticationInFlight
     this.authenticationInFlight = work()
-      .catch((error: unknown) => {
-        if (error instanceof ApiHttpError && error.status === 429) {
+      .catch((cause: unknown) => {
+        if (cause instanceof ApiHttpError && cause.status === 429) {
           this.authenticationRateLimit = {
-            until: this.now() + (error.retryAfterMs ?? DEFAULT_AUTH_RATE_LIMIT_MS),
-            operationName: error.operationName,
+            until: this.now() + (cause.retryAfterMs ?? DEFAULT_AUTH_RATE_LIMIT_MS),
+            operationName: cause.operationName,
           }
         }
-        throw error
+        throw cause
       })
       .finally(() => {
         this.authenticationInFlight = null
@@ -401,20 +412,32 @@ export class ApiClient {
   }
 }
 
+const GraphqlErrorCodeSchema = z.object({
+  extensions: z.object({ code: z.union([z.number(), z.string()]).optional() }).optional(),
+}).loose()
+
+const GraphqlResponseEnvelopeSchema = z.object({
+  data: z.json().optional(),
+  errors: z.array(z.json()).optional(),
+})
+
 function parseResponse<TData>(operationName: string, response: HttpResponse): TData {
   if (response.status < 200 || response.status >= 300) {
     throw new ApiHttpError(response.status, response.body, response.retryAfterMs, operationName)
   }
 
-  let parsed: { data?: TData; errors?: unknown[] }
+  let parsed: z.output<typeof GraphqlResponseEnvelopeSchema>
   try {
-    parsed = JSON.parse(response.body) as typeof parsed
-  } catch (error) {
-    throw new Error(`API operation ${operationName} returned invalid JSON`, { cause: error })
+    parsed = GraphqlResponseEnvelopeSchema.parse(JSON.parse(response.body))
+  } catch (cause) {
+    throw new Error(`API operation ${operationName} returned invalid JSON`, { cause })
   }
   if (parsed.errors?.length) throw new GraphqlError(operationName, parsed.errors)
   if (parsed.data === undefined) throw new Error(`API operation ${operationName} returned no data`)
-  return parsed.data
+  // SAFETY: The persisted GraphQL document fixes TData for this operation; the
+  // provider envelope has been decoded and the operation-specific caller owns
+  // the tolerant normalization of its external fields.
+  return parsed.data as TData
 }
 
 // Symbols are provider-safe (`F_TUPRS0826`) and the stream expects the comma
@@ -425,15 +448,15 @@ function buildStreamUrl(base: string, query?: Record<string, string>): string {
   return pairs.length > 0 ? `${base}?${pairs.join("&")}` : base
 }
 
-export function requiresAuthentication(error: unknown): boolean {
-  return error instanceof AuthenticationError
-    || error instanceof OtpRequiredError
-    || isApiAuthenticationError(error)
+export function requiresAuthentication(cause: unknown): boolean {
+  return cause instanceof AuthenticationError
+    || cause instanceof OtpRequiredError
+    || isApiAuthenticationError(cause)
 }
 
-function isApiAuthenticationError(error: unknown): boolean {
-  if (error instanceof ApiHttpError) return error.status === 401 || error.status === 403
-  return error instanceof GraphqlError && error.codes.some((code) => AUTH_ERROR_CODES.has(code))
+function isApiAuthenticationError(cause: unknown): boolean {
+  if (cause instanceof ApiHttpError) return cause.status === 401 || cause.status === 403
+  return cause instanceof GraphqlError && cause.codes.some((code) => AUTH_ERROR_CODES.has(code))
 }
 
 function hasUsableAccessToken(state: AuthState, now: number): state is AuthState & { accessToken: string } {
@@ -454,8 +477,10 @@ function accessTokenExpiresAt(accessToken: string): number | null {
   const payload = accessToken.split(".")[1]
   if (!payload) return null
   try {
-    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { exp?: unknown }
-    return typeof claims.exp === "number" ? claims.exp * 1000 : null
+    const claims = z.object({ exp: z.number().optional() }).parse(
+      JSON.parse(Buffer.from(payload, "base64url").toString("utf8")),
+    )
+    return claims.exp === undefined ? null : claims.exp * 1000
   } catch {
     return null
   }

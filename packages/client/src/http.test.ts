@@ -15,7 +15,7 @@ describe("HTTP response validation", () => {
     server = Bun.serve({ port: 0, fetch: () => Response.json({ authenticated: "yes" }) })
     const client = new HttpClient({ url: `http://127.0.0.1:${server.port}`, token: "test" })
 
-    const error = await client.get("/session", SessionStateSchema).catch((caught: unknown) => caught)
+    const error = await client.get("/session", SessionStateSchema).catch((cause: unknown) => cause)
 
     expect(isProtocolError(error) && error.code).toBe("internal")
     expect(isProtocolError(error) && error.message).toContain("invalid response")
@@ -25,7 +25,7 @@ describe("HTTP response validation", () => {
     server = Bun.serve({ port: 0, fetch: () => new Response("not json") })
     const client = new HttpClient({ url: `http://127.0.0.1:${server.port}`, token: "test" })
 
-    const error = await client.get("/session", SessionStateSchema).catch((caught: unknown) => caught)
+    const error = await client.get("/session", SessionStateSchema).catch((cause: unknown) => cause)
 
     expect(isProtocolError(error) && error.code).toBe("internal")
     expect(isProtocolError(error) && error.message).toContain("invalid JSON")

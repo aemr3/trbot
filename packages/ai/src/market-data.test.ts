@@ -1,11 +1,22 @@
 import { expect, test } from "bun:test"
+import type { ToolCall } from "@earendil-works/pi-ai"
 import { FUTURES_INTERVALS_BY_RANGE, type CandleSeries } from "@trbot/market/candle.ts"
 import type { DepthBook, DepthBookListener, DepthStatusListener, DepthStream } from "@trbot/market/depth.ts"
 import type { EquityQuoteListener, EquityQuoteStream } from "@trbot/market/equity-quote-stream.ts"
-import type { ViopInstrument } from "@trbot/market/instrument.ts"
+import { ViopInstrumentSchema, type ViopInstrument } from "@trbot/market/instrument.ts"
 import { memberFeatureSet } from "@trbot/member/features.ts"
 import { marketDataTools, type MarketDataSources, type MarketDataToolClients } from "./market-data.ts"
 import { ChatTools } from "./tool.ts"
+import { z } from "zod"
+import type { BrokerageDistributionRequest } from "@trbot/market/brokerage.ts"
+import type { SettlementRequest } from "@trbot/market/settlement.ts"
+
+const ModelDataSchema = z.json()
+const CandleResultSchema = z.object({
+  totalCandles: z.number(),
+  candles: z.array(z.object({ close: z.number() })),
+})
+const InstrumentResultSchema = z.object({ instruments: z.array(ViopInstrumentSchema) })
 
 const NOW = 1_786_000_000_000
 const ASELS: ViopInstrument = {
@@ -68,11 +79,12 @@ class UnavailableEquityQuoteStream implements EquityQuoteStream {
 function harness(patch: Partial<MarketDataSources> = {}) {
   const depth = new FakeDepthStream(depthBook())
   const equity = new FakeEquityQuoteStream()
-  const calls = {
-    brokerage: [] as unknown[],
-    settlement: [] as unknown[],
-    candles: [] as Array<{ instrumentUid: string; target: string | undefined }>,
+  interface MarketCalls {
+    brokerage: BrokerageDistributionRequest[]
+    settlement: SettlementRequest[]
+    candles: Array<{ instrumentUid: string; target: string | undefined }>
   }
+  const calls: MarketCalls = { brokerage: [], settlement: [], candles: [] }
   const sources: MarketDataSources = {
     instruments: {
       listInstruments: async () => [ASELS, THYAO],
@@ -334,14 +346,8 @@ test("returns every candle by default and optionally limits the result", async (
     interval: "HOUR_1",
     target: "UNDERLYING",
   } as const
-  const complete = modelData(await call(tools, "get_candles", request)) as {
-    totalCandles: number
-    candles: Array<{ close: number }>
-  }
-  const limited = modelData(await call(tools, "get_candles", { ...request, limit: 2 })) as {
-    totalCandles: number
-    candles: Array<{ close: number }>
-  }
+  const complete = CandleResultSchema.parse(modelData(await call(tools, "get_candles", request)))
+  const limited = CandleResultSchema.parse(modelData(await call(tools, "get_candles", { ...request, limit: 2 })))
 
   expect(complete.totalCandles).toBe(4)
   expect(complete.candles.map((candle) => candle.close)).toEqual([400, 401, 402, 403])
@@ -492,16 +498,16 @@ test("explains how to choose settlement dates before requesting lot changes", as
   expect(testHarness.calls.settlement).toEqual([])
 })
 
-async function call(tools: ChatTools, name: string, args: Record<string, unknown>) {
+async function call(tools: ChatTools, name: string, args: ToolCall["arguments"]) {
   return tools.call({ type: "toolCall", id: `${name}-call`, name, arguments: args }, {})
 }
 
-function modelData(outcome: Awaited<ReturnType<typeof call>>): unknown {
-  return JSON.parse(outcome.modelBlocks?.[0]?.text ?? "null") as unknown
+function modelData(outcome: Awaited<ReturnType<typeof call>>): z.output<typeof ModelDataSchema> {
+  return ModelDataSchema.parse(JSON.parse(outcome.modelBlocks?.[0]?.text ?? "null"))
 }
 
 function instrumentSymbols(outcome: Awaited<ReturnType<typeof call>>): string[] {
-  const data = modelData(outcome) as { instruments: ViopInstrument[] }
+  const data = InstrumentResultSchema.parse(modelData(outcome))
   return data.instruments.map((instrument) => instrument.symbol)
 }
 

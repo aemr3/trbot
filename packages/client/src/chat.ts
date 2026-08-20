@@ -148,7 +148,7 @@ export interface ChatDelta {
 export class ChatClient {
   private readonly seqByRun = new Map<string, number>()
 
-  constructor(connection: StreamConnection, events: ChatEvents) {
+  constructor(connection: Pick<StreamConnection, "on">, events: ChatEvents) {
     connection.on((frame) => {
       switch (frame.type) {
         case "chatSessions":
@@ -167,11 +167,11 @@ export class ChatClient {
             events.onResync?.(frame.sessionId)
             return
           }
-          events.onDelta?.(frame.sessionId, frame.runId, {
-            ...(frame.text !== undefined ? { text: frame.text } : {}),
-            ...(frame.reasoning !== undefined ? { reasoning: frame.reasoning } : {}),
-            ...(frame.toolName !== undefined ? { toolName: frame.toolName } : {}),
-          })
+          const delta: ChatDelta = {}
+          if (frame.text !== undefined) delta.text = frame.text
+          if (frame.reasoning !== undefined) delta.reasoning = frame.reasoning
+          if (frame.toolName !== undefined) delta.toolName = frame.toolName
+          events.onDelta?.(frame.sessionId, frame.runId, delta)
           return
         }
         case "chatRun":

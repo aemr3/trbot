@@ -3,7 +3,7 @@ import { parseFuturePriceUpdate, VIOP_PRICE_STREAM_EVENT, VIOP_PRICE_STREAM_PATH
 import type { ConnectionListener, QuoteStream, QuoteUpdateListener } from "@trbot/market/quote-stream.ts"
 
 export interface ApiQuoteStreamOptions {
-  onError?: (error: unknown) => void
+  onError?: (cause: unknown) => void
   reconnectDelaysMs?: number[]
 }
 

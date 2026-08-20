@@ -141,11 +141,11 @@ const OVERVIEW_DAILY: [CandleRange, CandleInterval] = ["YEAR", "DAY_1"]
 const DEPTH_LAYOUT_WIDTH = 190
 // How often close-based and ATR stop rules re-read their candles. Anything
 // finer just re-reads the same forming candle.
-const SORT_LABELS: Record<InstrumentSort, string> = { change: "Change", volume: "Volume", name: "Name" }
+const SORT_LABELS = { change: "Change", volume: "Volume", name: "Name" } satisfies Record<InstrumentSort, string>
 const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
 type DestructiveAction = "cancel-orders" | "exit-positions" | "delete-stop" | "delete-alert"
-const NEWS_FEED_LABELS: Record<NewsFeed, string> = { instrument: "Stock", index: "Index" }
+const NEWS_FEED_LABELS = { instrument: "Stock", index: "Index" } satisfies Record<NewsFeed, string>
 const TRADE_HINT = "B/S trade · C chat · L logs · M overview model · / ticker · ? help · Ctrl+C quit"
 const TRADE_SHORTCUTS: ShortcutHelpSection[] = [
   {
@@ -1540,13 +1540,13 @@ export class TradeScreen {
       held: this.pendingStopHeld,
       onHoldChange: (held) => {
         const decision = held ? this.stopMonitor?.hold(event.rule.id) : this.stopMonitor?.release(event.rule.id)
-        void decision?.catch((error: unknown) => {
+        void decision?.catch((cause: unknown) => {
           if (this.destroyed) return
           // The clock the trader sees is now not the clock the server is
           // running, which they need to know before it runs out.
-          this.reportError("Stop decision", error)
+          this.reportError("Stop decision", cause)
           this.showHintStatus(
-            `Could not ${held ? "hold" : "release"} the ${event.rule.displayName} stop: ${errorMessage(error)}`,
+            `Could not ${held ? "hold" : "release"} the ${event.rule.displayName} stop: ${errorMessage(cause)}`,
             "#ff6b6b",
             6_000,
           )
@@ -1967,7 +1967,7 @@ export class TradeScreen {
       // failed write only costs the next launch its head start.
       void this.options.overviewSnapshots
         ?.put({ instrumentUid: instrument.uid, mode, ...snapshot })
-        .catch((error: unknown) => this.reportError("AI overview cache", error))
+        .catch((cause: unknown) => this.reportError("AI overview cache", cause))
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.overviewRequest !== request || isAbortError(error)) return
       if (this.reportError("AI overview", error)) return
@@ -2334,8 +2334,8 @@ export class TradeScreen {
     }
   }
 
-  private notifyIfSessionExpired(error: unknown): boolean {
-    if (!requiresAuthentication(error)) return false
+  private notifyIfSessionExpired(cause: unknown): boolean {
+    if (!requiresAuthentication(cause)) return false
     if (!this.sessionExpiredNotified) {
       this.sessionExpiredNotified = true
       this.options.onSessionExpired?.()
@@ -2343,9 +2343,9 @@ export class TradeScreen {
     return true
   }
 
-  private reportError(scope: string, error: unknown): boolean {
-    this.options.logs?.error(scope, error)
-    return this.notifyIfSessionExpired(error)
+  private reportError(scope: string, cause: unknown): boolean {
+    this.options.logs?.error(scope, cause)
+    return this.notifyIfSessionExpired(cause)
   }
 
   private closeArticle(): void {
@@ -2660,10 +2660,10 @@ function tickerSearchScore(instrument: ViopInstrument, query: string): number | 
   return values.some((value) => value.includes(query)) ? 2 : null
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError"
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === "AbortError"
 }

@@ -33,7 +33,7 @@ const OVERVIEW_PROMPT_BASE = [
   "saying to stand aside and what would have to happen to make a trade.",
 ].join(" ")
 
-const OVERVIEW_PROMPT_BY_MODE: Record<OverviewMode, string> = {
+const OVERVIEW_PROMPT_BY_MODE = {
   INTRADAY: [
     "This is the intraday view: the live order book, the session's trade tape grouped by house,",
     "the range's trade-flow distribution with each house's volume-weighted average price, session",
@@ -51,7 +51,7 @@ const OVERVIEW_PROMPT_BY_MODE: Record<OverviewMode, string> = {
     "register is churn, custody growth with quiet flow is accumulation.",
     "The idea must be a swing idea on the daily timeframe, at levels from the daily candles.",
   ].join(" "),
-}
+} satisfies Record<OverviewMode, string>
 
 export function overviewSystemPrompt(mode: OverviewMode): string {
   return `${OVERVIEW_PROMPT_BASE} ${OVERVIEW_PROMPT_BY_MODE[mode]}`
@@ -80,18 +80,16 @@ export class ModelOverviewGenerator implements OverviewGenerator {
   ) {}
 
   async generate(digest: MarketOverviewDigest, options: OverviewGenerateOptions): Promise<void> {
+    const streamOptions = this.options.reasoningEffort
+      ? { signal: options.signal, reasoningEffort: this.options.reasoningEffort }
+      : { signal: options.signal }
     const events = this.models.stream(
       this.model,
       {
         systemPrompt: overviewSystemPrompt(digest.mode),
         messages: [{ role: "user", content: overviewPrompt(digest), timestamp: Date.now() }],
       },
-      {
-        signal: options.signal,
-        // Named for what the provider calls it. Providers that do not know the
-        // option ignore it, which is what lets the model stay configurable.
-        ...(this.options.reasoningEffort ? { reasoningEffort: this.options.reasoningEffort } : {}),
-      },
+      streamOptions,
     )
 
     // Only text reaches the trader; the model's reasoning is its own working.

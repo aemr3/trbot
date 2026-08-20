@@ -226,7 +226,8 @@ export class AiConnectionModal {
 
   private async chooseAuthType(provider: AiProviderSummary): Promise<AiAuthType> {
     const [only, second] = provider.authTypes
-    if (!second) return only as AiAuthType
+    if (!only) throw new Error(`${provider.name} has no supported sign-in method`)
+    if (!second) return only
     const chosen = await this.askSelect(`How do you want to connect ${provider.name}?`, [
       { id: "oauth", label: provider.isSubscription ? "Sign in (subscription)" : "Sign in" },
       { id: "api_key", label: "API key" },
@@ -339,9 +340,9 @@ export class AiConnectionModal {
     this.render()
   }
 
-  private fail(error: unknown): void {
+  private fail(cause: unknown): void {
     this.failed = true
-    this.message = errorMessage(error)
+    this.message = errorMessage(cause)
     this.render()
   }
 
@@ -452,10 +453,10 @@ function isPrintable(sequence: string | undefined): boolean {
   return code >= 0x20 && code !== 0x7f
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError"
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === "AbortError"
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }

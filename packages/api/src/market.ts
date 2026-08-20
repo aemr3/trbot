@@ -1,4 +1,5 @@
 import { defineOperation } from "./graphql.ts"
+import { z } from "zod"
 
 interface ScreenerInstrumentValue {
   key: string
@@ -33,7 +34,6 @@ export interface ScreenerRetrieveV2Variables {
   assetVertical: string
   sectorId: string | null
   investmentType: string
-  [key: string]: unknown
 }
 
 export interface ScreenerColumnInput {
@@ -54,7 +54,6 @@ export interface ScreenerResultV2Variables {
   investmentType: string
   filters: unknown[]
   columns: ScreenerColumnInput[]
-  [key: string]: unknown
 }
 
 export interface InstrumentData {
@@ -66,7 +65,6 @@ export interface InstrumentData {
 
 export interface InstrumentVariables {
   instrumentId: string
-  [key: string]: unknown
 }
 
 interface AdvancedToolSearchResult {
@@ -89,7 +87,6 @@ export interface AdvancedToolSearchVariables {
   tool: string
   page: number
   size: number
-  [key: string]: unknown
 }
 
 interface FutureDetailItem {
@@ -114,7 +111,6 @@ export interface FutureDetailData {
 
 export interface FutureDetailVariables {
   instrumentUid: string
-  [key: string]: unknown
 }
 
 interface BrokerageDistributionEntry {
@@ -159,7 +155,6 @@ export interface BrokerageDistributionVariables {
   brokeragePosition: string
   start: string | null
   end: string | null
-  [key: string]: unknown
 }
 
 // The provider's own name for each reading of the settlement register: the
@@ -201,7 +196,6 @@ export interface SettlementAnalysisVariables {
   settlementType: SettlementAnalysisType
   start: string | null
   end: string | null
-  [key: string]: unknown
 }
 
 interface AdvancedChartEntry {
@@ -236,7 +230,6 @@ export interface AdvancedChartVariables {
   selectedIndicatorIds: string[]
   timeRange: string
   intervalId: string
-  [key: string]: unknown
 }
 
 interface CandlestickChartEntry {
@@ -269,7 +262,6 @@ export interface CandlestickChartVariables {
   instrumentId: string
   timeRange: string
   currency: string
-  [key: string]: unknown
 }
 
 // VIOP futures live prices arrive over SSE on the streaming host. The event is
@@ -286,26 +278,37 @@ export interface FuturePriceUpdate {
   timestamp: number
 }
 
+const OptionalFiniteNumberSchema = z.number().finite().nullable().catch(null).optional()
+const OptionalStringSchema = z.string().nullable().catch(null).optional()
+const OptionalBooleanSchema = z.boolean().nullable().catch(null).optional()
+
+const FuturePriceFrameSchema = z.object({
+  s: z.string().min(1),
+  p: OptionalFiniteNumberSchema,
+  a: OptionalFiniteNumberSchema,
+  b: OptionalFiniteNumberSchema,
+  ss: OptionalStringSchema,
+  ts: OptionalFiniteNumberSchema,
+})
+
 export function parseFuturePriceUpdate(data: string): FuturePriceUpdate | null {
-  let raw: { s?: unknown; p?: unknown; a?: unknown; b?: unknown; ss?: unknown; ts?: unknown }
+  let decoded: z.input<typeof FuturePriceFrameSchema>
   try {
-    raw = JSON.parse(data)
+    decoded = JSON.parse(data)
   } catch {
     return null
   }
-  if (typeof raw.s !== "string" || raw.s.length === 0) return null
+  const parsed = FuturePriceFrameSchema.safeParse(decoded)
+  if (!parsed.success) return null
+  const raw = parsed.data
   return {
     symbol: raw.s,
-    lastPrice: numberOrNull(raw.p),
-    ask: numberOrNull(raw.a),
-    bid: numberOrNull(raw.b),
-    sessionStatus: typeof raw.ss === "string" ? raw.ss : null,
-    timestamp: numberOrNull(raw.ts) ?? 0,
+    lastPrice: raw.p ?? null,
+    ask: raw.a ?? null,
+    bid: raw.b ?? null,
+    sessionStatus: raw.ss ?? null,
+    timestamp: raw.ts ?? 0,
   }
-}
-
-function numberOrNull(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null
 }
 
 // Order book depth arrives over SSE on the streaming host, unnamed events with
@@ -346,73 +349,101 @@ export interface DepthUpdate {
   infoMessage: string | null
 }
 
+const DepthLevelFrameSchema = z.object({
+  i: OptionalFiniteNumberSchema,
+  p: OptionalFiniteNumberSchema,
+  l: OptionalFiniteNumberSchema,
+  o: OptionalFiniteNumberSchema,
+})
+
+const DepthLadderFrameSchema = z.object({
+  bc: OptionalFiniteNumberSchema,
+  sc: OptionalFiniteNumberSchema,
+  b: z.array(DepthLevelFrameSchema).catch([]).optional(),
+  s: z.array(DepthLevelFrameSchema).catch([]).optional(),
+})
+
+const DepthTradeFrameSchema = z.object({
+  id: z.string(),
+  p: OptionalFiniteNumberSchema,
+  l: OptionalFiniteNumberSchema,
+  d: OptionalStringSchema,
+  b: OptionalStringSchema,
+  s: OptionalStringSchema,
+})
+
+const DepthTradesFrameSchema = z.object({
+  mt: OptionalStringSchema,
+  l: OptionalFiniteNumberSchema,
+  t: z.array(DepthTradeFrameSchema),
+})
+
+const DepthFrameSchema = z.object({
+  s: z.string().min(1),
+  dpt: DepthLadderFrameSchema.nullable().catch(null).optional(),
+  trd: DepthTradesFrameSchema.nullable().catch(null).optional(),
+  c: OptionalBooleanSchema,
+  m: OptionalBooleanSchema,
+  t: OptionalStringSchema,
+})
+
 export function parseDepthUpdate(data: string): DepthUpdate | null {
-  let raw: { s?: unknown; dpt?: unknown; trd?: unknown; c?: unknown; m?: unknown; t?: unknown }
+  let decoded: z.input<typeof DepthFrameSchema>
   try {
-    raw = JSON.parse(data)
+    decoded = JSON.parse(data)
   } catch {
     return null
   }
-  if (typeof raw.s !== "string" || raw.s.length === 0) return null
+  const parsed = DepthFrameSchema.safeParse(decoded)
+  if (!parsed.success) return null
+  const raw = parsed.data
   return {
     symbol: raw.s,
     depth: parseDepthLadder(raw.dpt),
     trades: parseDepthTrades(raw.trd),
-    marketClosed: booleanOrNull(raw.c),
-    maintenance: booleanOrNull(raw.m),
-    infoMessage: typeof raw.t === "string" ? raw.t : null,
+    marketClosed: raw.c ?? null,
+    maintenance: raw.m ?? null,
+    infoMessage: raw.t ?? null,
   }
 }
 
-function parseDepthLadder(value: unknown): DepthUpdate["depth"] {
-  if (!value || typeof value !== "object") return null
-  const raw = value as { bc?: unknown; sc?: unknown; b?: unknown; s?: unknown }
+function parseDepthLadder(raw: z.output<typeof DepthLadderFrameSchema> | null | undefined): DepthUpdate["depth"] {
+  if (!raw) return null
   return {
-    buyLots: numberOrNull(raw.bc),
-    sellLots: numberOrNull(raw.sc),
+    buyLots: raw.bc ?? null,
+    sellLots: raw.sc ?? null,
     bids: parseDepthLevels(raw.b),
     asks: parseDepthLevels(raw.s),
   }
 }
 
-function parseDepthLevels(value: unknown): DepthUpdateLevel[] {
-  if (!Array.isArray(value)) return []
-  return value.flatMap((entry): DepthUpdateLevel[] => {
-    if (!entry || typeof entry !== "object") return []
-    const raw = entry as { i?: unknown; p?: unknown; l?: unknown; o?: unknown }
-    const index = numberOrNull(raw.i)
-    const price = numberOrNull(raw.p)
+function parseDepthLevels(value: z.output<typeof DepthLevelFrameSchema>[] | undefined): DepthUpdateLevel[] {
+  return (value ?? []).flatMap((raw): DepthUpdateLevel[] => {
+    const index = raw.i ?? null
+    const price = raw.p ?? null
     if (index === null || index < 0 || price === null) return []
     return [{
       index,
-      level: { price, lots: numberOrNull(raw.l) ?? 0, orderCount: numberOrNull(raw.o) ?? 0 },
+      level: { price, lots: raw.l ?? 0, orderCount: raw.o ?? 0 },
     }]
   })
 }
 
-function parseDepthTrades(value: unknown): DepthUpdate["trades"] {
-  if (!value || typeof value !== "object") return null
-  const raw = value as { mt?: unknown; l?: unknown; t?: unknown }
-  if (!Array.isArray(raw.t)) return null
-  const items = raw.t.flatMap((entry): DepthUpdateTrade[] => {
-    if (!entry || typeof entry !== "object") return []
-    const trade = entry as { id?: unknown; p?: unknown; l?: unknown; d?: unknown; b?: unknown; s?: unknown }
-    const price = numberOrNull(trade.p)
-    if (typeof trade.id !== "string" || price === null) return []
+function parseDepthTrades(raw: z.output<typeof DepthTradesFrameSchema> | null | undefined): DepthUpdate["trades"] {
+  if (!raw) return null
+  const items = raw.t.flatMap((trade): DepthUpdateTrade[] => {
+    const price = trade.p ?? null
+    if (price === null) return []
     return [{
       id: trade.id,
       price,
-      lots: numberOrNull(trade.l) ?? 0,
+      lots: trade.l ?? 0,
       side: trade.d === "s" ? "SELL" : "BUY",
-      buyer: typeof trade.b === "string" ? trade.b : null,
-      seller: typeof trade.s === "string" ? trade.s : null,
+      buyer: trade.b ?? null,
+      seller: trade.s ?? null,
     }]
   })
-  return { replace: raw.mt === "f", maxLength: numberOrNull(raw.l), items }
-}
-
-function booleanOrNull(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null
+  return { replace: raw.mt === "f", maxLength: raw.l ?? null, items }
 }
 
 export const marketOperations = {

@@ -1,8 +1,7 @@
-import type { ServerWebSocket } from "bun"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
 import type { ClientFrame, ServerFrame, StreamChannel } from "@trbot/protocol/stream.ts"
 import type { AccountLiveUpdate } from "@trbot/trading/account.ts"
-import type { ProviderSession, ProviderSources } from "./session.ts"
+import type { ProviderSessionAccess, ProviderSources } from "./session.ts"
 
 export interface SocketData {
   subscriptions: Set<StreamChannel>
@@ -26,7 +25,11 @@ export function newSocketData(): SocketData {
   }
 }
 
-type Socket = ServerWebSocket<SocketData>
+export interface StreamSocket {
+  data: SocketData
+  send(payload: string): number
+  getBufferedAmount(): number
+}
 
 /**
  * How much unsent data a socket may hold before market data is dropped for it.
@@ -74,7 +77,7 @@ interface SymbolStream {
 }
 
 export class StreamHub {
-  private readonly sockets = new Set<Socket>()
+  private readonly sockets = new Set<StreamSocket>()
   private attached: ProviderSources | null = null
   // One upstream connection per watched symbol, since these channels carry a
   // single symbol each. Two clients on different symbols are both served.
@@ -92,7 +95,7 @@ export class StreamHub {
   private readonly lastStatus = new Map<string, ServerFrame>()
 
   constructor(
-    private readonly session: ProviderSession,
+    private readonly session: ProviderSessionAccess,
     private readonly options: StreamHubOptions = {},
   ) {
     session.onExpired(() => this.broadcast({ type: "session", state: "expired" }))
@@ -116,12 +119,12 @@ export class StreamHub {
     this.resyncPendingOrders()
   }
 
-  add(socket: Socket): void {
+  add(socket: StreamSocket): void {
     this.sockets.add(socket)
     this.attachUpstream()
   }
 
-  remove(socket: Socket): void {
+  remove(socket: StreamSocket): void {
     this.sockets.delete(socket)
     this.resyncQuotes()
     this.resyncSymbols("equityQuotes")
@@ -130,7 +133,7 @@ export class StreamHub {
     this.resyncPendingOrders()
   }
 
-  handle(socket: Socket, frame: ClientFrame): void {
+  handle(socket: StreamSocket, frame: ClientFrame): void {
     switch (frame.type) {
       case "subscribe":
         socket.data.subscriptions.add(frame.channel)
@@ -191,14 +194,14 @@ export class StreamHub {
   }
 
   /** Tells one socket where a channel stands right now. */
-  private sendStatus(socket: Socket, channel: StreamChannel): void {
+  private sendStatus(socket: StreamSocket, channel: StreamChannel): void {
     const symbol = channel === "depth" ? socket.data.depthSymbol : socket.data.equitySymbol
     const key = channel === "depth" || channel === "equityQuotes" ? `${channel}:${symbol ?? ""}` : channel
     const frame = this.lastStatus.get(key)
     if (frame) socket.send(JSON.stringify(frame))
   }
 
-  private wants(socket: Socket, channel: StreamChannel, symbol: string): boolean {
+  private wants(socket: StreamSocket, channel: StreamChannel, symbol: string): boolean {
     if (channel === "depth") return socket.data.depthSymbol === symbol
     if (channel === "equityQuotes") return socket.data.equitySymbol === symbol
     if (channel === "quotes") return socket.data.quoteSymbols.includes(symbol)

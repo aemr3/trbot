@@ -11,6 +11,7 @@ import {
 } from "./client.ts"
 import { defineOperation } from "./graphql.ts"
 import type { HttpRequest, HttpResponse, Transport } from "./transport.ts"
+import { z } from "zod"
 
 const NOW = 1_786_000_000_000
 const viewerOperation = defineOperation<{ viewer: { id: string } }, Record<string, never>>(
@@ -58,7 +59,7 @@ describe("API authentication", () => {
       throw new Error("transport should not be called")
     })
 
-    const error = await client(store, transport).reauthenticate().catch((reason: unknown) => reason)
+    const error = await client(store, transport).reauthenticate().catch((cause: unknown) => cause)
 
     expect(error).toBeInstanceOf(OtpRequiredError)
     expect(transport.requests).toHaveLength(0)
@@ -146,7 +147,7 @@ describe("API authentication", () => {
           const input = variables(request)
           expect(input.phoneNumber).toBe("+905551234567")
           expect(input.password).toBe("password")
-          expect(typeof input.signature).toBe("string")
+          expect(input.signature).toEqual(expect.any(String))
           return data({
             deviceBindingLoginCompleteWithPasswordV2: {
               token: { access_token: nextAccessToken, refresh_token: "refresh-new" },
@@ -178,12 +179,12 @@ describe("API authentication", () => {
       throw new Error(`unexpected operation ${operationName(request)}`)
     })
 
-    const error = await client(store, transport).authenticate().catch((reason: unknown) => reason)
+    const error = await client(store, transport).authenticate().catch((cause: unknown) => cause)
 
-    expect(error).toBeInstanceOf(ApiHttpError)
-    expect((error as Error).message).toBe("API rate limit reached. Retry in 12s.")
-    expect((error as ApiHttpError).operationName).toBe("retrieveLoginNonce")
-    expect((error as ApiHttpError).retryAfterMs).toBe(12_000)
+    if (!(error instanceof ApiHttpError)) throw new Error("Expected an API rate-limit error")
+    expect(error.message).toBe("API rate limit reached. Retry in 12s.")
+    expect(error.operationName).toBe("retrieveLoginNonce")
+    expect(error.retryAfterMs).toBe(12_000)
     expect(requiresAuthentication(error)).toBe(false)
   })
 
@@ -208,10 +209,10 @@ describe("API authentication", () => {
     await api.authenticate().catch(() => {})
     const requestsAfterFirstAttempt = transport.requests.length
     now += 5_000
-    const blocked = await api.authenticate().catch((reason: unknown) => reason)
+    const blocked = await api.authenticate().catch((cause: unknown) => cause)
 
-    expect(blocked).toBeInstanceOf(ApiHttpError)
-    expect((blocked as ApiHttpError).retryAfterMs).toBe(7_000)
+    if (!(blocked instanceof ApiHttpError)) throw new Error("Expected the cached API rate-limit error")
+    expect(blocked.retryAfterMs).toBe(7_000)
     expect(transport.requests).toHaveLength(requestsAfterFirstAttempt)
 
     now += 7_000
@@ -224,7 +225,7 @@ describe("API authentication", () => {
     const store = new MemoryAuthStore(state)
     const transport = new FakeTransport(() => graphqlError(9008))
 
-    const error = await sessionClient(state.accountKey, store, transport).authenticate().catch((reason: unknown) => reason)
+    const error = await sessionClient(state.accountKey, store, transport).authenticate().catch((cause: unknown) => cause)
 
     expect(error).toBeInstanceOf(CredentialsRequiredError)
     expect(transport.requests.map(operationName)).toEqual(["refreshMemberTokenV2"])
@@ -256,9 +257,9 @@ describe("API authentication", () => {
     })
     const api = client(store, transport)
 
-    const error = await api.authenticate().catch((reason: unknown) => reason)
-    expect(error).toBeInstanceOf(OtpRequiredError)
-    expect((error as OtpRequiredError).expiresInSeconds).toBe(180)
+    const error = await api.authenticate().catch((cause: unknown) => cause)
+    if (!(error instanceof OtpRequiredError)) throw new Error("Expected an OTP challenge")
+    expect(error.expiresInSeconds).toBe(180)
     expect(store.state?.loginReferenceCode).toBe("reference-1")
     expect(store.state?.privateKeyPem).toContain("BEGIN PRIVATE KEY")
 
@@ -363,15 +364,24 @@ function jwt(secondsFromNow: number): string {
   return `header.${payload}.signature`
 }
 
+const RequestBodySchema = z.object({
+  operationName: z.string(),
+  variables: z.record(z.string(), z.json()),
+})
+
+function requestBody(request: HttpRequest): z.output<typeof RequestBodySchema> {
+  return RequestBodySchema.parse(JSON.parse(request.body))
+}
+
 function operationName(request: HttpRequest): string {
-  return JSON.parse(request.body).operationName as string
+  return requestBody(request).operationName
 }
 
-function variables(request: HttpRequest): Record<string, unknown> {
-  return JSON.parse(request.body).variables as Record<string, unknown>
+function variables(request: HttpRequest): z.output<typeof RequestBodySchema>["variables"] {
+  return requestBody(request).variables
 }
 
-function data(value: unknown): HttpResponse {
+function data<T>(value: T): HttpResponse {
   return { status: 200, body: JSON.stringify({ data: value }) }
 }
 

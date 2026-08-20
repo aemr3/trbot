@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
-import { type KeyEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { PlaceViopOrderRequest, ViopOrderSource } from "@trbot/trading/order.ts"
 import { ViopOrderTicket } from "./order-ticket.ts"
+import { keyEvent } from "../key-event.test-fixture.ts"
 
 const instrument = {
   uid: "future-1",
@@ -52,7 +52,7 @@ test("enters contract quantity immediately after the ticket opens", async () => 
   ticket.mount()
   await setup.waitForFrame((value) => value.includes("Upper limit"))
 
-  ticket.handleKey({ name: "3", sequence: "3" } as KeyEvent)
+  ticket.handleKey(keyEvent("3"))
   const frame = await setup.waitForFrame((value) => value.includes("₺62.865,00"))
   expect(frame).toContain("▸ 3")
 
@@ -75,9 +75,9 @@ test("restores the preferred order type and reports M and L changes", async () =
   ticket.mount()
 
   await setup.waitForFrame((value) => value.includes("Simulated market"))
-  ticket.handleKey({ name: "l", sequence: "l" } as KeyEvent)
+  ticket.handleKey(keyEvent("l"))
   await setup.waitForFrame((value) => value.includes("Limit price"))
-  ticket.handleKey({ name: "m", sequence: "m" } as KeyEvent)
+  ticket.handleKey(keyEvent("m"))
   await setup.waitForFrame((value) => value.includes("Resolved limit"))
   expect(kinds).toEqual(["LIMIT", "MARKETABLE_LIMIT"])
 
@@ -99,15 +99,15 @@ test("uses the exchange upper and lower limits for simulated market orders", asy
   const limitFrame = await setup.waitForFrame((value) => value.includes("₺188,30"))
   const limitPriceLine = limitFrame.split("\n").find((line) => line.includes("Limit price")) ?? ""
 
-  ticket.handleKey({ name: "m", sequence: "m" } as KeyEvent)
+  ticket.handleKey(keyEvent("m"))
   const marketFrame = await setup.waitForFrame((value) => value.includes("Simulated market") && value.includes("Resolved limit"))
   expect(marketFrame).toContain("₺188,30")
   const resolvedPriceLine = marketFrame.split("\n").find((line) => line.includes("Resolved limit")) ?? ""
   expect(resolvedPriceLine.indexOf("₺188,30")).toBe(limitPriceLine.indexOf("₺209,55"))
-  ticket.handleKey({ name: "r", sequence: "r" } as KeyEvent)
+  ticket.handleKey(keyEvent("r"))
   const reviewFrame = await setup.waitForFrame((value) => value.includes("Review sell order"))
   expect(reviewFrame).toContain("may remain as a day limit order")
-  ticket.handleKey({ name: "return", sequence: "\r" } as KeyEvent)
+  ticket.handleKey(keyEvent("return", { sequence: "\r" }))
   await setup.waitForFrame((value) => value.includes("Order submitted"))
 
   expect(placed[0]).toMatchObject({ side: "SELL", quantity: 1, limitPrice: 188.3 })
@@ -129,11 +129,11 @@ test("uses the matching side key to review and submit the order", async () => {
   ticket.mount()
   await setup.waitForFrame((value) => value.includes("Upper limit"))
 
-  ticket.handleKey({ name: "s", sequence: "s" } as KeyEvent)
+  ticket.handleKey(keyEvent("s"))
   expect(placed).toHaveLength(0)
-  ticket.handleKey({ name: "b", sequence: "b" } as KeyEvent)
+  ticket.handleKey(keyEvent("b"))
   await setup.waitForFrame((value) => value.includes("Review buy order"))
-  ticket.handleKey({ name: "b", sequence: "b" } as KeyEvent)
+  ticket.handleKey(keyEvent("b"))
   await setup.waitForFrame((value) => value.includes("Order submitted"))
   expect(placed).toHaveLength(1)
 
@@ -167,7 +167,7 @@ test("blocks review when available collateral is insufficient", async () => {
   ticket.mount()
   await setup.waitForFrame((value) => value.includes("0 contracts available by collateral"))
 
-  ticket.handleKey({ name: "r", sequence: "r" } as KeyEvent)
+  ticket.handleKey(keyEvent("r"))
   const frame = await setup.waitForFrame((value) => value.includes("Available collateral is insufficient"))
   expect(frame).not.toContain("Review buy order")
 
@@ -203,10 +203,10 @@ test("uses only residual reversal exposure for the collateral check", async () =
   const closeFrame = await setup.waitForFrame((value) => value.includes("5 contracts available by collateral"))
   expect(closeFrame.split("\n").find((line) => line.includes("Required collateral"))).toContain("₺0,00")
 
-  ticket.handleKey({ name: "5", sequence: "5" } as KeyEvent)
+  ticket.handleKey(keyEvent("5"))
   const reversalFrame = await setup.waitForFrame((value) => value.includes("₺104.775,00"))
   expect(reversalFrame.split("\n").find((line) => line.includes("Required collateral"))).toContain("₺4.719,55")
-  ticket.handleKey({ name: "r", sequence: "r" } as KeyEvent)
+  ticket.handleKey(keyEvent("r"))
   await setup.waitForFrame((value) => value.includes("Review sell order"))
 
   ticket.destroy()
@@ -233,28 +233,28 @@ test("reuses one idempotency key across retries, and mints a new one once the or
   ticket.mount()
   await setup.waitForFrame((value) => value.includes("Upper limit"))
 
-  ticket.handleKey({ name: "r", sequence: "r" } as KeyEvent)
+  ticket.handleKey(keyEvent("r"))
   await setup.waitForFrame((value) => value.includes("Review buy order"))
-  ticket.handleKey({ name: "return", sequence: "\r" } as KeyEvent)
+  ticket.handleKey(keyEvent("return", { sequence: "\r" }))
   await setup.waitForFrame((value) => value.includes("The connection dropped"))
 
   // Same order, pressed again: the server must see the same key.
-  ticket.handleKey({ name: "return", sequence: "\r" } as KeyEvent)
+  ticket.handleKey(keyEvent("return", { sequence: "\r" }))
   await setup.waitForFrame((value) => value.includes("The connection dropped"))
 
   // A different size is a different order, however it is reached.
-  ticket.handleKey({ name: "escape", sequence: "" } as KeyEvent)
-  ticket.handleKey({ name: "3", sequence: "3" } as KeyEvent)
-  ticket.handleKey({ name: "r", sequence: "r" } as KeyEvent)
+  ticket.handleKey(keyEvent("escape", { sequence: "" }))
+  ticket.handleKey(keyEvent("3"))
+  ticket.handleKey(keyEvent("r"))
   await setup.waitForFrame((value) => value.includes("Review buy order"))
-  ticket.handleKey({ name: "return", sequence: "\r" } as KeyEvent)
+  ticket.handleKey(keyEvent("return", { sequence: "\r" }))
   await setup.waitForFrame((value) => value.includes("Order submitted"))
 
   expect(placed).toHaveLength(3)
   expect(placed[0]?.idempotencyKey).toBeTruthy()
-  expect(placed[1]?.idempotencyKey).toBe(placed[0]?.idempotencyKey as string)
+  expect(placed[1]?.idempotencyKey).toBe(placed[0]?.idempotencyKey)
   expect(placed[2]?.quantity).toBe(3)
-  expect(placed[2]?.idempotencyKey).not.toBe(placed[0]?.idempotencyKey as string)
+  expect(placed[2]?.idempotencyKey).not.toBe(placed[0]?.idempotencyKey)
 
   ticket.destroy()
   setup.renderer.destroy()

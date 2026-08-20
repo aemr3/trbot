@@ -254,6 +254,7 @@ async function runTask(
   step?: number,
   sessions?: SubagentSessionRecorder,
 ): Promise<SubagentResult> {
+  const stepResult = step === undefined ? {} : { step }
   if (agentName !== "worker") {
     return {
       agent: agentName,
@@ -262,7 +263,7 @@ async function runTask(
       answer: "",
       error: `Unknown agent: "${agentName}". Available agent: "worker".`,
       usage: null,
-      ...(step === undefined ? {} : { step }),
+      ...stepResult,
     }
   }
 
@@ -312,7 +313,7 @@ async function runTask(
       answer,
       error,
       usage: draftUsage(drafts),
-      ...(step === undefined ? {} : { step }),
+      ...stepResult,
     }
   } catch (error) {
     taskResult = {
@@ -322,7 +323,7 @@ async function runTask(
       answer: "",
       error: error instanceof Error ? error.message : String(error),
       usage: draftUsage(drafts),
-      ...(step === undefined ? {} : { step }),
+      ...stepResult,
     }
   }
   await session?.finish(taskResult.error)

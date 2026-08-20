@@ -8,6 +8,7 @@ import {
   type OptimizedBuffer,
   type RenderContext,
   type RenderableOptions,
+  type TerminalCapabilities,
 } from "@opentui/core"
 import type { ChartBitmap } from "./raster.ts"
 
@@ -17,10 +18,19 @@ import type { ChartBitmap } from "./raster.ts"
 // and that reply can go unanswered (switching tmux sessions is enough), leaving
 // the renderer without a resolution for the rest of the run. Without the cache
 // the chart would silently drop to braille and never recover.
-const lastCellPixel = new WeakMap<RenderContext, { width: number; height: number }>()
+export interface ChartBitmapContext {
+  capabilities: TerminalCapabilities | null
+  resolution?: { width: number; height: number } | null
+  terminalWidth?: number
+  terminalHeight?: number
+  width: number
+  height: number
+}
+
+const lastCellPixel = new WeakMap<ChartBitmapContext, { width: number; height: number }>()
 
 /** Pixel size of one terminal cell, from the reported resolution or the last one seen. */
-function cellPixelSize(ctx: RenderContext): { width: number; height: number } | null {
+function cellPixelSize(ctx: ChartBitmapContext): { width: number; height: number } | null {
   const resolution = ctx.resolution
   const columns = ctx.terminalWidth ?? ctx.width
   const rows = ctx.terminalHeight ?? ctx.height
@@ -44,7 +54,7 @@ export interface ChartBitmapSupport {
 }
 
 /** How the chart may render as a kitty bitmap, or null for the braille fallback. */
-export function chartBitmapSupport(ctx: RenderContext): ChartBitmapSupport | null {
+export function chartBitmapSupport(ctx: ChartBitmapContext): ChartBitmapSupport | null {
   const cellPixel = cellPixelSize(ctx)
   if (!cellPixel) return null
   const capabilities = ctx.capabilities

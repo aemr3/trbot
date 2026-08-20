@@ -9,18 +9,18 @@ export interface SoundPlayer {
 }
 
 // The completion sound is deliberately gentler than the market cues.
-const MACOS_SOUND_FILES: Record<SoundCue, string> = {
+const MACOS_SOUND_FILES = {
   ALERT: "/System/Library/Sounds/Submarine.aiff",
   STOP: "/System/Library/Sounds/Sosumi.aiff",
   COMPLETE: "/System/Library/Sounds/Glass.aiff",
   QUESTION: "/System/Library/Sounds/Ping.aiff",
   NOTIFICATION: "/System/Library/Sounds/Pop.aiff",
-}
+} satisfies Record<SoundCue, string>
 
 // Where no sound player is available the terminal bell stands in, twice for a
 // stop, so the two cues stay apart even at their most primitive.
 const BELL = "\u0007"
-const BELL_COUNT: Record<SoundCue, number> = { ALERT: 1, STOP: 2, COMPLETE: 1, QUESTION: 1, NOTIFICATION: 1 }
+const BELL_COUNT = { ALERT: 1, STOP: 2, COMPLETE: 1, QUESTION: 1, NOTIFICATION: 1 } satisfies Record<SoundCue, number>
 
 export interface SystemSoundPlayerOptions {
   // Writes raw terminal output. Pass the renderer's writer so a bell never

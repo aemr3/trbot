@@ -6,6 +6,7 @@ import { Readability } from "@mozilla/readability"
 import { Type } from "@earendil-works/pi-ai"
 import { parseHTML } from "linkedom"
 import { toolText, type ChatTool } from "./tool.ts"
+import { z } from "zod"
 
 const SEARCH_ENDPOINT = "https://mcp.exa.ai/mcp?tools=web_search_exa"
 const REQUEST_TIMEOUT_MS = 15_000
@@ -38,6 +39,14 @@ interface WebResult {
   url: string
   snippet: string
 }
+
+const McpTextBlockSchema = z.object({ type: z.literal("text"), text: z.string() })
+const McpResultSchema = z.object({
+  content: z.array(z.unknown()).catch([]),
+  isError: z.boolean().optional(),
+})
+const McpResultInputSchema = z.preprocess((value) => value, McpResultSchema)
+type McpResult = z.output<typeof McpResultSchema>
 
 /** Search and readable-page tools for the chat agent; neither can reach private networks. */
 export function webTools(options: WebToolsOptions = {}): ChatTool[] {
@@ -157,8 +166,9 @@ async function searchExa(query: string, limit: number, signal?: AbortSignal): Pr
       name: "web_search_exa",
       arguments: { query, numResults: limit },
     }, undefined, { signal, timeout: REQUEST_TIMEOUT_MS })
-    const text = mcpText(result)
-    if (isRecord(result) && result.isError === true) throw new Error(text || "Web search failed")
+    const parsed = McpResultInputSchema.parse(result)
+    const text = mcpText(parsed)
+    if (parsed.isError === true) throw new Error(text || "Web search failed")
     if (!text) throw new Error("Web search returned no content")
     return text
   } finally {
@@ -166,18 +176,15 @@ async function searchExa(query: string, limit: number, signal?: AbortSignal): Pr
   }
 }
 
-function mcpText(result: unknown): string {
-  if (!isRecord(result) || !Array.isArray(result.content)) return ""
+function mcpText(result: McpResult): string {
   return result.content
-    .filter((block): block is { type: "text"; text: string } =>
-      isRecord(block) && block.type === "text" && typeof block.text === "string")
+    .flatMap((block) => {
+      const parsed = McpTextBlockSchema.safeParse(block)
+      return parsed.success ? [parsed.data] : []
+    })
     .map((block) => block.text)
     .join("\n\n")
     .trim()
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null
 }
 
 function parseSearchResults(text: string, limit: number): WebResult[] {
@@ -286,9 +293,19 @@ async function readText(response: Response, limit: number): Promise<string> {
   }
 }
 
-function readableHtml(html: string): { title: string; text: string } {
+interface ReadableHtml {
+  title: string
+  text: string
+}
+
+function readabilityDocument<T extends NonNullable<object>>(document: T): Document {
+  // SAFETY: Linkedom implements the DOM surface Readability consumes at runtime.
+  return document as Document
+}
+
+function readableHtml(html: string): ReadableHtml {
   const { document } = parseHTML(html)
-  const article = new Readability(document as unknown as Document, { charThreshold: 20 }).parse()
+  const article = new Readability(readabilityDocument(document), { charThreshold: 20 }).parse()
   const title = oneLine(article?.title || document.title || "")
   const text = cleanText(article?.textContent || document.body?.textContent || "")
   return { title, text }
