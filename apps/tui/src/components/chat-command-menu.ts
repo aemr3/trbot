@@ -31,7 +31,7 @@ export class ChatCommandMenu {
   ) {
     this.root = new BoxRenderable(renderer, {
       width: "100%",
-      height: 0,
+      height: "auto",
       flexShrink: 0,
       flexDirection: "column",
       paddingLeft: 3,
@@ -89,8 +89,9 @@ export class ChatCommandMenu {
     for (const entry of this.matches) {
       const box = new BoxRenderable(this.renderer, {
         width: "100%",
-        height: 1,
+        height: "auto",
         flexDirection: "row",
+        alignItems: "flex-start",
         backgroundColor: PANEL_BG,
       })
       const command = new TextRenderable(this.renderer, {
@@ -105,14 +106,13 @@ export class ChatCommandMenu {
         content: entry.description,
         flexGrow: 1,
         fg: DESCRIPTION_COLOR,
-        wrapMode: "none",
+        wrapMode: "word",
       })
       box.add(description)
       this.root.add(box)
       this.rows.push({ box, command, description })
     }
 
-    this.root.height = this.matches.length
     this.root.visible = this.matches.length > 0
     this.paint()
     this.renderer.requestRender()

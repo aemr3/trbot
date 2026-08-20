@@ -1,0 +1,2 @@
+ALTER TABLE `app_preferences` RENAME COLUMN "selected_chat_session_id" TO "selected_main_chat_session_id";--> statement-breakpoint
+ALTER TABLE `app_preferences` ADD `selected_trade_panel_chat_session_id` text;

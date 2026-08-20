@@ -45,10 +45,7 @@ const TOOL_COLOR = TUI_THEME.tool
 const PROMPT_BG = TUI_THEME.promptBackground
 const CLOSED_PROMPT_BG = TUI_THEME.promptClosedBackground
 const TURN_MARKER_COLOR = TUI_THEME.turnMarker
-/**
- * Sent prompts and the field at the foot of the screen share one graphite surface;
- * the warm insertion marker distinguishes the active field.
- */
+/** Full-screen prompts share one graphite surface; embedded prompts use a rail. */
 const COMPOSER_BG = PROMPT_BG
 const COMPOSER_COLOR = TUI_THEME.composer
 
@@ -105,8 +102,8 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/loop", description: "[interval] [task] · list · cancel <id>" },
   { name: "/subagents", description: "open this chat's worker sessions" },
   { name: "/parent", description: "return from a worker transcript" },
-  { name: "/chats", description: "open another chat" },
-  { name: "/new", description: "start a new chat" },
+  { name: "/sessions", description: "open another session" },
+  { name: "/new", description: "start a new session" },
   { name: "/connect", description: "manage model providers" },
   { name: "/help", description: "show every chat key" },
 ]
@@ -116,6 +113,8 @@ type Modal = AiConnectionModal | AiModelModal | ChatSessionModal | ChatHelpModal
 
 export interface ChatScreenOptions {
   chats: ChatSessions
+  /** Fit inside a parent panel instead of claiming the full workspace height. */
+  embedded?: boolean
   marketMonitors?: MarketMonitorClient
   account?: AiAccount
   sound?: SoundPlayer
@@ -203,6 +202,7 @@ export class ChatScreen {
   private spinner = 0
   private spinnerTimer: ReturnType<typeof setInterval> | null = null
   private marketOpen: boolean | null = null
+  private modalHost: BoxRenderable
   private destroyed = false
 
   constructor(
@@ -213,16 +213,16 @@ export class ChatScreen {
     this.showThoughts = options.initialShowThoughts ?? true
     this.root = new BoxRenderable(renderer, {
       width: "100%",
-      height: "100%",
+      ...(options.embedded ? { flexGrow: 1 } : { height: "100%" as const }),
       flexDirection: "column",
       backgroundColor: BACKGROUND,
     })
+    this.modalHost = this.root
 
     const body = new BoxRenderable(renderer, {
       width: "100%",
       flexGrow: 1,
       flexDirection: "column",
-      paddingTop: CHAT_INSET,
       paddingLeft: CHAT_INSET,
       paddingRight: CHAT_INSET,
       backgroundColor: PANEL_BG,
@@ -231,19 +231,26 @@ export class ChatScreen {
     body.add(this.transcript.root)
     this.commandMenu = new ChatCommandMenu(renderer, CHAT_COMMANDS)
 
-    // The next prompt uses the same filled shape as prompts already in the transcript.
+    const composerBackground = options.embedded ? PANEL_BG : COMPOSER_BG
+    // The next prompt matches sent prompts: filled in the full chat, or carried by
+    // a compact left rail in the trade panel.
     this.composerRow = new BoxRenderable(renderer, {
       flexShrink: 0,
       flexDirection: "row",
-      paddingLeft: 0,
+      paddingLeft: options.embedded ? 1 : 0,
       paddingRight: 1,
       paddingTop: 1,
       paddingBottom: 1,
       marginTop: 1,
       marginLeft: CHAT_INSET,
       marginRight: CHAT_INSET,
-      backgroundColor: COMPOSER_BG,
+      backgroundColor: composerBackground,
     })
+    if (options.embedded) {
+      this.composerRow.border = ["left"]
+      this.composerRow.borderColor = COMPOSER_COLOR
+      this.composerRow.borderStyle = "heavy"
+    }
     this.composerMarker = new TextRenderable(renderer, {
       content: "›",
       width: 2,
@@ -265,11 +272,11 @@ export class ChatScreen {
       maxHeight: COMPOSER_MAX_ROWS,
       wrapMode: "word",
       placeholder: "ask something…",
-      backgroundColor: COMPOSER_BG,
-      focusedBackgroundColor: COMPOSER_BG,
+      backgroundColor: composerBackground,
+      focusedBackgroundColor: composerBackground,
       textColor: TEXT_COLOR,
     })
-    this.composerRow.add(this.composerMarker)
+    if (!options.embedded) this.composerRow.add(this.composerMarker)
     this.composerRow.add(this.composer)
     this.questionSlot = new BoxRenderable(renderer, {
       width: "100%",
@@ -337,10 +344,19 @@ export class ChatScreen {
   setMarketOpen(open: boolean | null): void {
     if (this.destroyed || this.marketOpen === open) return
     this.marketOpen = open
-    const background = open === false ? CLOSED_PROMPT_BG : COMPOSER_BG
+    const background = this.options.embedded
+      ? PANEL_BG
+      : open === false ? CLOSED_PROMPT_BG : COMPOSER_BG
     this.composerRow.backgroundColor = background
     this.composer.backgroundColor = background
     this.composer.focusedBackgroundColor = background
+    this.render.schedule()
+  }
+
+  /** Keeps multiple views of chat on the same reasoning-visibility preference. */
+  setShowThoughts(showThoughts: boolean): void {
+    if (this.destroyed || this.showThoughts === showThoughts) return
+    this.showThoughts = showThoughts
     this.render.schedule()
   }
 
@@ -350,6 +366,22 @@ export class ChatScreen {
    */
   capturesInput(): boolean {
     return this.typing() || this.focus === "question" || this.modal !== null
+  }
+
+  /** Lets an embedded chat center its popups over the screen that contains it. */
+  setModalHost(host: BoxRenderable): void {
+    if (this.destroyed || this.modalHost === host) return
+    const modalRoot = this.modal?.root
+    if (modalRoot && !modalRoot.isDestroyed) {
+      if (!this.modalHost.isDestroyed) this.modalHost.remove(modalRoot)
+      host.add(modalRoot)
+    }
+    this.modalHost = host
+    this.renderer.requestRender()
+  }
+
+  hasOpenModal(): boolean {
+    return this.modal !== null
   }
 
   handleKey(key: KeyEvent): void {
@@ -531,7 +563,14 @@ export class ChatScreen {
       this.streamingBySession.set(sessionId, { runId, startedAt: Date.now(), thinkingMs: null, text: "", reasoning: "", tools: [] })
     }
     if (status === "running") this.runningRunIds.add(runId)
-    if (wasRunning && (status === "done" || status === "failed")) {
+    const session = this.sessions.find((candidate) => candidate.id === sessionId)
+    // A worker finishing is only one step inside its parent's turn. The parent
+    // completion is the single user-facing event worth sounding.
+    if (
+      wasRunning
+      && (status === "done" || status === "failed")
+      && session?.parentSessionId === null
+    ) {
       this.options.sound?.play("COMPLETE")
     }
     if (error) this.options.logs.error("Chat", new Error(error))
@@ -650,6 +689,24 @@ export class ChatScreen {
         sessionId,
         monitors.filter((monitor) => monitor.status === "ARMED").length,
       )
+      this.render.schedule()
+    } catch (error) {
+      this.options.logs.error("Market monitors", error)
+    }
+  }
+
+  private async refreshAllMarketMonitorCounts(): Promise<void> {
+    const service = this.options.marketMonitors
+    if (!service) return
+    try {
+      const monitors = await service.list()
+      if (this.destroyed) return
+      const counts = new Map<string, number>()
+      for (const monitor of monitors) {
+        if (monitor.status !== "ARMED") continue
+        counts.set(monitor.chatSessionId, (counts.get(monitor.chatSessionId) ?? 0) + 1)
+      }
+      this.armedMonitorCountBySession = counts
       this.render.schedule()
     } catch (error) {
       this.options.logs.error("Market monitors", error)
@@ -818,7 +875,7 @@ export class ChatScreen {
         if (parentId) this.selectSession(parentId)
         break
       }
-      case "/chats":
+      case "/sessions":
         this.openSessions()
         break
       case "/new":
@@ -1001,12 +1058,13 @@ export class ChatScreen {
 
   // --- modals -------------------------------------------------------------------
 
-  /** The chats, on ^L: pick one, start one, or delete one. */
+  /** The sessions, on ^S: pick one, start one, or delete one. */
   private openSessions(): void {
     if (this.modal || this.destroyed) return
     this.showModal(new ChatSessionModal(this.renderer, {
       sessions: this.sessions.filter((session) => session.parentSessionId === null),
       currentId: this.selectedSessionId,
+      monitorCounts: this.armedMonitorCountBySession,
       onSelect: (sessionId) => {
         this.selectSession(sessionId)
         this.closeModal()
@@ -1017,6 +1075,7 @@ export class ChatScreen {
       onDelete: (sessionId) => void this.deleteSession(sessionId),
       onClose: () => this.closeModal(),
     }))
+    void this.refreshAllMarketMonitorCounts()
   }
 
   private async openSubagents(): Promise<void> {
@@ -1161,7 +1220,7 @@ export class ChatScreen {
 
   private showModal(modal: Modal): void {
     this.modal = modal
-    this.root.add(modal.root)
+    this.modalHost.add(modal.root)
     if ("mount" in modal) modal.mount()
     this.renderer.requestRender()
   }
@@ -1170,7 +1229,7 @@ export class ChatScreen {
     const modal = this.modal
     if (!modal) return
     this.modal = null
-    if (!this.root.isDestroyed && !modal.root.isDestroyed) this.root.remove(modal.root)
+    if (!this.modalHost.isDestroyed && !modal.root.isDestroyed) this.modalHost.remove(modal.root)
     modal.destroy()
     // A connection may have been made or dropped in there, and whether the composer is
     // offered at all depends on it.
@@ -1308,13 +1367,16 @@ export class ChatScreen {
     this.composerMarker.fg = this.typing() ? COMPOSER_COLOR : TURN_MARKER_COLOR
     this.composerMeta.content = this.composerMetaText(session)
     this.composerMeta.visible = this.composerUsable()
-    this.hint.content = this.hintText(session)
+    const hint = this.hintText(session)
+    this.hint.content = hint
+    this.hint.marginRight = hint ? 2 : 0
     this.usage.content = this.usageText(session)
     // Session pickers stay live while a reply lands or a worker finishes.
     if (this.modal instanceof ChatSessionModal) {
       this.modal.setSessions(
         this.sessions.filter((candidate) => candidate.parentSessionId === null),
         this.selectedSessionId,
+        this.armedMonitorCountBySession,
       )
     }
     if (this.modal instanceof SubagentSessionModal) {
@@ -1425,8 +1487,10 @@ export class ChatScreen {
       const state = this.streamingBySession.has(session.id) ? "Subagent running" : "Subagent transcript"
       return `${state} · ⌥←/→ workers · ⌥↑ parent`
     }
-    if (session && this.streamingBySession.has(session.id)) return RUNNING_HINT
-    return CHAT_HINT
+    if (session && this.streamingBySession.has(session.id)) {
+      return this.options.embedded ? "Esc interrupt" : RUNNING_HINT
+    }
+    return this.options.embedded ? "" : CHAT_HINT
   }
 
   /**
@@ -1466,9 +1530,15 @@ export class ChatScreen {
       return [note("No model chosen for this chat.\n\nPress ^O to choose which model answers it.")]
     }
 
-    const current = modelLabel(session.model || "model", session.reasoning)
+    const current = transcriptModelLabel(session.model || "model", session.reasoning)
     const blocks = (this.messagesBySession.get(session.id) ?? [])
-      .map((message) => messageBlock(message, current, this.showThoughts, this.promptBackground()))
+      .map((message) => messageBlock(
+        message,
+        current,
+        this.showThoughts,
+        this.promptBackground(),
+        this.options.embedded === true,
+      ))
     const streaming = this.streamingBySession.get(session.id)
     if (streaming) {
       blocks.push(streamingBlock(streaming, current, {
@@ -1594,14 +1664,15 @@ function formatLoopInterval(intervalMs: number): string {
 /**
  * A message as a turn in the transcript.
  *
- * A prompt is a filled block with a chevron. A reply remains on the page with only a
- * muted bullet, leaving the answer visually lighter than the request that started it.
+ * A prompt uses a filled block in the full chat and a left rail in the trade panel.
+ * Replies remain on the page with only a muted bullet.
  */
 function messageBlock(
   message: ChatMessage,
   current: StyledText,
   showThoughts: boolean,
   promptBackground: string,
+  embedded: boolean,
 ): ChatTranscriptBlock {
   if (message.role === "APP_EVENT") {
     return {
@@ -1618,10 +1689,8 @@ function messageBlock(
   }
   if (message.role === "USER") {
     const queued = message.status === "QUEUED"
-    return {
+    const block: ChatTranscriptBlock = {
       id: message.id,
-      marker: new StyledText([fg(queued ? QUEUED_COLOR : TURN_MARKER_COLOR)("›")]),
-      fill: promptBackground,
       padded: true,
       content: new StyledText([fg(queued ? QUEUED_COLOR : TEXT_COLOR)(message.text)]),
       ...(queued
@@ -1630,6 +1699,12 @@ function messageBlock(
           ? { footer: new StyledText([fg(ERROR_COLOR)("failed")]) }
           : {}),
     }
+    if (embedded) block.rail = COMPOSER_COLOR
+    else {
+      block.marker = new StyledText([fg(queued ? QUEUED_COLOR : TURN_MARKER_COLOR)("›")])
+      block.fill = promptBackground
+    }
+    return block
   }
   if (message.role === "TOOL_RESULT") {
     return {
@@ -1713,7 +1788,7 @@ function streamingBlock(
  * read, and its provenance is what they check afterwards.
  */
 function signature(message: ChatMessage, current: StyledText): StyledText {
-  const label = message.model ? modelLabel(message.model, message.reasoning) : current
+  const label = message.model ? transcriptModelLabel(message.model, message.reasoning) : current
   const parts: string[] = []
   if (message.elapsedMs !== null) parts.push(formatDuration(message.elapsedMs))
   if (message.usage) {
@@ -1763,6 +1838,13 @@ function reasoningText(message: ChatMessage): string {
  */
 function modelLabel(model: string, reasoning: string | null): StyledText {
   const chunks: TextChunk[] = [fg(MODEL_COLOR)(model)]
+  if (reasoning) chunks.push(fg(FAINT_COLOR)(` · ${reasoning}`))
+  return new StyledText(chunks)
+}
+
+/** Model provenance recedes with the rest of a transcript footer. */
+function transcriptModelLabel(model: string, reasoning: string | null): StyledText {
+  const chunks: TextChunk[] = [fg(FAINT_COLOR)(model)]
   if (reasoning) chunks.push(fg(FAINT_COLOR)(` · ${reasoning}`))
   return new StyledText(chunks)
 }

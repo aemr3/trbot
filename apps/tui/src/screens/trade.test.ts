@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, type RenderContext } from "@opentui/core"
+import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { OverviewGenerateOptions, OverviewGenerator } from "@trbot/market/overview.ts"
 import type { MarketOverviewDigest } from "@trbot/market/overview.ts"
@@ -46,8 +46,8 @@ import type { StopRuleView, StopTriggerEvent } from "@trbot/trading/stop-monitor
 import { RemoteAlerts, RemoteStopRules } from "../remote-monitors.ts"
 import { LogsScreen } from "./logs.ts"
 import { TradingWorkspaceScreen } from "./trading-workspace.ts"
-import { TradeScreen } from "./trade.ts"
-import type { AppPreferences } from "@trbot/preferences/app.ts"
+import { TradeScreen, type TradeChatPanel } from "./trade.ts"
+import { DEFAULT_APP_PREFERENCES, type AppPreferences } from "@trbot/preferences/app.ts"
 
 // Tab cycles the panels in this order from a freshly mounted screen. Naming the
 // destination keeps the tests readable, and adding a panel only moves this list.
@@ -55,6 +55,51 @@ const FOCUS_ORDER = ["instruments", "portfolio", "chart", "depth", "brokers", "a
 
 function focusPanel(mockInput: { pressTab(): void }, panel: (typeof FOCUS_ORDER)[number]): void {
   for (let step = 0; step < FOCUS_ORDER.indexOf(panel); step++) mockInput.pressTab()
+}
+
+class FakeTradeChatPanel implements TradeChatPanel {
+  readonly root: BoxRenderable
+  readonly keys: KeyEvent[] = []
+  activations = 0
+  deactivations = 0
+  mounted = false
+  destroyed = false
+  modalHost: BoxRenderable | null = null
+
+  constructor(renderer: RenderContext) {
+    this.root = new BoxRenderable(renderer, { width: "100%", flexGrow: 1 })
+    this.root.add(new TextRenderable(renderer, { content: "SIDE CHAT" }))
+  }
+
+  mount(): void {
+    this.mounted = true
+  }
+  setModalHost(host: BoxRenderable): void {
+    this.modalHost = host
+  }
+  hasOpenModal(): boolean {
+    return false
+  }
+  activate(): void {
+    this.activations += 1
+  }
+  deactivate(): void {
+    this.deactivations += 1
+  }
+  capturesInput(): boolean {
+    return true
+  }
+  handleKey(key: KeyEvent): void {
+    this.keys.push(key)
+  }
+  isShowingSession(sessionId: string): boolean {
+    return sessionId === "side-session"
+  }
+  setMarketOpen(): void {}
+  destroy(): void {
+    this.destroyed = true
+    if (!this.root.isDestroyed) this.root.destroyRecursively()
+  }
 }
 
 class FakeQuoteStream implements QuoteStream {
@@ -307,8 +352,10 @@ test("switches between selected-stock and index news feeds", async () => {
   screen.mount()
 
   const stockFrame = await waitForFrame((frame) => frame.includes("Selected stock announces results"))
-  // The title and the feed tabs share one header row.
-  expect(stockFrame).toContain("News   Stock   Index")
+  const stockLines = stockFrame.split("\n")
+  expect(stockLines.some((line) => line.includes("News   Chat"))).toBe(true)
+  expect(stockLines.some((line) => line.includes("Feed   Stock   Indices"))).toBe(true)
+  expect(stockLines.some((line) => line.includes("News") && line.includes("Stock"))).toBe(false)
   expect(requests.at(-1)).toBe("u1")
 
   focusPanel(mockInput, "news")
@@ -319,6 +366,78 @@ test("switches between selected-stock and index news feeds", async () => {
   mockInput.pressArrow("left")
   await waitForFrame((frame) => frame.includes("Selected stock announces results"))
   expect(requests.at(-1)).toBe("u1")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("switches the news panel to its embedded chat and routes input there", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+    width: 120,
+    height: 30,
+    kittyKeyboard: true,
+  })
+  const chat = new FakeTradeChatPanel(renderer)
+  const preferenceChanges: AppPreferences[] = []
+  const screen = new TradeScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    chat,
+    onPreferencesChange: (preferences) => preferenceChanges.push(preferences),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("BIST 30 güne yükselişle başladı"))
+
+  mockInput.pressKey("c", { meta: true })
+  const chatFrame = await waitForFrame((frame) => frame.includes("SIDE CHAT"))
+  await mockInput.typeText("hello")
+
+  const chatLines = chatFrame.split("\n")
+  const toolbarLine = chatLines.findIndex((line) => line.includes("News") && line.includes("Chat"))
+  const contentLine = chatLines.findIndex((line) => line.includes("SIDE CHAT"))
+  expect(contentLine - toolbarLine).toBe(1)
+  expect(chatFrame).not.toContain("AI Overview")
+  expect(chatFrame).not.toContain("BIST 30 güne yükselişle başladı")
+  expect(chat.mounted).toBe(true)
+  expect(chat.modalHost).toBe(screen.root)
+  expect(chat.activations).toBeGreaterThan(0)
+  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
+  expect(screen.capturesInput()).toBe(true)
+  expect(screen.isShowingSession("side-session")).toBe(true)
+  expect(preferenceChanges.at(-1)?.selectedTradeRightView).toBe("chat")
+
+  mockInput.pressKey("n", { meta: true })
+  const newsFrame = await waitForFrame((frame) => (
+    frame.includes("BIST 30 güne yükselişle başladı") && frame.includes("AI Overview")
+  ))
+  expect(newsFrame).not.toContain("SIDE CHAT")
+  expect(screen.isShowingSession("side-session")).toBe(false)
+  expect(preferenceChanges.at(-1)?.selectedTradeRightView).toBe("news")
+
+  screen.destroy()
+  expect(chat.destroyed).toBe(true)
+  renderer.destroy()
+})
+
+test("restores the embedded chat as the selected trade-side view", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const chat = new FakeTradeChatPanel(renderer)
+  const screen = new TradeScreen(renderer, {
+    instruments,
+    candles,
+    news,
+    chat,
+    preferences: { ...DEFAULT_APP_PREFERENCES, selectedTradeRightView: "chat" },
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const frame = await waitForFrame((output) => output.includes("SIDE CHAT"))
+  expect(frame).not.toContain("AI Overview")
+  expect(frame).not.toContain("BIST 30 güne yükselişle başladı")
+  expect(screen.isShowingSession("side-session")).toBe(true)
 
   screen.destroy()
   renderer.destroy()
@@ -1107,7 +1226,9 @@ test("restores and reports list and chart display choices", async () => {
       chartIndicators: [],
       selectedInstrumentUid: "u1",
       orderKind: "LIMIT",
-      selectedChatSessionId: null,
+      selectedMainChatSessionId: null,
+      selectedTradePanelChatSessionId: null,
+      selectedTradeRightView: "news",
       showChatThoughts: true,
     },
     onPreferencesChange: (preferences) => changes.push(preferences),
@@ -1161,7 +1282,9 @@ test("falls back to an available contract when the saved contract no longer exis
       chartIndicators: [],
       selectedInstrumentUid: "expired-contract",
       orderKind: "LIMIT",
-      selectedChatSessionId: null,
+      selectedMainChatSessionId: null,
+      selectedTradePanelChatSessionId: null,
+      selectedTradeRightView: "news",
       showChatThoughts: true,
     },
     onPreferencesChange: (preferences) => selectedInstrumentUids.push(preferences.selectedInstrumentUid),

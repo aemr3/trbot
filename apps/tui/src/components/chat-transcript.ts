@@ -21,6 +21,8 @@ export interface ChatTranscriptBlock {
   marker?: StyledText
   /** Optional background for turns that need a stronger block treatment. */
   fill?: string
+  /** Optional left rail used instead of a filled block. */
+  rail?: string
   /** Whether the turn gets a blank line above and below its content. */
   padded?: boolean
   /** Above the content: what the model thought, or which tool answered. */
@@ -35,6 +37,8 @@ export interface ChatTranscriptBlock {
 export interface ChatTranscriptOptions {
   backgroundColor: string
 }
+
+const LEFT_RAIL: ["left"] = ["left"]
 
 /**
  * The conversation, scrolling.
@@ -67,6 +71,7 @@ export class ChatTranscript {
       backgroundColor: options.backgroundColor,
       contentOptions: {
         flexDirection: "column",
+        paddingRight: 1,
         backgroundColor: options.backgroundColor,
       },
     })
@@ -89,7 +94,15 @@ export class ChatTranscript {
       if (!row) return
       const fill = block.fill ?? this.options.backgroundColor
       row.box.backgroundColor = fill
-      row.box.paddingLeft = block.marker === undefined ? 0 : 2
+      if (block.rail === undefined) {
+        row.box.border = false
+      } else {
+        row.box.border = LEFT_RAIL
+        row.box.borderColor = block.rail
+        row.box.borderStyle = "heavy"
+      }
+      if (block.marker !== undefined) row.box.paddingLeft = 2
+      else row.box.paddingLeft = block.rail === undefined ? 0 : 1
       row.marker.visible = block.marker !== undefined
       if (block.marker !== undefined) row.marker.content = block.marker
       row.marker.top = block.padded ? 1 : 0

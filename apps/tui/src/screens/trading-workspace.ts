@@ -189,12 +189,12 @@ export class TradingWorkspaceScreen {
   }
 
   /** Announces a durable question without resolving or rejecting it. */
-  notifyQuestion(request: ChatQuestionRequest, sessionSelected: boolean): void {
+  notifyQuestion(request: ChatQuestionRequest): void {
     if (this.destroyed || this.knownQuestionIds.has(request.id)) return
     this.knownQuestionIds.add(request.id)
     this.questions.set(request.id, request)
     this.options.sound?.play("QUESTION")
-    if (this.activeTab === "chat" && (this.options.chat.isShowingSession?.(request.sessionId) ?? sessionSelected)) return
+    if (this.options[this.activeTab].isShowingSession?.(request.sessionId) === true) return
 
     this.showQuestionNotification(request)
   }
@@ -202,7 +202,7 @@ export class TradingWorkspaceScreen {
   syncQuestionNotifications(): void {
     if (this.destroyed) return
     for (const request of this.questions.values()) {
-      const visible = this.activeTab === "chat" && this.options.chat.isShowingSession?.(request.sessionId) === true
+      const visible = this.options[this.activeTab].isShowingSession?.(request.sessionId) === true
       if (visible) this.notifications.remove(request.id)
       else if (!this.dismissedQuestionIds.has(request.id)) this.showQuestionNotification(request)
     }

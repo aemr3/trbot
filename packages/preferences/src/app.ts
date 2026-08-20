@@ -18,6 +18,9 @@ export type InstrumentSort = (typeof INSTRUMENT_SORTS)[number]
 export const SORT_DIRECTIONS = ["asc", "desc"] as const
 export type SortDirection = (typeof SORT_DIRECTIONS)[number]
 
+export const TRADE_RIGHT_VIEWS = ["news", "chat"] as const
+export type TradeRightView = (typeof TRADE_RIGHT_VIEWS)[number]
+
 // Which way a sort reads when it is first picked: the biggest movers and the
 // busiest contracts lead, but a list by name reads A to Z.
 export const DEFAULT_SORT_DIRECTIONS = {
@@ -44,7 +47,11 @@ export interface AppPreferences {
   selectedInstrumentUid: string | null
   orderKind: ViopOrderKind
   /** The conversation restored when CHAT opens again. */
-  selectedChatSessionId: string | null
+  selectedMainChatSessionId: string | null
+  /** The conversation restored in the chat embedded beside the trading workspace. */
+  selectedTradePanelChatSessionId: string | null
+  /** Which view is restored beside the trading workspace. */
+  selectedTradeRightView: TradeRightView
   /** Whether CHAT expands model reasoning instead of showing only its summary line. */
   showChatThoughts: boolean
 }
@@ -68,7 +75,9 @@ export const AppPreferencesSchema: z.ZodType<AppPreferences> = z.object({
   chartIndicators: ChartIndicatorListSchema,
   selectedInstrumentUid: RequiredTextSchema.nullable().default(null),
   orderKind: z.enum(VIOP_ORDER_KINDS),
-  selectedChatSessionId: RequiredTextSchema.nullable().default(null),
+  selectedMainChatSessionId: RequiredTextSchema.nullable().default(null),
+  selectedTradePanelChatSessionId: RequiredTextSchema.nullable().default(null),
+  selectedTradeRightView: z.enum(TRADE_RIGHT_VIEWS).default("news"),
   showChatThoughts: z.boolean().default(true),
 })
 
@@ -86,7 +95,9 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   chartIndicators: [],
   selectedInstrumentUid: null,
   orderKind: "LIMIT",
-  selectedChatSessionId: null,
+  selectedMainChatSessionId: null,
+  selectedTradePanelChatSessionId: null,
+  selectedTradeRightView: "news",
   showChatThoughts: true,
 }
 

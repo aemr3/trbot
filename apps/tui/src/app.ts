@@ -318,7 +318,61 @@ export class App {
     const orders = new HttpOrderSource(http)
     const instruments = new HttpInstrumentSource(http)
     const candles = new HttpCandleSource(http)
+    const chats = new HttpChatSessions(http)
+    const marketMonitors = new HttpMarketMonitors(http)
     let workspace: TradingWorkspaceScreen | null = null
+    let mainChat: ChatScreen
+    let tradePanelChat: ChatScreen
+
+    const saveChatSelection = (
+      key: "selectedMainChatSessionId" | "selectedTradePanelChatSessionId",
+      sessionId: string | null,
+    ): void => {
+      const current = this.preferences ?? DEFAULT_APP_PREFERENCES
+      workspace?.syncQuestionNotifications()
+      if (current[key] === sessionId) return
+      const next = { ...current, [key]: sessionId }
+      this.preferences = next
+      if (this.preferencesLoaded) this.persistPreferences?.(next)
+    }
+    const saveThoughtVisibility = (source: ChatScreen, showChatThoughts: boolean): void => {
+      const current = this.preferences ?? DEFAULT_APP_PREFERENCES
+      const other = source === mainChat ? tradePanelChat : mainChat
+      other.setShowThoughts(showChatThoughts)
+      if (current.showChatThoughts === showChatThoughts) return
+      const next = { ...current, showChatThoughts }
+      this.preferences = next
+      if (this.preferencesLoaded) this.persistPreferences?.(next)
+    }
+
+    const accountOption = this.aiAccount ? { account: this.aiAccount } : {}
+    mainChat = new ChatScreen(this.renderer, {
+      chats,
+      marketMonitors,
+      ...accountOption,
+      sound: this.sound,
+      logs: this.logs,
+      initialSessionId: this.preferences?.selectedMainChatSessionId,
+      initialShowThoughts: this.preferences?.showChatThoughts,
+      onSessionChange: (sessionId) => saveChatSelection("selectedMainChatSessionId", sessionId),
+      onShowThoughtsChange: (showChatThoughts) => saveThoughtVisibility(mainChat, showChatThoughts),
+      onQuestionPending: (request) => workspace?.notifyQuestion(request),
+      onQuestionResolved: (requestId) => workspace?.resolveQuestion(requestId),
+      onNotification: (notification) => workspace?.notifyAgent(notification),
+      onNotificationDismissed: (notificationId) => workspace?.resolveAgentNotification(notificationId),
+    })
+    tradePanelChat = new ChatScreen(this.renderer, {
+      chats,
+      embedded: true,
+      marketMonitors,
+      ...accountOption,
+      logs: this.logs,
+      initialSessionId: this.preferences?.selectedTradePanelChatSessionId,
+      initialShowThoughts: this.preferences?.showChatThoughts,
+      onSessionChange: (sessionId) => saveChatSelection("selectedTradePanelChatSessionId", sessionId),
+      onShowThoughtsChange: (showChatThoughts) => saveThoughtVisibility(tradePanelChat, showChatThoughts),
+    })
+
     const trade = new TradeScreen(this.renderer, {
       instruments,
       candles,
@@ -336,11 +390,14 @@ export class App {
       memberFeatures: new HttpMemberFeatureSource(http),
       preferences: this.preferences,
       onPreferencesChange: (preferences) => {
-        // Chat owns its session and thought visibility. A trade-screen update carries
-        // the copy it opened with, so preserve newer chat choices rather than reverting them.
+        // Each chat view owns its session, and both own thought visibility. A trade-screen
+        // update carries the copy it opened with, so preserve newer chat choices.
         const next = {
           ...preferences,
-          selectedChatSessionId: this.preferences?.selectedChatSessionId ?? preferences.selectedChatSessionId,
+          selectedMainChatSessionId:
+            this.preferences?.selectedMainChatSessionId ?? preferences.selectedMainChatSessionId,
+          selectedTradePanelChatSessionId:
+            this.preferences?.selectedTradePanelChatSessionId ?? preferences.selectedTradePanelChatSessionId,
           showChatThoughts: this.preferences?.showChatThoughts ?? preferences.showChatThoughts,
         }
         this.preferences = next
@@ -358,57 +415,28 @@ export class App {
       logs: this.logs,
       manageInput: false,
       onMarketOpenChange: (open) => workspace?.setMarketOpen(open),
+      chat: tradePanelChat,
     })
-    // The chat screen is built with the workspace and stays mounted behind the
-    // other tabs: a reply the server is generating has to keep arriving while the
-    // trader is watching the market.
-    const chats = new HttpChatSessions(http)
-    const accountOption = this.aiAccount ? { account: this.aiAccount } : {}
-    const chat = new ChatScreen(this.renderer, {
-      chats,
-      marketMonitors: new HttpMarketMonitors(http),
-      ...accountOption,
-      sound: this.sound,
-      logs: this.logs,
-      initialSessionId: this.preferences?.selectedChatSessionId,
-      initialShowThoughts: this.preferences?.showChatThoughts,
-      onSessionChange: (selectedChatSessionId) => {
-        const current = this.preferences ?? DEFAULT_APP_PREFERENCES
-        workspace?.syncQuestionNotifications()
-        if (current.selectedChatSessionId === selectedChatSessionId) return
-        const next = { ...current, selectedChatSessionId }
-        this.preferences = next
-        if (this.preferencesLoaded) this.persistPreferences?.(next)
-      },
-      onShowThoughtsChange: (showChatThoughts) => {
-        const current = this.preferences ?? DEFAULT_APP_PREFERENCES
-        if (current.showChatThoughts === showChatThoughts) return
-        const next = { ...current, showChatThoughts }
-        this.preferences = next
-        if (this.preferencesLoaded) this.persistPreferences?.(next)
-      },
-      onQuestionPending: (request, selected) => workspace?.notifyQuestion(request, selected),
-      onQuestionResolved: (requestId) => workspace?.resolveQuestion(requestId),
-      onNotification: (notification) => workspace?.notifyAgent(notification),
-      onNotificationDismissed: (notificationId) => workspace?.resolveAgentNotification(notificationId),
-    })
+    // Both views stay mounted and observe the same server-owned runs. Only the main
+    // view owns global sounds and notifications, so one event has one side effect.
+    const chatViews = [mainChat, tradePanelChat]
     new ChatClient(stream, {
-      onSessions: (sessions) => chat.acceptSessions(sessions),
-      onMessage: (sessionId, message) => chat.acceptMessage(sessionId, message),
-      onMessageRemoved: (sessionId, messageId) => chat.acceptMessageRemoved(sessionId, messageId),
-      onDelta: (sessionId, runId, delta) => chat.acceptDelta(sessionId, runId, delta),
-      onRun: (sessionId, runId, status, error) => chat.acceptRun(sessionId, runId, status, error),
-      onQuestionAsked: (request) => chat.acceptQuestion(request),
-      onQuestionResolved: (sessionId, requestId) => chat.acceptQuestionResolved(sessionId, requestId),
-      onNotification: (notification) => chat.acceptNotification(notification),
-      onNotificationDismissed: (notificationId) => chat.acceptNotificationDismissed(notificationId),
-      onResync: (sessionId) => chat.resync(sessionId),
+      onSessions: (sessions) => chatViews.forEach((view) => view.acceptSessions(sessions)),
+      onMessage: (sessionId, message) => chatViews.forEach((view) => view.acceptMessage(sessionId, message)),
+      onMessageRemoved: (sessionId, messageId) => chatViews.forEach((view) => view.acceptMessageRemoved(sessionId, messageId)),
+      onDelta: (sessionId, runId, delta) => chatViews.forEach((view) => view.acceptDelta(sessionId, runId, delta)),
+      onRun: (sessionId, runId, status, error) => chatViews.forEach((view) => view.acceptRun(sessionId, runId, status, error)),
+      onQuestionAsked: (request) => chatViews.forEach((view) => view.acceptQuestion(request)),
+      onQuestionResolved: (sessionId, requestId) => chatViews.forEach((view) => view.acceptQuestionResolved(sessionId, requestId)),
+      onNotification: (notification) => chatViews.forEach((view) => view.acceptNotification(notification)),
+      onNotificationDismissed: (notificationId) => chatViews.forEach((view) => view.acceptNotificationDismissed(notificationId)),
+      onResync: (sessionId) => chatViews.forEach((view) => view.resync(sessionId)),
     })
     const logs = new LogsScreen(this.renderer, {
       logs: this.logs,
       onClose: () => workspace?.selectTab("trade"),
     })
-    workspace = new TradingWorkspaceScreen(this.renderer, { trade, chat, logs, sound: this.sound })
+    workspace = new TradingWorkspaceScreen(this.renderer, { trade, chat: mainChat, logs, sound: this.sound })
     return workspace
   }
 

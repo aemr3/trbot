@@ -88,10 +88,12 @@ import {
   DEFAULT_SORT_DIRECTIONS,
   DEFAULT_APP_PREFERENCES,
   INSTRUMENT_SORTS,
+  TRADE_RIGHT_VIEWS,
   normalizeAppPreferences,
   type InstrumentSort,
   type SortDirection,
   type AppPreferences,
+  type TradeRightView,
 } from "@trbot/preferences/app.ts"
 
 const UP_COLOR = TUI_THEME.positive
@@ -117,6 +119,8 @@ const DEPTH_PANEL_WIDTH = 48
 // afford that, and the portfolio header clips itself instead.
 const SIDEBAR_WIDTH = 40
 const COMPACT_SIDEBAR_WIDTH = 30
+const RIGHT_PANEL_BASE_WIDTH = 46
+const CHART_WIDTH_TRANSFER_RATIO = 0.1
 // What the instrument list spends on chrome rather than on a row: the sidebar's
 // own padding, the list's selection indicator, its scrollbar gutter, and two
 // columns of breathing room so the change column does not sit on the edge.
@@ -145,10 +149,11 @@ const DEPTH_LAYOUT_WIDTH = 190
 // How often close-based and ATR stop rules re-read their candles. Anything
 // finer just re-reads the same forming candle.
 const SORT_LABELS = { change: "Change", volume: "Volume", name: "Name" } satisfies Record<InstrumentSort, string>
+const RIGHT_VIEW_LABELS = { news: "News", chat: "Chat" } satisfies Record<TradeRightView, string>
 const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
 type DestructiveAction = "cancel-orders" | "exit-positions" | "delete-stop" | "delete-alert"
-const NEWS_FEED_LABELS = { instrument: "Stock", index: "Index" } satisfies Record<NewsFeed, string>
+const NEWS_FEED_LABELS = { instrument: "Stock", index: "Indices" } satisfies Record<NewsFeed, string>
 const TRADE_HINT = "B/S trade · C chat · L logs · M overview model · / ticker · ? help · Ctrl+C quit"
 const TRADE_SHORTCUTS: ShortcutHelpSection[] = [
   {
@@ -262,8 +267,9 @@ const TRADE_SHORTCUTS: ShortcutHelpSection[] = [
     ],
   },
   {
-    title: "News",
+    title: "News and side chat",
     bindings: [
+      { keys: "⌥N / ⌥C", description: "Show news / chat in the right panel" },
       { keys: "←/→ or h/l", description: "Change stock / index feed" },
       { keys: "↑/↓ or j/k", description: "Move selection or scroll article" },
       { keys: "Home / End", description: "Select first / last article" },
@@ -333,6 +339,22 @@ export interface TradeScreenOptions {
   onMarketOpenChange?: (open: boolean) => void
   now?: () => Date
   marketClockIntervalMs?: number
+  chat?: TradeChatPanel
+}
+
+/** Chat behavior mounted in the trade screen's right column. */
+export interface TradeChatPanel {
+  readonly root: BoxRenderable
+  mount?(): void
+  setModalHost?(host: BoxRenderable): void
+  hasOpenModal?(): boolean
+  activate(): void
+  deactivate(): void
+  capturesInput(): boolean
+  handleKey(key: KeyEvent): void
+  isShowingSession(sessionId: string): boolean
+  setMarketOpen(open: boolean | null): void
+  destroy(): void
 }
 
 type Focus = "instruments" | "portfolio" | "chart" | "depth" | "brokers" | "account" | "news" | "overview"
@@ -353,10 +375,13 @@ export class TradeScreen {
   private readonly depthPanel: DepthPanel
   private readonly brokeragePanel: BrokeragePanel
   private readonly rightPanel: BoxRenderable
+  private readonly rightViewToolbar: BoxRenderable
+  private readonly newsWorkspace: BoxRenderable
   private readonly newsSection: BoxRenderable
   private readonly overviewPanel: OverviewPanel
   private readonly viopHeader: TextRenderable
-  private readonly newsHeader: TextRenderable
+  private readonly rightViewButtons = new Map<TradeRightView, BoxRenderable>()
+  private readonly rightViewButtonLabels = new Map<TradeRightView, TextRenderable>()
   private readonly newsFeedButtons = new Map<NewsFeed, BoxRenderable>()
   private readonly newsFeedButtonLabels = new Map<NewsFeed, TextRenderable>()
   private readonly newsList: SelectableList
@@ -375,6 +400,7 @@ export class TradeScreen {
   private scheduledMarketOpen: boolean
   private providerMarketOpen: boolean | null = null
   private newsFeed: NewsFeed = "instrument"
+  private rightView: TradeRightView
   private instruments: ViopInstrument[] = []
   private newsArticles: NewsArticle[] = []
   private readonly symbolIndex = new Map<string, number>()
@@ -508,6 +534,22 @@ export class TradeScreen {
       this.modelModal.handleKey(key)
       return
     }
+    if (this.rightView === "chat" && this.options.chat?.hasOpenModal?.()) {
+      this.options.chat.handleKey(key)
+      return
+    }
+    if (isAltShortcut(key, "n")) {
+      this.selectRightView("news")
+      return
+    }
+    if (isAltShortcut(key, "c")) {
+      this.selectRightView("chat")
+      return
+    }
+    if (this.rightView === "chat" && this.options.chat) {
+      this.options.chat.handleKey(key)
+      return
+    }
     if (isShortcutHelpKey(key)) {
       this.openShortcutHelp()
       return
@@ -596,6 +638,10 @@ export class TradeScreen {
     this.preferences = normalizeAppPreferences(options.preferences ?? DEFAULT_APP_PREFERENCES)
     this.instrumentSort = this.preferences.instrumentSort
     this.sortDirection = this.preferences.sortDirection
+    this.rightView = this.preferences.selectedTradeRightView === "chat" && !options.chat
+      ? "news"
+      : this.preferences.selectedTradeRightView
+    if (this.rightView === "chat") this.focus = "news"
 
     this.root = new BoxRenderable(renderer, {
       flexDirection: "column",
@@ -603,6 +649,7 @@ export class TradeScreen {
       height: "100%",
       onSizeChange: () => this.updateResponsiveLayout(),
     })
+    options.chat?.setModalHost?.(this.root)
 
     const columns = new BoxRenderable(renderer, {
       flexDirection: "row",
@@ -756,22 +803,52 @@ export class TradeScreen {
     this.depthColumn.add(this.brokeragePanel.root)
 
     this.rightPanel = new BoxRenderable(renderer, {
-      width: 46,
+      width: RIGHT_PANEL_BASE_WIDTH,
       flexDirection: "column",
       paddingLeft: 1,
       paddingRight: 1,
       backgroundColor: SIDE_PANEL_BG,
     })
-    // News and the AI overview share the column: each keeps the rows its fixed
-    // content needs and they split the remainder, like the depth column does.
+    this.newsWorkspace = new BoxRenderable(renderer, {
+      width: "100%",
+      flexGrow: 1,
+      flexDirection: "column",
+    })
+    // News and the AI overview share this view of the column. Chat replaces the
+    // complete view below the common switch rather than only replacing the feed.
     this.newsSection = new BoxRenderable(renderer, {
       width: "100%",
       flexDirection: "column",
       flexBasis: NEWS_SECTION_BASIS,
       flexGrow: 1,
     })
-    // Like the AI overview beneath it, one row carries the title and the feed
-    // tabs so the list keeps the remaining lines.
+    this.rightViewToolbar = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      height: 1,
+      flexShrink: 0,
+      gap: 1,
+      marginBottom: 1,
+    })
+    for (const view of TRADE_RIGHT_VIEWS) {
+      const button = new BoxRenderable(renderer, {
+        height: 1,
+        paddingLeft: 1,
+        paddingRight: 1,
+        onMouseDown: (event) => {
+          if (event.button !== 0) return
+          this.selectRightView(view)
+        },
+      })
+      const label = new TextRenderable(renderer, { content: RIGHT_VIEW_LABELS[view], wrapMode: "none" })
+      button.add(label)
+      this.rightViewToolbar.add(button)
+      this.rightViewButtons.set(view, button)
+      this.rightViewButtonLabels.set(view, label)
+    }
+    this.rightPanel.add(this.rightViewToolbar)
+
+    // Feed selection gets its own row so it reads as a control within News,
+    // rather than as another peer of the News and Chat views.
     const newsFeedToolbar = new BoxRenderable(renderer, {
       flexDirection: "row",
       height: 1,
@@ -779,13 +856,11 @@ export class TradeScreen {
       gap: 1,
       marginBottom: 1,
     })
-    this.newsHeader = new TextRenderable(renderer, {
-      content: "News",
-      fg: HEADER_COLOR,
-      marginRight: 1,
-      wrapMode: "none",
-    })
-    newsFeedToolbar.add(this.newsHeader)
+    newsFeedToolbar.add(new TextRenderable(renderer, {
+      content: "Feed",
+      fg: NEUTRAL_COLOR,
+      width: 5,
+    }))
     for (const feed of NEWS_FEEDS) {
       const button = new BoxRenderable(renderer, {
         height: 1,
@@ -831,7 +906,7 @@ export class TradeScreen {
     })
     this.newsMessage = new TextRenderable(renderer, { content: "Loading news…", fg: TUI_THEME.textSubdued })
     this.setNewsContent(this.newsMessage)
-    this.rightPanel.add(this.newsSection)
+    this.newsWorkspace.add(this.newsSection)
     this.overviewPanel = new OverviewPanel(renderer, {
       onGenerate: () => void this.generateOverview({ force: true }),
       onModeChange: () => this.selectOverviewMode(),
@@ -840,7 +915,13 @@ export class TradeScreen {
     this.overviewPanel.setEntitled(options.memberFeatures ? null : false)
     this.overviewPanel.root.flexBasis = OVERVIEW_PANEL_BASIS
     this.overviewPanel.root.flexGrow = 1
-    this.rightPanel.add(this.overviewPanel.root)
+    this.newsWorkspace.add(this.overviewPanel.root)
+    this.rightPanel.add(this.newsWorkspace)
+    this.newsWorkspace.visible = this.rightView === "news"
+    if (options.chat) {
+      options.chat.root.visible = this.rightView === "chat"
+      this.rightPanel.add(options.chat.root)
+    }
 
     columns.add(this.leftPanel)
     columns.add(this.centerPanel)
@@ -876,6 +957,8 @@ export class TradeScreen {
 
   mount(): void {
     if (this.options.manageInput !== false) this.renderer.keyInput.on("keypress", this.handleKeypress)
+    this.options.chat?.mount?.()
+    this.options.chat?.deactivate()
     this.updateFocusIndicator()
     this.accountPanel.mount()
     void this.load()
@@ -919,6 +1002,7 @@ export class TradeScreen {
     this.closeStopTrigger()
     this.closeAlertEditor()
     this.closeAlertPopup()
+    this.options.chat?.destroy()
     this.stopMonitor?.destroy()
     this.alertMonitor?.destroy()
     this.contractDetailsRequest?.abort()
@@ -981,7 +1065,8 @@ export class TradeScreen {
    * ticker search takes letters, and a modal in front of the panels owns Escape.
    */
   capturesInput(): boolean {
-    return this.tickerSearchQuery !== null
+    return (this.rightView === "chat" && (this.options.chat?.capturesInput() ?? false))
+      || this.tickerSearchQuery !== null
       || this.orderTicket !== null
       || this.shortcutHelp !== null
       || this.brokerageDateModal !== null
@@ -997,7 +1082,20 @@ export class TradeScreen {
     this.handleKeypress(key)
   }
 
+  activate(): void {
+    if (this.rightView === "chat" && this.focus === "news") this.options.chat?.activate()
+  }
+
+  deactivate(): void {
+    this.options.chat?.deactivate()
+  }
+
+  isShowingSession(sessionId: string): boolean {
+    return this.rightView === "chat" && this.options.chat?.isShowingSession(sessionId) === true
+  }
+
   setMarketOpen(open: boolean | null): void {
+    this.options.chat?.setMarketOpen(open)
     if (this.destroyed || open === null || this.marketOpen === open) return
     this.marketOpen = open
     this.footer.backgroundColor = workspaceChromeBackground(open)
@@ -2462,8 +2560,28 @@ export class TradeScreen {
 
   private setFocus(focus: Focus): void {
     if (this.focus === focus) return
+    const leavingChat = this.focus === "news" && this.rightView === "chat"
     this.focus = focus
+    if (leavingChat) this.options.chat?.deactivate()
+    if (focus === "news" && this.rightView === "chat") this.options.chat?.activate()
     this.updateFocusIndicator()
+  }
+
+  private selectRightView(view: TradeRightView): void {
+    if (view === "chat" && !this.options.chat) return
+    if (this.rightView === view) {
+      this.setFocus("news")
+      return
+    }
+    this.options.chat?.deactivate()
+    this.rightView = view
+    this.savePreferences({ selectedTradeRightView: view })
+    this.setFocus("news")
+    this.newsWorkspace.visible = view === "news"
+    if (this.options.chat) this.options.chat.root.visible = view === "chat"
+    if (view === "chat") this.options.chat!.activate()
+    this.paintNewsToolbar()
+    this.renderer.requestRender()
   }
 
   private setConnected(connected: boolean): void {
@@ -2483,8 +2601,7 @@ export class TradeScreen {
     this.accountPanel.setFocused(this.focus === "account")
     this.portfolioPanel.setFocused(this.focus === "portfolio")
     this.overviewPanel.setFocused(this.focus === "overview")
-    this.newsHeader.fg = this.focus === "news" ? FOCUSED_HEADER : UNFOCUSED_HEADER
-    this.paintNewsFeedToolbar()
+    this.paintNewsToolbar()
     this.updateResponsiveLayout()
   }
 
@@ -2494,9 +2611,25 @@ export class TradeScreen {
       const button = this.newsFeedButtons.get(feed)
       const label = this.newsFeedButtonLabels.get(feed)
       if (!button || !label) continue
+      button.visible = this.rightView === "news"
       button.backgroundColor = selected ? SELECTED_ROW_BG : undefined
       label.fg = selected ? TUI_THEME.textStrong : this.focus === "news" ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }
+  }
+
+  private paintNewsToolbar(): void {
+    this.rightViewToolbar.marginBottom = this.rightView === "news" ? 1 : 0
+    for (const view of TRADE_RIGHT_VIEWS) {
+      const selected = this.rightView === view
+      const button = this.rightViewButtons.get(view)
+      const label = this.rightViewButtonLabels.get(view)
+      if (!button || !label) continue
+      button.backgroundColor = selected ? SELECTED_ROW_BG : undefined
+      label.fg = selected
+        ? TUI_THEME.textStrong
+        : this.focus === "news" ? TUI_THEME.textSecondary : TUI_THEME.textFaint
+    }
+    this.paintNewsFeedToolbar()
   }
 
   private setEquityConnected(connected: boolean): void {
@@ -2535,13 +2668,21 @@ export class TradeScreen {
     const wide = this.root.width >= DEPTH_LAYOUT_WIDTH
     const depthFocused = this.focus === "depth" || this.focus === "brokers"
     const rightFocused = this.focus === "news" || this.focus === "overview"
+    const depthVisible = compact ? depthFocused : wide || depthFocused
     this.leftPanel.width = compact ? COMPACT_SIDEBAR_WIDTH : SIDEBAR_WIDTH
     this.centerPanel.visible = !compact || (!rightFocused && !depthFocused)
-    this.depthColumn.visible = compact ? depthFocused : wide || depthFocused
+    this.depthColumn.visible = depthVisible
     this.rightPanel.visible = compact ? rightFocused : wide || !depthFocused
     this.depthColumn.width = compact ? "auto" : DEPTH_PANEL_WIDTH
     this.depthColumn.flexGrow = compact ? 1 : 0
-    this.rightPanel.width = compact ? "auto" : 46
+    if (compact) {
+      this.rightPanel.width = "auto"
+    } else {
+      const fixedWidth = SIDEBAR_WIDTH + RIGHT_PANEL_BASE_WIDTH + (depthVisible ? DEPTH_PANEL_WIDTH : 0)
+      const originalCenterWidth = Math.max(0, this.root.width - fixedWidth)
+      this.rightPanel.width = RIGHT_PANEL_BASE_WIDTH
+        + Math.round(originalCenterWidth * CHART_WIDTH_TRANSFER_RATIO)
+    }
     this.rightPanel.flexGrow = compact ? 1 : 0
   }
 
@@ -2686,6 +2827,10 @@ function overviewCacheKey(instrumentUid: string, mode: OverviewMode): string {
 function isCapitalShortcut(key: KeyEvent, letter: "a" | "c" | "g" | "m" | "n" | "o" | "t" | "v"): boolean {
   if (key.ctrl || key.meta || key.option) return false
   return key.sequence === letter.toUpperCase() || (key.shift && key.name === letter)
+}
+
+function isAltShortcut(key: KeyEvent, letter: "c" | "n"): boolean {
+  return Boolean(key.meta || key.option) && !key.ctrl && key.name === letter
 }
 
 function isLowercaseShortcut(key: KeyEvent, letter: "c" | "x" | "d"): boolean {

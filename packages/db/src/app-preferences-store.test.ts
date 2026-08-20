@@ -34,7 +34,9 @@ describe("app preferences store", () => {
       chartIndicators: ["EMA_20", "VWAP"],
       selectedInstrumentUid: "future-2",
       orderKind: "MARKETABLE_LIMIT",
-      selectedChatSessionId: "chat-2",
+      selectedMainChatSessionId: "chat-2",
+      selectedTradePanelChatSessionId: "chat-7",
+      selectedTradeRightView: "chat",
       showChatThoughts: false,
     })
     connection.close()
@@ -50,7 +52,9 @@ describe("app preferences store", () => {
       chartIndicators: ["EMA_20", "VWAP"],
       selectedInstrumentUid: "future-2",
       orderKind: "MARKETABLE_LIMIT",
-      selectedChatSessionId: "chat-2",
+      selectedMainChatSessionId: "chat-2",
+      selectedTradePanelChatSessionId: "chat-7",
+      selectedTradeRightView: "chat",
       showChatThoughts: false,
     })
   })

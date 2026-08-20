@@ -32,7 +32,11 @@ function session(overrides: Partial<ChatSession> = {}): ChatSession {
   }
 }
 
-async function mountModal(options: { sessions: ChatSession[]; currentId?: string | null }) {
+async function mountModal(options: {
+  sessions: ChatSession[]
+  currentId?: string | null
+  monitorCounts?: ReadonlyMap<string, number>
+}) {
   const harness = await createTestRenderer({ width: 90, height: 26 })
   const selected: string[] = []
   const deleted: string[] = []
@@ -41,6 +45,7 @@ async function mountModal(options: { sessions: ChatSession[]; currentId?: string
   const modal = new ChatSessionModal(harness.renderer, {
     sessions: options.sessions,
     currentId: options.currentId ?? null,
+    monitorCounts: options.monitorCounts,
     now: () => NOW,
     onSelect: (sessionId) => {
       selected.push(sessionId)
@@ -59,7 +64,7 @@ async function mountModal(options: { sessions: ChatSession[]; currentId?: string
   return { ...harness, modal, selected, deleted, created: () => created, closed: () => closed }
 }
 
-test("lists chats newest first, marking the one on screen behind it", async () => {
+test("lists sessions newest first, marking the one on screen behind it", async () => {
   // Recency is the order that matters: the chat a trader wants back is nearly always
   // the one they were just in.
   const { modal, renderOnce, captureCharFrame, renderer } = await mountModal({
@@ -72,8 +77,8 @@ test("lists chats newest first, marking the one on screen behind it", async () =
   await renderOnce()
 
   const frame = captureCharFrame()
-  expect(frame).toContain("Chats")
-  expect(frame).toContain("2 chats")
+  expect(frame).toContain("Sessions")
+  expect(frame).toContain("2 sessions")
   expect(frame.indexOf("ASELS setup")).toBeLessThan(frame.indexOf("Risk sizing"))
   // Touched today shows the time, anything older the date.
   expect(frame).toContain("14:32")
@@ -120,6 +125,19 @@ test("shows what is going on in a chat that is answering elsewhere", async () =>
   renderer.destroy()
 })
 
+test("shows armed monitor counts beside their sessions", async () => {
+  const { modal, renderOnce, captureCharFrame, renderer } = await mountModal({
+    sessions: [session()],
+    monitorCounts: new Map([["chat-1", 2]]),
+  })
+  await renderOnce()
+
+  expect(captureCharFrame()).toContain("2 monitors")
+
+  modal.destroy()
+  renderer.destroy()
+})
+
 test("deleting takes two presses of d, and moving off withdraws the question", async () => {
   const { modal, deleted, renderOnce, captureCharFrame, renderer } = await mountModal({
     sessions: [
@@ -145,11 +163,11 @@ test("deleting takes two presses of d, and moving off withdraws the question", a
   renderer.destroy()
 })
 
-test("starts a chat on n, and says so when there are none", async () => {
+test("starts a session on n, and says so when there are none", async () => {
   const { modal, created, renderOnce, captureCharFrame, renderer } = await mountModal({ sessions: [] })
   await renderOnce()
 
-  expect(captureCharFrame()).toContain("No chats yet")
+  expect(captureCharFrame()).toContain("No sessions yet")
 
   modal.handleKey(key("n"))
   expect(created()).toBe(1)

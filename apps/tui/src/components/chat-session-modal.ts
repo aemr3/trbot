@@ -16,11 +16,13 @@ const BORDER_COLOR = TUI_THEME.textFaint
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
 const ACCENT_COLOR = TUI_THEME.accent
+const MONITOR_COLOR = TUI_THEME.monitorAccent
 const CONFIRM_COLOR = TUI_THEME.warning
 const SELECTED_BG = TUI_THEME.overlaySelection
 
 export interface ChatSessionModalOptions {
   sessions: ChatSession[]
+  monitorCounts?: ReadonlyMap<string, number>
   /** The chat on screen behind the modal, marked so a trader knows where they are. */
   currentId: string | null
   onSelect: (sessionId: string) => void
@@ -47,6 +49,7 @@ export class ChatSessionModal {
 
   private sessions: ChatSession[]
   private currentId: string | null
+  private monitorCounts: ReadonlyMap<string, number>
   private highlighted: string | null = null
   private pendingDelete: string | null = null
   private destroyed = false
@@ -57,6 +60,7 @@ export class ChatSessionModal {
   ) {
     this.sessions = order(options.sessions)
     this.currentId = options.currentId
+    this.monitorCounts = options.monitorCounts ?? new Map()
     this.highlighted = options.currentId ?? this.sessions[0]?.id ?? null
 
     this.root = new BoxRenderable(renderer, {
@@ -104,10 +108,15 @@ export class ChatSessionModal {
   }
 
   /** Keeps the list live: a reply can land, or a chat be renamed, while this is open. */
-  setSessions(sessions: ChatSession[], currentId: string | null): void {
+  setSessions(
+    sessions: ChatSession[],
+    currentId: string | null,
+    monitorCounts: ReadonlyMap<string, number> = this.monitorCounts,
+  ): void {
     if (this.destroyed) return
     this.sessions = order(sessions)
     this.currentId = currentId
+    this.monitorCounts = monitorCounts
     if (!this.sessions.some((session) => session.id === this.highlighted)) {
       this.highlighted = currentId ?? this.sessions[0]?.id ?? null
     }
@@ -170,8 +179,8 @@ export class ChatSessionModal {
     if (this.destroyed) return
     const now = this.options.now?.() ?? Date.now()
     this.header.content = new StyledText([
-      fg(VALUE_COLOR)("Chats\n"),
-      fg(MUTED_COLOR)(`${this.sessions.length === 1 ? "1 chat" : `${this.sessions.length} chats`}\n`),
+      fg(VALUE_COLOR)("Sessions\n"),
+      fg(MUTED_COLOR)(`${this.sessions.length === 1 ? "1 session" : `${this.sessions.length} sessions`}\n`),
     ])
 
     this.list.setRows(
@@ -197,18 +206,22 @@ export class ChatSessionModal {
     if (session.running) marks.push("answering")
     if (session.queued > 0) marks.push(`+${session.queued} queued`)
     chunks.push(fg(MUTED_COLOR)(`  ${marks.join(" · ")}`))
+    const monitorCount = this.monitorCounts.get(session.id) ?? 0
+    if (monitorCount > 0) {
+      chunks.push(fg(MONITOR_COLOR)(` · ${monitorCount} monitor${monitorCount === 1 ? "" : "s"}`))
+    }
     return new StyledText(chunks)
   }
 
   private footerChunks(): TextChunk[] {
     if (this.sessions.length === 0) {
-      return [fg(MUTED_COLOR)("\nNo chats yet.\nn starts one · Esc close")]
+      return [fg(MUTED_COLOR)("\nNo sessions yet.\nn starts one · Esc close")]
     }
     const pending = this.sessions.find((session) => session.id === this.pendingDelete)
     if (pending) {
       return [fg(CONFIRM_COLOR)(`\nPress d again to delete "${pending.title}".`)]
     }
-    return [fg(MUTED_COLOR)("\nEnter open · n new · d delete · ↑↓ chat · Esc close")]
+    return [fg(MUTED_COLOR)("\nEnter open · n new · d delete · ↑↓ session · Esc close")]
   }
 
   private resizeModal(): void {

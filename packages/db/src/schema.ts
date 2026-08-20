@@ -1,4 +1,5 @@
 import { index, integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { TRADE_RIGHT_VIEWS } from "@trbot/preferences/app.ts"
 
 export const authState = sqliteTable("auth_state", {
   accountKey: text("account_key").primaryKey(),
@@ -158,7 +159,9 @@ export const appPreferences = sqliteTable("app_preferences", {
   chartIndicators: text("chart_indicators").notNull().default(""),
   selectedInstrumentUid: text("selected_instrument_uid"),
   orderKind: text("order_kind").notNull().default("LIMIT"),
-  selectedChatSessionId: text("selected_chat_session_id"),
+  selectedMainChatSessionId: text("selected_main_chat_session_id"),
+  selectedTradePanelChatSessionId: text("selected_trade_panel_chat_session_id"),
+  selectedTradeRightView: text("selected_trade_right_view", { enum: TRADE_RIGHT_VIEWS }).notNull().default("news"),
   showChatThoughts: integer("show_chat_thoughts", { mode: "boolean" }).notNull().default(true),
   updatedAt: integer("updated_at").notNull(),
 })

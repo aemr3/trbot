@@ -110,9 +110,9 @@ function notification(id: string): ChatNotification {
 
 async function mountWorkspace(options: { capturesInput?: boolean; showingSession?: string } = {}) {
   const harness = await createTestRenderer({ width: 80, height: 20, kittyKeyboard: true })
-  const trade = panel(harness.renderer, "TRADE PANEL", options)
+  const trade = panel(harness.renderer, "TRADE PANEL", { capturesInput: options.capturesInput })
   const chat = panel(harness.renderer, "CHAT PANEL", options)
-  const logs = panel(harness.renderer, "LOG PANEL", options)
+  const logs = panel(harness.renderer, "LOG PANEL", { capturesInput: options.capturesInput })
   const workspace = new TradingWorkspaceScreen(harness.renderer, { trade, chat, logs })
   harness.renderer.root.add(workspace.root)
   workspace.mount()
@@ -205,7 +205,7 @@ test("a panel taking text keeps the letters, and the workspace keeps the control
 test("a question notice can open its originating chat", async () => {
   const { renderer, mockInput, waitForFrame, workspace, chat } = await mountWorkspace()
   const request = question("one")
-  workspace.notifyQuestion(request, false)
+  workspace.notifyQuestion(request)
   await waitForFrame((frame) => frame.includes("Agent needs your answer") && frame.includes("Open chat"))
 
   mockInput.pressEnter()
@@ -231,9 +231,9 @@ test("question notices stack, sound once each, and Escape dismisses only one", a
   harness.renderer.root.add(workspace.root)
   workspace.mount()
 
-  workspace.notifyQuestion(question("one"), false)
-  workspace.notifyQuestion(question("two"), false)
-  workspace.notifyQuestion(question("two"), false)
+  workspace.notifyQuestion(question("one"))
+  workspace.notifyQuestion(question("two"))
+  workspace.notifyQuestion(question("two"))
   await harness.waitForFrame((frame) => frame.includes("How should one continue?") && frame.includes("How should two continue?"))
 
   harness.mockInput.pressEscape()
@@ -250,7 +250,7 @@ test("leaving a chat surfaces its still-pending question", async () => {
   workspace.selectTab("chat")
   await waitForFrame((frame) => frame.includes("CHAT PANEL"))
 
-  workspace.notifyQuestion(question("one"), true)
+  workspace.notifyQuestion(question("one"))
   await renderOnce()
   expect(captureCharFrame()).not.toContain("Agent needs your answer")
 
@@ -259,6 +259,26 @@ test("leaving a chat surfaces its still-pending question", async () => {
 
   workspace.destroy()
   renderer.destroy()
+})
+
+test("keeps a question inline while its embedded trade chat is visible", async () => {
+  const harness = await createTestRenderer({ width: 80, height: 20, kittyKeyboard: true })
+  const trade = panel(harness.renderer, "TRADE PANEL", { showingSession: "chat-one" })
+  const chat = panel(harness.renderer, "CHAT PANEL")
+  const logs = panel(harness.renderer, "LOG PANEL")
+  const workspace = new TradingWorkspaceScreen(harness.renderer, { trade, chat, logs })
+  harness.renderer.root.add(workspace.root)
+  workspace.mount()
+
+  workspace.notifyQuestion(question("one"))
+  await harness.renderOnce()
+  expect(harness.captureCharFrame()).not.toContain("Agent needs your answer")
+
+  workspace.selectTab("logs")
+  await harness.waitForFrame((frame) => frame.includes("Agent needs your answer"))
+
+  workspace.destroy()
+  harness.renderer.destroy()
 })
 
 test("agent notifications stack, sound once, and open their originating chat", async () => {

@@ -197,6 +197,7 @@ describe("editing the rules the server evaluates", () => {
     })
     const remote = new HttpMarketMonitors(client)
 
+    expect(await remote.list()).toEqual([saved])
     expect(await remote.list("chat-1")).toEqual([saved])
     expect(await remote.list("chat-2")).toEqual([])
     expect(alerts.list()).toEqual([])

@@ -41,7 +41,9 @@ export class DrizzleAppPreferencesStore {
       chartIndicators: parseChartIndicators(row.chartIndicators),
       selectedInstrumentUid: row.selectedInstrumentUid,
       orderKind: row.orderKind,
-      selectedChatSessionId: row.selectedChatSessionId,
+      selectedMainChatSessionId: row.selectedMainChatSessionId,
+      selectedTradePanelChatSessionId: row.selectedTradePanelChatSessionId,
+      selectedTradeRightView: row.selectedTradeRightView,
       showChatThoughts: row.showChatThoughts,
     })
   }

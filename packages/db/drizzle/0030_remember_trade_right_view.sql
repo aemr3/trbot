@@ -1,0 +1,1 @@
+ALTER TABLE `app_preferences` ADD `selected_trade_right_view` text DEFAULT 'news' NOT NULL;

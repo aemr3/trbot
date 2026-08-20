@@ -166,6 +166,79 @@ describe("chat session store", () => {
     expect(await chats.records("chat-1")).toEqual(records)
   })
 
+  test("omits undefined optional harness fields without losing tool calls", async () => {
+    const chats = await store()
+    await chats.create(session())
+    const record = {
+      role: "assistant" as const,
+      content: [{ type: "toolCall" as const, id: "call-1", name: "quote", arguments: { symbol: "ASELS" } }],
+      api: "openai-codex-responses",
+      provider: "openai-codex",
+      model: "gpt-5.6-sol",
+      usage: zeroUsage(),
+      stopReason: "toolUse",
+      timestamp: 1_000,
+    }
+    const draft = draftFor(record)
+    draft.record = {
+      ...record,
+      errorMessage: undefined,
+      usage: { ...record.usage, reasoning: undefined },
+      content: record.content.map((block) => ({ ...block, namespace: undefined })),
+    }
+
+    await chats.append("chat-1", draft)
+
+    expect(await chats.records("chat-1")).toEqual([record])
+  })
+
+  test("refuses a non-JSON harness record instead of storing an empty assistant message", async () => {
+    const chats = await store()
+    await chats.create(session())
+    const draft = draftFor({ role: "user", content: "hello", timestamp: 1_000 })
+    draft.record = { role: "user", content: "hello", timestamp: 1_000, invalid: 1n }
+
+    await expect(chats.append("chat-1", draft)).rejects.toThrow("Cannot persist chat record")
+    expect(await chats.records("chat-1")).toEqual([])
+  })
+
+  test("keeps orphaned legacy tool results out of model context", async () => {
+    const chats = await store()
+    await chats.create(session())
+    await chats.append("chat-1", draftFor({ role: "user", content: "Check ASELS", timestamp: 1_000 }))
+    await chats.append("chat-1", draftFor({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "call-1", name: "quote", arguments: { symbol: "ASELS" } }],
+      api: "test",
+      provider: "test",
+      model: "test",
+      usage: zeroUsage(),
+      stopReason: "toolUse",
+      timestamp: 2_000,
+    }))
+    await chats.append("chat-1", draftFor({
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "quote",
+      content: [{ type: "text", text: "ASELS 214.30" }],
+      isError: false,
+      timestamp: 3_000,
+    }))
+    await chats.append("chat-1", draftFor({
+      role: "toolResult",
+      toolCallId: "call-without-a-stored-call",
+      toolName: "news",
+      content: [{ type: "text", text: "orphaned result" }],
+      isError: false,
+      timestamp: 4_000,
+    }))
+
+    const context = await chats.context("chat-1")
+    expect(context.records.map((entry) => DraftRecordInputSchema.parse(entry.record).role))
+      .toEqual(["user", "assistant", "toolResult"])
+    expect((await chats.get("chat-1"))?.messages).toHaveLength(4)
+  })
+
   test("keeps a field this build does not model, so an older row still replays whole", async () => {
     // A harness upgrade that adds a field must not quietly drop it from every
     // message written before this build learned about it — that is the difference

@@ -199,6 +199,18 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
       return row.seq >= start
     })
     const blocks = await this.blockRows(rows.map((row) => row.id))
+    const toolCallIds = new Set(rows.flatMap((row) => (
+      row.role === "ASSISTANT"
+        ? (blocks.get(row.id) ?? []).flatMap((block) => (
+            block.kind === "TOOL_CALL" && block.toolCallId !== null ? [block.toolCallId] : []
+          ))
+        : []
+    )))
+    // A legacy partial write can contain a result without the call it answers.
+    // Replaying that pair is rejected by model providers; the visible transcript remains intact.
+    const replayableRows = rows.filter((row) => (
+      row.role !== "TOOL_RESULT" || (row.toolCallId !== null && toolCallIds.has(row.toolCallId))
+    ))
     return {
       compaction: compaction ? {
         sessionId: compaction.sessionId,
@@ -208,7 +220,7 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
         tokensBefore: compaction.tokensBefore,
         createdAt: compaction.createdAt,
       } : null,
-      records: rows.map((row) => ({
+      records: replayableRows.map((row) => ({
         id: row.id,
         seq: row.seq,
         record: toRecord(row, blocks.get(row.id) ?? []),
@@ -468,8 +480,18 @@ function toRows(
   harnessVersion: string,
 ): MessageRows {
   const { message } = draft
-  const parsedRecord = JsonObjectSchema.safeParse(draft.record)
-  const record = parsedRecord.success ? parsedRecord.data : null
+  let recordInput = draft.record
+  try {
+    const serialized = JSON.stringify(draft.record)
+    if (serialized !== undefined) recordInput = JSON.parse(serialized)
+  } catch {
+    // The strict schema below reports non-JSON records with the storage boundary's error.
+  }
+  const parsedRecord = JsonObjectSchema.safeParse(recordInput)
+  if (!parsedRecord.success) {
+    throw new Error(`Cannot persist chat record: ${parsedRecord.error.message}`)
+  }
+  const record = parsedRecord.data
   const usage = asObject(record?.usage)
   const cost = asObject(usage?.cost)
   const content = Array.isArray(record?.content) ? record.content : []

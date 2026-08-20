@@ -30,7 +30,7 @@ export interface StopRuleClient {
 export type AlertClient = PriceAlertActions
 
 export interface MarketMonitorClient {
-  list(chatSessionId: string): Promise<MarketMonitor[]>
+  list(chatSessionId?: string): Promise<MarketMonitor[]>
   remove(id: string): Promise<void>
 }
 
@@ -81,9 +81,11 @@ export class HttpAlerts implements AlertClient {
 export class HttpMarketMonitors implements MarketMonitorClient {
   constructor(private readonly http: HttpClient) {}
 
-  list(chatSessionId: string): Promise<MarketMonitor[]> {
-    const query = new URLSearchParams({ chatSessionId })
-    return this.http.get(`${ROUTES.marketMonitors}?${query}`, z.array(MarketMonitorSchema))
+  list(chatSessionId?: string): Promise<MarketMonitor[]> {
+    const route = chatSessionId
+      ? `${ROUTES.marketMonitors}?${new URLSearchParams({ chatSessionId })}`
+      : ROUTES.marketMonitors
+    return this.http.get(route, z.array(MarketMonitorSchema))
   }
 
   async remove(id: string): Promise<void> {
