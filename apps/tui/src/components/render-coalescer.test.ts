@@ -45,3 +45,16 @@ test("cancel drops the pending render and blocks future schedules", async () => 
   await nextTurn()
   expect(renders).toBe(0)
 })
+
+test("reports an asynchronous render failure without leaking it into the terminal", async () => {
+  const failures: unknown[] = []
+  const failure = new Error("native render failed")
+  const coalescer = new RenderCoalescer(() => {
+    throw failure
+  }, (error) => failures.push(error))
+
+  coalescer.schedule()
+  await nextTurn()
+
+  expect(failures).toEqual([failure])
+})

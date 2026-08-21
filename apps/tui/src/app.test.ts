@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { MouseEvent } from "@opentui/core"
+import { CliRenderEvents, MouseEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { App } from "./app.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
@@ -295,5 +295,33 @@ test("a stream failure is written to the log the trader can open", async () => {
   expect(entry?.message).toContain("trbot server")
 
   app.dispose()
+  session.close()
+})
+
+test("renderer failures reach the application log without opening a debug overlay", async () => {
+  const { renderer } = await createTestRenderer({ width: 80, height: 20 })
+  const session = offlineSession()
+  const logs = new ApplicationLog()
+  const app = new App(
+    renderer,
+    { session, authenticated: false },
+    { logs, exit: () => {} },
+  )
+  app.mount()
+
+  renderer.emit(CliRenderEvents.RENDER_ERROR, {
+    error: new Error("A renderable failed"),
+    renderable: app.root,
+  })
+
+  expect(logs.list()).toMatchObject([{
+    level: "ERROR",
+    scope: "Renderer",
+    message: "A renderable failed",
+  }])
+
+  app.dispose()
+  expect(renderer.listenerCount(CliRenderEvents.RENDER_ERROR)).toBe(0)
+  renderer.destroy()
   session.close()
 })

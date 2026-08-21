@@ -8,14 +8,23 @@ export class RenderCoalescer {
   private scheduled = false
   private cancelled = false
 
-  constructor(private readonly render: () => void) {}
+  constructor(
+    private readonly render: () => void,
+    private readonly onError?: (error: Error) => void,
+  ) {}
 
   schedule(): void {
     if (this.scheduled || this.cancelled) return
     this.scheduled = true
     setImmediate(() => {
       this.scheduled = false
-      if (!this.cancelled) this.render()
+      if (this.cancelled) return
+      try {
+        this.render()
+      } catch (error) {
+        if (!this.onError) throw error
+        this.onError(error instanceof Error ? error : new Error(String(error)))
+      }
     })
   }
 

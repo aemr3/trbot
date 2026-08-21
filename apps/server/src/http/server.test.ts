@@ -6,6 +6,7 @@ import { HttpAiAccount, HttpOverviewGenerator } from "@trbot/client/ai.ts"
 import { HttpChatSessions } from "@trbot/client/chat.ts"
 import { HttpClient } from "@trbot/client/http.ts"
 import type { ChatNotification, ChatNotificationStore } from "@trbot/chat/notification.ts"
+import type { ChatSessionDetail } from "@trbot/chat/session.ts"
 import { HttpInstrumentSource, HttpMemberFeatureSource, HttpOrderSource } from "@trbot/client/sources.ts"
 import { buildOverviewDigest } from "@trbot/market/overview.ts"
 import { memberFeatureSet, type MemberFeatureSet } from "@trbot/member/features.ts"
@@ -80,6 +81,7 @@ describe("server and client over the wire", () => {
   let overviewFailure: Error | null = null
   let notifications: ChatNotificationController
   const compactedChats: string[] = []
+  const detailedChats: Array<{ sessionId: string; topLevelLimit?: number }> = []
 
   beforeAll(async () => {
     connection = await openDatabase(":memory:")
@@ -117,9 +119,29 @@ describe("server and client over the wire", () => {
         preferences: new DrizzleAppPreferencesStore(connection.db),
         overviewSnapshots: new DrizzleOverviewSnapshotStore(connection.db),
         ai,
-        // SAFETY: this integration suite only invokes ChatController.compact;
-        // every other chat route remains behind an unused dependency.
+        // SAFETY: this integration suite exercises only these two controller surfaces.
         chat: {
+          async detail(sessionId: string, topLevelLimit?: number): Promise<ChatSessionDetail> {
+            detailedChats.push({ sessionId, topLevelLimit })
+            return {
+              session: {
+                id: sessionId,
+                title: "Test",
+                parentSessionId: null,
+                agent: null,
+                provider: "test",
+                model: "test",
+                reasoning: null,
+                createdAt: 1_000,
+                updatedAt: 1_000,
+                messageCount: 0,
+                queued: 0,
+                running: false,
+              },
+              messages: [],
+              partial: null,
+            }
+          },
           async compact(sessionId: string) {
             compactedChats.push(sessionId)
             return { compacted: true, tokensBefore: 24_000 }
@@ -183,6 +205,19 @@ describe("server and client over the wire", () => {
 
     expect(await chats.compact("chat/one")).toEqual({ compacted: true, tokensBefore: 24_000 })
     expect(compactedChats).toEqual(["chat/one"])
+  })
+
+  test("loads the bounded chat timeline over the wire", async () => {
+    detailedChats.length = 0
+    const chats = new HttpChatSessions(client)
+
+    expect((await chats.get("chat/one")).session.id).toBe("chat/one")
+    expect(detailedChats).toEqual([{ sessionId: "chat/one", topLevelLimit: 100 }])
+
+    const error = await client
+      .get(ROUTES.chatSession("chat/one"), z.unknown(), { query: { limit: "101" } })
+      .catch((cause: unknown) => cause)
+    expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
 
   test("a rejected sign-in reports invalid_request for a missing field", async () => {

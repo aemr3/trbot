@@ -5,6 +5,7 @@ import {
   chatSessionTitle,
   defaultChatSessionTitle,
   isDefaultChatSessionTitle,
+  recentChatTimeline,
 } from "./session.ts"
 
 test("creates a recognizable timestamp placeholder", () => {
@@ -62,5 +63,28 @@ describe("chatMessageText", () => {
 
   test("reads an empty reply as empty rather than throwing", () => {
     expect(chatMessageText([])).toBe("")
+  })
+})
+
+describe("recentChatTimeline", () => {
+  test("keeps the newest top-level events with their tool results", () => {
+    const messages = [
+      { id: "old-call", role: "ASSISTANT" },
+      { id: "old-result", role: "TOOL_RESULT" },
+      { id: "kept-call", role: "ASSISTANT" },
+      { id: "kept-result", role: "TOOL_RESULT" },
+      { id: "latest", role: "ASSISTANT" },
+    ]
+
+    expect(recentChatTimeline(messages, 2).map((message) => message.id)).toEqual([
+      "kept-call",
+      "kept-result",
+      "latest",
+    ])
+  })
+
+  test("leaves an in-progress timeline of tool results intact", () => {
+    const messages = [{ id: "live-result", role: "TOOL_RESULT" }]
+    expect(recentChatTimeline(messages, 100)).toEqual(messages)
   })
 })

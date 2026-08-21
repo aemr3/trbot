@@ -9,7 +9,13 @@ import {
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
-import type { ChatMessage, ChatRunStatus, ChatSession } from "@trbot/chat/session.ts"
+import {
+  CHAT_TIMELINE_LIMIT,
+  recentChatTimeline,
+  type ChatMessage,
+  type ChatRunStatus,
+  type ChatSession,
+} from "@trbot/chat/session.ts"
 import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type { ChatPermissionRequest } from "@trbot/chat/permission.ts"
@@ -183,7 +189,7 @@ export class ChatScreen {
   private readonly composerMeta: TextRenderable
   private readonly hint: TextRenderable
   private readonly usage: TextRenderable
-  private readonly render = new RenderCoalescer(() => this.paint())
+  private readonly render: RenderCoalescer
 
   private sessions: ChatSession[] = []
   private messagesBySession = new Map<string, ChatMessage[]>()
@@ -216,6 +222,10 @@ export class ChatScreen {
     private readonly renderer: RenderContext,
     private readonly options: ChatScreenOptions,
   ) {
+    this.render = new RenderCoalescer(
+      () => this.paint(),
+      (error) => options.logs.error("Chat renderer", error),
+    )
     this.selectedSessionId = options.initialSessionId ?? null
     this.showThoughts = options.initialShowThoughts ?? true
     this.root = new BoxRenderable(renderer, {
@@ -523,7 +533,7 @@ export class ChatScreen {
     const existing = messages.findIndex((entry) => entry.id === message.id)
     if (existing >= 0) messages[existing] = message
     else messages.push(message)
-    this.messagesBySession.set(sessionId, messages)
+    this.messagesBySession.set(sessionId, recentChatTimeline(messages, CHAT_TIMELINE_LIMIT))
     // A stored reply replaces what was streaming, so the words are not shown twice.
     if (message.role === "ASSISTANT") this.streamingBySession.delete(sessionId)
     // A tool result is also its completion signal. Keep only calls still in flight in
@@ -707,7 +717,9 @@ export class ChatScreen {
       const detail = await this.options.chats.get(sessionId)
       if (this.destroyed) return
       this.rememberSession(detail.session)
-      this.messagesBySession.set(sessionId, detail.messages)
+      // Keep this guard even though the HTTP client requests the same window. It
+      // protects the renderer while a newer TUI is connected to an older server.
+      this.messagesBySession.set(sessionId, recentChatTimeline(detail.messages, CHAT_TIMELINE_LIMIT))
       if (detail.partial) {
         const known = this.streamingBySession.get(sessionId)
         // A partial that already carries words is a run this terminal did not watch

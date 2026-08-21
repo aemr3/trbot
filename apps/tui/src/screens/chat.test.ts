@@ -587,6 +587,25 @@ test("renders a reply as it streams and replaces it with the stored message", as
   renderer.destroy()
 })
 
+test("keeps only the newest 100 top-level events in the live transcript", async () => {
+  const { renderer, waitForFrame, waitFor } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  for (let index = 0; index <= 100; index++) {
+    screen.acceptMessage(session.id, replyMessage(`answer ${index}`))
+  }
+  await waitFor(() => screen.root.findDescendantById("turn-99") !== undefined)
+
+  expect(screen.root.findDescendantById("turn-100")).toBeUndefined()
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("removes completed tools from the live status list", async () => {
   const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
@@ -902,7 +921,7 @@ test("opens and cancels only the current chat's agent monitors", async () => {
 
   await mockInput.typeText("dd")
   const empty = await waitForFrame((frame) => (
-    frame.includes("No market monitors were created in this chat.") && !frame.includes("1 monitor")
+    frame.includes("No open market monitors in this chat.") && !frame.includes("1 monitor")
   ))
 
   expect(requested.length).toBeGreaterThanOrEqual(3)

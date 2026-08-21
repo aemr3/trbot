@@ -175,8 +175,8 @@ export class ChatController {
     return this.withRunState(detail.session)
   }
 
-  async detail(sessionId: string): Promise<ChatSessionDetail> {
-    const detail = await this.options.store.get(sessionId)
+  async detail(sessionId: string, topLevelLimit?: number): Promise<ChatSessionDetail> {
+    const detail = await this.options.store.get(sessionId, topLevelLimit)
     if (!detail) throw new ProtocolError("not_found", "No such chat")
     return {
       ...detail,

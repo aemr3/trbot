@@ -2,7 +2,7 @@ import type { OverviewSnapshotStore } from "@trbot/market/overview.ts"
 import { BrokerageDistributionRequestSchema } from "@trbot/market/brokerage.ts"
 import { SettlementRequestSchema } from "@trbot/market/settlement.ts"
 import { PriceAlertStatusRequestSchema } from "@trbot/market/alert.ts"
-import { ChatMessageInputSchema } from "@trbot/chat/session.ts"
+import { ChatMessageInputSchema, ChatTimelineQuerySchema } from "@trbot/chat/session.ts"
 import { ChatQuestionReplySchema } from "@trbot/chat/question.ts"
 import { ChatPermissionReplySchema } from "@trbot/chat/permission.ts"
 import { CreateChatGoalSchema, CreateChatLoopSchema, UpdateChatGoalSchema } from "@trbot/chat/automation.ts"
@@ -543,7 +543,15 @@ export const PARAMETERIZED: {
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,
     method: "GET",
-    handle: async (match, _request, { chat }) => json(await chat.detail(decodeURIComponent(match[1] ?? ""))),
+    handle: async (match, request, { chat }) => {
+      const params = new URL(request.url).searchParams
+      const query = check.payload(
+        { limit: params.get("limit") ?? undefined },
+        ChatTimelineQuerySchema,
+        "chat timeline query",
+      )
+      return json(await chat.detail(decodeURIComponent(match[1] ?? ""), query.limit))
+    },
   },
   /** Points a session at a different model, from its next turn onwards. */
   {

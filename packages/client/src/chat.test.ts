@@ -2,7 +2,8 @@ import { expect, test } from "bun:test"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type { ChatPermissionRequest } from "@trbot/chat/permission.ts"
 import type { ServerFrame } from "@trbot/protocol/stream.ts"
-import { ChatClient } from "./chat.ts"
+import { HttpChatSessions, ChatClient } from "./chat.ts"
+import { HttpClient } from "./http.ts"
 
 class FakeChatStream {
   private listener: ((frame: ServerFrame) => void) | null = null
@@ -66,4 +67,37 @@ test("delivers permission request and resolution frames", () => {
 
   expect(seen).toEqual([request])
   expect(resolved).toEqual([request.id])
+})
+
+test("requests only the bounded timeline used by the TUI", async () => {
+  let requestedUrl = ""
+  const http = new HttpClient({
+    url: "http://localhost:3000",
+    token: "test",
+    fetch: async (input) => {
+      requestedUrl = String(input)
+      return Response.json({
+        session: {
+          id: "chat-1",
+          title: "Test",
+          parentSessionId: null,
+          agent: null,
+          provider: "test",
+          model: "test",
+          reasoning: null,
+          createdAt: 1_000,
+          updatedAt: 1_000,
+          messageCount: 0,
+          queued: 0,
+          running: false,
+        },
+        messages: [],
+        partial: null,
+      })
+    },
+  })
+
+  await new HttpChatSessions(http).get("chat-1")
+
+  expect(new URL(requestedUrl).searchParams.get("limit")).toBe("100")
 })

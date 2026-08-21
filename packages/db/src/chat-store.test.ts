@@ -239,6 +239,51 @@ describe("chat session store", () => {
     expect((await chats.get("chat-1"))?.messages).toHaveLength(4)
   })
 
+  test("loads a bounded display timeline without changing complete session counts", async () => {
+    const chats = await store()
+    await chats.create(session())
+    const records: Array<z.input<typeof DraftRecordInputSchema>> = [
+      { role: "user", content: "old", timestamp: 1_000 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-1", name: "quote", arguments: {} }],
+        model: "test",
+        timestamp: 2_000,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "quote",
+        content: [{ type: "text", text: "old result" }],
+        timestamp: 3_000,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-2", name: "quote", arguments: {} }],
+        model: "test",
+        timestamp: 4_000,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call-2",
+        toolName: "quote",
+        content: [{ type: "text", text: "kept result" }],
+        timestamp: 5_000,
+      },
+      { role: "assistant", content: "latest", model: "test", timestamp: 6_000 },
+    ]
+    for (const record of records) await chats.append("chat-1", draftFor(record))
+
+    const detail = await chats.get("chat-1", 2)
+
+    expect(detail?.messages.map((message) => message.toolCallId ?? message.text)).toEqual([
+      "",
+      "call-2",
+      "latest",
+    ])
+    expect(detail?.session.messageCount).toBe(records.length)
+  })
+
   test("keeps a field this build does not model, so an older row still replays whole", async () => {
     // A harness upgrade that adds a field must not quietly drop it from every
     // message written before this build learned about it — that is the difference

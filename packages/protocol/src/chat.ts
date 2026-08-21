@@ -30,6 +30,7 @@ export interface ChatSessions {
   create(choice?: ChatModelChoice): Promise<ChatSession>
   /** Points a session at a different model, from its next turn onwards. */
   configure(sessionId: string, choice: ChatModelChoice): Promise<ChatSession>
+  /** The recent display window; complete model history remains server-owned. */
   get(sessionId: string): Promise<ChatSessionDetail>
   delete(sessionId: string): Promise<void>
   send(sessionId: string, text: string): Promise<ChatMessage>

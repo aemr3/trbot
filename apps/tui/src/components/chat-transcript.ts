@@ -84,11 +84,12 @@ export class ChatTranscript {
   /**
    * Replaces what is shown.
    *
-   * Rebuilds only when the number of turns changes, so the deltas of a streaming reply
-   * repaint one block rather than the whole conversation.
+   * Existing rows survive both streaming updates and appended turns. Recreating every
+   * row when one turn arrives briefly duplicates a long transcript's native text
+   * buffers, which can exhaust OpenTUI's handle pool.
    */
   setBlocks(blocks: ChatTranscriptBlock[]): void {
-    if (blocks.length !== this.rows.length) this.rebuild(blocks.length)
+    this.resize(blocks.length)
     blocks.forEach((block, index) => {
       const row = this.rows[index]
       if (!row) return
@@ -130,22 +131,29 @@ export class ChatTranscript {
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
 
-  private rebuild(count: number): void {
-    for (const child of this.root.getChildren()) {
-      this.root.remove(child)
-      if (!child.isDestroyed) child.destroyRecursively()
+  private resize(count: number): void {
+    while (this.rows.length > count) {
+      const row = this.rows.pop()
+      if (!row) break
+      this.root.remove(row.box)
+      if (!row.box.isDestroyed) row.box.destroyRecursively()
     }
-    this.rows = []
-    for (let index = 0; index < count; index++) {
-      const box = new BoxRenderable(this.renderer, {
-        id: `turn-${index}`,
-        width: "100%",
-        flexDirection: "column",
-        flexShrink: 0,
-        paddingRight: 1,
-        marginBottom: 1,
-        backgroundColor: this.options.backgroundColor,
-      })
+    while (this.rows.length < count) {
+      this.rows.push(this.createRow(this.rows.length))
+    }
+  }
+
+  private createRow(index: number): (typeof this.rows)[number] {
+    const box = new BoxRenderable(this.renderer, {
+      id: `turn-${index}`,
+      width: "100%",
+      flexDirection: "column",
+      flexShrink: 0,
+      paddingRight: 1,
+      marginBottom: 1,
+      backgroundColor: this.options.backgroundColor,
+    })
+    try {
       const marker = new TextRenderable(this.renderer, {
         content: "",
         position: "absolute",
@@ -154,17 +162,20 @@ export class ChatTranscript {
         width: 1,
         wrapMode: "none",
       })
+      box.add(marker)
       // Reasoning can be paragraph-long; clipping its first line makes the rest
       // impossible to reach even when thoughts are expanded.
       const header = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "word" })
-      const body = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "word" })
-      const footer = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "none" })
-      box.add(marker)
       box.add(header)
+      const body = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "word" })
       box.add(body)
+      const footer = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "none" })
       box.add(footer)
       this.root.add(box)
-      this.rows.push({ box, marker, header, body, footer })
+      return { box, marker, header, body, footer }
+    } catch (error) {
+      if (!box.isDestroyed) box.destroyRecursively()
+      throw error
     }
   }
 }

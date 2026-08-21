@@ -5,6 +5,9 @@ import { z } from "zod"
 
 export type ChatRole = "USER" | "APP_EVENT" | "ASSISTANT" | "TOOL_RESULT"
 
+/** Maximum number of top-level events the terminal keeps materialized. */
+export const CHAT_TIMELINE_LIMIT = 100
+
 /**
  * Where a message stands.
  *
@@ -189,6 +192,10 @@ export const ChatSessionDetailSchema: z.ZodType<ChatSessionDetail> = z.object({
   partial: ChatPartialSchema.nullable(),
 })
 
+export const ChatTimelineQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(CHAT_TIMELINE_LIMIT).optional(),
+})
+
 export const ChatMessageInputSchema = z.object({
   text: z.string().refine((value) => value.trim().length > 0),
 })
@@ -269,7 +276,7 @@ export interface ChatSessionStore {
   /** Trader-owned root conversations only; child sessions have their own picker. */
   list(): Promise<ChatSession[]>
   listChildren(parentSessionId: string): Promise<ChatSession[]>
-  get(sessionId: string): Promise<ChatSessionDetail | null>
+  get(sessionId: string, topLevelLimit?: number): Promise<ChatSessionDetail | null>
   /** The harness records of a session's messages, in order, for replay. */
   records(sessionId: string): Promise<unknown[]>
   /** The rolling summary and verbatim tail currently used for model replay. */
@@ -308,6 +315,24 @@ export interface ChatSessionStore {
   remove(messageId: string): Promise<void>
   /** Sessions holding queued messages, so a restarted server resumes them. */
   queuedSessionIds(): Promise<string[]>
+}
+
+/**
+ * Keeps the newest conversational events and every tool result between them.
+ *
+ * Tool results are separate rows, so counting raw rows would retain much less than
+ * the intended number of conversational events.
+ */
+export function recentChatTimeline<T extends { role: string }>(messages: readonly T[], topLevelLimit: number): T[] {
+  let topLevelCount = 0
+  let start = 0
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]?.role === "TOOL_RESULT") continue
+    topLevelCount++
+    if (topLevelCount > topLevelLimit) return messages.slice(start)
+    start = index
+  }
+  return [...messages]
 }
 
 const TITLE_LENGTH = 48

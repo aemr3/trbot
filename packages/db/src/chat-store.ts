@@ -3,6 +3,7 @@ import {
   ChatBlockKindSchema,
   ChatMessageStatusSchema,
   ChatRoleSchema,
+  recentChatTimeline,
   type ChatBlock,
   type ChatCompaction,
   type ChatMessage,
@@ -148,10 +149,11 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
     })
   }
 
-  async get(sessionId: string): Promise<ChatSessionDetail | null> {
+  async get(sessionId: string, topLevelLimit?: number): Promise<ChatSessionDetail | null> {
     const [session] = await this.db.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).limit(1)
     if (!session) return null
-    const rows = await this.messageRows(sessionId)
+    const allRows = await this.messageRows(sessionId)
+    const rows = topLevelLimit === undefined ? allRows : recentChatTimeline(allRows, topLevelLimit)
     const blocks = await this.blockRows(rows.map((row) => row.id))
     const messages = rows.map((row) => toMessage(row, blocks.get(row.id) ?? []))
     return {
@@ -165,8 +167,8 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
         reasoning: session.reasoning,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
-        messageCount: messages.length,
-        queued: messages.filter((message) => message.status === "QUEUED").length,
+        messageCount: allRows.length,
+        queued: allRows.filter((message) => message.status === "QUEUED").length,
         running: false,
       },
       messages,

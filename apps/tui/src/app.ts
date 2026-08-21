@@ -1,4 +1,11 @@
-import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core"
+import {
+  BoxRenderable,
+  CliRenderEvents,
+  createCliRenderer,
+  type CliRenderer,
+  type CliRendererErrorEvent,
+  type KeyEvent,
+} from "@opentui/core"
 import { HttpAiAccount, HttpOverviewGenerator } from "@trbot/client/ai.ts"
 import { ChatClient, HttpChatSessions } from "@trbot/client/chat.ts"
 import {
@@ -108,8 +115,10 @@ export async function startApp(): Promise<void> {
     // what was saved as soon as anything is changed.
     const preferences = await preferencesStore.load().catch(() => undefined)
     const renderer = await createCliRenderer({
+      consoleMode: "disabled",
       exitOnCtrlC: false,
       exitSignals: EXIT_SIGNALS,
+      openConsoleOnError: false,
       onDestroy: () => app?.dispose(),
     })
     app = new App(renderer, initialState, {
@@ -194,6 +203,10 @@ export class App {
     this.shutdown()
   }
 
+  private readonly handleRendererError = ({ error }: CliRendererErrorEvent): void => {
+    this.logs.error("Renderer", error)
+  }
+
   constructor(
     private readonly renderer: CliRenderer,
     initialState: InitialState,
@@ -214,6 +227,7 @@ export class App {
     this.selection = options.selection ?? renderer
     this.logs = options.logs ?? new ApplicationLog()
     this.sessionPollMs = options.sessionPollMs ?? SESSION_POLL_MS
+    this.renderer.on(CliRenderEvents.RENDER_ERROR, this.handleRendererError)
 
     // Stop rules and price alerts are evaluated by the server so they keep
     // running with no terminal attached. These carry what it reports and send
@@ -262,6 +276,7 @@ export class App {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.renderer.off(CliRenderEvents.RENDER_ERROR, this.handleRendererError)
     this.renderer.keyInput.off("keypress", this.handleKeypress)
     this.stopWatchingForSession()
     for (const adapter of this.adapters.splice(0)) adapter.destroy()

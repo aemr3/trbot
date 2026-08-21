@@ -1,5 +1,6 @@
 import {
   ChatCompactionReportSchema,
+  CHAT_TIMELINE_LIMIT,
   ChatMessageSchema,
   ChatSessionDetailSchema,
   ChatSessionSchema,
@@ -54,7 +55,9 @@ export class HttpChatSessions implements ChatSessions {
   }
 
   get(sessionId: string): Promise<ChatSessionDetail> {
-    return this.http.get(ROUTES.chatSession(sessionId), ChatSessionDetailSchema)
+    return this.http.get(ROUTES.chatSession(sessionId), ChatSessionDetailSchema, {
+      query: { limit: String(CHAT_TIMELINE_LIMIT) },
+    })
   }
 
   async delete(sessionId: string): Promise<void> {

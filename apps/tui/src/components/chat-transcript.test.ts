@@ -116,6 +116,7 @@ test("replaces what a turn says without rebuilding the conversation", async () =
   const transcript = new ChatTranscript(renderer, { backgroundColor: "#101010" })
   renderer.root.add(transcript.root)
   transcript.setBlocks([asked("and volumes?"), reply("Volumes")])
+  const originalRows = transcript.root.getChildren()
   await renderOnce()
 
   transcript.setBlocks([asked("and volumes?"), reply("Volumes are thin.")])
@@ -125,10 +126,16 @@ test("replaces what a turn says without rebuilding the conversation", async () =
   expect(frame).toContain("and volumes?")
   expect(frame).toContain("Volumes are thin.")
 
-  // A turn arriving, or one going, reshapes the list rather than editing it.
+  transcript.setBlocks([asked("and volumes?"), reply("Volumes are thin."), reply("One more turn.")])
+  expect(transcript.root.getChildren()[0]).toBe(originalRows[0])
+  expect(transcript.root.getChildren()[1]).toBe(originalRows[1])
+
+  // Removing a turn releases only that row; earlier native text views survive.
   transcript.setBlocks([asked("and volumes?")])
   await renderOnce()
   expect(captureCharFrame()).not.toContain("Volumes are thin.")
+  expect(transcript.root.getChildren()[0]).toBe(originalRows[0])
+  expect(originalRows[1]?.isDestroyed).toBe(true)
 
   transcript.destroy()
   renderer.destroy()
