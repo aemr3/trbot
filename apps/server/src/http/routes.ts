@@ -4,11 +4,14 @@ import { SettlementRequestSchema } from "@trbot/market/settlement.ts"
 import { PriceAlertStatusRequestSchema } from "@trbot/market/alert.ts"
 import { ChatMessageInputSchema } from "@trbot/chat/session.ts"
 import { ChatQuestionReplySchema } from "@trbot/chat/question.ts"
+import { ChatPermissionReplySchema } from "@trbot/chat/permission.ts"
 import { CreateChatGoalSchema, CreateChatLoopSchema, UpdateChatGoalSchema } from "@trbot/chat/automation.ts"
 import type { AppPreferences } from "@trbot/preferences/app.ts"
 import { AiCredentialsSchema } from "@trbot/protocol/ai.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import {
+  CLIENT_INSTANCE_HEADER,
+  ClientInstanceIdSchema,
   IDEMPOTENCY_HEADER,
   LoginRequestSchema,
   OtpRequestSchema,
@@ -27,6 +30,7 @@ import type { ChatController } from "../chat.ts"
 import type { ChatQuestionController } from "../chat-question.ts"
 import type { ChatNotificationController } from "../chat-notification.ts"
 import type { ChatAutomationController } from "../chat-automation.ts"
+import type { ChatPermissionController } from "../chat-permission.ts"
 import type { AlertController } from "../monitors/alert.ts"
 import type { MarketMonitorController } from "../monitors/market-monitor.ts"
 import type { StopController } from "../monitors/stop.ts"
@@ -52,6 +56,7 @@ export interface RouteContext {
   ai: AiService
   chat: ChatController
   questions: ChatQuestionController
+  permissions: ChatPermissionController
   notifications: ChatNotificationController
   automations: ChatAutomationController
 }
@@ -287,6 +292,10 @@ export const HANDLERS: HandlerRegistry = {
     GET: async (_request, { questions }) => json(questions.list()),
   },
 
+  [ROUTES.chatPermissions]: {
+    GET: async (_request, { permissions }) => json(permissions.list()),
+  },
+
   [ROUTES.chatNotifications]: {
     GET: async (_request, { notifications }) => json(notifications.list()),
   },
@@ -375,11 +384,21 @@ export const PARAMETERIZED: {
     },
   },
   {
+    pattern: /^\/v1\/ai\/chat\/permissions\/([^/]+)\/reply$/,
+    method: "POST",
+    handle: async (match, request, { permissions }) => {
+      const body = check.payload(await readJsonObject(request), ChatPermissionReplySchema, "permission decision")
+      const clientId = ClientInstanceIdSchema.safeParse(request.headers.get(CLIENT_INSTANCE_HEADER))
+      await permissions.reply(decodeURIComponent(match[1] ?? ""), body, clientId.success ? clientId.data : null)
+      return json({ ok: true })
+    },
+  },
+  {
     pattern: /^\/v1\/ai\/chat\/questions\/([^/]+)\/reply$/,
     method: "POST",
     handle: async (match, request, { questions }) => {
       const body = check.payload(await readJsonObject(request), ChatQuestionReplySchema, "answers")
-      questions.reply(decodeURIComponent(match[1] ?? ""), body.answers)
+      await questions.reply(decodeURIComponent(match[1] ?? ""), body.answers)
       return json({ ok: true })
     },
   },
@@ -387,7 +406,7 @@ export const PARAMETERIZED: {
     pattern: /^\/v1\/ai\/chat\/questions\/([^/]+)$/,
     method: "DELETE",
     handle: async (match, _request, { questions }) => {
-      questions.reject(decodeURIComponent(match[1] ?? ""))
+      await questions.reject(decodeURIComponent(match[1] ?? ""))
       return json({ ok: true })
     },
   },
@@ -538,9 +557,9 @@ export const PARAMETERIZED: {
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,
     method: "DELETE",
-    handle: async (match, _request, { chat, notifications }) => {
+    handle: async (match, _request, { chat, questions, permissions, notifications }) => {
       await chat.remove(decodeURIComponent(match[1] ?? ""))
-      await notifications.sync()
+      await Promise.all([questions.sync(), permissions.sync(), notifications.sync()])
       return json({ ok: true })
     },
   },

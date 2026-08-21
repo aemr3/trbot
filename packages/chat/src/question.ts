@@ -36,3 +36,10 @@ export const ChatQuestionAnswersSchema = z.array(ChatQuestionAnswerSchema)
 export const ChatQuestionReplySchema = z.object({ answers: ChatQuestionAnswersSchema })
 
 export type ChatQuestionAnswer = z.infer<typeof ChatQuestionAnswerSchema>
+
+/** Durable pending questions; resolved answers remain in the chat tool result. */
+export interface ChatQuestionStore {
+  list(): Promise<ChatQuestionRequest[]>
+  put(request: ChatQuestionRequest, createdAt: number): Promise<void>
+  remove(id: string): Promise<void>
+}

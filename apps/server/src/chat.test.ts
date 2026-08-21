@@ -7,7 +7,6 @@ import { openDatabase, type DatabaseConnection } from "@trbot/db/client.ts"
 import type { ChatFrame } from "@trbot/protocol/stream.ts"
 import { isProtocolError } from "@trbot/protocol/error.ts"
 import { ChatController, type ChatTurnRunner } from "./chat.ts"
-import type { ExecutionPolicy } from "@trbot/trading/execution-policy.ts"
 import { modelRecord } from "@trbot/ai/compaction.ts"
 import { testModel } from "@trbot/ai/model.test-fixture.ts"
 
@@ -43,7 +42,6 @@ async function harness(options: {
   compaction?: ChatCompactionRunner
   generateTitle?: (message: string, signal: AbortSignal) => Promise<string | null>
   run?: (turn: ChatTurnOptions, call: number) => Promise<ChatTurnResult>
-  executionPolicyForEvent?: (label: string | null, referenceId: string | null) => Promise<ExecutionPolicy>
 } = {}): Promise<Harness> {
   connection = await openDatabase(":memory:")
   const store = new DrizzleChatSessionStore(connection.db, { harnessVersion: "pi-ai/test" })
@@ -81,9 +79,6 @@ async function harness(options: {
     requireModel: async () => {
       if (options.connected === false) throw new Error("test-provider is not connected")
     },
-    executionPolicyForEvent: options.executionPolicyForEvent
-      ? (_sessionId, label, referenceId) => options.executionPolicyForEvent!(label, referenceId)
-      : undefined,
     broadcast: (frame) => frames.push(frame),
     onError: (error) => errors.push(error),
   })
@@ -326,14 +321,7 @@ test("compacts and retries one clean overflow without duplicating durable output
 })
 
 test("an application event wakes its chat once with private model context", async () => {
-  const policy = { mode: "CONFIRM_EACH_ORDER" as const }
-  const resolved: Array<[string | null, string | null]> = []
-  const { chat, store, turns } = await harness({
-    executionPolicyForEvent: async (label, referenceId) => {
-      resolved.push([label, referenceId])
-      return policy
-    },
-  })
+  const { chat, store, turns } = await harness()
   const session = await chat.create()
   const event = {
     key: "price-alert:trigger-1",
@@ -351,8 +339,7 @@ test("an application event wakes its chat once with private model context", asyn
   expect(queued?.role).toBe("APP_EVENT")
   expect(duplicate).toBeNull()
   expect(turns.map((turn) => turn.prompt)).toEqual([event.prompt])
-  expect(turns[0]?.executionPolicy).toEqual(policy)
-  expect(resolved).toEqual([["loop", "loop-1"]])
+  expect(turns[0]?.automationEvent).toEqual({ label: "loop", referenceId: "loop-1" })
   const detail = await chat.detail(session.id)
   expect(detail.messages.map((message) => `${message.role}:${message.text}`)).toEqual([
     `APP_EVENT:${event.text}`,

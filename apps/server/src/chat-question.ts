@@ -2,30 +2,57 @@ import type { ChatQuestionAsker } from "@trbot/ai/question.ts"
 import type {
   ChatQuestionAnswer,
   ChatQuestionRequest,
+  ChatQuestionStore,
 } from "@trbot/chat/question.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import type { ChatFrame } from "@trbot/protocol/stream.ts"
 
 interface PendingQuestion {
   request: ChatQuestionRequest
-  resolve: (answers: ChatQuestionAnswer[]) => void
-  reject: (error: Error) => void
+  resolve?: (answers: ChatQuestionAnswer[]) => void
+  reject?: (error: Error) => void
   signal?: AbortSignal
   onAbort?: () => void
 }
 
 export interface ChatQuestionControllerOptions {
+  store: ChatQuestionStore
   broadcast: (frame: ChatFrame) => void
+  onDetachedAnswer?: (request: ChatQuestionRequest, answers: ChatQuestionAnswer[]) => Promise<void>
+  onDetachedReject?: (request: ChatQuestionRequest) => Promise<void>
+  now?: () => number
 }
 
 /** Coordinates agent tool calls that are waiting for a user response. */
 export class ChatQuestionController implements ChatQuestionAsker {
   private readonly pending = new Map<string, PendingQuestion>()
+  private readonly now: () => number
   private destroyed = false
 
-  constructor(private readonly options: ChatQuestionControllerOptions) {}
+  constructor(private readonly options: ChatQuestionControllerOptions) {
+    this.now = options.now ?? Date.now
+  }
 
-  ask(input: Parameters<ChatQuestionAsker["ask"]>[0]): Promise<ChatQuestionAnswer[]> {
+  async load(): Promise<void> {
+    this.pending.clear()
+    for (const request of await this.options.store.list()) {
+      this.pending.set(request.id, { request })
+    }
+  }
+
+  /** Reconciles database cascades after a chat is deleted. */
+  async sync(): Promise<void> {
+    const stored = new Set((await this.options.store.list()).map((request) => request.id))
+    for (const [id, pending] of this.pending) {
+      if (stored.has(id)) continue
+      this.pending.delete(id)
+      this.removeAbortListener(pending)
+      this.options.broadcast({ type: "chatQuestionResolved", requestId: id, sessionId: pending.request.sessionId })
+      pending.reject?.(new Error("The question's chat was deleted"))
+    }
+  }
+
+  async ask(input: Parameters<ChatQuestionAsker["ask"]>[0]): Promise<ChatQuestionAnswer[]> {
     if (this.destroyed) return Promise.reject(new Error("Question service is shutting down"))
     if (input.signal?.aborted) return Promise.reject(abortError())
 
@@ -35,10 +62,16 @@ export class ChatQuestionController implements ChatQuestionAsker {
       questions: input.questions,
     }
 
-    return new Promise<ChatQuestionAnswer[]>((resolve, reject) => {
+    await this.options.store.put(request, this.now())
+    if (input.signal?.aborted) {
+      await this.options.store.remove(request.id)
+      throw abortError()
+    }
+
+    return await new Promise<ChatQuestionAnswer[]>((resolve, reject) => {
       const pending: PendingQuestion = { request, resolve, reject, signal: input.signal }
       if (input.signal) {
-        pending.onAbort = () => this.settle(request.id, { error: abortError() })
+        pending.onAbort = () => void this.abort(request.id)
         input.signal.addEventListener("abort", pending.onAbort, { once: true })
       }
       this.pending.set(request.id, pending)
@@ -50,23 +83,27 @@ export class ChatQuestionController implements ChatQuestionAsker {
     return [...this.pending.values()].map((entry) => entry.request)
   }
 
-  reply(requestId: string, answers: ChatQuestionAnswer[]): void {
+  async reply(requestId: string, answers: ChatQuestionAnswer[]): Promise<void> {
     const pending = this.require(requestId)
     validateAnswers(pending.request, answers)
-    this.settle(requestId, { answers })
+    if (!pending.resolve) await this.options.onDetachedAnswer?.(pending.request, answers)
+    await this.finish(pending, { answers })
   }
 
-  reject(requestId: string): void {
-    this.require(requestId)
-    this.settle(requestId, { error: new Error("The user dismissed the question") })
+  async reject(requestId: string): Promise<void> {
+    const pending = this.require(requestId)
+    if (!pending.reject) await this.options.onDetachedReject?.(pending.request)
+    await this.finish(pending, { error: new Error("The user dismissed the question") })
   }
 
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
-    for (const id of this.pending.keys()) {
-      this.settle(id, { error: new Error("Question service is shutting down") })
+    for (const pending of this.pending.values()) {
+      this.removeAbortListener(pending)
+      pending.reject?.(new Error("Question service is shutting down"))
     }
+    this.pending.clear()
   }
 
   backlog(): ChatFrame[] {
@@ -79,21 +116,38 @@ export class ChatQuestionController implements ChatQuestionAsker {
     return pending
   }
 
-  private settle(
-    requestId: string,
+  private async finish(
+    pending: PendingQuestion,
     outcome: { answers: ChatQuestionAnswer[] } | { error: Error },
-  ): void {
+  ): Promise<void> {
+    await this.options.store.remove(pending.request.id)
+    this.pending.delete(pending.request.id)
+    this.removeAbortListener(pending)
+    this.options.broadcast({
+      type: "chatQuestionResolved",
+      requestId: pending.request.id,
+      sessionId: pending.request.sessionId,
+    })
+    if ("answers" in outcome) pending.resolve?.(outcome.answers)
+    else pending.reject?.(outcome.error)
+  }
+
+  private async abort(requestId: string): Promise<void> {
     const pending = this.pending.get(requestId)
     if (!pending) return
+    await this.options.store.remove(requestId)
     this.pending.delete(requestId)
-    if (pending.signal && pending.onAbort) pending.signal.removeEventListener("abort", pending.onAbort)
+    this.removeAbortListener(pending)
     this.options.broadcast({
       type: "chatQuestionResolved",
       requestId,
       sessionId: pending.request.sessionId,
     })
-    if ("answers" in outcome) pending.resolve(outcome.answers)
-    else pending.reject(outcome.error)
+    pending.reject?.(abortError())
+  }
+
+  private removeAbortListener(pending: PendingQuestion): void {
+    if (pending.signal && pending.onAbort) pending.signal.removeEventListener("abort", pending.onAbort)
   }
 }
 

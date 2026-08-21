@@ -4,6 +4,7 @@ import {
   ScrollBoxRenderable,
   TextRenderable,
   fg,
+  isRenderable,
   link,
   t,
   type KeyEvent,
@@ -351,7 +352,11 @@ export interface TradeChatPanel {
   activate(): void
   deactivate(): void
   capturesInput(): boolean
+  canReleaseFocus(): boolean
   handleKey(key: KeyEvent): void
+  openQuestion(sessionId: string): void
+  openPermission(sessionId: string): void
+  openSession(sessionId: string): void
   isShowingSession(sessionId: string): boolean
   setMarketOpen(open: boolean | null): void
   destroy(): void
@@ -485,6 +490,10 @@ export class TradeScreen {
   private preferences: AppPreferences
   private instrumentSort: InstrumentSort
   private sortDirection: SortDirection
+  private readonly temporarilyNonSelectable: Renderable[] = []
+  private readonly restoreSelectionAfterFinish = (): void => {
+    queueMicrotask(() => this.restoreSelectionScope())
+  }
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     // Deleting a stop rule is only offered where one is selected, so its key is
@@ -546,7 +555,11 @@ export class TradeScreen {
       this.selectRightView("chat")
       return
     }
-    if (this.rightView === "chat" && this.options.chat) {
+    if (this.rightView === "chat" && this.focus === "news" && this.options.chat) {
+      if ((key.name === "escape" || key.name === "esc") && this.options.chat.canReleaseFocus()) {
+        this.setFocus("instruments")
+        return
+      }
       this.options.chat.handleKey(key)
       return
     }
@@ -808,6 +821,15 @@ export class TradeScreen {
       paddingLeft: 1,
       paddingRight: 1,
       backgroundColor: SIDE_PANEL_BG,
+      onMouseDown: (event) => {
+        if (event.button !== 0 || this.rightView !== "chat") return
+        // OpenTUI auto-focuses the closest focusable node under the pointer after
+        // mouse handlers run. A transcript click must keep the composer focused,
+        // rather than replacing its visible cursor with the transcript scroller.
+        event.preventDefault()
+        this.setFocus("news")
+        this.confineSelectionToChat()
+      },
     })
     this.newsWorkspace = new BoxRenderable(renderer, {
       width: "100%",
@@ -992,6 +1014,7 @@ export class TradeScreen {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.restoreSelectionScope()
     this.listResort.cancel()
     this.chart.destroy()
     this.accountPanel.destroy()
@@ -1059,13 +1082,40 @@ export class TradeScreen {
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
 
+  /** Keeps a drag that began in embedded chat from collecting sibling panel text. */
+  private confineSelectionToChat(): void {
+    const chatRoot = this.options.chat?.root
+    if (!chatRoot || !this.renderer.getSelection()?.isDragging || this.temporarilyNonSelectable.length > 0) return
+
+    this.disableSelectionOutside(this.root, chatRoot)
+    this.renderer.once("selection", this.restoreSelectionAfterFinish)
+  }
+
+  private disableSelectionOutside(renderable: Renderable, allowed: Renderable): void {
+    if (renderable === allowed) return
+    if (renderable.selectable) {
+      renderable.selectable = false
+      this.temporarilyNonSelectable.push(renderable)
+    }
+    for (const child of renderable.getChildren()) {
+      if (isRenderable(child)) this.disableSelectionOutside(child, allowed)
+    }
+  }
+
+  private restoreSelectionScope(): void {
+    this.renderer.off("selection", this.restoreSelectionAfterFinish)
+    for (const renderable of this.temporarilyNonSelectable.splice(0)) {
+      if (!renderable.isDestroyed) renderable.selectable = true
+    }
+  }
+
   /**
    * Whether a key typed now belongs to something on this screen rather than to
    * the tab bar. True while anything with a field or a confirmation is up: the
    * ticker search takes letters, and a modal in front of the panels owns Escape.
    */
   capturesInput(): boolean {
-    return (this.rightView === "chat" && (this.options.chat?.capturesInput() ?? false))
+    return (this.rightView === "chat" && this.focus === "news" && (this.options.chat?.capturesInput() ?? false))
       || this.tickerSearchQuery !== null
       || this.orderTicket !== null
       || this.shortcutHelp !== null
@@ -1092,6 +1142,28 @@ export class TradeScreen {
 
   isShowingSession(sessionId: string): boolean {
     return this.rightView === "chat" && this.options.chat?.isShowingSession(sessionId) === true
+  }
+
+  hasEmbeddedChat(): boolean {
+    return this.options.chat !== undefined
+  }
+
+  openQuestion(sessionId: string): void {
+    if (!this.options.chat) return
+    this.selectRightView("chat")
+    this.options.chat.openQuestion(sessionId)
+  }
+
+  openPermission(sessionId: string): void {
+    if (!this.options.chat) return
+    this.selectRightView("chat")
+    this.options.chat.openPermission(sessionId)
+  }
+
+  openSession(sessionId: string): void {
+    if (!this.options.chat) return
+    this.selectRightView("chat")
+    this.options.chat.openSession(sessionId)
   }
 
   setMarketOpen(open: boolean | null): void {
@@ -2559,7 +2631,10 @@ export class TradeScreen {
   }
 
   private setFocus(focus: Focus): void {
-    if (this.focus === focus) return
+    if (this.focus === focus) {
+      if (focus === "news" && this.rightView === "chat") this.options.chat?.activate()
+      return
+    }
     const leavingChat = this.focus === "news" && this.rightView === "chat"
     this.focus = focus
     if (leavingChat) this.options.chat?.deactivate()

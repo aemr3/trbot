@@ -1,0 +1,215 @@
+import type { ChatPermissionAuthorizer } from "@trbot/ai/permission.ts"
+import {
+  type ChatPermissionReply,
+  type ChatPermissionRequest,
+  type ChatPermissionResolution,
+  type ChatPermissionStore,
+} from "@trbot/chat/permission.ts"
+import { ProtocolError } from "@trbot/protocol/error.ts"
+import type { ChatFrame } from "@trbot/protocol/stream.ts"
+
+interface PendingPermission {
+  request: ChatPermissionRequest
+  resolve?: (resolution: ChatPermissionResolution) => void
+  reject?: (error: Error) => void
+  signal?: AbortSignal
+  onAbort?: () => void
+}
+
+export interface ChatPermissionControllerOptions {
+  store: ChatPermissionStore
+  broadcast: (frame: ChatFrame) => void
+  onDetachedDecision?: (request: ChatPermissionRequest, resolution: ChatPermissionResolution) => Promise<void>
+  now?: () => number
+}
+
+/** Gates sensitive agent tools and keeps grants only while their approving client is attached. */
+export class ChatPermissionController implements ChatPermissionAuthorizer {
+  private readonly pending = new Map<string, PendingPermission>()
+  private readonly grants = new Map<string, Set<string>>()
+  private readonly clientGrants = new Map<string, Set<string>>()
+  private readonly attachedClients = new Map<string, number>()
+  private readonly now: () => number
+  private destroyed = false
+
+  constructor(private readonly options: ChatPermissionControllerOptions) {
+    this.now = options.now ?? Date.now
+  }
+
+  async load(): Promise<void> {
+    this.pending.clear()
+    for (const request of await this.options.store.listRequests()) {
+      this.pending.set(request.id, { request })
+    }
+  }
+
+  /** Reconciles database cascades after a chat is deleted. */
+  async sync(): Promise<void> {
+    const stored = new Set((await this.options.store.listRequests()).map((request) => request.id))
+    for (const [id, pending] of this.pending) {
+      if (stored.has(id)) continue
+      this.pending.delete(id)
+      this.removeAbortListener(pending)
+      this.options.broadcast({ type: "chatPermissionResolved", requestId: id, sessionId: pending.request.sessionId })
+      pending.reject?.(new Error("The permission request's chat was deleted"))
+    }
+  }
+
+  async authorize(input: Parameters<ChatPermissionAuthorizer["authorize"]>[0]): Promise<ChatPermissionResolution> {
+    if (this.destroyed) throw new Error("Permission service is shutting down")
+    if (input.signal?.aborted) throw abortError()
+    if (input.scope === "SESSION" && this.hasGrant(input.sessionId, input.toolName)) {
+      return { decision: "ALLOW", reason: null }
+    }
+
+    const request: ChatPermissionRequest = {
+      id: crypto.randomUUID(),
+      sessionId: input.sessionId,
+      toolName: input.toolName,
+      action: input.action,
+      reason: input.reason?.trim() || null,
+      scope: input.scope,
+      createdAt: this.now(),
+    }
+    await this.options.store.putRequest(request)
+    if (input.signal?.aborted) {
+      await this.options.store.removeRequest(request.id)
+      throw abortError()
+    }
+
+    return await new Promise<ChatPermissionResolution>((resolve, reject) => {
+      const pending: PendingPermission = { request, resolve, reject, signal: input.signal }
+      if (input.signal) {
+        pending.onAbort = () => void this.abort(request.id)
+        input.signal.addEventListener("abort", pending.onAbort, { once: true })
+      }
+      this.pending.set(request.id, pending)
+      this.options.broadcast({ type: "chatPermissionRequested", request })
+    })
+  }
+
+  list(): ChatPermissionRequest[] {
+    return [...this.pending.values()].map((entry) => entry.request)
+  }
+
+  async reply(requestId: string, reply: ChatPermissionReply, clientId: string | null = null): Promise<void> {
+    const pending = this.require(requestId)
+    if (reply.decision === "ALLOW" && reply.scope === "SESSION" && pending.request.scope !== "SESSION") {
+      throw new ProtocolError("invalid_request", "This permission request only allows one-time approval")
+    }
+    const resolution: ChatPermissionResolution = {
+      decision: reply.decision,
+      reason: reply.decision === "DENY" ? reply.reason?.trim() || null : null,
+    }
+    if (reply.decision === "ALLOW" && reply.scope === "SESSION") {
+      if (!clientId || !this.attachedClients.has(clientId)) {
+        throw new ProtocolError("invalid_request", "Session approval requires a connected client")
+      }
+      this.grant(pending.request.sessionId, pending.request.toolName, clientId)
+    }
+    if (!pending.resolve) await this.options.onDetachedDecision?.(pending.request, resolution)
+    await this.finish(pending, resolution)
+  }
+
+  backlog(): ChatFrame[] {
+    return this.list().map((request) => ({ type: "chatPermissionRequested", request }))
+  }
+
+  attachClient(clientId: string | null): void {
+    if (!clientId) return
+    this.attachedClients.set(clientId, (this.attachedClients.get(clientId) ?? 0) + 1)
+  }
+
+  detachClient(clientId: string | null): void {
+    if (!clientId) return
+    const connections = this.attachedClients.get(clientId)
+    if (!connections) return
+    if (connections > 1) {
+      this.attachedClients.set(clientId, connections - 1)
+      return
+    }
+    this.attachedClients.delete(clientId)
+    this.revokeClient(clientId)
+  }
+
+  destroy(): void {
+    if (this.destroyed) return
+    this.destroyed = true
+    for (const pending of this.pending.values()) {
+      this.removeAbortListener(pending)
+      pending.reject?.(new Error("Permission service is shutting down"))
+    }
+    this.pending.clear()
+    this.grants.clear()
+    this.clientGrants.clear()
+    this.attachedClients.clear()
+  }
+
+  private hasGrant(sessionId: string, toolName: string): boolean {
+    return (this.grants.get(grantKey(sessionId, toolName))?.size ?? 0) > 0
+  }
+
+  private grant(sessionId: string, toolName: string, clientId: string): void {
+    const key = grantKey(sessionId, toolName)
+    const clients = this.grants.get(key) ?? new Set<string>()
+    clients.add(clientId)
+    this.grants.set(key, clients)
+
+    const keys = this.clientGrants.get(clientId) ?? new Set<string>()
+    keys.add(key)
+    this.clientGrants.set(clientId, keys)
+  }
+
+  private revokeClient(clientId: string): void {
+    for (const key of this.clientGrants.get(clientId) ?? []) {
+      const clients = this.grants.get(key)
+      clients?.delete(clientId)
+      if (clients?.size === 0) this.grants.delete(key)
+    }
+    this.clientGrants.delete(clientId)
+  }
+
+  private require(requestId: string): PendingPermission {
+    const pending = this.pending.get(requestId)
+    if (!pending) throw new ProtocolError("not_found", "No such pending permission request")
+    return pending
+  }
+
+  private async abort(requestId: string): Promise<void> {
+    const pending = this.pending.get(requestId)
+    if (!pending) return
+    await this.options.store.removeRequest(requestId)
+    this.pending.delete(requestId)
+    this.removeAbortListener(pending)
+    this.options.broadcast({
+      type: "chatPermissionResolved",
+      requestId,
+      sessionId: pending.request.sessionId,
+    })
+    pending.reject?.(abortError())
+  }
+
+  private async finish(pending: PendingPermission, resolution: ChatPermissionResolution): Promise<void> {
+    await this.options.store.removeRequest(pending.request.id)
+    this.pending.delete(pending.request.id)
+    this.removeAbortListener(pending)
+    this.options.broadcast({
+      type: "chatPermissionResolved",
+      requestId: pending.request.id,
+      sessionId: pending.request.sessionId,
+    })
+    pending.resolve?.(resolution)
+  }
+
+  private removeAbortListener(pending: PendingPermission): void {
+    if (pending.signal && pending.onAbort) pending.signal.removeEventListener("abort", pending.onAbort)
+  }
+}
+
+function abortError(): Error {
+  return new DOMException("The permission request was cancelled", "AbortError")
+}
+
+function grantKey(sessionId: string, toolName: string): string {
+  return JSON.stringify([sessionId, toolName])
+}

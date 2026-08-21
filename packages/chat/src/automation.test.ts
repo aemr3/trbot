@@ -10,7 +10,7 @@ test("parses compact loop intervals and rounds seconds to minute granularity", (
   expect(parseLoopInterval("0m")).toBeNull()
 })
 
-test("goals default execution authority outside the request schema", () => {
+test("validates a goal without transport-owned defaults", () => {
   expect(CreateChatGoalSchema.parse({ objective: "  finish the report  " })).toEqual({
     objective: "finish the report",
   })

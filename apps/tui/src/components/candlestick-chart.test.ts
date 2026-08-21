@@ -488,7 +488,11 @@ test("pins the OHLC line to a clicked candle until it is cleared", async () => {
       }
     },
   }
-  const chart = new CandlestickChart(setup.renderer, { source })
+  let focusRequests = 0
+  const chart = new CandlestickChart(setup.renderer, {
+    source,
+    onFocusRequest: () => { focusRequests++ },
+  })
   setup.renderer.root.add(chart.root)
   chart.setInstrument({ uid: "stock-1", symbol: "TUPRS", displayName: "TUPRS" })
   await setup.waitForFrame((value) => value.includes("O 43,00"))
@@ -498,6 +502,7 @@ test("pins the OHLC line to a clicked candle until it is cleared", async () => {
   // lands on the older one.
   await mouse.click(0, 8)
   const pinned = await setup.waitForFrame((value) => value.includes("O 40,00"))
+  expect(focusRequests).toBe(1)
   expect(pinned).toContain("◆")
   expect(pinned).toContain("C 43,00")
   // The pinned candle names its date and, on a five-minute grain, its hour.

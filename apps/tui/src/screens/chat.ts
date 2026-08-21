@@ -12,6 +12,7 @@ import {
 import type { ChatMessage, ChatRunStatus, ChatSession } from "@trbot/chat/session.ts"
 import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
+import type { ChatPermissionRequest } from "@trbot/chat/permission.ts"
 import { parseLoopInterval, type ChatAutomationState } from "@trbot/chat/automation.ts"
 import type { MarketMonitor } from "@trbot/market/market-monitor.ts"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
@@ -22,6 +23,7 @@ import { AiModelModal } from "../components/ai-model-modal.ts"
 import { ChatCommandMenu, type ChatCommand } from "../components/chat-command-menu.ts"
 import { ChatHelpModal } from "../components/chat-help-modal.ts"
 import { ChatQuestionPanel } from "../components/chat-question-panel.ts"
+import { ChatPermissionPanel } from "../components/chat-permission-panel.ts"
 import { ChatSessionModal } from "../components/chat-session-modal.ts"
 import { ChatTranscript, type ChatTranscriptBlock } from "../components/chat-transcript.ts"
 import { MarketMonitorModal } from "../components/market-monitor-modal.ts"
@@ -41,6 +43,7 @@ const QUEUED_COLOR = TUI_THEME.queued
 const ERROR_COLOR = TUI_THEME.negative
 const MODEL_COLOR = TUI_THEME.modelAccent
 const MONITOR_COLOR = TUI_THEME.monitorAccent
+const LOOP_COLOR = TUI_THEME.warning
 const TOOL_COLOR = TUI_THEME.tool
 const PROMPT_BG = TUI_THEME.promptBackground
 const CLOSED_PROMPT_BG = TUI_THEME.promptClosedBackground
@@ -72,9 +75,8 @@ const MARKET_MONITOR_MUTATIONS = new Set([
   "set_market_monitor_status",
   "cancel_market_monitor",
 ])
-const AUTOMATION_MUTATIONS = new Set([
-  "create_goal",
-  "update_goal",
+const GOAL_MUTATIONS = new Set(["create_goal", "update_goal"])
+const LOOP_MUTATIONS = new Set([
   "create_loop",
   "cancel_loop",
   "reschedule_loop",
@@ -108,7 +110,7 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/help", description: "show every chat key" },
 ]
 
-type Focus = "transcript" | "composer" | "question"
+type Focus = "transcript" | "composer" | "question" | "permission"
 type Modal = AiConnectionModal | AiModelModal | ChatSessionModal | ChatHelpModal | MarketMonitorModal | SubagentSessionModal
 
 export interface ChatScreenOptions {
@@ -125,6 +127,8 @@ export interface ChatScreenOptions {
   onShowThoughtsChange?: (showThoughts: boolean) => void
   onQuestionPending?: (request: ChatQuestionRequest, selected: boolean) => void
   onQuestionResolved?: (requestId: string) => void
+  onPermissionPending?: (request: ChatPermissionRequest, selected: boolean) => void
+  onPermissionResolved?: (requestId: string) => void
   onNotification?: (notification: ChatNotification) => void
   onNotificationDismissed?: (notificationId: string) => void
 }
@@ -187,7 +191,10 @@ export class ChatScreen {
   private runningRunIds = new Set<string>()
   private pendingQuestions = new Map<string, ChatQuestionRequest>()
   private questionPanel: ChatQuestionPanel | null = null
+  private pendingPermissions = new Map<string, ChatPermissionRequest>()
+  private permissionPanel: ChatPermissionPanel | null = null
   private armedMonitorCountBySession = new Map<string, number>()
+  private activeLoopCountBySession = new Map<string, number>()
   /** Context window per `provider/model`, for reading a conversation's usage as a share of it. */
   private contextWindows = new Map<string, number>()
   private selectedSessionId: string | null = null
@@ -216,6 +223,7 @@ export class ChatScreen {
       ...(options.embedded ? { flexGrow: 1 } : { height: "100%" as const }),
       flexDirection: "column",
       backgroundColor: BACKGROUND,
+      onSizeChange: () => this.render.schedule(),
     })
     this.modalHost = this.root
 
@@ -290,6 +298,7 @@ export class ChatScreen {
       height: 1,
       flexShrink: 0,
       flexDirection: "row",
+      gap: 2,
       // The model starts under the prompt text, after its inset and marker.
       paddingLeft: CHAT_INSET + 2,
       paddingRight: CHAT_INSET,
@@ -365,7 +374,13 @@ export class ChatScreen {
    * not: typing "Tomorrow" would otherwise leave the tab.
    */
   capturesInput(): boolean {
-    return this.typing() || this.focus === "question" || this.modal !== null
+    return this.typing() || this.focus === "question" || this.focus === "permission" || this.modal !== null
+  }
+
+  /** Whether an embedded composer can hand Escape back to its host panel. */
+  canReleaseFocus(): boolean {
+    const session = this.selectedSession()
+    return this.focus === "composer" && (!session || !this.streamingBySession.has(session.id))
   }
 
   /** Lets an embedded chat center its popups over the screen that contains it. */
@@ -399,6 +414,10 @@ export class ChatScreen {
     }
     if (this.focus === "question" && this.questionPanel) {
       this.questionPanel.handleKey(key)
+      return
+    }
+    if (this.focus === "permission" && this.permissionPanel) {
+      this.permissionPanel.handleKey(key)
       return
     }
     if (this.typing() && this.handleCommandMenuKey(key)) return
@@ -446,7 +465,7 @@ export class ChatScreen {
       return
     }
     if (key.name === "tab" || key.name === "backtab") {
-      if (this.typing()) this.setFocus(this.selectedPendingQuestion() ? "question" : "transcript")
+      if (this.typing()) this.setFocus(this.blockingFocus() ?? "transcript")
       else this.setFocus("composer")
       return
     }
@@ -476,6 +495,7 @@ export class ChatScreen {
     this.stopSpinner()
     this.closeModal()
     this.removeQuestionPanel()
+    this.removePermissionPanel()
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
 
@@ -516,11 +536,19 @@ export class ChatScreen {
     if (message.role === "APP_EVENT" || (message.toolName && MARKET_MONITOR_MUTATIONS.has(message.toolName))) {
       void this.refreshMarketMonitorCount(sessionId)
     }
-    if (
-      (message.role === "APP_EVENT" && (message.toolName === "goal" || message.toolName === "loop")) ||
-      (message.role === "TOOL_RESULT" && message.toolName && AUTOMATION_MUTATIONS.has(message.toolName))
-    ) {
+    const goalChanged = (message.role === "APP_EVENT" && message.toolName === "goal")
+      || (message.role === "TOOL_RESULT" && message.toolName !== null && GOAL_MUTATIONS.has(message.toolName))
+    if (goalChanged) {
       void this.refreshAutomationNotice(sessionId)
+    }
+    const loopChanged = (message.role === "APP_EVENT" && message.toolName === "loop")
+      || (message.role === "TOOL_RESULT" && message.toolName !== null && LOOP_MUTATIONS.has(message.toolName))
+    if (loopChanged) {
+      if (sessionId === this.selectedSessionId && this.automationNotice === "loop") {
+        this.automationNotice = null
+        this.commandNotice = null
+      }
+      void this.refreshActiveLoopCount(sessionId)
     }
     this.render.schedule()
   }
@@ -585,7 +613,7 @@ export class ChatScreen {
     const isNew = !this.pendingQuestions.has(request.id)
     this.pendingQuestions.set(request.id, request)
     if (!isNew) return
-    if (request.sessionId === this.selectedSessionId) this.setFocus("question")
+    if (request.sessionId === this.selectedSessionId) this.setFocus(this.blockingFocus() ?? "question")
     this.options.onQuestionPending?.(request, request.sessionId === this.selectedSessionId)
     this.render.schedule()
   }
@@ -593,6 +621,21 @@ export class ChatScreen {
   acceptQuestionResolved(_sessionId: string, requestId: string): void {
     if (this.destroyed) return
     this.finishQuestion(requestId)
+  }
+
+  acceptPermission(request: ChatPermissionRequest): void {
+    if (this.destroyed) return
+    const isNew = !this.pendingPermissions.has(request.id)
+    this.pendingPermissions.set(request.id, request)
+    if (!isNew) return
+    if (request.sessionId === this.selectedSessionId) this.setFocus("permission")
+    this.options.onPermissionPending?.(request, request.sessionId === this.selectedSessionId)
+    this.render.schedule()
+  }
+
+  acceptPermissionResolved(_sessionId: string, requestId: string): void {
+    if (this.destroyed) return
+    this.finishPermission(requestId)
   }
 
   acceptNotification(notification: ChatNotification): void {
@@ -616,9 +659,10 @@ export class ChatScreen {
   private async load(): Promise<void> {
     await this.refreshConnection()
     try {
-      const [sessions, questions, notifications] = await Promise.all([
+      const [sessions, questions, permissions, notifications] = await Promise.all([
         this.options.chats.list(),
         this.options.chats.questions(),
+        this.options.chats.permissions(),
         this.options.chats.notifications(),
       ])
       if (this.destroyed) return
@@ -627,6 +671,11 @@ export class ChatScreen {
         if (this.pendingQuestions.has(request.id)) continue
         this.pendingQuestions.set(request.id, request)
         this.options.onQuestionPending?.(request, request.sessionId === this.selectedSessionId)
+      }
+      for (const request of permissions) {
+        if (this.pendingPermissions.has(request.id)) continue
+        this.pendingPermissions.set(request.id, request)
+        this.options.onPermissionPending?.(request, request.sessionId === this.selectedSessionId)
       }
       for (const notification of notifications) this.options.onNotification?.(notification)
       const preferred = this.options.initialSessionId
@@ -638,11 +687,13 @@ export class ChatScreen {
         }
       }
       this.setSelectedSession(this.initialSession(this.sessions))
-      if (this.selectedPendingQuestion()) this.setFocus("question")
+      const blocking = this.blockingFocus()
+      if (blocking) this.setFocus(blocking)
       if (this.selectedSessionId) {
         await Promise.all([
           this.loadSession(this.selectedSessionId),
           this.refreshMarketMonitorCount(this.selectedSessionId),
+          this.refreshActiveLoopCount(this.selectedSessionId),
         ])
       }
     } catch (error) {
@@ -711,6 +762,43 @@ export class ChatScreen {
     } catch (error) {
       this.options.logs.error("Market monitors", error)
     }
+  }
+
+  private async refreshAllActiveLoopCounts(): Promise<void> {
+    const sessions = this.sessions.filter((session) => session.parentSessionId === null)
+    try {
+      const states = await Promise.all(sessions.map(async (session) => ({
+        sessionId: session.id,
+        state: await this.options.chats.automations(session.id),
+      })))
+      if (this.destroyed) return
+      const counts = new Map<string, number>()
+      for (const { sessionId, state } of states) {
+        const count = state.loops.filter((loop) => loop.status === "ACTIVE").length
+        if (count > 0) counts.set(sessionId, count)
+      }
+      this.activeLoopCountBySession = counts
+      this.render.schedule()
+    } catch (error) {
+      this.options.logs.error("Chat loops", error)
+    }
+  }
+
+  private async refreshActiveLoopCount(sessionId: string): Promise<void> {
+    try {
+      const state = await this.options.chats.automations(sessionId)
+      if (this.destroyed) return
+      this.rememberActiveLoopCount(sessionId, state)
+      this.render.schedule()
+    } catch (error) {
+      this.options.logs.error("Chat loops", error)
+    }
+  }
+
+  private rememberActiveLoopCount(sessionId: string, state: ChatAutomationState): void {
+    const count = state.loops.filter((loop) => loop.status === "ACTIVE").length
+    if (count > 0) this.activeLoopCountBySession.set(sessionId, count)
+    else this.activeLoopCountBySession.delete(sessionId)
   }
 
   private async refreshAutomationNotice(sessionId: string): Promise<void> {
@@ -958,11 +1046,12 @@ export class ChatScreen {
   }
 
   private async runLoopCommand(argumentsText: string): Promise<void> {
-    this.automationNotice = "loop"
+    this.automationNotice = null
     try {
       const selected = this.selectedSession()
       const command = parseLoopCommand(argumentsText)
       if (command.action === "LIST") {
+        this.automationNotice = "loop"
         if (!selected) {
           this.commandNotice = "No scheduled tasks in this chat.\n\n/loop [interval] [task]"
           return
@@ -976,14 +1065,15 @@ export class ChatScreen {
       }
       const session = selected ?? await this.startSession()
       if (!session) return
-      this.automationNotice = "loop"
       if (command.action === "CANCEL") {
         await this.options.chats.cancelLoop(session.id, command.loopId)
-        this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "loop")
+        this.commandNotice = null
+        await this.refreshActiveLoopCount(session.id)
         return
       }
       await this.options.chats.createLoop(session.id, command.input)
-      this.commandNotice = formatAutomations(await this.options.chats.automations(session.id), "loop")
+      this.commandNotice = null
+      await this.refreshActiveLoopCount(session.id)
     } catch (error) {
       this.options.logs.error("Chat loop", error)
       this.commandNotice = error instanceof Error ? error.message : String(error)
@@ -1065,6 +1155,7 @@ export class ChatScreen {
       sessions: this.sessions.filter((session) => session.parentSessionId === null),
       currentId: this.selectedSessionId,
       monitorCounts: this.armedMonitorCountBySession,
+      loopCounts: this.activeLoopCountBySession,
       onSelect: (sessionId) => {
         this.selectSession(sessionId)
         this.closeModal()
@@ -1075,7 +1166,10 @@ export class ChatScreen {
       onDelete: (sessionId) => void this.deleteSession(sessionId),
       onClose: () => this.closeModal(),
     }))
-    void this.refreshAllMarketMonitorCounts()
+    void Promise.all([
+      this.refreshAllMarketMonitorCounts(),
+      this.refreshAllActiveLoopCounts(),
+    ])
   }
 
   private async openSubagents(): Promise<void> {
@@ -1241,8 +1335,19 @@ export class ChatScreen {
     if (!this.pendingQuestions.delete(requestId)) return
     this.options.onQuestionResolved?.(requestId)
     if (this.questionPanel?.requestId === requestId) this.removeQuestionPanel()
-    if (this.selectedPendingQuestion()) this.setFocus("question")
+    const blocking = this.blockingFocus()
+    if (blocking) this.setFocus(blocking)
     else if (this.focus === "question") this.setFocus("composer")
+    this.render.schedule()
+  }
+
+  private finishPermission(requestId: string): void {
+    if (!this.pendingPermissions.delete(requestId)) return
+    this.options.onPermissionResolved?.(requestId)
+    if (this.permissionPanel?.requestId === requestId) this.removePermissionPanel()
+    const blocking = this.blockingFocus()
+    if (blocking) this.setFocus(blocking)
+    else if (this.focus === "permission") this.setFocus("composer")
     this.render.schedule()
   }
 
@@ -1265,8 +1370,9 @@ export class ChatScreen {
     if (sessionId === this.selectedSessionId) return
     this.setSelectedSession(sessionId)
     if (!this.messagesBySession.has(sessionId)) void this.loadSession(sessionId)
-    if (this.selectedPendingQuestion()) this.setFocus("question")
-    else if (this.focus === "question") this.setFocus("composer")
+    const blocking = this.blockingFocus()
+    if (blocking) this.setFocus(blocking)
+    else if (this.focus === "question" || this.focus === "permission") this.setFocus("composer")
     this.render.schedule()
   }
 
@@ -1275,6 +1381,13 @@ export class ChatScreen {
     if (this.destroyed) return
     this.selectSession(sessionId)
     this.setFocus("question")
+  }
+
+  /** Opens the exact conversation where a sensitive tool is waiting. */
+  openPermission(sessionId: string): void {
+    if (this.destroyed) return
+    this.selectSession(sessionId)
+    this.setFocus("permission")
   }
 
   /** Opens the conversation that emitted a non-blocking notification. */
@@ -1307,7 +1420,10 @@ export class ChatScreen {
     this.commandNotice = null
     this.automationNotice = null
     this.options.onSessionChange?.(sessionId)
-    if (sessionId) void this.refreshMarketMonitorCount(sessionId)
+    if (sessionId) {
+      void this.refreshMarketMonitorCount(sessionId)
+      void this.refreshActiveLoopCount(sessionId)
+    }
   }
 
   private toggleThoughts(): void {
@@ -1334,11 +1450,13 @@ export class ChatScreen {
   }
 
   private setFocus(focus: Focus): void {
+    if (focus === "composer") focus = this.blockingFocus() ?? focus
     if (this.focus === focus) return
     this.focus = focus
     if (focus === "composer") this.composer.focus()
     else this.composer.blur()
     this.questionPanel?.setActive(focus === "question")
+    this.permissionPanel?.setActive(focus === "permission")
     this.render.schedule()
   }
 
@@ -1349,7 +1467,7 @@ export class ChatScreen {
 
   /** No provider or no model means there is nothing to type into yet. */
   private composerUsable(): boolean {
-    return this.connected !== false && this.selectedHasModel()
+    return this.connected !== false && this.selectedHasModel() && this.blockingFocus() === null
   }
 
   // --- painting ----------------------------------------------------------------
@@ -1360,23 +1478,29 @@ export class ChatScreen {
     this.syncSpinner(session)
     this.transcript.setBlocks(this.transcriptBlocks(session))
     this.syncQuestionPanel()
+    this.syncPermissionPanel()
     this.composerRow.visible = this.composerUsable()
     // Nothing here sizes the field: it measures its own text and the block around it
     // takes exactly the height the prompt needs. Only the active insertion marker is
     // warm; when the transcript has focus it recedes with the other turn markers.
     this.composerMarker.fg = this.typing() ? COMPOSER_COLOR : TURN_MARKER_COLOR
-    this.composerMeta.content = this.composerMetaText(session)
+    const composerMeta = this.composerMetaText(session)
+    this.composerMeta.content = composerMeta
     this.composerMeta.visible = this.composerUsable()
     const hint = this.hintText(session)
     this.hint.content = hint
-    this.hint.marginRight = hint ? 2 : 0
-    this.usage.content = this.usageText(session)
+    this.hint.visible = hint.length > 0
+    this.hint.marginRight = 0
+    const usage = this.usageText(session)
+    this.usage.content = usage
+    this.usage.visible = this.usageFits(composerMeta, hint, usage)
     // Session pickers stay live while a reply lands or a worker finishes.
     if (this.modal instanceof ChatSessionModal) {
       this.modal.setSessions(
         this.sessions.filter((candidate) => candidate.parentSessionId === null),
         this.selectedSessionId,
         this.armedMonitorCountBySession,
+        this.activeLoopCountBySession,
       )
     }
     if (this.modal instanceof SubagentSessionModal) {
@@ -1396,7 +1520,24 @@ export class ChatScreen {
     return null
   }
 
+  private selectedPendingPermission(): ChatPermissionRequest | null {
+    for (const request of this.pendingPermissions.values()) {
+      if (request.sessionId === this.selectedSessionId) return request
+    }
+    return null
+  }
+
+  private blockingFocus(): "question" | "permission" | null {
+    if (this.selectedPendingPermission()) return "permission"
+    if (this.selectedPendingQuestion()) return "question"
+    return null
+  }
+
   private syncQuestionPanel(): void {
+    if (this.selectedPendingPermission()) {
+      this.removeQuestionPanel()
+      return
+    }
     const request = this.selectedPendingQuestion()
     if (this.questionPanel && request && this.questionPanel.requestId === request.id) {
       this.questionPanel.setActive(this.focus === "question")
@@ -1411,7 +1552,7 @@ export class ChatScreen {
         this.finishQuestion(request.id)
       },
       onFocus: () => this.setFocus("question"),
-      onLeave: () => this.setFocus("composer"),
+      onLeave: () => this.setFocus("transcript"),
     })
     this.questionPanel.setActive(this.focus === "question")
     this.questionSlot.add(this.questionPanel.root)
@@ -1421,6 +1562,35 @@ export class ChatScreen {
     const panel = this.questionPanel
     if (!panel) return
     this.questionPanel = null
+    if (!this.questionSlot.isDestroyed && !panel.root.isDestroyed) this.questionSlot.remove(panel.root)
+    panel.destroy()
+  }
+
+  private syncPermissionPanel(): void {
+    const request = this.selectedPendingPermission()
+    if (this.permissionPanel && request && this.permissionPanel.requestId === request.id) {
+      this.permissionPanel.setActive(this.focus === "permission")
+      return
+    }
+    this.removePermissionPanel()
+    if (!request) return
+    this.permissionPanel = new ChatPermissionPanel(this.renderer, {
+      request,
+      onDecide: async (reply) => {
+        await this.options.chats.answerPermission(request.id, reply)
+        this.finishPermission(request.id)
+      },
+      onFocus: () => this.setFocus("permission"),
+      onLeave: () => this.setFocus("transcript"),
+    })
+    this.permissionPanel.setActive(this.focus === "permission")
+    this.questionSlot.add(this.permissionPanel.root)
+  }
+
+  private removePermissionPanel(): void {
+    const panel = this.permissionPanel
+    if (!panel) return
+    this.permissionPanel = null
     if (!this.questionSlot.isDestroyed && !panel.root.isDestroyed) this.questionSlot.remove(panel.root)
     panel.destroy()
   }
@@ -1442,7 +1612,23 @@ export class ChatScreen {
         fg(MONITOR_COLOR)(`${monitorCount} monitor${monitorCount === 1 ? "" : "s"}`),
       )
     }
+    const loopCount = this.activeLoopCountBySession.get(session.id)
+    if (loopCount !== undefined && loopCount > 0) {
+      label.chunks.push(
+        fg(FAINT_COLOR)(" · "),
+        fg(LOOP_COLOR)(`${loopCount} loop${loopCount === 1 ? "" : "s"}`),
+      )
+    }
     return label
+  }
+
+  private usageFits(meta: StyledText, hint: string, usage: StyledText): boolean {
+    const usageWidth = styledTextWidth(usage)
+    if (usageWidth === 0 || (this.options.embedded && hint.length > 0)) return false
+    const widths = [styledTextWidth(meta), hint.length, usageWidth].filter((width) => width > 0)
+    const required = widths.reduce((sum, width) => sum + width, 0) + Math.max(0, widths.length - 1) * 2
+    const available = Math.max(0, this.root.width - (CHAT_INSET * 2 + 2))
+    return required <= available
   }
 
   /**
@@ -1570,7 +1756,7 @@ function formatAutomations(state: ChatAutomationState, focus: "goal" | "loop"): 
     return [
       `${goal.status.toLowerCase()} goal`,
       goal.objective,
-      `${goal.turnCount}/${goal.maxTurns} continuations · ${budget} · ${goal.executionPolicy.mode.toLowerCase()}`,
+      `${goal.turnCount}/${goal.maxTurns} continuations · ${budget}`,
       ...(goal.lastEvaluation ? [`Evaluator: ${goal.lastEvaluation}`] : []),
       "",
       "/goal pause · /goal resume · /goal clear",
@@ -1871,6 +2057,10 @@ function formatDuration(elapsedMs: number): string {
 function formatTokens(tokens: number): string {
   if (tokens < 1000) return `${tokens}`
   return `${(tokens / 1000).toFixed(1)}K`
+}
+
+function styledTextWidth(value: StyledText): number {
+  return value.chunks.reduce((width, chunk) => width + chunk.text.length, 0)
 }
 
 /** Fractions of a cent are the normal case for one reply, so they are not rounded away. */

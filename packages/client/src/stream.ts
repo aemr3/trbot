@@ -2,7 +2,7 @@ import type { AlertTriggerEvent, PriceAlertView } from "@trbot/market/alert-moni
 import type { DepthBookListener, DepthStatusListener, DepthStream } from "@trbot/market/depth.ts"
 import type { EquityQuoteListener, EquityQuoteStream } from "@trbot/market/equity-quote-stream.ts"
 import type { ConnectionListener, QuoteStream, QuoteUpdateListener } from "@trbot/market/quote-stream.ts"
-import { ROUTES } from "@trbot/protocol/routes.ts"
+import { CLIENT_INSTANCE_HEADER, ROUTES } from "@trbot/protocol/routes.ts"
 import { parseServerFrame, STREAM_CHANNELS } from "@trbot/protocol/stream.ts"
 import type { ClientFrame, ServerFrame, StopOutcome } from "@trbot/protocol/stream.ts"
 import type { AccountLiveUpdateListener, AccountStream } from "@trbot/trading/account.ts"
@@ -18,6 +18,8 @@ function webSocketProtocols<T extends NonNullable<object>>(options: T): string[]
 export interface StreamConnectionOptions {
   url: string
   token: string
+  /** Shared with HTTP requests so temporary grants are revoked when this socket closes. */
+  clientId?: string
   /**
    * Certificate authority to trust, for a server using a self-signed
    * certificate. The socket needs its own copy: it does not go through the HTTP
@@ -59,8 +61,10 @@ export class StreamConnection {
 
     const url = this.options.url.replace(/^http/, "ws") + ROUTES.stream
     const tls = this.options.ca ? { tls: { ca: this.options.ca } } : {}
+    const headers = new Headers({ Authorization: `Bearer ${this.options.token}` })
+    if (this.options.clientId) headers.set(CLIENT_INSTANCE_HEADER, this.options.clientId)
     const socketOptions = {
-      headers: { Authorization: `Bearer ${this.options.token}` },
+      headers,
       ...tls,
     }
     const socket = new WebSocket(url, webSocketProtocols(socketOptions))

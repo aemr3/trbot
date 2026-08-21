@@ -1,4 +1,3 @@
-import { ExecutionPolicySchema } from "@trbot/trading/execution-policy.ts"
 import { z } from "zod"
 
 export const CHAT_GOAL_STATUSES = ["ACTIVE", "PAUSED", "BLOCKED", "COMPLETE"] as const
@@ -15,7 +14,6 @@ export const ChatGoalSchema = z.object({
   sessionId: z.string().min(1),
   objective: z.string().min(1),
   status: z.enum(CHAT_GOAL_STATUSES),
-  executionPolicy: ExecutionPolicySchema,
   turnCount: z.number().int().nonnegative(),
   maxTurns: z.number().int().positive(),
   tokenBudget: z.number().int().positive().nullable(),
@@ -35,7 +33,6 @@ const ChatLoopCommon = {
   prompt: z.string().min(1),
   usesDefaultPrompt: z.boolean(),
   status: z.enum(CHAT_LOOP_STATUSES),
-  executionPolicy: ExecutionPolicySchema,
   nextRunAt: z.number().int().nonnegative(),
   lastRunAt: z.number().int().nonnegative().nullable(),
   runCount: z.number().int().nonnegative(),
@@ -92,7 +89,6 @@ export const CreateChatGoalSchema = z.object({
   objective: z.string().trim().min(1).max(4_000),
   maxTurns: z.number().int().positive().max(500).optional(),
   tokenBudget: z.number().int().positive().optional(),
-  executionPolicy: ExecutionPolicySchema.optional(),
 })
 
 export type CreateChatGoal = z.infer<typeof CreateChatGoalSchema>
@@ -107,7 +103,6 @@ const CreateChatLoopCommon = {
   prompt: z.string().trim().min(1).max(4_000).optional(),
   maxRuns: z.number().int().positive().optional(),
   expiresAt: z.number().int().positive().optional(),
-  executionPolicy: ExecutionPolicySchema.optional(),
 }
 
 export const CreateChatLoopSchema = z.discriminatedUnion("schedule", [

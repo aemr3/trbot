@@ -149,3 +149,57 @@ test("adds every read-only market tool when the server provides its clients", ()
     "subagent",
   ])
 })
+
+test("adds every permission-gated trading tool when the server provides them", () => {
+  const faux = fauxProvider({ models: [{ id: "chat-model" }] })
+  const models = createModels()
+  models.setProvider(faux.provider)
+
+  const tools = createAgentTools({
+    models,
+    trading: {
+      sources: () => { throw new Error("not called") },
+      permissions: { authorize: async () => ({ decision: "DENY", reason: null }) },
+    },
+  })
+
+  expect(tools.list().map((tool) => tool.name)).toEqual([
+    "web_search",
+    "fetch_content",
+    "place_viop_order",
+    "cancel_pending_viop_orders",
+    "exit_viop_position",
+    "exit_all_viop_positions",
+    "subagent",
+  ])
+})
+
+test("adds permission-gated protective exit tools when the server provides them", () => {
+  const faux = fauxProvider({ models: [{ id: "chat-model" }] })
+  const models = createModels()
+  models.setProvider(faux.provider)
+
+  const tools = createAgentTools({
+    models,
+    stopRules: {
+      sources: () => { throw new Error("not called") },
+      rules: {
+        list: async () => [],
+        save: async () => { throw new Error("not called") },
+        setStatus: async () => {},
+        remove: async () => {},
+      },
+      permissions: { authorize: async () => ({ decision: "DENY", reason: null }) },
+    },
+  })
+
+  expect(tools.list().map((tool) => tool.name)).toEqual([
+    "web_search",
+    "fetch_content",
+    "create_stop_rule",
+    "update_stop_rule",
+    "set_stop_rule_status",
+    "delete_stop_rule",
+    "subagent",
+  ])
+})

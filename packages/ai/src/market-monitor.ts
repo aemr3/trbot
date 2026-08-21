@@ -69,7 +69,7 @@ const CreateMarketMonitorParameters = Type.Object({
     description: [
       "Self-contained continuation for the agent when this monitor triggers.",
       "State why the monitor exists, which fresh market and account data to read, and what to reassess.",
-      "A trigger is only a signal, never current data or order authorization.",
+      "A trigger is only a signal; refresh current data before acting.",
     ].join(" "),
     minLength: 1,
     maxLength: 4_000,
@@ -137,7 +137,7 @@ export function createMarketMonitorTool(
         "The server evaluates it without consuming model tokens and it remains active when no terminal is attached.",
         "onTrigger is the continuation used to wake the originating chat when it triggers.",
         "A triggered agent must refresh the required market and account data before analysis or action because the event is not current data.",
-        "This tool only creates the monitor; it does not place orders. A triggered agent may use separate trading tools only within the user's active execution authorization.",
+        "This tool only creates the monitor; it does not place orders.",
         "CLOSE and ATR monitors require an interval.",
       ].join(" "),
       parameters: CreateMarketMonitorParameters,

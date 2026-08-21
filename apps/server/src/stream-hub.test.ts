@@ -87,9 +87,11 @@ function sessionWith(sources: ProviderSources): TestProviderSession {
 
 class FakeSocket implements StreamSocket {
   readonly sent: ServerFrame[] = []
-  data = newSocketData()
+  readonly data
 
-  constructor(public buffered = 0) {}
+  constructor(public buffered = 0, clientId: string | null = null) {
+    this.data = newSocketData(clientId)
+  }
 
   send(payload: string): number {
     const frame = parseServerFrame(payload)
@@ -126,6 +128,20 @@ function book(symbol: string): DepthBook {
 }
 
 describe("stream hub", () => {
+  test("reports the lifetime of an identified client", () => {
+    const events: string[] = []
+    const hub = new StreamHub(sessionWith(sourcesWith(new FakeQuoteStream(), new FakeDepthFactory())), {
+      onClientAttach: (clientId) => events.push(`attach:${clientId}`),
+      onClientDetach: (clientId) => events.push(`detach:${clientId}`),
+    })
+    const client = new FakeSocket(0, "client-1")
+
+    hub.add(client)
+    hub.remove(client)
+
+    expect(events).toEqual(["attach:client-1", "detach:client-1"])
+  })
+
   test("subscribes upstream to the union of what clients want, plus the monitors", () => {
     const quotes = new FakeQuoteStream()
     const hub = new StreamHub(sessionWith(sourcesWith(quotes, new FakeDepthFactory())), {

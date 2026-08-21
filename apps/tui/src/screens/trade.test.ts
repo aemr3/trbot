@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
+import { BoxRenderable, TextRenderable, type KeyEvent, type Renderable, type RenderContext } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { OverviewGenerateOptions, OverviewGenerator } from "@trbot/market/overview.ts"
 import type { MarketOverviewDigest } from "@trbot/market/overview.ts"
@@ -59,16 +59,27 @@ function focusPanel(mockInput: { pressTab(): void }, panel: (typeof FOCUS_ORDER)
 
 class FakeTradeChatPanel implements TradeChatPanel {
   readonly root: BoxRenderable
+  readonly composerTarget: BoxRenderable
+  readonly transcriptText: TextRenderable
   readonly keys: KeyEvent[] = []
   activations = 0
   deactivations = 0
   mounted = false
   destroyed = false
   modalHost: BoxRenderable | null = null
+  openedQuestions: string[] = []
+  openedPermissions: string[] = []
+  openedSessions: string[] = []
+  selectedSessionId = "side-session"
 
   constructor(renderer: RenderContext) {
-    this.root = new BoxRenderable(renderer, { width: "100%", flexGrow: 1 })
-    this.root.add(new TextRenderable(renderer, { content: "SIDE CHAT" }))
+    this.root = new BoxRenderable(renderer, { width: "100%", flexGrow: 1, flexDirection: "column" })
+    const transcriptTarget = new BoxRenderable(renderer, { width: "100%", flexGrow: 1, focusable: true })
+    this.transcriptText = new TextRenderable(renderer, { content: "SIDE CHAT" })
+    transcriptTarget.add(this.transcriptText)
+    this.composerTarget = new BoxRenderable(renderer, { width: "100%", height: 1, focusable: true })
+    this.root.add(transcriptTarget)
+    this.root.add(this.composerTarget)
   }
 
   mount(): void {
@@ -82,18 +93,35 @@ class FakeTradeChatPanel implements TradeChatPanel {
   }
   activate(): void {
     this.activations += 1
+    this.composerTarget.focus()
   }
   deactivate(): void {
     this.deactivations += 1
+    this.composerTarget.blur()
   }
   capturesInput(): boolean {
+    return true
+  }
+  canReleaseFocus(): boolean {
     return true
   }
   handleKey(key: KeyEvent): void {
     this.keys.push(key)
   }
+  openQuestion(sessionId: string): void {
+    this.openedQuestions.push(sessionId)
+    this.selectedSessionId = sessionId
+  }
+  openPermission(sessionId: string): void {
+    this.openedPermissions.push(sessionId)
+    this.selectedSessionId = sessionId
+  }
+  openSession(sessionId: string): void {
+    this.openedSessions.push(sessionId)
+    this.selectedSessionId = sessionId
+  }
   isShowingSession(sessionId: string): boolean {
-    return sessionId === "side-session"
+    return sessionId === this.selectedSessionId
   }
   setMarketOpen(): void {}
   destroy(): void {
@@ -371,8 +399,8 @@ test("switches between selected-stock and index news feeds", async () => {
   renderer.destroy()
 })
 
-test("switches the news panel to its embedded chat and routes input there", async () => {
-  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+test("switches the news panel to its embedded chat and releases input for ticker search", async () => {
+  const { renderer, mockInput, mockMouse, waitForFrame } = await createTestRenderer({
     width: 120,
     height: 30,
     kittyKeyboard: true,
@@ -406,20 +434,81 @@ test("switches the news panel to its embedded chat and routes input there", asyn
   expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
   expect(screen.capturesInput()).toBe(true)
   expect(screen.isShowingSession("side-session")).toBe(true)
+  expect(screen.hasEmbeddedChat()).toBe(true)
   expect(preferenceChanges.at(-1)?.selectedTradeRightView).toBe("chat")
+
+  const tickerLine = chatFrame.split("\n").findIndex((line) => line.includes("▶ XU030"))
+  const tickerColumn = chatFrame.split("\n")[tickerLine]?.indexOf("XU030") ?? -1
+  expect(tickerLine).toBeGreaterThanOrEqual(0)
+  expect(tickerColumn).toBeGreaterThanOrEqual(0)
+  await mockMouse.click(tickerColumn, tickerLine)
+  await mockInput.typeText("/")
+  await waitForFrame((frame) => frame.includes("type a ticker"))
+  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
+
+  mockInput.pressEscape()
+  mockInput.pressKey("c", { meta: true })
+  mockInput.pressEscape()
+  await mockInput.typeText("/")
+  await waitForFrame((frame) => frame.includes("type a ticker"))
+  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
+  mockInput.pressEscape()
+
+  const sideChatLine = chatFrame.split("\n").findIndex((line) => line.includes("SIDE CHAT"))
+  const sideChatColumn = chatFrame.split("\n")[sideChatLine]?.indexOf("SIDE CHAT") ?? -1
+  expect(sideChatLine).toBeGreaterThanOrEqual(0)
+  expect(sideChatColumn).toBeGreaterThanOrEqual(0)
+  await mockMouse.click(sideChatColumn, sideChatLine)
+  expect(renderer.currentFocusedRenderable).toBe(chat.composerTarget)
+  await mockInput.typeText("/")
+  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello/")
+  expect(screen.capturesInput()).toBe(true)
+  const focusedChat = await waitForFrame((frame) => frame.includes("SIDE CHAT"))
+  expect(focusedChat).not.toContain("type a ticker")
+
+  const activationsBeforeNotification = chat.activations
+  screen.openSession("another-session")
+  expect(chat.openedSessions).toEqual(["another-session"])
+  expect(screen.isShowingSession("another-session")).toBe(true)
+  expect(chat.activations).toBeGreaterThan(activationsBeforeNotification)
 
   mockInput.pressKey("n", { meta: true })
   const newsFrame = await waitForFrame((frame) => (
     frame.includes("BIST 30 güne yükselişle başladı") && frame.includes("AI Overview")
   ))
   expect(newsFrame).not.toContain("SIDE CHAT")
-  expect(screen.isShowingSession("side-session")).toBe(false)
+  expect(screen.isShowingSession("another-session")).toBe(false)
+  expect(screen.hasEmbeddedChat()).toBe(true)
   expect(preferenceChanges.at(-1)?.selectedTradeRightView).toBe("news")
+
+  screen.openSession("notification-session")
+  const reopenedChatFrame = await waitForFrame((frame) => frame.includes("SIDE CHAT"))
+  expect(chat.openedSessions).toEqual(["another-session", "notification-session"])
+  expect(screen.isShowingSession("notification-session")).toBe(true)
+
+  const reopenedLines = reopenedChatFrame.split("\n")
+  const transcriptLine = reopenedLines.findIndex((line) => line.includes("SIDE CHAT"))
+  const transcriptColumn = reopenedLines[transcriptLine]?.indexOf("SIDE CHAT") ?? -1
+  expect(transcriptLine).toBeGreaterThanOrEqual(0)
+  expect(transcriptColumn).toBeGreaterThanOrEqual(0)
+  await mockMouse.drag(transcriptColumn + "SIDE CHAT".length - 1, transcriptLine, 0, transcriptLine)
+  const selection = renderer.getSelection()
+  expect(selection?.selectedRenderables).toContain(chat.transcriptText)
+  expect(selection?.selectedRenderables.every((renderable) => isDescendantOf(renderable, chat.root))).toBe(true)
 
   screen.destroy()
   expect(chat.destroyed).toBe(true)
   renderer.destroy()
 })
+
+function isDescendantOf(renderable: Renderable, ancestor: Renderable): boolean {
+  let current: Renderable | null = renderable
+  while (current) {
+    if (current === ancestor) return true
+    current = current.parent
+  }
+  return false
+}
 
 test("restores the embedded chat as the selected trade-side view", async () => {
   const { renderer, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
@@ -1388,7 +1477,7 @@ test("opens a news article with its full body on Enter and returns on Backspace"
 })
 
 test("switches chart ranges and timeframes from the focused chart panel", async () => {
-  const { renderer, mockInput, waitForFrame, waitFor } = await createTestRenderer({ width: 120, height: 24 })
+  const { renderer, mockInput, mockMouse, waitForFrame, waitFor } = await createTestRenderer({ width: 120, height: 24 })
   const requested: Array<{ range: string; interval: string }> = []
   const trackingCandles: CandleSource = {
     async loadCandles(instrumentUid, range, interval) {
@@ -1404,9 +1493,13 @@ test("switches chart ranges and timeframes from the focused chart panel", async 
   renderer.root.add(screen.root)
   screen.mount()
 
-  await waitForFrame((frame) => frame.includes("XU030"))
+  const chartFrame = await waitForFrame((frame) => frame.includes("XU030") && /[\u2801-\u28ff]/u.test(frame))
   await waitFor(() => requested.some((request) => request.range === "INTRADAY" && request.interval === "MIN_5"))
-  focusPanel(mockInput, "chart")
+  const plotY = chartFrame.split("\n").findIndex((line) => /[\u2801-\u28ff]/u.test(line))
+  const plotX = chartFrame.split("\n")[plotY]?.search(/[\u2801-\u28ff]/u) ?? -1
+  expect(plotX).toBeGreaterThanOrEqual(0)
+  expect(plotY).toBeGreaterThanOrEqual(0)
+  await mockMouse.click(plotX, plotY)
   mockInput.pressArrow("right")
   await waitFor(() => requested.some((request) => request.range === "WEEK" && request.interval === "HOUR_1"))
   mockInput.pressArrow("down")

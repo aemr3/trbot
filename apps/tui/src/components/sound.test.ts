@@ -19,6 +19,7 @@ test("the cues use different system sounds", () => {
   sound.play("STOP")
   sound.play("COMPLETE")
   sound.play("QUESTION")
+  sound.play("PERMISSION")
   sound.play("NOTIFICATION")
 
   // Which one fired has to be clear without looking at the screen.
@@ -26,7 +27,9 @@ test("the cues use different system sounds", () => {
   expect(commands[0]?.[1]).not.toBe(commands[1]?.[1])
   expect(commands[2]?.[1]).not.toBe(commands[0]?.[1])
   expect(commands[2]?.[1]).not.toBe(commands[1]?.[1])
-  expect(new Set(commands.map((command) => command[1])).size).toBe(5)
+  expect(commands[2]?.[1]).toEndWith("/Pop.aiff")
+  expect(commands[5]?.[1]).toEndWith("/Glass.aiff")
+  expect(new Set(commands.map((command) => command[1])).size).toBe(6)
 })
 
 test("falls back to the terminal bell where no player exists", () => {

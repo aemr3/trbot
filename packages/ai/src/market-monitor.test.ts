@@ -247,7 +247,7 @@ test("describes monitoring as durable attention, not trading authority", () => {
 
   expect(create?.description).toContain("without consuming model tokens")
   expect(create?.description).toContain("does not place orders")
-  expect(create?.description).toContain("active execution authorization")
+  expect(create?.description).not.toContain("permission")
   expect(create?.description).toContain("refresh the required market and account data")
 })
 

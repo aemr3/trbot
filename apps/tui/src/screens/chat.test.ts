@@ -4,6 +4,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { chatBlockText, type ChatMessage, type ChatSession, type ChatSessionDetail } from "@trbot/chat/session.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
+import type { ChatPermissionReply, ChatPermissionRequest } from "@trbot/chat/permission.ts"
 import { ChatLoopSchema, type ChatAutomationState } from "@trbot/chat/automation.ts"
 import { createMarketMonitor } from "@trbot/market/market-monitor.ts"
 import type { AiAccount, AiModelChoice, AiModelSummary, AiPreferences, AiProviderSummary } from "@trbot/protocol/ai.ts"
@@ -24,6 +25,7 @@ function fakeChats(): ChatSessions & {
   rejected: string[]
   agentNotifications: ChatNotification[]
   dismissedNotifications: string[]
+  permissionDecisions: Array<{ requestId: string; reply: ChatPermissionReply }>
 } {
   const sessions: ChatSession[] = []
   const messages = new Map<string, ChatMessage[]>()
@@ -35,6 +37,7 @@ function fakeChats(): ChatSessions & {
   const rejected: string[] = []
   const agentNotifications: ChatNotification[] = []
   const dismissedNotifications: string[] = []
+  const permissionDecisions: Array<{ requestId: string; reply: ChatPermissionReply }> = []
   const automations = new Map<string, ChatAutomationState>()
 
   return {
@@ -47,6 +50,7 @@ function fakeChats(): ChatSessions & {
     rejected,
     agentNotifications,
     dismissedNotifications,
+    permissionDecisions,
     async list() {
       // A copy, as a real client's answer would be: handing out the live array
       // would let the screen and the fake share state no server ever shares.
@@ -121,7 +125,6 @@ function fakeChats(): ChatSessions & {
         sessionId,
         objective: input.objective,
         status: "ACTIVE" as const,
-        executionPolicy: input.executionPolicy ?? { mode: "ANALYSIS_ONLY" as const },
         turnCount: 0,
         maxTurns: input.maxTurns ?? 50,
         tokenBudget: input.tokenBudget ?? null,
@@ -163,7 +166,6 @@ function fakeChats(): ChatSessions & {
         intervalMs,
         cronExpression: input.schedule === "CRON" ? input.cronExpression : null,
         status: "ACTIVE" as const,
-        executionPolicy: input.executionPolicy ?? { mode: "ANALYSIS_ONLY" as const },
         nextRunAt,
         lastRunAt: null,
         runCount: 0,
@@ -188,6 +190,12 @@ function fakeChats(): ChatSessions & {
     },
     async rejectQuestion(requestId) {
       rejected.push(requestId)
+    },
+    async permissions() {
+      return []
+    },
+    async answerPermission(requestId, reply) {
+      permissionDecisions.push({ requestId, reply })
     },
     async notifications() {
       return [...agentNotifications]
@@ -433,6 +441,44 @@ test("leaves an inline agent question pending and answers it later", async () =>
   expect(chats.answered).toEqual([{ requestId: "question-2", answers: [["Yes"]] }])
   expect(chats.rejected).toEqual([])
   expect(chats.sent).toEqual([])
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("freezes the composer while a trading permission is pending", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  const request: ChatPermissionRequest = {
+    id: "permission-1",
+    sessionId: session.id,
+    toolName: "place_viop_order",
+    action: "BUY 1 F_ASELS0826 at 100 (LIMIT)",
+    reason: "Open the planned position",
+    scope: "SESSION",
+    createdAt: 1_000,
+  }
+  screen.acceptPermission(request)
+  const blocked = await waitForFrame((frame) => frame.includes("Permission required"))
+  expect(blocked).not.toContain("ask something")
+
+  await mockInput.typeText("this must not enter the composer")
+  await Bun.sleep(0)
+  expect(chats.sent).toEqual([])
+
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("ask something") && !frame.includes("Permission required"))
+  expect(chats.permissionDecisions).toEqual([{
+    requestId: request.id,
+    reply: { decision: "ALLOW", scope: "SESSION" },
+  }])
+
   screen.destroy()
   renderer.destroy()
 })
@@ -753,43 +799,54 @@ test("creates and inspects persistent goals and scheduled loops from slash comma
   await mockInput.typeText("/goal Verify the close")
   mockInput.pressEnter()
   const goal = await waitForFrame((frame) => frame.includes("active goal") && frame.includes("Verify the close"))
-  expect(goal).toContain("analysis_only")
+  expect(goal).not.toContain("execution policy")
   expect(chats.sent).toEqual([])
 
   await mockInput.typeText("/loop 5m Refresh positions")
   mockInput.pressEnter()
-  const loop = await waitForFrame((frame) => frame.includes("Scheduled tasks") && frame.includes("every 5m"))
-  expect(loop).toContain("Refresh positions")
+  const created = await waitForFrame((frame) => frame.includes("1 loop") && !frame.includes("Scheduled tasks"))
+  expect(created).not.toContain("Refresh positions")
   expect(chats.sent).toEqual([])
+
+  await mockInput.typeText("/loop list")
+  mockInput.pressEnter()
+  const listed = await waitForFrame((frame) => frame.includes("Scheduled tasks") && frame.includes("every 5m"))
+  expect(listed).toContain("Refresh positions")
 
   await mockInput.typeText("/loop Recheck the account every 2 hours")
   mockInput.pressEnter()
-  const trailing = await waitForFrame((frame) => frame.includes("every 2h") && frame.includes("Recheck the account"))
-  expect(trailing).toContain("Scheduled tasks")
+  await waitForFrame((frame) => frame.includes("2 loops") && !frame.includes("Scheduled tasks"))
 
   await mockInput.typeText("/loop Watch the open")
   mockInput.pressEnter()
-  const dynamic = await waitForFrame((frame) => frame.includes("dynamic") && frame.includes("Watch the open"))
-  expect(dynamic).toContain("next delay 1m")
+  await waitForFrame((frame) => frame.includes("3 loops"))
 
   await mockInput.typeText("/loop 20s")
   mockInput.pressEnter()
-  const rounded = await waitForFrame((frame) => frame.includes("every 1m") && frame.includes("Maintenance"))
-  expect(rounded).toContain("Scheduled tasks")
+  await waitForFrame((frame) => frame.includes("4 loops"))
 
   await mockInput.typeText("/loop cron */5 * * * * Refresh news")
   mockInput.pressEnter()
-  const cron = await waitForFrame((frame) => frame.includes("cron */5 * * * *") && frame.includes("Refresh news"))
-  expect(cron).toContain("Scheduled tasks")
+  await waitForFrame((frame) => frame.includes("5 loops"))
 
   const state = await chats.automations(session.id)
+  expect(state.loops).toEqual(expect.arrayContaining([
+    expect.objectContaining({ schedule: "INTERVAL", intervalMs: 300_000, prompt: "Refresh positions" }),
+    expect.objectContaining({ schedule: "INTERVAL", intervalMs: 7_200_000, prompt: "Recheck the account" }),
+    expect.objectContaining({ schedule: "INTERVAL", intervalMs: 60_000, prompt: "Maintenance" }),
+    expect.objectContaining({ schedule: "CRON", cronExpression: "*/5 * * * *", prompt: "Refresh news" }),
+  ]))
   const rescheduled = state.loops.find((entry) => entry.schedule === "DYNAMIC" && entry.prompt === "Watch the open")
   if (!rescheduled || rescheduled.schedule !== "DYNAMIC") throw new Error("dynamic loop was not created")
   rescheduled.intervalMs = 3_600_000
   rescheduled.nextRunAt += 3_600_000
+
+  await mockInput.typeText("/loop list")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Scheduled tasks") && frame.includes("Watch the open"))
   screen.acceptMessage(session.id, toolResultMessage("reschedule_loop", "Next run in 60 minutes."))
-  const refreshed = await waitForFrame((frame) => frame.includes("Watch the open") && frame.includes("next delay 1h"))
-  expect(refreshed).toContain("Scheduled tasks")
+  const refreshed = await waitForFrame((frame) => frame.includes("5 loops") && !frame.includes("Scheduled tasks"))
+  expect(refreshed).not.toContain(rescheduled.id)
 
   screen.destroy()
   renderer.destroy()
@@ -987,11 +1044,16 @@ test("keeps one transcript per session and switches between them", async () => {
   renderer.destroy()
 })
 
-test("shows every session's armed monitor count in the sessions modal", async () => {
+test("shows every session's active monitor and loop counts in the sessions modal", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const first = await chats.create()
   const second = await chats.create()
+  await chats.createLoop(second.id, {
+    schedule: "INTERVAL",
+    intervalMs: 60_000,
+    prompt: "Review the position.",
+  })
   const makeMonitor = (id: string, status: "ARMED" | "PAUSED") => ({
     ...createMarketMonitor({
       id,
@@ -1041,9 +1103,12 @@ test("shows every session's armed monitor count in the sessions modal", async ()
   ])
 
   mockInput.pressKey("s", { ctrl: true })
-  const modal = await waitForFrame((frame) => frame.includes("Sessions") && frame.includes("2 monitors"))
+  const modal = await waitForFrame((frame) => (
+    frame.includes("Sessions") && frame.includes("2 monitors") && frame.includes("1 loop")
+  ))
   const monitored = modal.split("\n").find((line) => line.includes("Risk sizing"))
   expect(monitored).toContain("2 monitors")
+  expect(monitored).toContain("1 loop")
   expect(requests).toContain(undefined)
 
   screen.destroy()
@@ -1545,6 +1610,79 @@ test("gives embedded prompts and the composer a rail instead of a fill", async (
   const promptColumn = promptLine?.spans.map((span) => span.text).join("").indexOf("top-edge prompt")
   const composerColumn = composerLine?.spans.map((span) => span.text).join("").indexOf("ask something")
   expect(composerColumn).toBe(promptColumn)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("keeps the embedded running hint clear of usage and releases focus when idle", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 40, height: 16, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  session.reasoning = "high"
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    embedded: true,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptMessage(session.id, {
+    ...replyMessage("Ready."),
+    usage: { inputTokens: 17_200, outputTokens: 1_400, totalTokens: 18_600, costTotal: 0.0412 },
+  })
+  expect(screen.canReleaseFocus()).toBe(true)
+
+  screen.acceptRun(session.id, "run-1", "running")
+  const running = await waitForFrame((frame) => frame.includes("Esc interrupt"))
+  const runningStatus = running.split("\n").find((line) => line.includes("Esc interrupt")) ?? ""
+  expect(runningStatus).toContain("test-model")
+  expect(runningStatus).toMatch(/high\s{2,}Esc interrupt/)
+  expect(runningStatus).not.toContain("18.6K")
+  expect(screen.canReleaseFocus()).toBe(false)
+
+  screen.acceptRun(session.id, "run-1", "done")
+  const idle = await waitForFrame((frame) => !frame.includes("Esc interrupt") && frame.includes("18.6K"))
+  expect(idle).not.toContain("Esc interrupt")
+  expect(screen.canReleaseFocus()).toBe(true)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("prioritizes active loop counts over usage in a narrow embedded footer", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 40, height: 16, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  session.reasoning = "high"
+  await chats.createLoop(session.id, {
+    schedule: "INTERVAL",
+    intervalMs: 60_000,
+    prompt: "Review the position.",
+  })
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    embedded: true,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("1 loop"))
+
+  screen.acceptMessage(session.id, {
+    ...replyMessage("Ready."),
+    usage: { inputTokens: 17_200, outputTokens: 1_400, totalTokens: 18_600, costTotal: 0.0412 },
+  })
+  const frame = await waitForFrame((value) => value.includes("Ready."))
+  const status = frame.split("\n").findLast((line) => line.includes("test-model")) ?? ""
+  expect(status).toContain("high")
+  expect(status).toContain("1 loop")
+  expect(status).not.toContain("18.6K")
+  expect(status).not.toContain("$0.04")
 
   screen.destroy()
   renderer.destroy()

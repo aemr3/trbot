@@ -55,3 +55,52 @@ test("expands existing fixed loops without losing their state", async () => {
     database.close()
   }
 })
+
+test("removes dormant execution policy without losing automation or permission state", async () => {
+  const database = new Database(":memory:")
+  try {
+    database.run(`
+      CREATE TABLE chat_goals (
+        session_id text PRIMARY KEY NOT NULL,
+        objective text NOT NULL,
+        execution_policy text NOT NULL
+      )
+    `)
+    database.run(`
+      CREATE TABLE chat_loops (
+        id text PRIMARY KEY NOT NULL,
+        prompt text NOT NULL,
+        execution_policy text NOT NULL
+      )
+    `)
+    database.run(`
+      CREATE TABLE chat_permission_requests (
+        id text PRIMARY KEY NOT NULL,
+        scope text NOT NULL
+      )
+    `)
+    database.run("INSERT INTO chat_goals VALUES ('chat-1', 'Manage position', '{\"mode\":\"ANALYSIS_ONLY\"}')")
+    database.run("INSERT INTO chat_loops VALUES ('loop-1', 'Review position', '{\"mode\":\"ANALYSIS_ONLY\"}')")
+    database.run("INSERT INTO chat_permission_requests VALUES ('permission-1', 'CHAT')")
+
+    const migration = await Bun.file(new URL("../drizzle/0032_remove_execution_policy.sql", import.meta.url)).text()
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) database.run(statement)
+    }
+
+    expect(database.query("SELECT session_id, objective FROM chat_goals").get()).toEqual({
+      session_id: "chat-1",
+      objective: "Manage position",
+    })
+    expect(database.query("SELECT id, prompt FROM chat_loops").get()).toEqual({
+      id: "loop-1",
+      prompt: "Review position",
+    })
+    expect(database.query("SELECT id, scope FROM chat_permission_requests").get()).toEqual({
+      id: "permission-1",
+      scope: "SESSION",
+    })
+  } finally {
+    database.close()
+  }
+})

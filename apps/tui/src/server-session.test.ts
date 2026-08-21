@@ -58,6 +58,20 @@ describe("reaching a server with a self-signed certificate", () => {
     session.close()
   })
 
+  test("one ephemeral client identity reaches both transports", () => {
+    const captured = captureTransports()
+    const session = createServerSession({
+      config: { url: "http://127.0.0.1:8080", token: "test-token", caPath: null },
+      transports: captured.transports,
+    })
+
+    const clientId = captured.httpOptions[0]?.clientId
+    expect(clientId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(captured.streamOptions[0]?.clientId).toBe(clientId)
+
+    session.close()
+  })
+
   // Failing here names the setting; failing later is a certificate error on
   // every request with nothing to say about why.
   test("an authority that cannot be read fails at startup, naming the setting", () => {

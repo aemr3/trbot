@@ -11,7 +11,6 @@ import {
 import { isValidCronExpression, nextCronOccurrence } from "@trbot/chat/schedule.ts"
 import type { ChatApplicationEvent, ChatSessionDetail } from "@trbot/chat/session.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
-import { ANALYSIS_ONLY_POLICY, type ExecutionPolicy } from "@trbot/trading/execution-policy.ts"
 import type { ChatTurnModel } from "@trbot/ai/chat.ts"
 
 const DEFAULT_MAX_GOAL_TURNS = 50
@@ -77,7 +76,6 @@ export class ChatAutomationController {
   async createGoal(sessionId: string, input: CreateChatGoal): Promise<ChatGoal> {
     const root = await this.rootSessionId(sessionId)
     const now = this.now()
-    requireCurrentPolicy(input.executionPolicy, now)
     const previous = await this.options.store.getGoal(root)
     const detail = await this.options.detail(root)
     const goal: ChatGoal = {
@@ -85,7 +83,6 @@ export class ChatAutomationController {
       sessionId: root,
       objective: input.objective.trim(),
       status: "ACTIVE",
-      executionPolicy: input.executionPolicy ?? ANALYSIS_ONLY_POLICY,
       turnCount: 0,
       maxTurns: input.maxTurns ?? DEFAULT_MAX_GOAL_TURNS,
       tokenBudget: input.tokenBudget ?? null,
@@ -127,7 +124,7 @@ export class ChatAutomationController {
     return await this.options.store.getGoal(root)
   }
 
-  /** The agent may finish its own goal, but cannot pause, resume, clear, or grant authority. */
+  /** The agent may finish its own goal, but cannot pause, resume, or clear it. */
   async finishGoal(sessionId: string, status: "COMPLETE" | "BLOCKED", reason: string): Promise<ChatGoal> {
     const root = await this.rootSessionId(sessionId)
     const goal = await this.options.store.getGoal(root)
@@ -141,7 +138,6 @@ export class ChatAutomationController {
   async createLoop(sessionId: string, input: CreateChatLoop): Promise<ChatLoop> {
     const root = await this.rootSessionId(sessionId)
     const now = this.now()
-    requireCurrentPolicy(input.executionPolicy, now)
     const existing = await this.options.store.listLoops(root)
     if (existing.filter((loop) => loop.status !== "COMPLETE").length >= MAX_SCHEDULED_TASKS) {
       throw new ProtocolError("invalid_request", `This chat already has ${MAX_SCHEDULED_TASKS} scheduled tasks`)
@@ -162,7 +158,6 @@ export class ChatAutomationController {
       usesDefaultPrompt,
       ...schedule,
       status: "ACTIVE",
-      executionPolicy: input.executionPolicy ?? ANALYSIS_ONLY_POLICY,
       lastRunAt: null,
       runCount: 0,
       maxRuns: input.maxRuns ?? null,
@@ -199,23 +194,6 @@ export class ChatAutomationController {
     if (!loop) throw new ProtocolError("not_found", "No such loop in this chat")
     await this.options.cancelQueuedEvents?.(root, "loop", loop.id)
     await this.options.store.removeLoop(loopId)
-  }
-
-  /** Typed authority for tool enforcement; prompt text is never trusted for this. */
-  async executionPolicyForEvent(
-    sessionId: string,
-    label: string | null,
-    referenceId: string | null,
-  ): Promise<ExecutionPolicy> {
-    if (label === "goal" && referenceId) {
-      const goal = await this.options.store.getGoal(sessionId)
-      if (goal?.id === referenceId) return goal.executionPolicy
-    }
-    if (label === "loop" && referenceId) {
-      const loop = (await this.options.store.listLoops(sessionId)).find((entry) => entry.id === referenceId)
-      if (loop) return loop.executionPolicy
-    }
-    return ANALYSIS_ONLY_POLICY
   }
 
   /** Called only after a root turn, its tools, retries, and compaction have settled. */
@@ -313,7 +291,6 @@ export class ChatAutomationController {
         "Continue the active goal autonomously.",
         `Objective: ${goal.objective}`,
         `Evaluator: ${reason}`,
-        `Execution policy: ${policyText(goal.executionPolicy)}`,
         "Make concrete progress now. Do not ask the user unless progress genuinely requires their decision.",
       ].join("\n"),
     })
@@ -356,11 +333,10 @@ export class ChatAutomationController {
       prompt: [
         "Run this scheduled task now.",
         `Task: ${prompt}`,
-        `Execution policy: ${policyText(loop.executionPolicy)}`,
         ...(loop.schedule === "DYNAMIC" && !complete ? [
           `This is dynamic loop ${loop.id}. After observing the result, call reschedule_loop with a delay from 1 to 60 minutes and briefly explain why that cadence fits.`,
         ] : []),
-        "Refresh any current data the task depends on. This schedule is not itself market data or order authorization.",
+        "Refresh any current data the task depends on.",
       ].join("\n"),
     })
     const nextRunAt = complete ? scheduledAt : nextLoopRun(loop, now)
@@ -503,16 +479,4 @@ function deterministicOffset(id: string, maximum: number): number {
 
 function totalTokens(detail: ChatSessionDetail): number {
   return detail.messages.reduce((total, message) => total + (message.usage?.totalTokens ?? 0), 0)
-}
-
-function policyText(policy: ExecutionPolicy): string {
-  if (policy.mode === "ANALYSIS_ONLY") return "ANALYSIS_ONLY; do not place orders."
-  if (policy.mode === "CONFIRM_EACH_ORDER") return "CONFIRM_EACH_ORDER; ask the user before every order."
-  return `AUTONOMOUS within persisted limits for ${policy.symbols.join(", ")}; expires ${new Date(policy.expiresAt).toISOString()}.`
-}
-
-function requireCurrentPolicy(policy: ExecutionPolicy | undefined, now: number): void {
-  if (policy?.mode === "AUTONOMOUS" && policy.expiresAt <= now) {
-    throw new ProtocolError("invalid_request", "Autonomous execution authorization has already expired")
-  }
 }

@@ -337,6 +337,7 @@ export class CandlestickChart {
       // Double-click resets the zoom, anchored at the cursor.
       onMouseDown: (event) => {
         if (event.button !== 0) return
+        this.options.onFocusRequest?.()
         const previous = this.lastPlotClick
         const now = Date.now()
         this.lastPlotClick = { time: now, x: event.x, y: event.y }

@@ -1,10 +1,12 @@
 import { ProtocolError, parseErrorBody } from "@trbot/protocol/error.ts"
-import { IDEMPOTENCY_HEADER } from "@trbot/protocol/routes.ts"
+import { CLIENT_INSTANCE_HEADER, IDEMPOTENCY_HEADER } from "@trbot/protocol/routes.ts"
 import type { ZodType } from "zod"
 
 export interface HttpClientOptions {
   url: string
   token: string
+  /** Shared with this process's stream so temporary grants can follow its lifetime. */
+  clientId?: string
   /** Certificate authority to trust, for a server using a self-signed certificate. */
   ca?: string | null
   /** Request transport override for tests and embedded clients. */
@@ -89,6 +91,7 @@ export class HttpClient {
     }
 
     const headers = new Headers({ Authorization: `Bearer ${this.options.token}` })
+    if (this.options.clientId) headers.set(CLIENT_INSTANCE_HEADER, this.options.clientId)
     if (options.body !== undefined) headers.set("Content-Type", "application/json")
     if (options.idempotencyKey) headers.set(IDEMPOTENCY_HEADER, options.idempotencyKey)
 

@@ -36,6 +36,7 @@ async function mountModal(options: {
   sessions: ChatSession[]
   currentId?: string | null
   monitorCounts?: ReadonlyMap<string, number>
+  loopCounts?: ReadonlyMap<string, number>
 }) {
   const harness = await createTestRenderer({ width: 90, height: 26 })
   const selected: string[] = []
@@ -46,6 +47,7 @@ async function mountModal(options: {
     sessions: options.sessions,
     currentId: options.currentId ?? null,
     monitorCounts: options.monitorCounts,
+    loopCounts: options.loopCounts,
     now: () => NOW,
     onSelect: (sessionId) => {
       selected.push(sessionId)
@@ -133,6 +135,24 @@ test("shows armed monitor counts beside their sessions", async () => {
   await renderOnce()
 
   expect(captureCharFrame()).toContain("2 monitors")
+
+  modal.destroy()
+  renderer.destroy()
+})
+
+test("shows active loop counts and wraps long session rows", async () => {
+  const { modal, renderOnce, captureCharFrame, renderer } = await mountModal({
+    sessions: [session({
+      title: "Tomorrow's unusually detailed trading opportunity review with several scenarios",
+    })],
+    loopCounts: new Map([["chat-1", 2]]),
+  })
+  await renderOnce()
+
+  const frame = captureCharFrame()
+  expect(frame).toContain("Tomorrow's unusually detailed")
+  expect(frame).toContain("with several scenarios")
+  expect(frame).toContain("2 loops")
 
   modal.destroy()
   renderer.destroy()

@@ -202,13 +202,39 @@ export const chatNotifications = sqliteTable(
   (table) => [index("chat_notifications_created_at").on(table.createdAt)],
 )
 
+// Questions and permission prompts survive terminal disconnects and server
+// restarts. Their owning agent run may be resumed directly or by a chat event.
+export const chatQuestions = sqliteTable(
+  "chat_questions",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
+    questions: text("questions").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("chat_questions_created_at").on(table.createdAt)],
+)
+
+export const chatPermissionRequests = sqliteTable(
+  "chat_permission_requests",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
+    toolName: text("tool_name").notNull(),
+    action: text("action").notNull(),
+    reason: text("reason"),
+    scope: text("scope").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("chat_permission_requests_created_at").on(table.createdAt)],
+)
+
 // One current objective per root chat. Replacing a goal replaces this row.
 export const chatGoals = sqliteTable("chat_goals", {
   sessionId: text("session_id").primaryKey().references(() => chatSessions.id, { onDelete: "cascade" }),
   id: text("id").notNull().unique(),
   objective: text("objective").notNull(),
   status: text("status").notNull(),
-  executionPolicy: text("execution_policy").notNull(),
   turnCount: integer("turn_count").notNull(),
   maxTurns: integer("max_turns").notNull(),
   tokenBudget: integer("token_budget"),
@@ -232,7 +258,6 @@ export const chatLoops = sqliteTable(
     intervalMs: integer("interval_ms"),
     cronExpression: text("cron_expression"),
     status: text("status").notNull(),
-    executionPolicy: text("execution_policy").notNull(),
     nextRunAt: integer("next_run_at").notNull(),
     lastRunAt: integer("last_run_at"),
     runCount: integer("run_count").notNull(),

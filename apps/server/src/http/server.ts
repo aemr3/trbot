@@ -1,7 +1,12 @@
 import type { Server, ServerWebSocket } from "bun"
 import type { ServerConfig } from "@trbot/config"
 import { ProtocolError } from "@trbot/protocol/error.ts"
-import { ROUTES, type StreamTicket } from "@trbot/protocol/routes.ts"
+import {
+  CLIENT_INSTANCE_HEADER,
+  ClientInstanceIdSchema,
+  ROUTES,
+  type StreamTicket,
+} from "@trbot/protocol/routes.ts"
 import { parseClientFrame } from "@trbot/protocol/stream.ts"
 import { toProtocolError } from "../errors.ts"
 import { bearerToken, errorResponse, json, secretsMatch } from "./request.ts"
@@ -74,7 +79,7 @@ export function startServer(config: ServerConfig, deps: ServerDeps): Server<Sock
         const ticket = url.searchParams.get("ticket")
         const allowed = authorized(request) || (ticket !== null && tickets.redeem(ticket))
         if (!allowed) return errorResponse(new ProtocolError("unauthorized", "A valid token is required"))
-        return server.upgrade(request, { data: newSocketData() })
+        return server.upgrade(request, { data: newSocketData(clientInstanceId(request)) })
           ? undefined
           : errorResponse(new ProtocolError("invalid_request", "Expected a WebSocket upgrade"))
       }
@@ -124,6 +129,11 @@ export function startServer(config: ServerConfig, deps: ServerDeps): Server<Sock
       },
     },
   })
+}
+
+function clientInstanceId(request: Request): string | null {
+  const parsed = ClientInstanceIdSchema.safeParse(request.headers.get(CLIENT_INSTANCE_HEADER))
+  return parsed.success ? parsed.data : null
 }
 
 /** Runs the route matching `url`, exactly once. Callers decide about retrying. */

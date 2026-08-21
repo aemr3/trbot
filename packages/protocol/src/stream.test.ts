@@ -211,6 +211,19 @@ describe("server frames the terminal will act on", () => {
       },
       { type: "chatQuestionResolved", requestId: "question-1", sessionId: "chat-1" },
       {
+        type: "chatPermissionRequested",
+        request: {
+          id: "permission-1",
+          sessionId: "chat-1",
+          toolName: "place_viop_order",
+          action: "BUY 1 F_ASELS0826 at 100",
+          reason: null,
+          scope: "SESSION",
+          createdAt: 1_000,
+        },
+      },
+      { type: "chatPermissionResolved", requestId: "permission-1", sessionId: "chat-1" },
+      {
         type: "chatNotification",
         notification: {
           id: "notification-1",
@@ -247,6 +260,8 @@ describe("server frames the terminal will act on", () => {
       { type: "alertTriggered" },
       { type: "chatQuestionAsked", request: { id: "question-1", sessionId: "chat-1", questions: [{}] } },
       { type: "chatQuestionResolved", requestId: "question-1" },
+      { type: "chatPermissionRequested", request: {} },
+      { type: "chatPermissionResolved", requestId: "permission-1" },
       { type: "chatNotification", notification: {} },
       { type: "chatNotificationDismissed" },
       { type: "error" },

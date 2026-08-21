@@ -4,6 +4,8 @@ import type { AccountLiveUpdate } from "@trbot/trading/account.ts"
 import type { ProviderSessionAccess, ProviderSources } from "./session.ts"
 
 export interface SocketData {
+  /** The client process owning any temporary permission grants. */
+  clientId: string | null
   subscriptions: Set<StreamChannel>
   quoteSymbols: string[]
   equitySymbol: string | null
@@ -14,8 +16,9 @@ export interface SocketData {
   dropped: number
 }
 
-export function newSocketData(): SocketData {
+export function newSocketData(clientId: string | null = null): SocketData {
   return {
+    clientId,
     subscriptions: new Set(),
     quoteSymbols: [],
     equitySymbol: null,
@@ -39,6 +42,9 @@ export interface StreamSocket {
 const BACKPRESSURE_LIMIT_BYTES = 1 << 20
 
 export interface StreamHubOptions {
+  /** Tracks the socket lifetime that owns temporary tool grants. */
+  onClientAttach?: (clientId: string | null) => void
+  onClientDetach?: (clientId: string | null) => void
   /**
    * Symbols the server needs regardless of who is attached — the ones the stop
    * and alert monitors watch. Without these, closing the last client would stop
@@ -121,11 +127,13 @@ export class StreamHub {
 
   add(socket: StreamSocket): void {
     this.sockets.add(socket)
+    this.options.onClientAttach?.(socket.data.clientId)
     this.attachUpstream()
   }
 
   remove(socket: StreamSocket): void {
     this.sockets.delete(socket)
+    this.options.onClientDetach?.(socket.data.clientId)
     this.resyncQuotes()
     this.resyncSymbols("equityQuotes")
     this.resyncSymbols("depth")

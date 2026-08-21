@@ -3,6 +3,7 @@ import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from
 import { createTestRenderer } from "@opentui/core/testing"
 import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
+import type { ChatPermissionRequest } from "@trbot/chat/permission.ts"
 import type { SoundCue } from "../components/sound.ts"
 import {
   WORKSPACE_CLOSED_ACTIVE_BACKGROUND,
@@ -14,15 +15,18 @@ interface TestPanel {
   root: BoxRenderable
   keys: KeyEvent[]
   openedQuestions: string[]
+  openedPermissions: string[]
   openedSessions: string[]
   dismissedNotifications: string[]
   marketStates: Array<boolean | null>
   handleKey(key: KeyEvent): void
   capturesInput(): boolean
   openQuestion(sessionId: string): void
+  openPermission(sessionId: string): void
   openSession(sessionId: string): void
   dismissNotification(notificationId: string): void
   isShowingSession(sessionId: string): boolean
+  hasEmbeddedChat(): boolean
   setMarketOpen(open: boolean | null): void
   destroy(): void
 }
@@ -36,12 +40,13 @@ interface TestPanel {
 function panel(
   renderer: RenderContext,
   label: string,
-  options: { capturesInput?: boolean; showingSession?: string } = {},
+  options: { capturesInput?: boolean; showingSession?: string; embeddedChat?: boolean } = {},
 ): TestPanel {
   const root = new BoxRenderable(renderer, { width: "100%", height: "100%" })
   root.add(new TextRenderable(renderer, { content: label }))
   const keys: KeyEvent[] = []
   const openedQuestions: string[] = []
+  const openedPermissions: string[] = []
   const openedSessions: string[] = []
   const dismissedNotifications: string[] = []
   const marketStates: Array<boolean | null> = []
@@ -50,6 +55,7 @@ function panel(
     root,
     keys,
     openedQuestions,
+    openedPermissions,
     openedSessions,
     dismissedNotifications,
     marketStates,
@@ -61,6 +67,10 @@ function panel(
       openedQuestions.push(sessionId)
       showingSession = sessionId
     },
+    openPermission: (sessionId) => {
+      openedPermissions.push(sessionId)
+      showingSession = sessionId
+    },
     openSession: (sessionId) => {
       openedSessions.push(sessionId)
       showingSession = sessionId
@@ -69,6 +79,7 @@ function panel(
       dismissedNotifications.push(notificationId)
     },
     isShowingSession: (sessionId) => showingSession === sessionId,
+    hasEmbeddedChat: () => options.embeddedChat ?? false,
     setMarketOpen: (open) => marketStates.push(open),
     destroy: () => {
       if (!root.isDestroyed) root.destroyRecursively()
@@ -104,6 +115,18 @@ function notification(id: string): ChatNotification {
     title: `Notice ${id}`,
     message: `Agent update for ${id}.`,
     urgency: "INFO",
+    createdAt: 1_000,
+  }
+}
+
+function permission(id: string): ChatPermissionRequest {
+  return {
+    id,
+    sessionId: `chat-${id}`,
+    toolName: "place_viop_order",
+    action: "BUY 1 F_ASELS0826 at 100 (LIMIT)",
+    reason: null,
+    scope: "SESSION",
     createdAt: 1_000,
   }
 }
@@ -281,7 +304,33 @@ test("keeps a question inline while its embedded trade chat is visible", async (
   harness.renderer.destroy()
 })
 
-test("agent notifications stack, sound once, and open their originating chat", async () => {
+test("a permission notice sounds and opens its originating chat", async () => {
+  const harness = await createTestRenderer({ width: 90, height: 24, kittyKeyboard: true })
+  const trade = panel(harness.renderer, "TRADE PANEL")
+  const chat = panel(harness.renderer, "CHAT PANEL")
+  const logs = panel(harness.renderer, "LOG PANEL")
+  const cues: SoundCue[] = []
+  const workspace = new TradingWorkspaceScreen(harness.renderer, {
+    trade,
+    chat,
+    logs,
+    sound: { play: (cue) => cues.push(cue) },
+  })
+  harness.renderer.root.add(workspace.root)
+  workspace.mount()
+
+  workspace.notifyPermission(permission("one"))
+  await harness.waitForFrame((frame) => frame.includes("Agent needs tool permission") && frame.includes("Review"))
+  harness.mockInput.pressEnter()
+  await harness.waitForFrame((frame) => frame.includes("CHAT PANEL") && !frame.includes("Agent needs tool permission"))
+
+  expect(chat.openedPermissions).toEqual(["chat-one"])
+  expect(cues).toEqual(["PERMISSION"])
+  workspace.destroy()
+  harness.renderer.destroy()
+})
+
+test("agent notifications use the main chat when the trade-side chat is hidden", async () => {
   const harness = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
   const trade = panel(harness.renderer, "TRADE PANEL")
   const chat = panel(harness.renderer, "CHAT PANEL")
@@ -307,6 +356,32 @@ test("agent notifications stack, sound once, and open their originating chat", a
   expect(chat.openedSessions).toEqual(["chat-two"])
   expect(chat.dismissedNotifications).toEqual(["two"])
   expect(cues).toEqual(["NOTIFICATION", "NOTIFICATION"])
+
+  workspace.destroy()
+  harness.renderer.destroy()
+})
+
+test("an agent notification stays on trade and opens its embedded chat", async () => {
+  const harness = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
+  const trade = panel(harness.renderer, "TRADE PANEL", {
+    embeddedChat: true,
+    showingSession: "chat-current",
+  })
+  const chat = panel(harness.renderer, "CHAT PANEL")
+  const logs = panel(harness.renderer, "LOG PANEL")
+  const workspace = new TradingWorkspaceScreen(harness.renderer, { trade, chat, logs })
+  harness.renderer.root.add(workspace.root)
+  workspace.mount()
+
+  workspace.notifyAgent(notification("one"))
+  await harness.waitForFrame((frame) => frame.includes("Notice one"))
+  harness.mockInput.pressEnter()
+  const frame = await harness.waitForFrame((value) => value.includes("TRADE PANEL") && !value.includes("Notice one"))
+
+  expect(frame).not.toContain("CHAT PANEL")
+  expect(trade.openedSessions).toEqual(["chat-one"])
+  expect(chat.openedSessions).toEqual([])
+  expect(chat.dismissedNotifications).toEqual(["one"])
 
   workspace.destroy()
   harness.renderer.destroy()

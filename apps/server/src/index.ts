@@ -19,11 +19,14 @@ import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trb
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { DrizzleChatNotificationStore } from "@trbot/db/chat-notification-store.ts"
 import { DrizzleChatAutomationStore } from "@trbot/db/chat-automation-store.ts"
+import { DrizzleChatQuestionStore } from "@trbot/db/chat-question-store.ts"
+import { DrizzleChatPermissionStore } from "@trbot/db/chat-permission-store.ts"
 import { AiService } from "./ai.ts"
 import { ChatController } from "./chat.ts"
 import { ChatQuestionController } from "./chat-question.ts"
 import { ChatNotificationController } from "./chat-notification.ts"
 import { ChatAutomationController } from "./chat-automation.ts"
+import { ChatPermissionController } from "./chat-permission.ts"
 import { loadDefaultLoopPrompt } from "./chat-loop-prompt.ts"
 import { marketMonitorApplicationEvent } from "./chat-market-monitor-event.ts"
 import { certificateExpiry } from "./tls.ts"
@@ -79,6 +82,8 @@ async function startTrbotServer(): Promise<void> {
   const marketMonitorStore = new DrizzleMarketMonitorStore(connection.db)
   const chatNotificationStore = new DrizzleChatNotificationStore(connection.db)
   const chatAutomationStore = new DrizzleChatAutomationStore(connection.db)
+  const chatQuestionStore = new DrizzleChatQuestionStore(connection.db)
+  const chatPermissionStore = new DrizzleChatPermissionStore(connection.db)
   const stopStore = new DrizzleStopRuleStore(connection.db)
   const idempotency = new IdempotencyStore(connection.db)
   await idempotency.sweep()
@@ -95,7 +100,52 @@ async function startTrbotServer(): Promise<void> {
 
   const ai = new AiService({ models, credentials, preferences: aiPreferences })
   let hub: StreamHub | null = null
-  const questions = new ChatQuestionController({ broadcast: (frame) => hub?.broadcast(frame) })
+  let chat!: ChatController
+  const questions = new ChatQuestionController({
+    store: chatQuestionStore,
+    broadcast: (frame) => hub?.broadcast(frame),
+    onDetachedAnswer: async (request, answers) => {
+      const formatted = request.questions.map((question, index) => (
+        `"${question.question}"="${answers[index]?.join(", ") || "Unanswered"}"`
+      )).join(", ")
+      await chat.enqueueEvent(request.sessionId, {
+        key: `question:${request.id}:answered`,
+        text: `The user answered: ${formatted}.`,
+        prompt: `The user answered the pending questions: ${formatted}. Continue from those answers.`,
+        label: "ask_question",
+        referenceId: request.id,
+      })
+    },
+    onDetachedReject: async (request) => {
+      await chat.enqueueEvent(request.sessionId, {
+        key: `question:${request.id}:rejected`,
+        text: "The user dismissed the pending questions.",
+        prompt: "The user dismissed the pending questions. Continue without those answers.",
+        label: "ask_question",
+        referenceId: request.id,
+      })
+    },
+  })
+  const permissions = new ChatPermissionController({
+    store: chatPermissionStore,
+    broadcast: (frame) => hub?.broadcast(frame),
+    onDetachedDecision: async (request, resolution) => {
+      const allowed = resolution.decision === "ALLOW"
+      const denialReason = resolution.reason ? ` Reason: ${resolution.reason}` : ""
+      await chat.enqueueEvent(request.sessionId, {
+        key: `permission:${request.id}:${resolution.decision.toLowerCase()}`,
+        text: `${request.toolName} permission ${allowed ? "granted" : "denied"}.`,
+        prompt: allowed
+          ? [
+            `The user granted permission for ${request.toolName}: ${request.action}.`,
+            "The interrupted action was not executed. Refresh any data it depends on before deciding whether to call the tool again.",
+          ].join(" ")
+          : `The user denied permission for ${request.toolName}: ${request.action}.${denialReason} Continue without executing it.`,
+        label: "tool_permission",
+        referenceId: request.id,
+      })
+    },
+  })
   const notifications = new ChatNotificationController({
     store: chatNotificationStore,
     broadcast: (frame) => hub?.broadcast(frame),
@@ -146,7 +196,6 @@ async function startTrbotServer(): Promise<void> {
 
   // Chat runs belong to the server for the same reason the monitors do: a reply
   // has to survive the terminal that asked for it closing its tab or quitting.
-  let chat!: ChatController
   let automations!: ChatAutomationController
   const chatTools = createAgentTools({
     models,
@@ -168,6 +217,20 @@ async function startTrbotServer(): Promise<void> {
     },
     questions,
     notifications,
+    trading: {
+      sources: () => session.require(),
+      permissions,
+    },
+    stopRules: {
+      sources: () => session.require(),
+      rules: {
+        list: async () => stops.list(),
+        save: (draft) => stops.save(draft),
+        setStatus: (id, status) => stops.setStatus(id, status),
+        remove: (id) => stops.remove(id),
+      },
+      permissions,
+    },
     automations: {
       state: (sessionId) => automations.state(sessionId),
       createGoal: (sessionId, input) => automations.createGoal(sessionId, input),
@@ -198,8 +261,6 @@ async function startTrbotServer(): Promise<void> {
     }),
     requireModel: (choice) => ai.requireModel("chat", choice?.providerId, choice?.modelId),
     onTurnSettled: (sessionId, event) => automations.onTurnSettled(sessionId, event),
-    executionPolicyForEvent: (sessionId, label, referenceId) =>
-      automations.executionPolicyForEvent(sessionId, label, referenceId),
     broadcast: (frame) => hub?.broadcast(frame),
     onError: (error) => log("Chat", error),
   })
@@ -243,6 +304,8 @@ async function startTrbotServer(): Promise<void> {
   })
 
   hub = new StreamHub(session, {
+    onClientAttach: (clientId) => permissions.attachClient(clientId),
+    onClientDetach: (clientId) => permissions.detachClient(clientId),
     extraQuoteSymbols: () => [...new Set([...stops.symbols(), ...alerts.symbols(), ...marketMonitors.symbols()])],
     onQuote: (update) => {
       stops.applyQuote(update)
@@ -263,6 +326,8 @@ async function startTrbotServer(): Promise<void> {
 
   await stops.rules.load()
   await notifications.load()
+  await questions.load()
+  await permissions.load()
   await chat.start()
   await alerts.load()
   await marketMonitors.load()
@@ -322,12 +387,14 @@ async function startTrbotServer(): Promise<void> {
     ai,
     chat,
     questions,
+    permissions,
     notifications,
     automations,
     hub,
     backlog: () => [
       ...chat.backlog(),
       ...questions.backlog(),
+      ...permissions.backlog(),
       ...notifications.backlog(),
       ...stops.outstanding().map((event) =>
         event.type === "triggered"
@@ -352,9 +419,10 @@ async function startTrbotServer(): Promise<void> {
     clearInterval(positionTimer)
     clearInterval(candleTimer)
     if (positionRefreshTimer) clearTimeout(positionRefreshTimer)
+    questions.destroy()
+    permissions.destroy()
     chat.destroy()
     automations.destroy()
-    questions.destroy()
     closeHarness()
     stops.destroy()
     alerts.destroy()

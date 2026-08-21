@@ -2,6 +2,7 @@ import { TUI_THEME } from "../theme.ts"
 import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
 import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
+import type { ChatPermissionRequest } from "@trbot/chat/permission.ts"
 import { NotificationCenter } from "../components/notification-center.ts"
 import type { SoundPlayer } from "../components/sound.ts"
 import {
@@ -31,9 +32,12 @@ interface WorkspacePanel {
    */
   capturesInput?(): boolean
   openQuestion?(sessionId: string): void
+  openPermission?(sessionId: string): void
   openSession?(sessionId: string): void
   dismissNotification?(notificationId: string): void
   isShowingSession?(sessionId: string): boolean
+  /** Whether this panel can host its own chat surface. */
+  hasEmbeddedChat?(): boolean
   setMarketOpen?(open: boolean | null): void
   destroy(): void
 }
@@ -69,6 +73,9 @@ export class TradingWorkspaceScreen {
   private readonly questions = new Map<string, ChatQuestionRequest>()
   private readonly dismissedQuestionIds = new Set<string>()
   private readonly agentNotifications = new Map<string, ChatNotification>()
+  private readonly knownPermissionIds = new Set<string>()
+  private readonly permissions = new Map<string, ChatPermissionRequest>()
+  private readonly dismissedPermissionIds = new Set<string>()
   private activeTab: TradingWorkspaceTab = "trade"
   private marketOpen: boolean | null = null
   private mounted = false
@@ -170,6 +177,7 @@ export class TradingWorkspaceScreen {
     next.activate?.()
     this.renderTabs()
     this.syncQuestionNotifications()
+    this.syncPermissionNotifications()
     this.renderer.requestRender()
   }
 
@@ -220,8 +228,7 @@ export class TradingWorkspaceScreen {
         {
           label: "Open chat",
           onSelect: () => {
-            this.selectTab("chat")
-            this.options.chat.openQuestion?.(request.sessionId)
+            this.openChatTarget(request.sessionId, "question")
             this.syncQuestionNotifications()
           },
         },
@@ -241,6 +248,53 @@ export class TradingWorkspaceScreen {
     this.notifications.remove(requestId)
   }
 
+  notifyPermission(request: ChatPermissionRequest): void {
+    if (this.destroyed || this.knownPermissionIds.has(request.id)) return
+    this.knownPermissionIds.add(request.id)
+    this.permissions.set(request.id, request)
+    this.options.sound?.play("PERMISSION")
+    if (this.options[this.activeTab].isShowingSession?.(request.sessionId) === true) return
+    this.showPermissionNotification(request)
+  }
+
+  syncPermissionNotifications(): void {
+    if (this.destroyed) return
+    for (const request of this.permissions.values()) {
+      const visible = this.options[this.activeTab].isShowingSession?.(request.sessionId) === true
+      if (visible) this.notifications.remove(request.id)
+      else if (!this.dismissedPermissionIds.has(request.id)) this.showPermissionNotification(request)
+    }
+  }
+
+  private showPermissionNotification(request: ChatPermissionRequest): void {
+    this.notifications.add({
+      id: request.id,
+      title: "Agent needs tool permission",
+      body: `${request.toolName}\n${request.action}`,
+      actions: [
+        {
+          label: "Review",
+          onSelect: () => {
+            this.openChatTarget(request.sessionId, "permission")
+            this.syncPermissionNotifications()
+          },
+        },
+        {
+          label: "Stay here",
+          onSelect: () => this.dismissedPermissionIds.add(request.id),
+        },
+      ],
+      onDismiss: () => this.dismissedPermissionIds.add(request.id),
+    })
+  }
+
+  resolvePermission(requestId: string): void {
+    this.knownPermissionIds.delete(requestId)
+    this.permissions.delete(requestId)
+    this.dismissedPermissionIds.delete(requestId)
+    this.notifications.remove(requestId)
+  }
+
   notifyAgent(notification: ChatNotification): void {
     if (this.destroyed || this.agentNotifications.has(notification.id)) return
     this.agentNotifications.set(notification.id, notification)
@@ -255,8 +309,7 @@ export class TradingWorkspaceScreen {
         {
           label: "Open chat",
           onSelect: () => {
-            this.selectTab("chat")
-            this.options.chat.openSession?.(notification.sessionId)
+            this.openChatTarget(notification.sessionId, "session")
             this.dismissAgentNotification(notification.id)
           },
         },
@@ -278,6 +331,15 @@ export class TradingWorkspaceScreen {
     if (!this.agentNotifications.delete(notificationId)) return
     this.notifications.remove(notificationId)
     this.options.chat.dismissNotification?.(notificationId)
+  }
+
+  private openChatTarget(sessionId: string, target: "session" | "question" | "permission"): void {
+    const embedded = this.activeTab === "trade" && this.options.trade.hasEmbeddedChat?.() === true
+    const panel = embedded ? this.options.trade : this.options.chat
+    if (!embedded) this.selectTab("chat")
+    if (target === "question") panel.openQuestion?.(sessionId)
+    else if (target === "permission") panel.openPermission?.(sessionId)
+    else panel.openSession?.(sessionId)
   }
 
   destroy(): void {

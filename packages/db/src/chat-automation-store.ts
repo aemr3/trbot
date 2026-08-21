@@ -6,7 +6,6 @@ import {
   type ChatGoal,
   type ChatLoop,
 } from "@trbot/chat/automation.ts"
-import { ExecutionPolicySchema, type ExecutionPolicy } from "@trbot/trading/execution-policy.ts"
 import type { AppDatabase } from "./client.ts"
 import { chatGoals, chatLoops } from "./schema.ts"
 
@@ -25,10 +24,7 @@ export class DrizzleChatAutomationStore implements ChatAutomationStore {
   }
 
   async putGoal(goal: ChatGoal): Promise<void> {
-    const row = {
-      ...goal,
-      executionPolicy: JSON.stringify(goal.executionPolicy),
-    }
+    const row = goal
     await this.db.insert(chatGoals).values(row).onConflictDoUpdate({
       target: chatGoals.sessionId,
       set: row,
@@ -57,10 +53,7 @@ export class DrizzleChatAutomationStore implements ChatAutomationStore {
   }
 
   async putLoop(loop: ChatLoop): Promise<void> {
-    const row = {
-      ...loop,
-      executionPolicy: JSON.stringify(loop.executionPolicy),
-    }
+    const row = loop
     await this.db.insert(chatLoops).values(row).onConflictDoUpdate({ target: chatLoops.id, set: row })
   }
 
@@ -73,13 +66,9 @@ type GoalRow = typeof chatGoals.$inferSelect
 type LoopRow = typeof chatLoops.$inferSelect
 
 function goalFromRow(row: GoalRow): ChatGoal {
-  return ChatGoalSchema.parse({ ...row, executionPolicy: parseExecutionPolicy(row.executionPolicy) })
+  return ChatGoalSchema.parse(row)
 }
 
 function loopFromRow(row: LoopRow): ChatLoop {
-  return ChatLoopSchema.parse({ ...row, executionPolicy: parseExecutionPolicy(row.executionPolicy) })
-}
-
-function parseExecutionPolicy(value: string): ExecutionPolicy {
-  return ExecutionPolicySchema.parse(JSON.parse(value))
+  return ChatLoopSchema.parse(row)
 }

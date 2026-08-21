@@ -181,23 +181,9 @@ test("rejects invalid cron and caps a chat at fifty live scheduled tasks", async
   })).rejects.toThrow("50 scheduled tasks")
 })
 
-test("pause cancels queued goal work and runtime authority comes only from persisted state", async () => {
+test("pause cancels queued goal work", async () => {
   const { automation, cancelledLabels } = await harness({ now: () => 1_000 })
-  const executionPolicy = {
-    mode: "AUTONOMOUS" as const,
-    symbols: ["F_ASELS0826"],
-    maxContractsPerOrder: 1,
-    maxPositionSize: 2,
-    maxDailyLoss: 500,
-    allowedOrderTypes: ["LIMIT" as const],
-    expiresAt: 10_000,
-  }
-  const goal = await automation.createGoal("chat-1", { objective: "Manage the position", executionPolicy })
-
-  expect(await automation.executionPolicyForEvent("chat-1", "goal", goal.id)).toEqual(executionPolicy)
-  expect(await automation.executionPolicyForEvent("chat-1", "goal", "untrusted-id")).toEqual({
-    mode: "ANALYSIS_ONLY",
-  })
+  await automation.createGoal("chat-1", { objective: "Manage the position" })
 
   await automation.updateGoal("chat-1", { action: "PAUSE" })
   expect(cancelledLabels).toEqual(["goal"])

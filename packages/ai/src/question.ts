@@ -54,9 +54,8 @@ export function askQuestionTool(questions: ChatQuestionAsker): ChatTool<typeof A
           `"${question.question}"="${answers[index]?.length ? answers[index]!.join(", ") : "Unanswered"}"`
         ))
         .join(", ")
-      const count = params.questions.length
       return {
-        blocks: [toolText(`Answered ${count} question${count === 1 ? "" : "s"}.`)],
+        blocks: [toolText(`The user answered: ${formatted}.`)],
         modelBlocks: [toolText(`The user answered: ${formatted}. Continue with these answers in mind.`)],
         details: { answers },
         isError: false,

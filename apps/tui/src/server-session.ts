@@ -45,15 +45,18 @@ export function createServerSession(options: ServerSessionOptions): ServerSessio
   // self-signed certificate to each, and nothing else trusts that authority.
   const ca = options.ca ?? readAuthority(options.config.caPath)
   const transports = options.transports ?? defaultTransports
+  const clientId = crypto.randomUUID()
   const http = transports.http({
     url: options.config.url,
     token: options.config.token,
+    clientId,
     ca,
   })
   let report: ((cause: unknown) => void) | null = null
   const stream = transports.stream({
     url: options.config.url,
     token: options.config.token,
+    clientId,
     ca,
     onError: (error) => report?.(error),
   })

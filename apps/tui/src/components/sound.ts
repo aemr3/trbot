@@ -1,7 +1,7 @@
 // Audible cues for events worth noticing while looking at something else. They
 // use different system sounds so the urgent market cues remain recognizable.
 
-const SOUND_CUES = ["ALERT", "STOP", "COMPLETE", "QUESTION", "NOTIFICATION"] as const
+const SOUND_CUES = ["ALERT", "STOP", "COMPLETE", "QUESTION", "PERMISSION", "NOTIFICATION"] as const
 export type SoundCue = (typeof SOUND_CUES)[number]
 
 export interface SoundPlayer {
@@ -12,15 +12,16 @@ export interface SoundPlayer {
 const MACOS_SOUND_FILES = {
   ALERT: "/System/Library/Sounds/Submarine.aiff",
   STOP: "/System/Library/Sounds/Sosumi.aiff",
-  COMPLETE: "/System/Library/Sounds/Glass.aiff",
+  COMPLETE: "/System/Library/Sounds/Pop.aiff",
   QUESTION: "/System/Library/Sounds/Ping.aiff",
-  NOTIFICATION: "/System/Library/Sounds/Pop.aiff",
+  PERMISSION: "/System/Library/Sounds/Hero.aiff",
+  NOTIFICATION: "/System/Library/Sounds/Glass.aiff",
 } satisfies Record<SoundCue, string>
 
 // Where no sound player is available the terminal bell stands in, twice for a
 // stop, so the two cues stay apart even at their most primitive.
 const BELL = "\u0007"
-const BELL_COUNT = { ALERT: 1, STOP: 2, COMPLETE: 1, QUESTION: 1, NOTIFICATION: 1 } satisfies Record<SoundCue, number>
+const BELL_COUNT = { ALERT: 1, STOP: 2, COMPLETE: 1, QUESTION: 1, PERMISSION: 1, NOTIFICATION: 1 } satisfies Record<SoundCue, number>
 
 export interface SystemSoundPlayerOptions {
   // Writes raw terminal output. Pass the renderer's writer so a bell never

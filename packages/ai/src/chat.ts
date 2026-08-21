@@ -17,7 +17,6 @@ import {
   type ChatUsage,
 } from "@trbot/chat/session.ts"
 import { createChatDelegationContext, type ChatDelegationContext, type ChatToolRegistry } from "./tool.ts"
-import type { ExecutionPolicy } from "@trbot/trading/execution-policy.ts"
 
 export const CHAT_SYSTEM_PROMPT = [
   "You are the trading desk assistant inside trbot, a terminal trading application.",
@@ -51,10 +50,10 @@ export const CHAT_SYSTEM_PROMPT = [
   "A market-monitor event is an application continuation, not a message the user typed. It records",
   "what happened at trigger time, not current market data: follow its stored continuation, refresh the",
   "required market and account data, and then decide what, if anything, to say or do next.",
-  "A monitor trigger never grants permission to trade. Use separate trading tools only within the user's",
-  "active execution authorization.",
-  "Goals continue immediately after settled turns; scheduled tasks wake this chat at fixed, dynamic, cron, or one-time times. Creating",
-  "either does not grant order authority. Obey the execution policy included in every goal or loop event.",
+  "Never repeat a mutation merely because its result is delayed or unclear; refresh the relevant current state first.",
+  "Stop-rule tools manage trbot's durable server-side protective exits, not broker-native resting stop orders.",
+  "A triggered rule starts an exit countdown and may submit a marketable limit exit, so creating, editing, pausing, arming, or deleting one is a trading mutation.",
+  "Goals continue immediately after settled turns; scheduled tasks wake this chat at fixed, dynamic, cron, or one-time times.",
 ].join(" ")
 
 /** The harness message shape a store keeps so a later turn replays exactly. */
@@ -106,8 +105,6 @@ export interface ChatTurnOptions {
   delegation?: ChatDelegationContext
   /** Inherited by delegated workers; root turns receive a fresh allowance. */
   notificationBudget?: { sent: number }
-  /** Persisted authority resolved by the server, never inferred from prompt text. */
-  executionPolicy?: ExecutionPolicy
   /** Application event that woke this turn, when one exists. */
   automationEvent?: { label: string | null; referenceId: string | null }
   events: ChatTurnEvents
@@ -202,7 +199,6 @@ export class ChatAgent {
           chatSessionId: turn.chatSessionId,
           delegation,
           notificationBudget,
-          executionPolicy: turn.executionPolicy,
           automationEvent: turn.automationEvent,
         })
         const result: Message = {

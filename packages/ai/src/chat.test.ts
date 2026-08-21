@@ -36,7 +36,7 @@ test("teaches the agent VIOP exposure and the difference between limits and circ
   expect(CHAT_SYSTEM_PROMPT).toContain("never describe an underlying equity order book as a VIOP contract order book")
   expect(CHAT_SYSTEM_PROMPT).toContain("the tool does not translate a VIOP contract symbol")
   expect(CHAT_SYSTEM_PROMPT).toContain("what happened at trigger time, not current market data")
-  expect(CHAT_SYSTEM_PROMPT).toContain("never grants permission to trade")
+  expect(CHAT_SYSTEM_PROMPT).not.toContain("permission")
 })
 
 test("streams a reply and hands over the message it produced", async () => {

@@ -17,12 +17,14 @@ const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
 const ACCENT_COLOR = TUI_THEME.accent
 const MONITOR_COLOR = TUI_THEME.monitorAccent
+const LOOP_COLOR = TUI_THEME.warning
 const CONFIRM_COLOR = TUI_THEME.warning
 const SELECTED_BG = TUI_THEME.overlaySelection
 
 export interface ChatSessionModalOptions {
   sessions: ChatSession[]
   monitorCounts?: ReadonlyMap<string, number>
+  loopCounts?: ReadonlyMap<string, number>
   /** The chat on screen behind the modal, marked so a trader knows where they are. */
   currentId: string | null
   onSelect: (sessionId: string) => void
@@ -50,6 +52,7 @@ export class ChatSessionModal {
   private sessions: ChatSession[]
   private currentId: string | null
   private monitorCounts: ReadonlyMap<string, number>
+  private loopCounts: ReadonlyMap<string, number>
   private highlighted: string | null = null
   private pendingDelete: string | null = null
   private destroyed = false
@@ -61,6 +64,7 @@ export class ChatSessionModal {
     this.sessions = order(options.sessions)
     this.currentId = options.currentId
     this.monitorCounts = options.monitorCounts ?? new Map()
+    this.loopCounts = options.loopCounts ?? new Map()
     this.highlighted = options.currentId ?? this.sessions[0]?.id ?? null
 
     this.root = new BoxRenderable(renderer, {
@@ -90,6 +94,7 @@ export class ChatSessionModal {
     this.list = new SelectableList(renderer, {
       backgroundColor: PANEL_BG,
       selectedBackgroundColor: SELECTED_BG,
+      wrapContent: true,
       onSelect: (index) => {
         this.highlighted = this.sessions[index]?.id ?? null
         // Moving off a chat withdraws the question, as it does on the trade screen: the
@@ -112,11 +117,13 @@ export class ChatSessionModal {
     sessions: ChatSession[],
     currentId: string | null,
     monitorCounts: ReadonlyMap<string, number> = this.monitorCounts,
+    loopCounts: ReadonlyMap<string, number> = this.loopCounts,
   ): void {
     if (this.destroyed) return
     this.sessions = order(sessions)
     this.currentId = currentId
     this.monitorCounts = monitorCounts
+    this.loopCounts = loopCounts
     if (!this.sessions.some((session) => session.id === this.highlighted)) {
       this.highlighted = currentId ?? this.sessions[0]?.id ?? null
     }
@@ -209,6 +216,10 @@ export class ChatSessionModal {
     const monitorCount = this.monitorCounts.get(session.id) ?? 0
     if (monitorCount > 0) {
       chunks.push(fg(MONITOR_COLOR)(` · ${monitorCount} monitor${monitorCount === 1 ? "" : "s"}`))
+    }
+    const loopCount = this.loopCounts.get(session.id) ?? 0
+    if (loopCount > 0) {
+      chunks.push(fg(LOOP_COLOR)(` · ${loopCount} loop${loopCount === 1 ? "" : "s"}`))
     }
     return new StyledText(chunks)
   }

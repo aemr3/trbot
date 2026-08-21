@@ -7,6 +7,8 @@ import { subagentTool, type SubagentSessionRecorder } from "./subagent.ts"
 import { ChatTools, type ChatToolRegistry } from "./tool.ts"
 import { webTools, type WebToolsOptions } from "./web.ts"
 import { automationTools, type ChatAutomationToolsClient } from "./automation.ts"
+import { tradingTools, type TradingToolClients } from "./trading.ts"
+import { stopRuleTools, type StopRuleToolClients } from "./stop-rules.ts"
 
 export interface AgentToolsOptions {
   models: Models
@@ -17,6 +19,8 @@ export interface AgentToolsOptions {
   notifications?: ChatNotifier
   subagentSessions?: SubagentSessionRecorder
   automations?: ChatAutomationToolsClient
+  trading?: TradingToolClients
+  stopRules?: StopRuleToolClients
 }
 
 /** The complete chat capability set; workers receive a non-delegating view of it. */
@@ -27,6 +31,12 @@ export function createAgentTools(options: AgentToolsOptions): ChatToolRegistry {
   }
   if (options.marketMonitors) {
     for (const tool of marketMonitorTools(options.marketMonitors)) tools.register(tool)
+  }
+  if (options.trading) {
+    for (const tool of tradingTools(options.trading)) tools.register(tool)
+  }
+  if (options.stopRules) {
+    for (const tool of stopRuleTools(options.stopRules)) tools.register(tool)
   }
   if (options.questions) tools.register(askQuestionTool(options.questions))
   if (options.notifications) tools.register(notifyUserTool(options.notifications))

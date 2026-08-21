@@ -330,6 +330,7 @@ export class App {
     ): void => {
       const current = this.preferences ?? DEFAULT_APP_PREFERENCES
       workspace?.syncQuestionNotifications()
+      workspace?.syncPermissionNotifications()
       if (current[key] === sessionId) return
       const next = { ...current, [key]: sessionId }
       this.preferences = next
@@ -358,6 +359,8 @@ export class App {
       onShowThoughtsChange: (showChatThoughts) => saveThoughtVisibility(mainChat, showChatThoughts),
       onQuestionPending: (request) => workspace?.notifyQuestion(request),
       onQuestionResolved: (requestId) => workspace?.resolveQuestion(requestId),
+      onPermissionPending: (request) => workspace?.notifyPermission(request),
+      onPermissionResolved: (requestId) => workspace?.resolvePermission(requestId),
       onNotification: (notification) => workspace?.notifyAgent(notification),
       onNotificationDismissed: (notificationId) => workspace?.resolveAgentNotification(notificationId),
     })
@@ -428,6 +431,8 @@ export class App {
       onRun: (sessionId, runId, status, error) => chatViews.forEach((view) => view.acceptRun(sessionId, runId, status, error)),
       onQuestionAsked: (request) => chatViews.forEach((view) => view.acceptQuestion(request)),
       onQuestionResolved: (sessionId, requestId) => chatViews.forEach((view) => view.acceptQuestionResolved(sessionId, requestId)),
+      onPermissionRequested: (request) => chatViews.forEach((view) => view.acceptPermission(request)),
+      onPermissionResolved: (sessionId, requestId) => chatViews.forEach((view) => view.acceptPermissionResolved(sessionId, requestId)),
       onNotification: (notification) => chatViews.forEach((view) => view.acceptNotification(notification)),
       onNotificationDismissed: (notificationId) => chatViews.forEach((view) => view.acceptNotificationDismissed(notificationId)),
       onResync: (sessionId) => chatViews.forEach((view) => view.resync(sessionId)),

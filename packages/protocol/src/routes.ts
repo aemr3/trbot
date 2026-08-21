@@ -4,6 +4,9 @@ const API_PREFIX = "/v1"
 
 /** Header deduplicating a mutation so a retry cannot place a second order. */
 export const IDEMPOTENCY_HEADER = "Idempotency-Key"
+/** Identifies one live client process so its temporary grants end with its socket. */
+export const CLIENT_INSTANCE_HEADER = "Trbot-Client-Instance"
+export const ClientInstanceIdSchema = z.string().uuid()
 
 /**
  * Every route the server serves. Paths are written as functions where they take
@@ -68,6 +71,8 @@ export const ROUTES = {
   chatQuestions: `${API_PREFIX}/ai/chat/questions`,
   chatQuestionReply: (id: string) => `${API_PREFIX}/ai/chat/questions/${encodeURIComponent(id)}/reply`,
   chatQuestion: (id: string) => `${API_PREFIX}/ai/chat/questions/${encodeURIComponent(id)}`,
+  chatPermissions: `${API_PREFIX}/ai/chat/permissions`,
+  chatPermissionReply: (id: string) => `${API_PREFIX}/ai/chat/permissions/${encodeURIComponent(id)}/reply`,
   chatNotifications: `${API_PREFIX}/ai/chat/notifications`,
   chatNotification: (id: string) => `${API_PREFIX}/ai/chat/notifications/${encodeURIComponent(id)}`,
   overviewSnapshots: `${API_PREFIX}/overview-snapshots`,

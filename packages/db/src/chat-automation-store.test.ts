@@ -24,14 +24,13 @@ async function setup() {
   return new DrizzleChatAutomationStore(connection.db)
 }
 
-test("round trips a goal and its persisted execution policy", async () => {
+test("round trips a goal", async () => {
   const store = await setup()
   const goal: ChatGoal = {
     id: "goal-1",
     sessionId: "chat-1",
     objective: "Finish analysis",
     status: "ACTIVE",
-    executionPolicy: { mode: "CONFIRM_EACH_ORDER" },
     turnCount: 2,
     maxTurns: 50,
     tokenBudget: 10_000,
@@ -58,7 +57,6 @@ test("returns only active loops whose next run is due", async () => {
     intervalMs: 60_000,
     cronExpression: null,
     status: "ACTIVE",
-    executionPolicy: { mode: "ANALYSIS_ONLY" },
     nextRunAt: 2_000,
     lastRunAt: null,
     runCount: 0,

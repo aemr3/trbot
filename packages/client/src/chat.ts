@@ -12,6 +12,11 @@ import {
 } from "@trbot/chat/session.ts"
 import { ChatQuestionRequestSchema, type ChatQuestionAnswer, type ChatQuestionRequest } from "@trbot/chat/question.ts"
 import { ChatNotificationSchema, type ChatNotification } from "@trbot/chat/notification.ts"
+import {
+  ChatPermissionRequestSchema,
+  type ChatPermissionReply,
+  type ChatPermissionRequest,
+} from "@trbot/chat/permission.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import {
   ChatAutomationStateSchema,
@@ -104,6 +109,14 @@ export class HttpChatSessions implements ChatSessions {
     await this.http.delete(ROUTES.chatQuestion(requestId), OkResponseSchema)
   }
 
+  permissions(): Promise<ChatPermissionRequest[]> {
+    return this.http.get(ROUTES.chatPermissions, z.array(ChatPermissionRequestSchema))
+  }
+
+  async answerPermission(requestId: string, reply: ChatPermissionReply): Promise<void> {
+    await this.http.post(ROUTES.chatPermissionReply(requestId), OkResponseSchema, { body: reply })
+  }
+
   notifications(): Promise<ChatNotification[]> {
     return this.http.get(ROUTES.chatNotifications, z.array(ChatNotificationSchema))
   }
@@ -121,6 +134,8 @@ export interface ChatEvents {
   onRun?: (sessionId: string, runId: string, status: ChatRunStatus, error?: string) => void
   onQuestionAsked?: (request: ChatQuestionRequest) => void
   onQuestionResolved?: (sessionId: string, requestId: string) => void
+  onPermissionRequested?: (request: ChatPermissionRequest) => void
+  onPermissionResolved?: (sessionId: string, requestId: string) => void
   onNotification?: (notification: ChatNotification) => void
   onNotificationDismissed?: (notificationId: string) => void
   /**
@@ -188,6 +203,12 @@ export class ChatClient {
           return
         case "chatQuestionResolved":
           events.onQuestionResolved?.(frame.sessionId, frame.requestId)
+          return
+        case "chatPermissionRequested":
+          events.onPermissionRequested?.(frame.request)
+          return
+        case "chatPermissionResolved":
+          events.onPermissionResolved?.(frame.sessionId, frame.requestId)
           return
         case "chatNotification":
           events.onNotification?.(frame.notification)
