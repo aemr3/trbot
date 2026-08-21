@@ -2,7 +2,13 @@ import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
 import type { StopOutcome } from "@trbot/protocol/stream.ts"
 import type { AccountPosition } from "@trbot/trading/account.ts"
 import { StopMonitor, type StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
-import type { StopRule, StopRuleDraft, StopRuleStatus, StopRuleStore } from "@trbot/trading/stop.ts"
+import {
+  isOpenStopRule,
+  type StopRule,
+  type StopRuleDraft,
+  type StopRuleStatus,
+  type StopRuleStore,
+} from "@trbot/trading/stop.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import type { ViopPositionExitSource } from "@trbot/trading/order.ts"
 
@@ -95,7 +101,7 @@ export class StopController {
    * is saved but never watched, which is the worst way for a stop to fail.
    */
   list(): StopRule[] {
-    return this.monitor.views().map((view) => view.rule)
+    return this.monitor.views().map((view) => view.rule).filter(isOpenStopRule)
   }
 
   async save(draft: StopRuleDraft): Promise<StopRule> {

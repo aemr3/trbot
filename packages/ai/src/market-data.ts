@@ -14,7 +14,7 @@ import type { SettlementSource } from "@trbot/market/settlement.ts"
 import type { MemberFeatureSource } from "@trbot/member/features.ts"
 import type { AccountSource } from "@trbot/trading/account.ts"
 import type { ViopOrderCancellationSource, ViopOrderSource } from "@trbot/trading/order.ts"
-import type { StopRule } from "@trbot/trading/stop.ts"
+import { isOpenStopRule, type StopRule } from "@trbot/trading/stop.ts"
 import { toolText, type ChatTool } from "./tool.ts"
 
 const STREAM_SNAPSHOT_TIMEOUT_MS = 10_000
@@ -600,11 +600,11 @@ function stopRulesTool(clients: MarketDataToolClients): ChatTool<typeof EmptyPar
   return {
     definition: {
       name: "list_stop_rules",
-      description: "List protective VIOP stop and target rules, including their levels, state, and position ownership.",
+      description: "List open protective VIOP stop and target rules, including their levels, state, and position ownership.",
       parameters: EmptyParameters,
     },
     run: async () => {
-      const rules = await clients.stops.list()
+      const rules = (await clients.stops.list()).filter(isOpenStopRule)
       return dataOutcome(`Found ${rules.length} stop or target rule${rules.length === 1 ? "" : "s"}.`, { rules })
     },
   }

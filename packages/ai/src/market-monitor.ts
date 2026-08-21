@@ -1,6 +1,7 @@
 import { Type } from "@earendil-works/pi-ai"
 import {
   isAtrAlert,
+  isOpenPriceAlert,
   validatePriceAlert,
   type PriceAlertBasis,
   type PriceAlertKind,
@@ -48,7 +49,6 @@ const Interval = Type.Union([
 const Repeat = Type.Union([Type.Literal("ONCE"), Type.Literal("ALWAYS")], {
   description: "ONCE stops after triggering; ALWAYS re-arms after price returns to the near side and crosses again",
 })
-const Status = Type.Union([Type.Literal("ARMED"), Type.Literal("PAUSED"), Type.Literal("TRIGGERED")])
 const MutableStatus = Type.Union([Type.Literal("ARMED"), Type.Literal("PAUSED")])
 const CreateMarketMonitorParameters = Type.Object({
   symbol: Type.String({
@@ -78,7 +78,7 @@ const CreateMarketMonitorParameters = Type.Object({
 
 const ListMarketMonitorsParameters = Type.Object({
   symbol: Type.Optional(Type.String({ description: "Only monitors for this contract or underlying symbol" })),
-  status: Type.Optional(Status),
+  status: Type.Optional(MutableStatus),
 })
 
 const UpdateMarketMonitorParameters = Type.Object({
@@ -178,7 +178,7 @@ function listMarketMonitorsTool(
     definition: {
       name: "list_market_monitors",
       description: [
-        "List active, paused, and triggered market monitors with their IDs, conditions, status, owner chat, and continuation.",
+        "List open armed or paused market monitors with their IDs, conditions, status, owner chat, and continuation.",
         "Use this before updating or cancelling a monitor when its ID is unknown.",
       ].join(" "),
       parameters: ListMarketMonitorsParameters,
@@ -187,7 +187,8 @@ function listMarketMonitorsTool(
       const wanted = symbol?.trim().toUpperCase()
       const chatSessionId = requireChatSession(options)
       const monitors = (await service.monitors.list()).filter((monitor) => (
-        monitor.chatSessionId === chatSessionId
+        isOpenPriceAlert(monitor)
+        && monitor.chatSessionId === chatSessionId
         && (!status || monitor.status === status)
         && (!wanted || [monitor.symbol, monitor.displayName].some((name) => name.toUpperCase() === wanted))
       ))

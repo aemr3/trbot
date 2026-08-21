@@ -10,6 +10,7 @@ import { ChatTools } from "./tool.ts"
 import { z } from "zod"
 import type { BrokerageDistributionRequest } from "@trbot/market/brokerage.ts"
 import type { SettlementRequest } from "@trbot/market/settlement.ts"
+import { StopRuleSchema, createStopRule } from "@trbot/trading/stop.ts"
 
 const ModelDataSchema = z.json()
 const CandleResultSchema = z.object({
@@ -378,7 +379,28 @@ test("reads BIST index candles without requiring an active VIOP contract", async
 })
 
 test("reads account, pending orders, features, and stop rules without mutations", async () => {
-  const tools = new ChatTools(marketDataTools(harness().clients))
+  const testHarness = harness()
+  const openRule = createStopRule({
+    id: "rule-open",
+    instrumentUid: ASELS.uid,
+    symbol: ASELS.symbol,
+    displayName: ASELS.displayName,
+    side: "LONG",
+    role: "STOP",
+    kind: "PRICE",
+    value: 380,
+    basis: "TOUCH",
+    interval: null,
+    quantity: null,
+    referencePrice: 390,
+    atrValue: null,
+  }, NOW)
+  const tools = new ChatTools(marketDataTools({
+    ...testHarness.clients,
+    stops: {
+      list: async () => [openRule, { ...openRule, id: "rule-closed", status: "DONE" }],
+    },
+  }))
   const account = await call(tools, "get_account", { range: "WEEK" })
   const orders = await call(tools, "list_pending_orders", {})
   const features = await call(tools, "get_data_entitlements", {})
@@ -387,7 +409,7 @@ test("reads account, pending orders, features, and stop rules without mutations"
   expect(modelData(account)).toMatchObject({ positions: [{ symbol: ASELS.symbol, quantity: 2 }] })
   expect(modelData(orders)).toEqual({ orders: [{ uid: "order-1", title: "Buy ASELS", description: "2 @ 399" }] })
   expect(modelData(features)).toEqual({ enabled: ["MARKET_DEPTH", "BROKERAGE_DISTRIBUTION"] })
-  expect(modelData(stops)).toEqual({ rules: [] })
+  expect(z.object({ rules: z.array(StopRuleSchema) }).parse(modelData(stops)).rules).toEqual([openRule])
 })
 
 test("takes bounded live depth and underlying-equity snapshots and closes both streams", async () => {

@@ -21,10 +21,10 @@ import type {
   PortfolioSummary,
 } from "@trbot/trading/account.ts"
 import type { PriceAlertView } from "@trbot/market/alert-monitor.ts"
-import { isTrailingAlert, type PriceAlertStatus } from "@trbot/market/alert.ts"
+import { isOpenPriceAlert, isTrailingAlert, type PriceAlertStatus } from "@trbot/market/alert.ts"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
 import type { StopRuleView } from "@trbot/trading/stop-monitor.ts"
-import { isTrailingStopRule, type StopRuleStatus } from "@trbot/trading/stop.ts"
+import { isOpenStopRule, isTrailingStopRule, type StopRuleStatus } from "@trbot/trading/stop.ts"
 import { RenderCoalescer } from "./render-coalescer.ts"
 
 const PANEL_BG = TUI_THEME.panelBackground
@@ -316,8 +316,8 @@ export class AccountPanel {
   /** Replaces the stops tab's contents; the monitor owns what they say. */
   showStopRules(views: StopRuleView[]): void {
     if (this.destroyed) return
-    this.stopViews = views
-    this.stopSelection = Math.max(0, Math.min(this.stopSelection, views.length - 1))
+    this.stopViews = views.filter((view) => isOpenStopRule(view.rule))
+    this.stopSelection = Math.max(0, Math.min(this.stopSelection, this.stopViews.length - 1))
     // Position rows carry their own rules, so they repaint on this too — a
     // trail that advanced or a feed that died shows without changing tabs.
     if (this.tab === "stops" || this.tab === "positions") this.liveRender.schedule()
@@ -326,8 +326,8 @@ export class AccountPanel {
   /** Replaces the alerts tab's contents; the monitor owns what they say. */
   showPriceAlerts(views: PriceAlertView[]): void {
     if (this.destroyed) return
-    this.alertViews = views
-    this.alertSelection = Math.max(0, Math.min(this.alertSelection, views.length - 1))
+    this.alertViews = views.filter((view) => isOpenPriceAlert(view.alert))
+    this.alertSelection = Math.max(0, Math.min(this.alertSelection, this.alertViews.length - 1))
     if (this.tab === "alerts") this.liveRender.schedule()
   }
 

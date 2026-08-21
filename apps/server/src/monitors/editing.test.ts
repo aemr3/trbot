@@ -206,6 +206,29 @@ describe("editing the rules the server evaluates", () => {
     expect(await remote.list("chat-1")).toEqual([])
   })
 
+  test("list routes omit closed stops, alerts, and market monitors", async () => {
+    const rules = new HttpStopRules(client)
+    const stop = await rules.save(STOP_DRAFT)
+    await rules.setStatus(stop.id, "DONE")
+
+    const alertClient = new HttpAlerts(client)
+    const alert = await alertClient.save(ALERT_DRAFT)
+    await alertClient.setStatus(alert.id, "TRIGGERED")
+
+    const monitor = await marketMonitors.save({
+      ...ALERT_DRAFT,
+      chatSessionId: "chat-1",
+      onTrigger: "Refresh the quote and reassess the setup.",
+    })
+    await marketMonitors.setStatus(monitor.id, "TRIGGERED")
+
+    expect(await rules.list()).toEqual([])
+    expect(await alertClient.list()).toEqual([])
+    expect(await new HttpMarketMonitors(client).list("chat-1")).toEqual([])
+    expect(stops.rules.rule(stop.id)?.status).toBe("DONE")
+    expect(alerts.alerts.alert(alert.id)?.status).toBe("TRIGGERED")
+  })
+
   test("pausing a rule reaches the monitor that would otherwise fire it", async () => {
     const rules = new HttpStopRules(client)
     const saved = await rules.save(STOP_DRAFT)

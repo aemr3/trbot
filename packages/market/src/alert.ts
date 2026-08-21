@@ -151,6 +151,11 @@ export function isPriceAlertRepeat(value: string): value is PriceAlertRepeat {
   return ALERT_REPEATS.some((repeat) => repeat === value)
 }
 
+/** Whether an alert is still available to watch, pause, or edit. */
+export function isOpenPriceAlert(alert: Pick<PriceAlert, "status">): boolean {
+  return alert.status !== "TRIGGERED"
+}
+
 /** True for the kinds whose level follows the extreme the price has reached. */
 export function isTrailingAlert(kind: PriceAlertKind): boolean {
   return kind === "TRAILING_PERCENT" || kind === "TRAILING_ATR"

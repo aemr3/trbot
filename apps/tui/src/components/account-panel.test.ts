@@ -81,6 +81,7 @@ test("lists stop rules with their level, distance and state", async () => {
   panel.showStopRules([
     view(rule()),
     view(rule({ id: "rule-2", role: "TARGET", value: 440 }), { level: 440, distancePercent: 10 }),
+    view(rule({ id: "rule-3", value: 360 }, { status: "DONE" }), { level: 360 }),
   ])
   // showStopRules repaints through the coalescer, one event-loop turn later.
   await Bun.sleep(0)
@@ -92,6 +93,7 @@ test("lists stop rules with their level, distance and state", async () => {
   expect(frame).toContain("380,00")
   expect(frame).toContain("armed")
   expect(frame).toContain("440,00")
+  expect(frame).not.toContain("360,00")
 
   panel.destroy()
   renderer.destroy()
@@ -279,8 +281,8 @@ test("lists price alerts with the side they watch", async () => {
   expect(frame).toContain("Alerts")
   expect(frame).toContain("420,00")
   expect(frame).toContain("armed")
-  // A fired alert reads as fired, not as something still being watched for.
-  expect(frame).toContain("fired")
+  expect(frame).not.toContain("380,00")
+  expect(frame).not.toContain("fired")
 
   panel.destroy()
   renderer.destroy()

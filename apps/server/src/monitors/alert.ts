@@ -1,5 +1,12 @@
 import { AlertMonitor, type AlertTriggerEvent } from "@trbot/market/alert-monitor.ts"
-import { createPriceAlert, type PriceAlert, type PriceAlertDraft, type PriceAlertStatus, type PriceAlertStore } from "@trbot/market/alert.ts"
+import {
+  createPriceAlert,
+  isOpenPriceAlert,
+  type PriceAlert,
+  type PriceAlertDraft,
+  type PriceAlertStatus,
+  type PriceAlertStore,
+} from "@trbot/market/alert.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
 
@@ -53,7 +60,7 @@ export class AlertController {
    * reaches the database behind its back is an alert that exists but never fires.
    */
   list(): PriceAlert[] {
-    return this.monitor.views().map((view) => view.alert)
+    return this.monitor.views().map((view) => view.alert).filter(isOpenPriceAlert)
   }
 
   async save(draft: PriceAlertDraft): Promise<PriceAlert> {

@@ -9,6 +9,7 @@ import {
   type TextChunk,
 } from "@opentui/core"
 import type { MarketMonitor } from "@trbot/market/market-monitor.ts"
+import { isOpenPriceAlert } from "@trbot/market/alert.ts"
 import { SelectableList } from "./selectable-list.ts"
 
 const PANEL_BG = TUI_THEME.appBackground
@@ -150,7 +151,7 @@ export class MarketMonitorModal {
 
   private footerChunks(): TextChunk[] {
     if (this.monitors.length === 0) {
-      return [fg(MUTED_COLOR)("\nNo market monitors were created in this chat.\nEsc close")]
+      return [fg(MUTED_COLOR)("\nNo open market monitors in this chat.\nEsc close")]
     }
     const pending = this.monitors.find((monitor) => monitor.id === this.pendingCancel)
     if (pending) {
@@ -213,7 +214,7 @@ function formatNumber(value: number | null): string {
 }
 
 function order(monitors: MarketMonitor[]): MarketMonitor[] {
-  return [...monitors].sort((left, right) => right.createdAt - left.createdAt)
+  return monitors.filter(isOpenPriceAlert).sort((left, right) => right.createdAt - left.createdAt)
 }
 
 function isLowercase(key: KeyEvent, name: string): boolean {

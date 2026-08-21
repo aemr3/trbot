@@ -5,7 +5,7 @@ import {
   type MarketMonitorDraft,
   type MarketMonitorStore,
 } from "@trbot/market/market-monitor.ts"
-import type { PriceAlertStatus } from "@trbot/market/alert.ts"
+import { isOpenPriceAlert, type PriceAlertStatus } from "@trbot/market/alert.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
 
@@ -47,7 +47,7 @@ export class MarketMonitorController {
   }
 
   list(): MarketMonitor[] {
-    return this.engine.views().map((view) => view.alert)
+    return this.engine.views().map((view) => view.alert).filter(isOpenPriceAlert)
   }
 
   async save(draft: MarketMonitorDraft): Promise<MarketMonitor> {

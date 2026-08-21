@@ -148,11 +148,12 @@ test("refuses a level the current market has already crossed", async () => {
   expect(testHarness.drafts).toHaveLength(0)
 })
 
-test("lists market monitors with symbol and status filters", async () => {
+test("lists open market monitors with symbol and status filters", async () => {
   const asels = monitor()
   const thyao = { ...monitor("monitor-2", THYAO), status: "PAUSED" as const }
   const otherChat = monitor("monitor-3", ASELS, "chat-2")
-  const tools = new ChatTools(marketMonitorTools(harness([asels, thyao, otherChat]).service))
+  const closed = { ...monitor("monitor-4"), status: "TRIGGERED" as const }
+  const tools = new ChatTools(marketMonitorTools(harness([asels, thyao, otherChat, closed]).service))
 
   const outcome = await tools.call({
     type: "toolCall",
@@ -165,6 +166,15 @@ test("lists market monitors with symbol and status filters", async () => {
   expect(outcome.modelBlocks?.[0]?.text).toContain("id: monitor-2")
   expect(outcome.modelBlocks?.[0]?.text).not.toContain("id: monitor-1")
   expect(outcome.modelBlocks?.[0]?.text).not.toContain("id: monitor-3")
+
+  const all = await tools.call({
+    type: "toolCall",
+    id: "all-call",
+    name: "list_market_monitors",
+    arguments: {},
+  }, { chatSessionId: "chat-1" })
+  expect(all.blocks[0]?.text).toBe("Found 2 market monitors.")
+  expect(all.modelBlocks?.[0]?.text).not.toContain("id: monitor-4")
 })
 
 test("updates a monitor without changing its owning chat", async () => {

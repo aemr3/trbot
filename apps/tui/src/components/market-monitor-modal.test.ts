@@ -37,7 +37,10 @@ test("shows a chat's monitors and requires two d presses to cancel", async () =>
   const harness = await createTestRenderer({ width: 100, height: 26 })
   const cancelled: string[] = []
   const modal = new MarketMonitorModal(harness.renderer, {
-    monitors: [monitor()],
+    monitors: [
+      monitor(),
+      monitor({ id: "monitor-2", displayName: "THYAO", status: "TRIGGERED" }),
+    ],
     onCancel: (id) => cancelled.push(id),
     onClose: () => {},
   })
@@ -49,6 +52,8 @@ test("shows a chat's monitors and requires two d presses to cancel", async () =>
   expect(frame).toContain("ASELS")
   expect(frame).toContain("above 420,00")
   expect(frame).toContain("Refresh the quote and reassess the breakout.")
+  expect(frame).toContain("1 in this chat")
+  expect(frame).not.toContain("THYAO")
 
   modal.handleKey(key("d"))
   await harness.renderOnce()
@@ -72,7 +77,7 @@ test("explains when the open chat has no monitors", async () => {
   harness.renderer.root.add(modal.root)
   await harness.renderOnce()
 
-  expect(harness.captureCharFrame()).toContain("No market monitors were created in this chat.")
+  expect(harness.captureCharFrame()).toContain("No open market monitors in this chat.")
 
   modal.destroy()
   harness.renderer.destroy()

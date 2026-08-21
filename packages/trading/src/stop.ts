@@ -160,6 +160,11 @@ export function isStopRuleStatus(value: string): value is StopRuleStatus {
   return STOP_RULE_STATUSES.some((status) => status === value)
 }
 
+/** Whether a protective rule can still affect or describe an open position. */
+export function isOpenStopRule(rule: Pick<StopRule, "status">): boolean {
+  return rule.status !== "DONE"
+}
+
 /** True for the kinds whose level follows the best price seen. */
 export function isTrailingStopRule(kind: StopRuleKind): boolean {
   return kind === "TRAILING_PERCENT" || kind === "TRAILING_ATR"
