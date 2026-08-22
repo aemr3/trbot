@@ -328,6 +328,10 @@ export class App {
     let workspace: TradingWorkspaceScreen | null = null
     let mainChat: ChatScreen
     let tradePanelChat: ChatScreen
+    let selectContract = (_symbol: string): void => {}
+    const contractSelection = {
+      onContractSelect: (symbol: string) => selectContract(symbol),
+    }
 
     const saveChatSelection = (
       key: "selectedMainChatSessionId" | "selectedTradePanelChatSessionId",
@@ -368,6 +372,7 @@ export class App {
       onPermissionResolved: (requestId) => workspace?.resolvePermission(requestId),
       onNotification: (notification) => workspace?.notifyAgent(notification),
       onNotificationDismissed: (notificationId) => workspace?.resolveAgentNotification(notificationId),
+      ...contractSelection,
     })
     tradePanelChat = new ChatScreen(this.renderer, {
       chats,
@@ -379,8 +384,10 @@ export class App {
       initialShowThoughts: this.preferences?.showChatThoughts,
       onSessionChange: (sessionId) => saveChatSelection("selectedTradePanelChatSessionId", sessionId),
       onShowThoughtsChange: (showChatThoughts) => saveThoughtVisibility(tradePanelChat, showChatThoughts),
+      ...contractSelection,
     })
 
+    const chatViews = [mainChat, tradePanelChat]
     const trade = new TradeScreen(this.renderer, {
       instruments,
       candles,
@@ -424,11 +431,17 @@ export class App {
       logs: this.logs,
       manageInput: false,
       onMarketOpenChange: (open) => workspace?.setMarketOpen(open),
+      onInstrumentsChange: (activeInstruments) => (
+        chatViews.forEach((view) => view.setContractInstruments(activeInstruments))
+      ),
       chat: tradePanelChat,
     })
+    selectContract = (symbol) => {
+      workspace?.selectTab("trade")
+      trade.selectContract(symbol)
+    }
     // Both views stay mounted and observe the same server-owned runs. Only the main
     // view owns global sounds and notifications, so one event has one side effect.
-    const chatViews = [mainChat, tradePanelChat]
     new ChatClient(stream, {
       onSessions: (sessions) => chatViews.forEach((view) => view.acceptSessions(sessions)),
       onMessage: (sessionId, message) => chatViews.forEach((view) => view.acceptMessage(sessionId, message)),

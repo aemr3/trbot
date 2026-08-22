@@ -908,6 +908,10 @@ test("shows contract symbols and sorts them while preserving the selected contra
   const nameDescFrame = await waitForFrame((frame) => frame.includes("Name ↓"))
   expect(viopRowSymbols(nameDescFrame)).toEqual(["F_CCC0826", "F_BBB0826", "F_AAA0826"])
 
+  expect(screen.selectContract("F_BBB0826")).toBe(true)
+  await waitForFrame((frame) => frame.includes("▶ F_BBB0826"))
+  expect(screen.selectContract("F_MISSING0826")).toBe(false)
+
   screen.destroy()
   renderer.destroy()
 })

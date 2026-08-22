@@ -1,10 +1,14 @@
+import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
   ScrollBoxRenderable,
   StyledText,
+  TextAttributes,
   TextRenderable,
+  fg,
   type KeyEvent,
   type RenderContext,
+  type TextChunk,
 } from "@opentui/core"
 
 /**
@@ -36,9 +40,23 @@ export interface ChatTranscriptBlock {
 
 export interface ChatTranscriptOptions {
   backgroundColor: string
+  resolveContractSymbol?: (mention: string) => string | null
+  onContractSelect?: (symbol: string) => void
 }
 
 const LEFT_RAIL: ["left"] = ["left"]
+const CONTRACT_MENTION_PATTERN = /\b(?:F_[A-Z0-9]+[0-9]{4}|[A-Z][A-Z0-9]{1,9})\b/gu
+
+interface ContractLink {
+  symbol: string
+  start: number
+  end: number
+}
+
+interface ContractLinkedText {
+  content: StyledText
+  contracts: ContractLink[]
+}
 
 /**
  * The conversation, scrolling.
@@ -56,6 +74,7 @@ export class ChatTranscript {
     header: TextRenderable
     body: TextRenderable
     footer: TextRenderable
+    contracts: ContractLink[]
   }[] = []
 
   constructor(
@@ -116,7 +135,9 @@ export class ChatTranscript {
       // Likewise, provenance belongs to the reply without running into its last line.
       row.body.visible = bodyVisible
       row.body.marginTop = bodyVisible && block.header !== undefined ? 1 : 0
-      row.body.content = block.content
+      const linked = contractLinks(block.content, this.options.resolveContractSymbol)
+      row.body.content = linked.content
+      row.contracts = linked.contracts
       row.footer.visible = block.footer !== undefined
       if (block.footer !== undefined) row.footer.content = block.footer
       row.footer.marginTop = block.footer !== undefined && bodyVisible ? 1 : 0
@@ -167,15 +188,101 @@ export class ChatTranscript {
       // impossible to reach even when thoughts are expanded.
       const header = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "word" })
       box.add(header)
-      const body = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "word" })
+      const body = new TextRenderable(this.renderer, {
+        content: "",
+        width: "100%",
+        wrapMode: "word",
+        onMouseDown: (event) => {
+          if (event.button !== 0) return
+          const symbol = contractAtPoint(body, this.rows[index]?.contracts ?? [], event.x, event.y)
+          if (!symbol) return
+          event.preventDefault()
+          event.stopPropagation()
+          this.options.onContractSelect?.(symbol)
+        },
+      })
       box.add(body)
       const footer = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "none" })
       box.add(footer)
       this.root.add(box)
-      return { box, marker, header, body, footer }
+      return { box, marker, header, body, footer, contracts: [] }
     } catch (error) {
       if (!box.isDestroyed) box.destroyRecursively()
       throw error
     }
   }
+}
+
+function contractLinks(
+  content: StyledText,
+  resolveContractSymbol: ((mention: string) => string | null) | undefined,
+): ContractLinkedText {
+  if (!resolveContractSymbol) return { content, contracts: [] }
+
+  const contracts: ContractLink[] = []
+  const chunks: TextChunk[] = []
+  let contentOffset = 0
+  for (const chunk of content.chunks) {
+    CONTRACT_MENTION_PATTERN.lastIndex = 0
+    const matches: { match: RegExpExecArray; contractSymbol: string }[] = []
+    for (const match of chunk.text.matchAll(CONTRACT_MENTION_PATTERN)) {
+      const contractSymbol = resolveContractSymbol(match[0])
+      if (contractSymbol !== null) matches.push({ match, contractSymbol })
+    }
+    if (matches.length === 0) {
+      chunks.push(chunk)
+      contentOffset += textBufferWidth(chunk.text)
+      continue
+    }
+
+    let cursor = 0
+    for (const { match, contractSymbol } of matches) {
+      const start = match.index
+      const mention = match[0]
+      if (start > cursor) chunks.push(copyTextChunk(chunk, chunk.text.slice(cursor, start)))
+      const accent = fg(TUI_THEME.link)(mention)
+      chunks.push({
+        ...chunk,
+        ...accent,
+        attributes: (chunk.attributes ?? 0) | TextAttributes.UNDERLINE,
+      })
+      const displayStart = contentOffset + textBufferWidth(chunk.text.slice(0, start))
+      contracts.push({
+        symbol: contractSymbol,
+        start: displayStart,
+        end: displayStart + Bun.stringWidth(mention),
+      })
+      cursor = start + mention.length
+    }
+    if (cursor < chunk.text.length) chunks.push(copyTextChunk(chunk, chunk.text.slice(cursor)))
+    contentOffset += textBufferWidth(chunk.text)
+  }
+  return { content: new StyledText(chunks), contracts }
+}
+
+function copyTextChunk(chunk: TextChunk, text: string): TextChunk {
+  return { ...chunk, text }
+}
+
+// OpenTUI's visual-line offsets count a logical newline as one position even
+// though it occupies no terminal cell. Keep link ranges in that same space.
+function textBufferWidth(text: string): number {
+  let width = 0
+  for (const character of text) width += character === "\n" ? 1 : Bun.stringWidth(character)
+  return width
+}
+
+function contractAtPoint(
+  body: TextRenderable,
+  contracts: ContractLink[],
+  screenX: number,
+  screenY: number,
+): string | null {
+  const row = screenY - body.screenY + body.scrollY
+  const column = screenX - body.screenX + body.scrollX
+  if (row < 0 || column < 0) return null
+  const lineStart = body.lineInfo.lineStartCols[row]
+  if (lineStart === undefined) return null
+  const offset = lineStart + column
+  return contracts.find((contract) => offset >= contract.start && offset < contract.end)?.symbol ?? null
 }

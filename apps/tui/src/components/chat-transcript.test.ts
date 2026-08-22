@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { StyledText, fg } from "@opentui/core"
+import { StyledText, TextAttributes, fg } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { ChatTranscript, type ChatTranscriptBlock } from "./chat-transcript.ts"
 
@@ -179,6 +179,55 @@ test("a note carries neither header nor footer, so an empty state does not look 
   // The first line of the block is the note itself, not a blank where a name would be.
   const lines = frame.split("\n").filter((line) => line.trim().length > 0)
   expect(lines[0]).toContain("No chat yet.")
+
+  transcript.destroy()
+  renderer.destroy()
+})
+
+test("opens active contracts from full symbols and underlying tickers in wrapped chat text", async () => {
+  const { renderer, mockMouse, renderOnce, captureCharFrame, captureSpans } = await createTestRenderer({
+    width: 38,
+    height: 12,
+  })
+  const selected: string[] = []
+  const transcript = new ChatTranscript(renderer, {
+    backgroundColor: "#101010",
+    resolveContractSymbol: (mention) => (
+      mention === "F_SAHOL0826" || mention === "SAHOL" ? "F_SAHOL0826" : null
+    ),
+    onContractSelect: (symbol) => selected.push(symbol),
+  })
+  renderer.root.add(transcript.root)
+  transcript.setBlocks([
+    reply("Best setup for Monday: SAHOL long breakout. Contract F_SAHOL0826. Ignore BIST and F_OLD0826."),
+  ])
+  await renderOnce()
+
+  const spans = captureSpans().lines.flatMap((line) => line.spans)
+  const underlying = spans.find((span) => span.text === "SAHOL")
+  const contract = spans.find((span) => span.text === "F_SAHOL0826")
+  expect((underlying?.attributes ?? 0) & TextAttributes.UNDERLINE).not.toBe(0)
+  expect((contract?.attributes ?? 0) & TextAttributes.UNDERLINE).not.toBe(0)
+  expect(spans.find((span) => span.text.includes("BIST"))?.attributes ?? 0)
+    .toBe(0)
+  expect(spans.find((span) => span.text.includes("F_OLD0826"))?.attributes ?? 0)
+    .toBe(0)
+
+  const lines = captureCharFrame().split("\n")
+  const underlyingY = lines.findIndex((line) => line.includes("SAHOL"))
+  const underlyingX = lines[underlyingY]?.indexOf("SAHOL") ?? -1
+  await mockMouse.click(underlyingX + 2, underlyingY)
+  expect(selected).toEqual(["F_SAHOL0826"])
+
+  const contractY = lines.findIndex((line) => line.includes("F_SAHOL0826"))
+  const contractX = lines[contractY]?.indexOf("F_SAHOL0826") ?? -1
+  await mockMouse.click(contractX + 2, contractY)
+  expect(selected).toEqual(["F_SAHOL0826", "F_SAHOL0826"])
+
+  const unknownY = lines.findIndex((line) => line.includes("F_OLD0826"))
+  const unknownX = lines[unknownY]?.indexOf("F_OLD0826") ?? -1
+  await mockMouse.click(unknownX + 2, unknownY)
+  expect(selected).toEqual(["F_SAHOL0826", "F_SAHOL0826"])
 
   transcript.destroy()
   renderer.destroy()

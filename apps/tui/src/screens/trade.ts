@@ -296,6 +296,7 @@ export interface TradeScreenOptions {
   destructiveConfirmationTimeoutMs?: number
   preferences?: AppPreferences
   onPreferencesChange?: (preferences: AppPreferences) => void
+  onInstrumentsChange?: (instruments: readonly ViopInstrument[]) => void
   logs?: ApplicationLog
   manageInput?: boolean
   onMarketOpenChange?: (open: boolean) => void
@@ -1094,6 +1095,15 @@ export class TradeScreen {
     this.options.chat.openSession(sessionId)
   }
 
+  /** Selects an active watchlist contract named elsewhere in the application. */
+  selectContract(symbol: string): boolean {
+    const wanted = symbol.trim().toUpperCase()
+    const index = this.instruments.findIndex((instrument) => instrument.symbol.toUpperCase() === wanted)
+    if (index < 0) return false
+    this.setFocus("instruments")
+    return this.instrumentList.selectIndex(index)
+  }
+
   setMarketOpen(open: boolean | null): void {
     this.options.chat?.setMarketOpen(open)
     if (this.destroyed || open === null || this.marketOpen === open) return
@@ -1107,6 +1117,7 @@ export class TradeScreen {
       const instruments = await this.options.instruments.listInstruments()
       if (this.destroyed) return
       this.instruments = instruments
+      this.options.onInstrumentsChange?.(instruments)
       this.referenceClose.clear()
       instruments.forEach((instrument) => {
         const reference = referenceClose(instrument)

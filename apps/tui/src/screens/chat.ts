@@ -20,6 +20,7 @@ import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type { ChatPermissionRequest } from "@trbot/chat/permission.ts"
 import { parseLoopInterval, type ChatAutomationState } from "@trbot/chat/automation.ts"
+import type { ViopInstrument } from "@trbot/market/instrument.ts"
 import type { MarketMonitor } from "@trbot/market/market-monitor.ts"
 import type { AiAccount, AiModelChoice } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
@@ -145,6 +146,7 @@ export interface ChatScreenOptions {
   onPermissionResolved?: (requestId: string) => void
   onNotification?: (notification: ChatNotification) => void
   onNotificationDismissed?: (notificationId: string) => void
+  onContractSelect?: (symbol: string) => void
 }
 
 /** A reply arriving now, before it has been stored as a message. */
@@ -211,6 +213,7 @@ export class ChatScreen {
   private permissionPanel: ChatPermissionPanel | null = null
   private armedMonitorCountBySession = new Map<string, number>()
   private activeLoopCountBySession = new Map<string, number>()
+  private contractByMention = new Map<string, string>()
   /** Context window per `provider/model`, for reading a conversation's usage as a share of it. */
   private contextWindows = new Map<string, number>()
   /** The model a blank chat will receive when its first prompt creates the session. */
@@ -264,7 +267,11 @@ export class ChatScreen {
       paddingRight: CHAT_INSET,
       backgroundColor: PANEL_BG,
     })
-    this.transcript = new ChatTranscript(renderer, { backgroundColor: PANEL_BG })
+    this.transcript = new ChatTranscript(renderer, {
+      backgroundColor: PANEL_BG,
+      resolveContractSymbol: (mention) => this.contractByMention.get(mention) ?? null,
+      onContractSelect: options.onContractSelect,
+    })
     this.emptyState = new BoxRenderable(renderer, {
       position: "absolute",
       top: 0,
@@ -420,6 +427,24 @@ export class ChatScreen {
     this.composerRow.backgroundColor = background
     this.composer.backgroundColor = background
     this.composer.focusedBackgroundColor = background
+    this.render.schedule()
+  }
+
+  /** Links an active contract's full symbol and underlying ticker to that contract. */
+  setContractInstruments(instruments: readonly ViopInstrument[]): void {
+    if (this.destroyed) return
+    const next = new Map<string, string>()
+    for (const instrument of instruments) {
+      next.set(instrument.symbol.toUpperCase(), instrument.symbol)
+      if (instrument.underlyingSymbol) {
+        next.set(instrument.underlyingSymbol.toUpperCase(), instrument.symbol)
+      }
+    }
+    if (
+      next.size === this.contractByMention.size
+      && [...next].every(([mention, symbol]) => this.contractByMention.get(mention) === symbol)
+    ) return
+    this.contractByMention = next
     this.render.schedule()
   }
 
