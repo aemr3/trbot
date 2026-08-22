@@ -58,6 +58,7 @@ export interface ProviderSessionOptions {
   openAuthSession: OpenAuthSession
   credentials: AppCredentials | null
   onError?: (label: string, cause: unknown) => void
+  onInfo?: (label: string, message: string) => void
   /**
    * Opens provider handles. `providerConnector(feed)` is the real one; it carries
    * the market data feed because it is what builds sources from it.
@@ -72,6 +73,7 @@ interface StoppableProviderStream {
 export interface ProviderSourceOptions {
   track(stream: StoppableProviderStream): void
   report(label: string, cause: unknown): void
+  info(label: string, message: string): void
 }
 
 /** A provider login plus the source objects that login owns. */
@@ -270,6 +272,7 @@ export class ProviderSession implements ProviderSessionAccess {
     this.current = handle.sources({
       track: (stream) => this.track(stream),
       report: (label, cause) => this.options.onError?.(label, cause),
+      info: (label, message) => this.options.onInfo?.(label, message),
     })
 
     for (const listener of this.sessionListeners) listener()
@@ -351,7 +354,13 @@ function providerSources(client: ApiClient, feed: MarketFeed, options: ProviderS
       onError: report("Member features"),
     }),
     quotes: feed.openQuoteStream(),
-    accountStream: new ApiAccountStream(client, { onError: report("Account stream") }),
+    accountStream: new ApiAccountStream(client, {
+      onError: report("Account stream"),
+      onRecovery: (channel, failures) => options.info(
+        "Account stream",
+        `${channel} stream recovered after ${failures} consecutive disconnects`,
+      ),
+    }),
     openDepthStream: () => {
       const stream = feed.openDepthStream()
       options.track(stream)

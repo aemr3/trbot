@@ -84,3 +84,47 @@ test("streams positions, collateral, and pending order status with the captured 
   expect(connections).toContain(true)
   expect(connections.at(-1)).toBe(false)
 })
+
+test("reports a sustained transient outage once and logs its recovery", async () => {
+  let positionAttempts = 0
+  const client = {
+    async authenticate() {
+      return { accessToken: "token", refreshToken: null, memberUid: "member-1" }
+    },
+    async *stream(options: { path: string; signal?: AbortSignal }): AsyncGenerator<SseFrame> {
+      if (options.path.includes("overview-sse")) {
+        await waitForAbort(options.signal)
+        return
+      }
+      positionAttempts += 1
+      if (positionAttempts <= 5) {
+        throw new Error("The socket connection was closed unexpectedly")
+      }
+      yield { event: "Position", data: '[{"su":"future-1","q":1}]' }
+      await waitForAbort(options.signal)
+    },
+  }
+  const errors: unknown[] = []
+  const recoveries: Array<{ channel: string; failures: number }> = []
+  const stream = new ApiAccountStream(client, {
+    reconnectDelaysMs: [0],
+    onError: (error) => errors.push(error),
+    onRecovery: (channel, failures) => recoveries.push({ channel, failures }),
+  })
+  stream.start()
+
+  await waitFor(() => recoveries.length === 1)
+  stream.stop()
+
+  expect(errors).toHaveLength(1)
+  const reported = errors[0]
+  expect(reported).toBeInstanceOf(Error)
+  if (!(reported instanceof Error)) throw new Error("Expected the outage report to be an Error")
+  expect(reported.message).toContain("disconnected 3 consecutive times")
+  expect(recoveries).toEqual([{ channel: "positions", failures: 5 }])
+})
+
+function waitForAbort(signal?: AbortSignal): Promise<void> {
+  if (!signal || signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+}

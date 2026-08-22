@@ -58,6 +58,10 @@ async function startTrbotServer(): Promise<void> {
     console.error(`[${label}]`, cause instanceof Error ? cause.message : cause)
   }
 
+  const info = (label: string, message: string): void => {
+    console.info(`[${label}]`, message)
+  }
+
   // A stream that stops being accepted is the other way a dead session shows up,
   // and the one that matters with no client attached.
   const reportProviderError = (label: string, cause: unknown): void => {
@@ -110,6 +114,7 @@ async function startTrbotServer(): Promise<void> {
     openAuthSession: () => openAuthSession(config.databaseUrl),
     credentials: config.credentials,
     onError: reportProviderError,
+    onInfo: info,
     connector: providerConnector(feed),
   })
 

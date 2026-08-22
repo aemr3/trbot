@@ -1,4 +1,5 @@
 import type { ApiClient } from "@trbot/api"
+import { isTransientStreamError } from "@trbot/api/transport.ts"
 import type { AccountLiveUpdate, AccountLiveUpdateListener, AccountOrderStatus, AccountStream } from "@trbot/trading/account.ts"
 import { z } from "zod"
 
@@ -16,6 +17,7 @@ const TERMINAL_ORDER_STATUSES = new Set([
   "REJECTED",
 ])
 const DEFAULT_RECONNECT_DELAYS_MS = [1000, 3000, 5000]
+const TRANSIENT_FAILURE_REPORT_THRESHOLD = 3
 
 type AccountStreamApiClient = Pick<ApiClient, "authenticate" | "stream">
 type PositionLiveUpdate = Extract<AccountLiveUpdate, { type: "position" }>
@@ -24,6 +26,7 @@ type OrderLiveUpdate = Extract<AccountLiveUpdate, { type: "order" }>
 
 export interface ApiAccountStreamOptions {
   onError?: (cause: unknown) => void
+  onRecovery?: (channel: string, failures: number) => void
   reconnectDelaysMs?: number[]
 }
 
@@ -34,6 +37,7 @@ export class ApiAccountStream implements AccountStream {
   private readonly connectedChannels = new Set<string>()
   private readonly pendingOrderUids = new Set<string>()
   private readonly orderControllers = new Map<string, AbortController>()
+  private readonly transientFailures = new Map<string, number>()
   private controller: AbortController | null = null
   private running = false
   private connected = false
@@ -86,6 +90,7 @@ export class ApiAccountStream implements AccountStream {
     for (const controller of this.orderControllers.values()) controller.abort()
     this.orderControllers.clear()
     this.connectedChannels.clear()
+    this.transientFailures.clear()
     this.notifyConnection(false)
   }
 
@@ -97,15 +102,16 @@ export class ApiAccountStream implements AccountStream {
         const path = `${POSITION_STREAM_PATH}/${encodeURIComponent(session.memberUid)}`
         for await (const frame of this.client.stream({ path, query: { eventTypes: "position" }, signal })) {
           if (!this.running || signal.aborted) return
+          attempt = 0
+          this.reportHealthy("positions")
           const updates = parseAccountPositionUpdates(frame.data)
           if (updates.length === 0) continue
-          attempt = 0
           this.setChannelConnected("positions", true)
           for (const update of updates) this.emit(update)
         }
       } catch (error) {
         if (!this.running || signal.aborted) return
-        this.options.onError?.(error)
+        this.reportFailure("positions", error)
       } finally {
         this.setChannelConnected("positions", false)
       }
@@ -119,15 +125,16 @@ export class ApiAccountStream implements AccountStream {
       try {
         for await (const frame of this.client.stream({ path: OVERVIEW_STREAM_PATH, signal })) {
           if (!this.running || signal.aborted) return
+          attempt = 0
+          this.reportHealthy("overview")
           const update = parseAccountCollateralUpdate(frame.data)
           if (!update) continue
-          attempt = 0
           this.setChannelConnected("overview", true)
           this.emit(update)
         }
       } catch (error) {
         if (!this.running || signal.aborted) return
-        this.options.onError?.(error)
+        this.reportFailure("overview", error)
       } finally {
         this.setChannelConnected("overview", false)
       }
@@ -153,9 +160,10 @@ export class ApiAccountStream implements AccountStream {
         const path = `${ORDER_STREAM_PATH}/${encodeURIComponent(session.memberUid)}/order/${encodeURIComponent(uid)}`
         for await (const frame of this.client.stream({ path, signal })) {
           if (!this.running || signal.aborted) return
+          attempt = 0
+          this.reportHealthy(`order:${uid}`)
           const update = parseAccountOrderUpdate(frame.data, uid)
           if (!update) continue
-          attempt = 0
           this.setChannelConnected(`order:${uid}`, true)
           this.emit(update)
           if (update.status === "completed") {
@@ -165,7 +173,7 @@ export class ApiAccountStream implements AccountStream {
         }
       } catch (error) {
         if (!this.running || signal.aborted) return
-        this.options.onError?.(error)
+        this.reportFailure(`order:${uid}`, error)
       } finally {
         this.setChannelConnected(`order:${uid}`, false)
       }
@@ -176,6 +184,30 @@ export class ApiAccountStream implements AccountStream {
   private reconnectDelay(attempt: number): number {
     const index = Math.min(attempt, this.reconnectDelaysMs.length - 1)
     return this.reconnectDelaysMs[index] ?? 0
+  }
+
+  /** Reports a persistent transient outage once while preserving immediate errors. */
+  private reportFailure(channel: string, cause: unknown): void {
+    if (!isTransientStreamError(cause)) {
+      this.transientFailures.delete(channel)
+      this.options.onError?.(cause)
+      return
+    }
+
+    const failures = (this.transientFailures.get(channel) ?? 0) + 1
+    this.transientFailures.set(channel, failures)
+    if (failures !== TRANSIENT_FAILURE_REPORT_THRESHOLD) return
+    this.options.onError?.(new Error(
+      `${channel} stream disconnected ${failures} consecutive times; retries continue`,
+      { cause },
+    ))
+  }
+
+  private reportHealthy(channel: string): void {
+    const failures = this.transientFailures.get(channel)
+    if (failures === undefined) return
+    this.transientFailures.delete(channel)
+    if (failures >= TRANSIENT_FAILURE_REPORT_THRESHOLD) this.options.onRecovery?.(channel, failures)
   }
 
   private emit(update: AccountLiveUpdate): void {
