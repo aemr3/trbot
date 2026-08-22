@@ -209,6 +209,7 @@ export class ChatScreen {
   private readonly hint: TextRenderable
   private readonly usage: TextRenderable
   private readonly render: RenderCoalescer
+  private readonly surfaceBackground: string
 
   private sessions: ChatSession[] = []
   private messagesBySession = new Map<string, ChatMessage[]>()
@@ -252,6 +253,7 @@ export class ChatScreen {
       () => this.paint(),
       (error) => options.logs.error("Chat renderer", error),
     )
+    this.surfaceBackground = options.embedded ? TUI_THEME.panelBackground : PANEL_BG
     this.selectedSessionId = options.initialSessionId ?? null
     // An explicit null is the saved blank-chat state. Undefined means preferences
     // were unavailable, in which case load() may safely fall back to a real session.
@@ -261,7 +263,7 @@ export class ChatScreen {
       width: "100%",
       ...(options.embedded ? { flexGrow: 1 } : { height: "100%" as const }),
       flexDirection: "column",
-      backgroundColor: BACKGROUND,
+      backgroundColor: options.embedded ? this.surfaceBackground : BACKGROUND,
       onSizeChange: () => this.render.schedule(),
     })
     this.modalHost = this.root
@@ -272,10 +274,10 @@ export class ChatScreen {
       flexDirection: "column",
       paddingLeft: CHAT_INSET,
       paddingRight: CHAT_INSET,
-      backgroundColor: PANEL_BG,
+      backgroundColor: this.surfaceBackground,
     })
     this.transcript = new ChatTranscript(renderer, {
-      backgroundColor: PANEL_BG,
+      backgroundColor: this.surfaceBackground,
       resolveContractSymbol: (mention) => this.contractByMention.get(mention) ?? null,
       onContractSelect: options.onContractSelect,
       onBlockSelect: (messageId) => this.openUndo(messageId),
@@ -288,7 +290,7 @@ export class ChatScreen {
       height: "100%",
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: PANEL_BG,
+      backgroundColor: this.surfaceBackground,
       visible: false,
     })
     this.emptyState.add(new TextRenderable(renderer, {
@@ -306,9 +308,11 @@ export class ChatScreen {
     }))
     body.add(this.transcript.root)
     body.add(this.emptyState)
-    this.commandMenu = new ChatCommandMenu(renderer, CHAT_COMMANDS)
+    this.commandMenu = new ChatCommandMenu(renderer, CHAT_COMMANDS, {
+      backgroundColor: this.surfaceBackground,
+    })
 
-    const composerBackground = options.embedded ? PANEL_BG : COMPOSER_BG
+    const composerBackground = options.embedded ? this.surfaceBackground : COMPOSER_BG
     // The next prompt matches sent prompts: filled in the full chat, or carried by
     // a compact left rail in the trade panel.
     this.composerRow = new BoxRenderable(renderer, {
@@ -376,7 +380,7 @@ export class ChatScreen {
       // The model starts under the prompt text, after its inset and marker.
       paddingLeft: CHAT_INSET + 2,
       paddingRight: CHAT_INSET,
-      backgroundColor: PANEL_BG,
+      backgroundColor: this.surfaceBackground,
     })
     this.composerMeta = new TextRenderable(renderer, {
       content: "",
@@ -431,7 +435,7 @@ export class ChatScreen {
     if (this.destroyed || this.marketOpen === open) return
     this.marketOpen = open
     const background = this.options.embedded
-      ? PANEL_BG
+      ? this.surfaceBackground
       : open === false ? CLOSED_PROMPT_BG : COMPOSER_BG
     this.composerRow.backgroundColor = background
     this.composer.backgroundColor = background
@@ -1356,6 +1360,7 @@ export class ChatScreen {
     const panel = new ChatUndoPanel(this.renderer, {
       messages,
       presentation: selectedMessage ? "modal" : "inline",
+      backgroundColor: this.surfaceBackground,
       loadPreview: (message) => this.options.chats.previewUndo(session.id, message.id),
       onUndo: (message, revertEffects) => {
         closeUndo()

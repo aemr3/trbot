@@ -12,6 +12,10 @@ export interface ChatCommand {
   description: string
 }
 
+export interface ChatCommandMenuOptions {
+  backgroundColor?: string
+}
+
 /**
  * A filtered command list displayed directly below the composer.
  *
@@ -24,11 +28,14 @@ export class ChatCommandMenu {
   private matches: ChatCommand[] = []
   private rows: Array<{ box: BoxRenderable; command: TextRenderable; description: TextRenderable }> = []
   private selected = 0
+  private readonly backgroundColor: string
 
   constructor(
     private readonly renderer: RenderContext,
     private readonly commands: readonly ChatCommand[],
+    options: ChatCommandMenuOptions = {},
   ) {
+    this.backgroundColor = options.backgroundColor ?? PANEL_BG
     this.root = new BoxRenderable(renderer, {
       width: "100%",
       height: "auto",
@@ -36,7 +43,7 @@ export class ChatCommandMenu {
       flexDirection: "column",
       paddingLeft: 3,
       paddingRight: 2,
-      backgroundColor: PANEL_BG,
+      backgroundColor: this.backgroundColor,
       visible: false,
     })
   }
@@ -92,7 +99,7 @@ export class ChatCommandMenu {
         height: "auto",
         flexDirection: "row",
         alignItems: "flex-start",
-        backgroundColor: PANEL_BG,
+        backgroundColor: this.backgroundColor,
       })
       const command = new TextRenderable(this.renderer, {
         content: entry.name,
@@ -128,7 +135,7 @@ export class ChatCommandMenu {
   private paint(): void {
     this.rows.forEach((row, index) => {
       const selected = index === this.selected
-      row.box.backgroundColor = PANEL_BG
+      row.box.backgroundColor = this.backgroundColor
       row.command.fg = selected ? COMMAND_COLOR : COMMAND_MUTED_COLOR
       row.description.fg = selected ? SELECTED_DESCRIPTION_COLOR : DESCRIPTION_COLOR
     })

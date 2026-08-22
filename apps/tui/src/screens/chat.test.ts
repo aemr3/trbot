@@ -966,6 +966,76 @@ test("centers embedded chat modals over their full host", async () => {
   renderer.destroy()
 })
 
+test("matches the trade side-panel background when embedded", async () => {
+  const { renderer, mockInput, waitForFrame, captureSpans } = await createTestRenderer({
+    width: 50,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const screen = new ChatScreen(renderer, {
+    chats: fakeChats(),
+    account: account(connected),
+    logs: new ApplicationLog(),
+    embedded: true,
+    initialSessionId: null,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("New chat") && frame.includes("ask something"))
+
+  const expectedBackground: [number, number, number, number] = [22, 22, 22, 255]
+  for (const text of ["New chat", "ask something"]) {
+    const span = captureSpans().lines
+      .flatMap((line) => line.spans)
+      .find((candidate) => candidate.text.includes(text))
+    expect(span?.bg.toInts()).toEqual(expectedBackground)
+  }
+
+  await mockInput.typeText("/")
+  await waitForFrame((frame) => frame.includes("/model"))
+  const command = captureSpans().lines
+    .flatMap((line) => line.spans)
+    .find((span) => span.text.includes("/model"))
+  expect(command?.bg.toInts()).toEqual(expectedBackground)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("matches the trade side-panel background for embedded rewind", async () => {
+  const { renderer, waitForFrame, captureSpans } = await createTestRenderer({
+    width: 50,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const prompt = userMessage("review monday", "SENT")
+  chats.messages.set(session.id, [prompt, replyMessage("reviewed")])
+  session.messageCount = 2
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    embedded: true,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("reviewed"))
+
+  screen.openUndo()
+  await waitForFrame((frame) => frame.includes("Rewind") && frame.includes("review monday"))
+
+  const rewind = captureSpans().lines
+    .flatMap((line) => line.spans)
+    .find((span) => span.text.includes("Rewind"))
+  expect(rewind?.bg.toInts()).toEqual([22, 22, 22, 255])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("dims the composer and earlier user messages while stock futures are closed", async () => {
   const { renderer, waitForFrame, waitFor, captureSpans } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()

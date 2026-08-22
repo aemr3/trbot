@@ -42,6 +42,7 @@ interface UndoRow {
 export interface ChatUndoPanelOptions {
   messages: ChatMessage[]
   presentation?: "inline" | "modal"
+  backgroundColor?: string
   loadPreview: (message: ChatMessage) => Promise<ChatUndoPreview>
   onUndo: (message: ChatMessage, revertEffects: boolean) => void
   onError: (cause: unknown) => void
@@ -70,11 +71,13 @@ export class ChatUndoPanel {
   private destroyed = false
   private promptWidth = 0
   private desiredHeight = 10
+  private readonly backgroundColor: string
 
   constructor(
     private readonly renderer: RenderContext,
     private readonly options: ChatUndoPanelOptions,
   ) {
+    this.backgroundColor = options.backgroundColor ?? PANEL_BG
     const messages = options.messages
       .filter((message) => message.role === "USER" && message.status !== "QUEUED")
     this.rows = [
@@ -102,7 +105,7 @@ export class ChatUndoPanel {
         paddingBottom: 1,
         paddingLeft: 2,
         paddingRight: 2,
-        backgroundColor: PANEL_BG,
+        backgroundColor: this.backgroundColor,
         border: true,
         borderStyle: "rounded",
         borderColor: BORDER_COLOR,
@@ -122,7 +125,7 @@ export class ChatUndoPanel {
         paddingTop: 0,
         paddingLeft: 2,
         paddingRight: 2,
-        backgroundColor: PANEL_BG,
+        backgroundColor: this.backgroundColor,
         border: ["top"],
         borderStyle: "single",
         borderColor: ACCENT_COLOR,
@@ -138,8 +141,8 @@ export class ChatUndoPanel {
       wrapMode: "word",
     })
     this.list = new SelectableList(renderer, {
-      backgroundColor: PANEL_BG,
-      selectedBackgroundColor: options.presentation === "modal" ? SELECTED_BG : PANEL_BG,
+      backgroundColor: this.backgroundColor,
+      selectedBackgroundColor: options.presentation === "modal" ? SELECTED_BG : this.backgroundColor,
       indicatorColor: ACCENT_COLOR,
       selectedIndicator: "› ",
       wrapContent: true,
