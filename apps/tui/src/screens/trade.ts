@@ -431,6 +431,7 @@ export class TradeScreen {
   private hintTimer: ReturnType<typeof setTimeout> | null = null
   private destructiveConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private connected = false
+  private hasConnected = false
   private equityConnected = false
   private selectedEquitySymbol: string | null = null
   private preferences: AppPreferences
@@ -2307,9 +2308,24 @@ export class TradeScreen {
 
   private setConnected(connected: boolean): void {
     if (this.connected === connected) return
+    const recovered = connected && this.hasConnected
     this.connected = connected
+    if (connected) this.hasConnected = true
     this.renderViopHeader()
     if (this.preferences.chartTarget === "INSTRUMENT") this.renderChartHeader()
+    if (recovered) this.refreshAfterReconnect()
+  }
+
+  /** Replaces errors left by requests made while the server was restarting. */
+  private refreshAfterReconnect(): void {
+    if (this.destroyed) return
+    this.chart.refresh()
+    void this.accountPanel.refresh()
+    void this.refreshInstruments()
+    void this.refreshNews()
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    if (instrument) void this.loadContractDetails(instrument)
+    this.loadBrokerView()
   }
 
   private updateFocusIndicator(): void {

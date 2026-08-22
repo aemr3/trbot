@@ -427,6 +427,12 @@ export class CandlestickChart {
     this.load()
   }
 
+  /** Re-reads the selected series after the server connection returns. */
+  refresh(): void {
+    if (this.destroyed || !this.instrument) return
+    this.load()
+  }
+
   /** The overlays currently drawn, in the order the toolbar lists them. */
   get indicators(): ChartIndicator[] {
     return [...this.activeIndicators]

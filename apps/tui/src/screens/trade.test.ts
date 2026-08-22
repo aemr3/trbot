@@ -1742,11 +1742,13 @@ test("keeps the book closed when the subscription does not include market depth"
 
 class FakeBrokerageSource implements BrokerageDistributionSource {
   requests: BrokerageDistributionRequest[] = []
+  failure: Error | null = null
 
   constructor(private readonly shares = 8) {}
 
   async loadDistribution(request: BrokerageDistributionRequest): Promise<BrokerageDistribution> {
     this.requests.push(request)
+    if (this.failure) throw this.failure
     return {
       side: request.side,
       shares: Array.from({ length: this.shares }, (_, index) => ({
@@ -1771,6 +1773,61 @@ class FakeBrokerageSource implements BrokerageDistributionSource {
     }
   }
 }
+
+test("reloads failed HTTP panels when the server stream reconnects", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const quotes = new FakeQuoteStream()
+  const brokerage = new FakeBrokerageSource()
+  let candleRequests = 0
+  let candlesUnavailable = false
+  const reconnectingCandles: CandleSource = {
+    async loadCandles(instrumentUid, range, interval, options) {
+      candleRequests += 1
+      if (candlesUnavailable) throw new Error("Cannot reach the trbot server")
+      return candles.loadCandles(instrumentUid, range, interval, options)
+    },
+  }
+  const screen = new TradeScreen(renderer, {
+    instruments,
+    candles: reconnectingCandles,
+    news,
+    quotes,
+    brokerage,
+    memberFeatures: entitledFeatures,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitForFrame((frame) => frame.includes("Buyer 1") && frame.includes("XU030"))
+  quotes.emitConnection(true)
+  await waitForFrame((frame) => frame.includes("● live"))
+
+  quotes.emitConnection(false)
+  candlesUnavailable = true
+  brokerage.failure = new Error("Cannot reach the trbot server")
+  focusPanel(mockInput, "chart")
+  mockInput.pressArrow("right")
+  mockInput.pressTab()
+  mockInput.pressTab()
+  mockInput.pressArrow("right")
+  await waitForFrame((frame) => frame.includes("Failed to load candles") && frame.includes("Failed to load:"))
+
+  const failedCandleRequests = candleRequests
+  const failedBrokerRequests = brokerage.requests.length
+  candlesUnavailable = false
+  brokerage.failure = null
+  quotes.emitConnection(true)
+
+  const recovered = await waitForFrame(
+    (frame) => frame.includes("Seller 1") && !frame.includes("Failed to load candles") && !frame.includes("Failed to load:"),
+  )
+  expect(recovered).toContain("● live")
+  expect(candleRequests).toBeGreaterThan(failedCandleRequests)
+  expect(brokerage.requests.length).toBeGreaterThan(failedBrokerRequests)
+
+  screen.destroy()
+  renderer.destroy()
+})
 
 test("ranks broker buyers and sellers under the order book", async () => {
   const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
