@@ -12,7 +12,7 @@ import { requireToolPermission, type ChatPermissionAuthorizer } from "./permissi
 import { externalToolEffect, toolText, type ChatTool, type ChatToolOutcome } from "./tool.ts"
 
 const SymbolParameter = Type.String({
-  description: "Active VIOP contract or unambiguous underlying symbol, such as F_ASELS0826 or ASELS",
+  description: "Exact nearest-expiry VIOP contract returned by list_instruments, or its unambiguous underlying symbol; never construct an expiry code",
   minLength: 1,
   maxLength: 80,
 })

@@ -3,6 +3,7 @@ import type { OpenAuthSession } from "@trbot/auth/session.ts"
 import type { AppCredentials } from "@trbot/config"
 import {
   FeedBrokerageDistributionSource,
+  FeedAwareInstrumentSource,
   FeedMemberFeatureSource,
   FeedSettlementSource,
   InstrumentCandleSource,
@@ -13,6 +14,7 @@ import type { BrokerageDistributionSource } from "@trbot/market/brokerage.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import type { DepthStream } from "@trbot/market/depth.ts"
 import type { EquityQuoteStream } from "@trbot/market/equity-quote-stream.ts"
+import type { RecentFinancialSource } from "@trbot/market/financials.ts"
 import type { ViopInstrumentSource } from "@trbot/market/instrument.ts"
 import type { NewsSource } from "@trbot/market/news.ts"
 import type { QuoteStream } from "@trbot/market/quote-stream.ts"
@@ -36,6 +38,7 @@ import { toProtocolError } from "./errors.ts"
 /** Everything the routes and the stream hub read from the provider. */
 export interface ProviderSources {
   instruments: ViopInstrumentSource
+  financials: RecentFinancialSource
   candles: CandleSource
   news: NewsSource
   account: AccountSource
@@ -327,7 +330,8 @@ function providerHandle(handle: ApiClientHandle, feed: MarketFeed): ProviderSess
 function providerSources(client: ApiClient, feed: MarketFeed, options: ProviderSourceOptions): ProviderSources {
   const orders = new ApiViopOrderSource(client)
   const report = (label: string) => (cause: unknown) => options.report(label, cause)
-  const instruments = new ApiViopInstrumentSource(client)
+  const brokerageInstruments = new ApiViopInstrumentSource(client)
+  const instruments = new FeedAwareInstrumentSource(brokerageInstruments, feed.instruments)
   // Callers address market data by brokerage instrument uid, including persisted
   // rules, while the feed knows only tickers. The translation needs the
   // brokerage's instrument list, so it is composed here rather than inside the
@@ -342,6 +346,7 @@ function providerSources(client: ApiClient, feed: MarketFeed, options: ProviderS
   }
   return {
     instruments,
+    financials: feed.financials,
     candles: new InstrumentCandleSource(feed.candles, symbols),
     news: new ApiNewsSource(client),
     account: new ApiAccountSource(client),

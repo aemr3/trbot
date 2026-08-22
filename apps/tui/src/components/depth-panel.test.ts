@@ -98,13 +98,15 @@ test("reports a locked panel when market depth is not part of the subscription",
   renderer.destroy()
 })
 
-test("explains a contract whose underlying has no book", async () => {
+test("falls back to the futures book when the underlying is unavailable", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
   panel.setEntitled(true)
 
   panel.selectInstrument({ displayName: "XU030", symbol: "F_XU0300826", underlyingSymbol: null })
   await renderOnce()
-  expect(captureCharFrame()).toContain("XU030 has no underlying stock.")
+  expect(panel.activeSymbol()).toBe("F_XU0300826")
+  expect(captureCharFrame()).toContain("Futures")
+  expect(captureCharFrame()).not.toContain("Stock")
 
   panel.selectInstrument({ displayName: "ASELS", symbol: "F_ASELS0826", underlyingSymbol: "ASELS" })
   panel.setStatus("unavailable")

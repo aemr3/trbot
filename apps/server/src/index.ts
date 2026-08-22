@@ -250,6 +250,10 @@ async function startTrbotServer(): Promise<void> {
     models,
     marketData: {
       sources: () => session.require(),
+      candleData: {
+        instruments: feed.instruments,
+        candles: feed.candles,
+      },
       stops: { list: async () => stops.list() },
     },
     marketMonitors: {

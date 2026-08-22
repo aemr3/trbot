@@ -2,6 +2,7 @@ import { FeedBrokerageDirectory } from "./brokerages.ts"
 import { FeedCandleSource } from "./candles.ts"
 import { FeedDepthStream } from "./depth-stream.ts"
 import { FeedEquityQuoteStream } from "./equity-quote-stream.ts"
+import { FeedRecentFinancialSource } from "./financials.ts"
 import { FeedInstrumentSource } from "./instruments.ts"
 import { FeedQuoteStream } from "./quote-stream.ts"
 import { FeedSession, type FeedCredentials, type FeedEntitlements } from "./session.ts"
@@ -16,9 +17,11 @@ export * from "./candles.ts"
 export * from "./depth-stream.ts"
 export * from "./equity-quote-stream.ts"
 export * from "./features.ts"
+export * from "./financials.ts"
 export * from "./fields.ts"
 export * from "./frames.ts"
 export * from "./instrument-candles.ts"
+export * from "./instrument-availability.ts"
 export * from "./instrument-symbols.ts"
 export * from "./instruments.ts"
 export * from "./quote-stream.ts"
@@ -58,6 +61,7 @@ export class MarketFeed {
   readonly session: FeedSession
   readonly socket: MarketSocket
   readonly candles: FeedCandleSource
+  readonly financials: FeedRecentFinancialSource
   readonly instruments: FeedInstrumentSource
   readonly trades: FeedTradeSource
   /** Shared by every broker feed, so the house names are read once per run. */
@@ -79,6 +83,7 @@ export class MarketFeed {
     })
     this.candles = new FeedCandleSource(this.session)
     this.instruments = new FeedInstrumentSource(this.session)
+    this.financials = new FeedRecentFinancialSource(this.session, this.instruments)
     this.brokerages = new FeedBrokerageDirectory(this.session)
     this.trades = new FeedTradeSource(this.session, { brokerages: this.brokerages })
     this.tradingDays = new FeedTradingDays(this.candles)

@@ -444,6 +444,60 @@ Session strings differ per contract and matter for scheduling: single-underlying
 futures are `0920-1810`, while index futures add an evening session,
 `0920-1810,1900-2300`. Read it from UDF `/symbols?symbol=<code>`.
 
+Treat contract and underlying availability separately. For example,
+`F_XAUTRYM0826` is in `VİOP Aktif Vade` and its candle history answers, but
+neither `XAUTRY` nor `XAUTRYM` exists in `/symbols/`; both underlying-history
+requests return HTTP 400. The server therefore annotates each brokerage
+contract by intersecting it with both feed universes. The TUI offers only the
+confirmed chart and depth targets, and broker distribution/settlement only when
+the matched underlying has `type=equity`.
+
+## Recent financials — `GET /screener/`
+
+The "Son Bilançolar" table reads the account API with `Bearer <access>`. Its
+`filter` parameter is a field projection rather than a predicate:
+
+```http
+GET /screener/?period=null&filter=published_at||!period||!kapanis||!gunluk_getiri||!piyasa_degeri||!net_kar||!yillik_net_kar_degisimi||!fk||!pddd||
+```
+
+```jsonc
+{
+  "header": ["Hisse", "Açıklanma", "Periyot", "Son Fiyat", "Gün %", ...],
+  "attributes": [
+    { "key": "published_at", "title": "Açıklanma", "format": { "date": true } },
+    { "key": "net_kar", "title": "Net Dönem Karı", "format": { "prefix": "₺" } }
+  ],
+  "data": [
+    { "code": "THYAO", "published_at": "2026-08-18T15:00:00Z",
+      "period": "2026/6", "kapanis": 300.0, "gunluk_getiri": -1.0,
+      "piyasa_degeri": 410000000000, "net_kar": 15000000000,
+      "yillik_net_kar_degisimi": 20.0, "fk": 8.0, "pddd": 1.2 }
+  ]
+}
+```
+
+`period=null` means each company's latest available filing, so one response can
+legitimately contain more than one period. A concrete `YYYY/M` value asks for
+that reporting period. Numeric values are raw amounts or percentages, not the
+abbreviated strings rendered by the table, and ratios or changes can be null.
+
+The signed-in column picker exposes 97 numeric metrics across price and volume,
+valuation, custody, profitability, leverage, growth, the three financial
+statements, and activity ratios. The application maps every one to a
+provider-neutral metric name and projects only what a caller asks for. Omitting
+the metric list uses a compact trading set covering liquidity, valuation,
+profitability, leverage, annual and quarterly growth, EPS, and free cash flow;
+`includeAllMetrics` remains available for a complete reading. This keeps a
+normal multi-company tool result bounded without hiding the raw accounting or
+BIST-100-only custody fields when they are specifically useful.
+
+The endpoint returns the whole equity universe. `FeedRecentFinancialSource`
+therefore applies the product boundary itself: it intersects the cash-equity
+universe from `/symbols/` with `VİOP Aktif Vade`, and returns only those company
+underlyings. Index, currency, and metal futures remain available to the trading
+desk but cannot leak through the company-financials tool.
+
 ### What no JSON endpoint provides
 
 Contract **multiplier, expiry date, underlying, and collateral** are not exposed

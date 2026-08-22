@@ -356,6 +356,35 @@ test("renders the VIOP, chart, and news panels with instrument data", async () =
   renderer.destroy()
 })
 
+test("aligns prices and changes for the longer XAUTRY contract symbol", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 120, height: 24 })
+  const mixedSymbolLengths: ViopInstrumentSource = {
+    async listInstruments() {
+      return [
+        { uid: "stock", symbol: "F_TRMET0826", displayName: "TRMET", underlyingSymbol: "TRMET", lastPrice: 143.5, changePercent: 7.54, volume: 200, currency: "TRY" },
+        { uid: "gold", symbol: "F_XAUTRYM0826", displayName: "XAUTRY", underlyingSymbol: "XAUTRY", lastPrice: 7_137.8, changePercent: 1.4, volume: 100, currency: "TRY" },
+      ]
+    },
+  }
+  const screen = new TradeScreen(renderer, { instruments: mixedSymbolLengths, candles, news })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const frame = await waitForFrame((value) => value.includes("F_XAUTRYM0826") && value.includes("7.137,80"))
+  const stockRow = frame.split("\n").find((line) => line.includes("F_TRMET0826"))
+  const goldRow = frame.split("\n").find((line) => line.includes("F_XAUTRYM0826"))
+
+  expect(stockRow).toBeDefined()
+  expect(goldRow).toBeDefined()
+  const stockPriceEnd = (stockRow?.indexOf("143,50") ?? -1) + "143,50".length
+  const goldPriceEnd = (goldRow?.indexOf("7.137,80") ?? -1) + "7.137,80".length
+  expect(stockPriceEnd).toBe(goldPriceEnd)
+  expect(stockRow?.indexOf("+7.54%")).toBe(goldRow?.indexOf("+1.40%"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("switches between selected-stock and index news feeds", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
   const requests: Array<string | null> = []
@@ -1787,6 +1816,57 @@ class FakeBrokerageSource implements BrokerageDistributionSource {
     }
   }
 }
+
+test("uses only the market-data views available for a futures-only underlying", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
+  const brokerage = new FakeBrokerageSource()
+  const candleTargets: Array<string | undefined> = []
+  const futuresOnly: ViopInstrumentSource = {
+    async listInstruments() {
+      return [{
+        uid: "gold-future",
+        symbol: "F_XAUTRYM0826",
+        displayName: "XAUTRY",
+        underlyingSymbol: "XAUTRY",
+        lastPrice: 7_156.7,
+        changePercent: 0.8,
+        volume: 100_000,
+        currency: "TRY",
+        marketData: {
+          instrumentCandles: true,
+          underlyingSymbol: null,
+          underlyingKind: null,
+          brokerAnalytics: false,
+        },
+      }]
+    },
+  }
+  const availableCandles: CandleSource = {
+    async loadCandles(instrumentUid, range, interval, options) {
+      candleTargets.push(options?.target)
+      return candles.loadCandles(instrumentUid, range, interval, options)
+    },
+  }
+  const screen = new TradeScreen(renderer, {
+    instruments: futuresOnly,
+    candles: availableCandles,
+    news,
+    brokerage,
+    memberFeatures: entitledFeatures,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const frame = await waitForFrame(
+    (value) => value.includes("Chart  XAUTRY futures") && value.includes("cash-equity underlying"),
+  )
+  expect(frame).not.toContain("Failed to load")
+  expect(candleTargets[0]).toBe("INSTRUMENT")
+  expect(brokerage.requests).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
 
 test("reloads failed HTTP panels when the server stream reconnects", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })

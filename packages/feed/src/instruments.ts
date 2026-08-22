@@ -1,4 +1,9 @@
 import { z } from "zod"
+import type {
+  CandleInstrumentResolver,
+  CandleInstrumentTarget,
+  ResolvedCandleInstrument,
+} from "@trbot/market/candle.ts"
 import { ACCOUNT_API_BASE, withAccessToken, type FeedSession } from "./session.ts"
 import { buildUrl, FetchFeedTransport, readJson, type FeedTransport } from "./transport.ts"
 
@@ -67,6 +72,14 @@ const ACTIVE_FUTURES_COLLECTION = "VİOP Aktif Vade"
 
 const FUTURE_CODE = /^F_([A-Z0-9]+?)(\d{2})(\d{2})$/
 
+// Fintables names the gram-gold future XAUTRYM while the rest of the product
+// calls its underlying XAUTRY. This is a display/input alias only: Fintables has
+// no spot candle ticker for either spelling.
+const FUTURE_UNDERLYING_BY_ALIAS = new Map([["XAUTRY", "XAUTRYM"]])
+const FUTURE_ALIAS_BY_UNDERLYING = new Map(
+  [...FUTURE_UNDERLYING_BY_ALIAS].map(([alias, underlying]) => [underlying, alias]),
+)
+
 /**
  * Splits a contract code into its underlying and contract month.
  *
@@ -106,7 +119,7 @@ export interface FeedInstrumentSourceOptions {
  * them, and they are read from the brokerage, which is what orders are sized
  * against anyway.
  */
-export class FeedInstrumentSource {
+export class FeedInstrumentSource implements CandleInstrumentResolver {
   private readonly transport: FeedTransport
   private readonly baseUrl: string
   private universe: FeedInstrument[] | null = null
@@ -184,6 +197,48 @@ export class FeedInstrumentSource {
   async contractsFor(underlying: string, options: { signal?: AbortSignal } = {}): Promise<FeedFutureInstrument[]> {
     const wanted = underlying.trim().toUpperCase()
     return (await this.listFutures(options)).filter((contract) => contract.underlying === wanted)
+  }
+
+  /**
+   * Resolves a candle request from the feed's own active-contract and cash/spot
+   * universes, without consulting the brokerage or requiring its instrument uid.
+   */
+  async resolveCandleInstrument(
+    symbol: string,
+    target: CandleInstrumentTarget,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ResolvedCandleInstrument> {
+    const wanted = symbol.trim().toUpperCase()
+    const [futures, instruments] = await Promise.all([
+      this.listFutures(options),
+      this.listInstruments(options),
+    ])
+    const wantedUnderlying = FUTURE_UNDERLYING_BY_ALIAS.get(wanted) ?? wanted
+    const contract = futures.find((future) => future.symbol === wanted)
+      ?? futures.find((future) => future.underlying === wantedUnderlying)
+    if (!contract) {
+      throw new Error(
+        `No active VIOP contract matches ${symbol}. Only nearest-expiry contracts are available; use an exact listed contract or its underlying symbol instead of constructing an expiry code.`,
+      )
+    }
+
+    const displayName = FUTURE_ALIAS_BY_UNDERLYING.get(contract.underlying) ?? contract.underlying
+    const underlying = instruments.find((instrument) =>
+      instrument.symbol === contract.underlying || instrument.symbol === displayName
+    ) ?? null
+
+    if (target === "UNDERLYING" && !underlying) {
+      throw new Error(`${displayName} has no underlying cash/spot candle instrument; use target INSTRUMENT`)
+    }
+    const candleSymbol = target === "INSTRUMENT" ? contract.symbol : underlying?.symbol
+    if (!candleSymbol) throw new Error(`No candle symbol resolved for ${displayName}`)
+
+    return {
+      candleSymbol,
+      contractSymbol: contract.symbol,
+      underlyingSymbol: underlying?.symbol ?? null,
+      displayName,
+    }
   }
 
   private async loadCollections(signal?: AbortSignal): Promise<{ title: string; data: string[] }[]> {

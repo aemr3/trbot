@@ -16,7 +16,10 @@ const UNIVERSE = {
 const COLLECTIONS = [
   { title: "XU100", data: ["GARAN", "AKBNK"] },
   { title: "XU030", data: ["GARAN"] },
-  { title: "VİOP Aktif Vade", data: ["F_XU0300826", "F_GARAN0826", "F_USDTRY0926", "BROKEN"] },
+  {
+    title: "VİOP Aktif Vade",
+    data: ["F_XU0300826", "F_GARAN0826", "F_USDTRY0926", "F_XAUTRYM0826", "BROKEN"],
+  },
 ]
 
 function build() {
@@ -95,7 +98,12 @@ describe("FeedInstrumentSource", () => {
     const { instruments } = build()
     const futures = await instruments.listFutures()
 
-    expect(futures.map((contract) => contract.symbol)).toEqual(["F_GARAN0826", "F_USDTRY0926", "F_XU0300826"])
+    expect(futures.map((contract) => contract.symbol)).toEqual([
+      "F_GARAN0826",
+      "F_USDTRY0926",
+      "F_XAUTRYM0826",
+      "F_XU0300826",
+    ])
   })
 
   test("carries the underlying and contract month on each contract", async () => {
@@ -116,6 +124,44 @@ describe("FeedInstrumentSource", () => {
   test("finds every contract on one underlying", async () => {
     const { instruments } = build()
     expect((await instruments.contractsFor("garan")).map((row) => row.symbol)).toEqual(["F_GARAN0826"])
+  })
+
+  test("resolves contract and underlying candles from the feed universes", async () => {
+    const { instruments } = build()
+
+    await expect(instruments.resolveCandleInstrument("GARAN", "INSTRUMENT")).resolves.toEqual({
+      candleSymbol: "F_GARAN0826",
+      contractSymbol: "F_GARAN0826",
+      underlyingSymbol: "GARAN",
+      displayName: "GARAN",
+    })
+    await expect(instruments.resolveCandleInstrument("F_GARAN0826", "UNDERLYING")).resolves.toEqual({
+      candleSymbol: "GARAN",
+      contractSymbol: "F_GARAN0826",
+      underlyingSymbol: "GARAN",
+      displayName: "GARAN",
+    })
+  })
+
+  test("resolves the XAUTRY alias only to its futures candles", async () => {
+    const { instruments } = build()
+
+    await expect(instruments.resolveCandleInstrument("XAUTRY", "INSTRUMENT")).resolves.toEqual({
+      candleSymbol: "F_XAUTRYM0826",
+      contractSymbol: "F_XAUTRYM0826",
+      underlyingSymbol: null,
+      displayName: "XAUTRY",
+    })
+    await expect(instruments.resolveCandleInstrument("XAUTRY", "UNDERLYING"))
+      .rejects.toThrow("no underlying cash/spot candle instrument; use target INSTRUMENT")
+  })
+
+  test("does not resolve a cash symbol without an active VIOP contract", async () => {
+    const { instruments } = build()
+    await expect(instruments.resolveCandleInstrument("BOSSA", "UNDERLYING"))
+      .rejects.toThrow("No active VIOP contract matches BOSSA")
+    await expect(instruments.resolveCandleInstrument("F_GARAN0926", "INSTRUMENT"))
+      .rejects.toThrow("Only nearest-expiry contracts are available")
   })
 
   test("reads index constituents from the same collections", async () => {

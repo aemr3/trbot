@@ -56,8 +56,9 @@ export interface DepthPanelInstrument {
   displayName: string
   /** The contract's own symbol, which now has a book of its own. */
   symbol: string
-  /** The stock the contract settles against, which has a separate book. */
+  /** The feed's cash, spot, or index symbol, which has a separate book when available. */
   underlyingSymbol: string | null
+  underlyingLabel?: string
 }
 
 export interface DepthPanelOptions {
@@ -87,6 +88,8 @@ export class DepthPanel {
   private status: DepthStatus = "idle"
   private entitled: boolean | null = null
   private target: DepthTarget
+  private preferredTarget: DepthTarget
+  private availableTargets: DepthTarget[] = [...DEPTH_TARGETS]
   private focused = false
   // Depth is the busiest stream at market open; book events overwrite state
   // and the full-panel rebuild is coalesced per burst.
@@ -99,6 +102,7 @@ export class DepthPanel {
     private readonly options: DepthPanelOptions = {},
   ) {
     this.target = options.initialTarget ?? "UNDERLYING"
+    this.preferredTarget = this.target
     this.root = new BoxRenderable(renderer, {
       flexDirection: "column",
       paddingLeft: PANEL_PADDING,
@@ -174,7 +178,12 @@ export class DepthPanel {
 
   selectInstrument(instrument: DepthPanelInstrument): void {
     this.instrument = instrument
+    this.availableTargets = instrument.underlyingSymbol ? [...DEPTH_TARGETS] : ["INSTRUMENT"]
+    this.target = this.availableTargets.includes(this.preferredTarget) ? this.preferredTarget : "INSTRUMENT"
+    const underlyingLabel = this.targetButtonLabels.get("UNDERLYING")
+    if (underlyingLabel) underlyingLabel.content = instrument.underlyingLabel ?? TARGET_LABELS.UNDERLYING
     this.book = null
+    this.status = "idle"
     this.render()
   }
 
@@ -228,7 +237,8 @@ export class DepthPanel {
   }
 
   setTarget(target: DepthTarget): void {
-    if (this.target === target) return
+    if (this.target === target || !this.availableTargets.includes(target)) return
+    this.preferredTarget = target
     this.target = target
     // The book on screen belongs to the symbol being left behind.
     this.book = null
@@ -246,12 +256,14 @@ export class DepthPanel {
     const toggle = key.sequence === "f" || key.name === "left" || key.name === "right"
       || key.name === "h" || key.name === "l"
     if (!toggle) return false
-    this.selectTarget(this.target === "UNDERLYING" ? "INSTRUMENT" : "UNDERLYING")
+    if (this.availableTargets.length > 1) {
+      this.selectTarget(this.target === "UNDERLYING" ? "INSTRUMENT" : "UNDERLYING")
+    }
     return true
   }
 
   private selectTarget(target: DepthTarget): void {
-    if (this.target === target) return
+    if (this.target === target || !this.availableTargets.includes(target)) return
     this.setTarget(target)
     this.options.onTargetChange?.(target)
   }
@@ -286,6 +298,7 @@ export class DepthPanel {
       const button = this.targetButtons.get(target)
       const label = this.targetButtonLabels.get(target)
       if (!button || !label) continue
+      button.visible = this.availableTargets.includes(target)
       button.backgroundColor = selected ? ACTIVE_BUTTON_BG : undefined
       label.fg = selected ? TUI_THEME.textStrong : this.focused ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }
@@ -304,7 +317,7 @@ export class DepthPanel {
     if (!this.instrument) return { text: "Select a VIOP contract.", color: MUTED_COLOR }
     const symbol = this.activeSymbol()
     if (!symbol) {
-      return { text: `${this.instrument.displayName} has no underlying stock.`, color: MUTED_COLOR }
+      return { text: `${this.instrument.displayName} has no market-data symbol for this view.`, color: MUTED_COLOR }
     }
     if (this.status === "unavailable") {
       return { text: `No depth book for ${symbol}.`, color: MUTED_COLOR }

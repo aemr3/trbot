@@ -1,9 +1,17 @@
 import { Type } from "@earendil-works/pi-ai"
 import type { BrokerageDistributionSource } from "@trbot/market/brokerage.ts"
 import type { BrokerageDateRange } from "@trbot/market/broker-calendar.ts"
-import type { CandleSource } from "@trbot/market/candle.ts"
-import type { DepthBook, DepthStream } from "@trbot/market/depth.ts"
+import type { CandleInstrumentResolver, CandleSource } from "@trbot/market/candle.ts"
+import type { DepthBook, DepthStream, DepthTarget } from "@trbot/market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "@trbot/market/equity-quote-stream.ts"
+import {
+  DEFAULT_FINANCIAL_METRICS,
+  FINANCIAL_METRICS,
+  FINANCIAL_PERIOD_PATTERN,
+  type FinancialMetric,
+  type RecentFinancial,
+  type RecentFinancialSource,
+} from "@trbot/market/financials.ts"
 import {
   resolveViopInstrument,
   type ViopInstrument,
@@ -23,7 +31,7 @@ const CANDLE_INTERVAL_HELP =
   "Supported intervals: MIN_1, MIN_5, MIN_15, MIN_30, HOUR_1, HOUR_4, DAY_1, WEEK_1, MONTH_1."
 
 const SymbolParameter = Type.String({
-  description: "VIOP contract or underlying symbol, such as F_ASELS0826 or ASELS",
+  description: "Exact nearest-expiry VIOP contract returned by list_instruments, or its underlying symbol; never construct an expiry code",
   minLength: 1,
   maxLength: 80,
 })
@@ -36,6 +44,14 @@ const InstrumentSort = Type.Union([
 const SortDirection = Type.Union([Type.Literal("ASC"), Type.Literal("DESC")], {
   description: "Sort direction when sortBy is present; defaults to DESC",
 })
+const FinancialMetricParameter = Type.Union(
+  FINANCIAL_METRICS.map((metric) => Type.Literal(metric)),
+  { description: "One of the 97 signed-in Fintables screener metrics" },
+)
+const FinancialSort = Type.Union([
+  Type.Literal("PUBLISHED_AT"),
+  ...FINANCIAL_METRICS.map((metric) => Type.Literal(metric)),
+])
 const ResultLimit = Type.Optional(Type.Integer({ minimum: 1, maximum: 50, default: 20 }))
 const CandleRange = Type.Union([
   Type.Literal("INTRADAY"),
@@ -79,10 +95,33 @@ const ListInstrumentsParameters = Type.Object({
   sortDirection: Type.Optional(SortDirection),
   limit: InstrumentLimit,
 })
+const RecentFinancialsParameters = Type.Object({
+  period: Type.Optional(Type.String({
+    description: "Reporting period as YYYY/M, such as 2026/6; omit for each company's latest filing",
+    pattern: FINANCIAL_PERIOD_PATTERN,
+  })),
+  symbols: Type.Optional(Type.Array(Type.String({
+    description: "Front-month VİOP contract or its cash-equity underlying, such as F_THYAO0826 or THYAO",
+    minLength: 1,
+    maxLength: 80,
+  }), { minItems: 1, maxItems: 100, uniqueItems: true })),
+  metrics: Type.Optional(Type.Array(FinancialMetricParameter, {
+    description: "Exact metrics to return; omit for the compact trading default",
+    minItems: 1,
+    maxItems: FINANCIAL_METRICS.length,
+    uniqueItems: true,
+  })),
+  includeAllMetrics: Type.Optional(Type.Boolean({
+    description: "Return every available metric; cannot be combined with metrics",
+  })),
+  sortBy: Type.Optional(FinancialSort),
+  sortDirection: Type.Optional(SortDirection),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+})
 const SymbolOnlyParameters = Type.Object({ symbol: SymbolParameter })
 const CandleParameters = Type.Object({
   symbol: Type.Optional(Type.String({
-    description: "VIOP contract, underlying, or index alias such as ASELS, XU100, XU030, BIST100, or BIST30",
+    description: "Exact nearest-expiry contract returned by list_instruments, its underlying, or an index alias such as ASELS, XU100, XU030, BIST100, or BIST30; never construct an expiry code",
     minLength: 1,
     maxLength: 80,
   })),
@@ -93,11 +132,13 @@ const CandleParameters = Type.Object({
 })
 const AccountParameters = Type.Object({ range: Type.Optional(PortfolioRange) })
 const DepthParameters = Type.Object({
-  symbol: Type.String({
-    description: "Underlying BIST cash-equity symbol, such as ASELS or AKBNK. Never pass a VIOP contract symbol.",
-    minLength: 1,
-    maxLength: 80,
-  }),
+  symbol: SymbolParameter,
+  target: Type.Optional(Type.Union([
+    Type.Literal("UNDERLYING"),
+    Type.Literal("INSTRUMENT"),
+  ], {
+    description: "Read the underlying cash/spot book or the VIOP contract book; inferred from the symbol when omitted",
+  })),
   levels: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, default: 10 })),
   trades: Type.Optional(Type.Integer({ minimum: 0, maximum: 100, default: 25 })),
 })
@@ -134,6 +175,7 @@ const EmptyParameters = Type.Object({})
 
 export interface MarketDataSources {
   instruments: ViopInstrumentSource
+  financials: RecentFinancialSource
   candles: CandleSource
   news: NewsSource
   account: AccountSource
@@ -148,6 +190,11 @@ export interface MarketDataSources {
 export interface MarketDataToolClients {
   /** Resolved per call because provider recovery replaces every source object. */
   sources(): MarketDataSources
+  /** Feed-native candle access does not require a brokerage session or uid. */
+  candleData: {
+    instruments: CandleInstrumentResolver
+    candles: CandleSource
+  }
   stops: { list(): Promise<StopRule[]> }
 }
 
@@ -155,6 +202,7 @@ export interface MarketDataToolClients {
 export function marketDataTools(clients: MarketDataToolClients): ChatTool[] {
   return [
     listInstrumentsTool(clients),
+    recentFinancialsTool(clients),
     viopQuoteTool(clients),
     contractDetailsTool(clients),
     candlesTool(clients),
@@ -171,11 +219,103 @@ export function marketDataTools(clients: MarketDataToolClients): ChatTool[] {
   ]
 }
 
+type FinancialSortField = "PUBLISHED_AT" | FinancialMetric
+
+function recentFinancialsTool(clients: MarketDataToolClients): ChatTool<typeof RecentFinancialsParameters> {
+  return {
+    definition: {
+      name: "list_viop_equity_financials",
+      description: [
+        "List recent financial results and valuation ratios only for cash equities with a current front-month VİOP contract.",
+        "Accepts either exact contract codes or their underlying stock tickers.",
+        "Index, currency, metal, and non-VİOP equity financials are outside this tool's scope.",
+      ].join(" "),
+      parameters: RecentFinancialsParameters,
+    },
+    run: async ({ period, symbols, metrics, includeAllMetrics, sortBy, sortDirection, limit }, options) => {
+      if (includeAllMetrics && metrics) {
+        throw new Error("Choose either metrics or includeAllMetrics, not both")
+      }
+      const selectedMetrics: FinancialMetric[] = includeAllMetrics
+        ? [...FINANCIAL_METRICS]
+        : [...(metrics ?? DEFAULT_FINANCIAL_METRICS)]
+      if (sortBy && sortBy !== "PUBLISHED_AT" && !selectedMetrics.includes(sortBy)) {
+        selectedMetrics.push(sortBy)
+      }
+      const sources = clients.sources()
+      const requestedSymbols = symbols
+        ? await resolveFinancialSymbols(sources.instruments, symbols, options.signal)
+        : undefined
+      const result = await sources.financials.listRecentFinancials({
+        period,
+        symbols: requestedSymbols,
+        metrics: selectedMetrics,
+        signal: options.signal,
+      })
+      const sorted = sortFinancials(
+        result.financials,
+        sortBy ?? "PUBLISHED_AT",
+        sortDirection ?? "DESC",
+      )
+      const returned = sorted.slice(0, limit ?? (includeAllMetrics ? 10 : 20))
+      return dataOutcome(
+        `Found ${result.financials.length} matching VİOP equity financial${result.financials.length === 1 ? "" : "s"}; returned ${returned.length}.`,
+        {
+          universe: result.universe,
+          eligibleSymbols: result.eligibleSymbols,
+          metrics: result.metrics,
+          period: period ?? null,
+          matched: result.financials.length,
+          financials: returned,
+        },
+      )
+    },
+  }
+}
+
+async function resolveFinancialSymbols(
+  source: ViopInstrumentSource,
+  symbols: string[],
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const instruments = await source.listInstruments({ signal })
+  return [...new Set(symbols.map((symbol) => {
+    const instrument = resolveViopInstrument(instruments, symbol)
+    return instrument.underlyingSymbol ?? instrument.symbol
+  }))]
+}
+
+function sortFinancials(
+  financials: RecentFinancial[],
+  sortBy: FinancialSortField,
+  direction: "ASC" | "DESC",
+): RecentFinancial[] {
+  return [...financials].sort((left, right) => {
+    const leftValue = financialSortValue(left, sortBy)
+    const rightValue = financialSortValue(right, sortBy)
+    if (leftValue === null) return rightValue === null ? left.symbol.localeCompare(right.symbol) : 1
+    if (rightValue === null) return -1
+    const compared = leftValue === rightValue ? left.symbol.localeCompare(right.symbol) : leftValue - rightValue
+    return direction === "ASC" ? compared : -compared
+  })
+}
+
+function financialSortValue(financial: RecentFinancial, sortBy: FinancialSortField): number | null {
+  if (sortBy === "PUBLISHED_AT") {
+    const value = Date.parse(financial.publishedAt)
+    return Number.isFinite(value) ? value : null
+  }
+  return financial.metrics[sortBy] ?? null
+}
+
 function listInstrumentsTool(clients: MarketDataToolClients): ChatTool<typeof ListInstrumentsParameters> {
   return {
     definition: {
       name: "list_instruments",
-      description: "List active front-month VIOP contracts with instrument UIDs, current prices, changes, and volume.",
+      description: [
+        "List the nearest-expiry VIOP contract for every underlying with instrument UIDs, prices, changes, and volume.",
+        "This is the authoritative contract-symbol universe: out-month expiries are not exposed, so never construct or probe another expiry code.",
+      ].join(" "),
       parameters: ListInstrumentsParameters,
     },
     run: async ({ query, sortBy, sortDirection, limit }, options) => {
@@ -225,6 +365,7 @@ function viopQuoteTool(clients: MarketDataToolClients): ChatTool<typeof SymbolOn
       name: "get_viop_quote",
       description: [
         "Get the latest VIOP last, bid, ask, exchange limits, collateral, contract size, and current position quantity.",
+        "Use an exact contract returned by list_instruments or an underlying ticker; only its nearest expiry is available.",
         "When quote sources have no last price, returns the newest VIOP contract candle close with its source and timestamp.",
       ].join(" "),
       parameters: SymbolOnlyParameters,
@@ -286,7 +427,7 @@ function contractDetailsTool(clients: MarketDataToolClients): ChatTool<typeof Sy
   return {
     definition: {
       name: "get_contract_details",
-      description: "Get VIOP contract leverage, size, collateral, expiry, session range, settlement, volume, and open interest.",
+      description: "Get nearest-expiry VIOP contract leverage, size, collateral, expiry, session range, settlement, volume, and open interest. Use an exact contract returned by list_instruments or its underlying ticker; do not construct an expiry code.",
       parameters: SymbolOnlyParameters,
     },
     run: async ({ symbol }, options) => {
@@ -304,30 +445,40 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
     definition: {
       name: "get_candles",
       description: [
-        "Read the complete OHLCV candle series for a VIOP contract, its underlying equity, BIST 100, or BIST 30.",
+        "Read the complete OHLCV candle series for a VIOP contract, an available underlying cash/spot instrument, BIST 100, or BIST 30.",
         "For indices, pass XU100/XU030 as symbol or select BIST_100/BIST_30 without a symbol.",
         CANDLE_INTERVAL_HELP,
       ].join(" "),
       parameters: CandleParameters,
     },
     run: async ({ symbol, range, interval, target, limit }, options) => {
-      const sources = clients.sources()
       const resolvedTarget = indexTarget(target, symbol) ?? target ?? "INSTRUMENT"
       const indexSymbol = resolvedTarget === "BIST_100" ? "XU100" : resolvedTarget === "BIST_30" ? "XU030" : null
-      const instrument = indexSymbol
-        ? null
-        : resolveViopInstrument(
-            await sources.instruments.listInstruments({ signal: options.signal }),
+      const resolved = resolvedTarget === "UNDERLYING" || resolvedTarget === "INSTRUMENT"
+        ? await clients.candleData.instruments.resolveCandleInstrument(
             requireSymbol(symbol),
+            resolvedTarget,
+            { signal: options.signal },
           )
-      const series = await sources.candles.loadCandles(instrument?.uid ?? indexSymbol!, range, interval, {
+        : null
+      const candleSymbol = indexSymbol ?? resolved?.candleSymbol
+      if (!candleSymbol) throw new Error(`Unsupported candle target ${resolvedTarget}`)
+      const series = await clients.candleData.candles.loadCandles(candleSymbol, range, interval, {
         signal: options.signal,
         target: resolvedTarget,
       })
       const candles = limit === undefined ? series.candles : series.candles.slice(-limit)
-      return dataOutcome(`Read ${candles.length} ${interval} candles for ${indexSymbol ?? instrument?.displayName}.`, {
+      const instrument = resolved
+        ? {
+            symbol: resolved.contractSymbol,
+            displayName: resolved.displayName,
+            underlyingSymbol: resolved.underlyingSymbol,
+          }
+        : null
+      return dataOutcome(`Read ${candles.length} ${interval} candles for ${indexSymbol ?? resolved?.displayName}.`, {
         instrument,
-        symbol: indexSymbol ?? instrument?.symbol,
+        symbol: indexSymbol ?? resolved?.contractSymbol,
+        candleSymbol,
         target: resolvedTarget,
         range: series.range,
         interval: series.interval,
@@ -344,6 +495,39 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
 function requireSymbol(symbol: string | undefined): string {
   if (!symbol?.trim()) throw new Error("A VIOP contract or underlying symbol is required for these candles")
   return symbol
+}
+
+function requireEquityUnderlying(instrument: ViopInstrument): string {
+  const availability = instrument.marketData
+  if (availability) {
+    if (availability.underlyingKind !== "equity" || !availability.underlyingSymbol) {
+      throw new Error(`${instrument.symbol} has no cash-equity underlying in the market-data feed`)
+    }
+    return availability.underlyingSymbol
+  }
+  if (!instrument.underlyingSymbol) throw new Error(`${instrument.symbol} has no underlying equity symbol`)
+  return instrument.underlyingSymbol
+}
+
+function requireBrokerAnalytics(instrument: ViopInstrument): void {
+  if (instrument.marketData?.brokerAnalytics === false) {
+    throw new Error(`${instrument.symbol} has no cash-equity underlying for broker analytics`)
+  }
+}
+
+function depthUnderlyingSymbol(instrument: ViopInstrument): string | null {
+  return instrument.marketData
+    ? instrument.marketData.underlyingSymbol
+    : instrument.underlyingSymbol
+}
+
+function depthSymbol(instrument: ViopInstrument, target: DepthTarget): string {
+  if (target === "INSTRUMENT") return instrument.symbol
+  const underlyingSymbol = depthUnderlyingSymbol(instrument)
+  if (!underlyingSymbol) {
+    throw new Error(`${instrument.symbol} has no underlying cash/spot depth instrument; use target INSTRUMENT`)
+  }
+  return underlyingSymbol
 }
 
 function indexTarget(
@@ -379,27 +563,36 @@ function orderBookTool(clients: MarketDataToolClients): ChatTool<typeof DepthPar
     definition: {
       name: "get_order_book",
       description: [
-        "Take a live cash-equity order-book snapshot for an underlying BIST stock,",
-        "with bid/ask levels, total lots, and recent trades. VIOP contract order books are not available.",
-        "Pass the underlying equity ticker itself, such as AKBNK, never a contract such as F_AKBNK0826.",
+        "Take a live order-book snapshot for a VIOP contract or its available underlying cash/spot instrument,",
+        "with bid/ask levels, total lots, and recent trades. Use target INSTRUMENT for the futures book or",
+        "UNDERLYING for the underlying book. When target is omitted, a contract symbol selects INSTRUMENT;",
+        "an underlying alias selects UNDERLYING unless that contract has no underlying market-data instrument.",
       ].join(" "),
       parameters: DepthParameters,
     },
-    run: async ({ symbol, levels, trades }, options) => {
+    run: async ({ symbol, target, levels, trades }, options) => {
       const sources = clients.sources()
-      const underlyingSymbol = symbol.trim().toUpperCase()
-      if (underlyingSymbol.startsWith("F_")) {
-        throw new Error("VIOP contract order books are unavailable; call get_order_book with the underlying equity symbol")
-      }
-      const book = await readDepthSnapshot(sources.openDepthStream(), underlyingSymbol, options.signal)
+      const instrument = resolveViopInstrument(
+        await sources.instruments.listInstruments({ signal: options.signal }),
+        symbol,
+      )
+      const underlyingSymbol = depthUnderlyingSymbol(instrument)
+      const resolvedTarget: DepthTarget = target
+        ?? (symbol.trim().toUpperCase().startsWith("F_") || !underlyingSymbol ? "INSTRUMENT" : "UNDERLYING")
+      const requestedSymbol = depthSymbol(instrument, resolvedTarget)
+      const book = await readDepthSnapshot(sources.openDepthStream(), requestedSymbol, options.signal)
       const normalized = {
         ...book,
+        symbol: requestedSymbol,
+        instrumentSymbol: instrument.symbol,
         underlyingSymbol,
+        target: resolvedTarget,
         bids: book.bids.slice(0, levels ?? 10),
         asks: book.asks.slice(0, levels ?? 10),
         trades: book.trades.slice(0, trades ?? 25),
       }
-      return dataOutcome(`Read underlying equity order book for ${underlyingSymbol}.`, normalized)
+      const targetName = resolvedTarget === "INSTRUMENT" ? "VIOP contract" : "underlying"
+      return dataOutcome(`Read ${targetName} order book for ${requestedSymbol}.`, normalized)
     },
   }
 }
@@ -421,11 +614,11 @@ function equityQuoteTool(clients: MarketDataToolClients): ChatTool<typeof Symbol
         await sources.instruments.listInstruments({ signal: options.signal }),
         symbol,
       )
-      if (!instrument.underlyingSymbol) throw new Error(`${instrument.symbol} has no underlying equity symbol`)
+      const underlyingSymbol = requireEquityUnderlying(instrument)
       try {
         const quote = await readEquityQuote(
           sources.openEquityQuoteStream(),
-          instrument.underlyingSymbol,
+          underlyingSymbol,
           options.signal,
         )
         return dataOutcome(`Read live equity quote for ${quote.symbol}.`, { ...quote, source: "LIVE_TICK" })
@@ -436,9 +629,9 @@ function equityQuoteTool(clients: MarketDataToolClients): ChatTool<typeof Symbol
           target: "UNDERLYING",
         })
         const candle = series.candles.at(-1)
-        if (!candle) throw new Error(`No live quote or candle price is available for ${instrument.underlyingSymbol}`)
+        if (!candle) throw new Error(`No live quote or candle price is available for ${underlyingSymbol}`)
         const quote = {
-          symbol: instrument.underlyingSymbol,
+          symbol: underlyingSymbol,
           lastPrice: candle.close,
           timestamp: candle.timestamp,
           sessionStatus: null,
@@ -447,7 +640,7 @@ function equityQuoteTool(clients: MarketDataToolClients): ChatTool<typeof Symbol
           candleInterval: series.interval,
         }
         return dataOutcome(
-          `Live quote unavailable; read the latest ${series.interval} candle close for ${instrument.underlyingSymbol}.`,
+          `Live quote unavailable; read the latest ${series.interval} candle close for ${underlyingSymbol}.`,
           quote,
         )
       }
@@ -477,6 +670,7 @@ function brokerageTool(clients: MarketDataToolClients): ChatTool<typeof Brokerag
         await sources.instruments.listInstruments({ signal: options.signal }),
         symbol,
       )
+      requireBrokerAnalytics(instrument)
       const range = dateRange(start, end)
       const distribution = await sources.brokerage.loadDistribution({
         instrumentUid: instrument.uid,
@@ -519,6 +713,7 @@ function settlementTool(clients: MarketDataToolClients): ChatTool<typeof Settlem
         await sources.instruments.listInstruments({ signal: options.signal }),
         symbol,
       )
+      requireBrokerAnalytics(instrument)
       const range = dateRange(start, end)
       const settlement = await sources.settlement.loadSettlement({
         instrumentUid: instrument.uid,

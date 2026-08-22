@@ -3,6 +3,12 @@ import type { ToolCall } from "@earendil-works/pi-ai"
 import { DEFAULT_INTERVALS_BY_RANGE, type CandleSeries } from "@trbot/market/candle.ts"
 import type { DepthBook, DepthBookListener, DepthStatusListener, DepthStream } from "@trbot/market/depth.ts"
 import type { EquityQuoteListener, EquityQuoteStream } from "@trbot/market/equity-quote-stream.ts"
+import {
+  DEFAULT_FINANCIAL_METRICS,
+  FINANCIAL_METRICS,
+  type RecentFinancial,
+  type RecentFinancialRequest,
+} from "@trbot/market/financials.ts"
 import { ViopInstrumentSchema, type ViopInstrument } from "@trbot/market/instrument.ts"
 import { memberFeatureSet } from "@trbot/member/features.ts"
 import { marketDataTools, type MarketDataSources, type MarketDataToolClients } from "./market-data.ts"
@@ -38,6 +44,40 @@ const THYAO: ViopInstrument = {
   underlyingSymbol: "THYAO",
   lastPrice: 300,
 }
+const FINANCIALS: RecentFinancial[] = [
+  {
+    symbol: "ASELS",
+    publishedAt: "2026-08-18T15:00:00Z",
+    period: "2026/6",
+    metrics: {
+      LAST_PRICE: 400,
+      DAILY_CHANGE_PERCENT: 1.5,
+      MARKET_CAP: 500_000_000_000,
+      NET_INCOME: 10_000_000_000,
+      ANNUAL_NET_INCOME_CHANGE_PERCENT: 20,
+      PRICE_TO_EARNINGS: 12,
+      PRICE_TO_BOOK: 3,
+      PEG: 1.2,
+      NET_DEBT: 2_000_000_000,
+    },
+  },
+  {
+    symbol: "THYAO",
+    publishedAt: "2026-08-19T15:00:00Z",
+    period: "2026/6",
+    metrics: {
+      LAST_PRICE: 300,
+      DAILY_CHANGE_PERCENT: -1,
+      MARKET_CAP: 600_000_000_000,
+      NET_INCOME: 20_000_000_000,
+      ANNUAL_NET_INCOME_CHANGE_PERCENT: null,
+      PRICE_TO_EARNINGS: 8,
+      PRICE_TO_BOOK: 1.5,
+      PEG: 0.8,
+      NET_DEBT: 3_000_000_000,
+    },
+  },
+]
 
 class FakeDepthStream implements DepthStream {
   listener: DepthBookListener | null = null
@@ -77,15 +117,20 @@ class UnavailableEquityQuoteStream implements EquityQuoteStream {
   stop(): void { this.stopped += 1 }
 }
 
-function harness(patch: Partial<MarketDataSources> = {}) {
+function harness(
+  patch: Partial<MarketDataSources> = {},
+  candleInstruments?: MarketDataToolClients["candleData"]["instruments"],
+) {
   const depth = new FakeDepthStream(depthBook())
   const equity = new FakeEquityQuoteStream()
   interface MarketCalls {
     brokerage: BrokerageDistributionRequest[]
     settlement: SettlementRequest[]
     candles: Array<{ instrumentUid: string; target: string | undefined }>
+    feedCandles: Array<{ symbol: string; target: string | undefined }>
+    financials: RecentFinancialRequest[]
   }
-  const calls: MarketCalls = { brokerage: [], settlement: [], candles: [] }
+  const calls: MarketCalls = { brokerage: [], settlement: [], candles: [], feedCandles: [], financials: [] }
   const sources: MarketDataSources = {
     instruments: {
       listInstruments: async () => [ASELS, THYAO],
@@ -101,6 +146,26 @@ function harness(patch: Partial<MarketDataSources> = {}) {
         volume: 10_000,
         openInterest: 20_000,
       }),
+    },
+    financials: {
+      listRecentFinancials: async (request = {}) => {
+        calls.financials.push(request)
+        const wanted = request.symbols ? new Set(request.symbols) : null
+        const metrics = request.metrics ?? [...DEFAULT_FINANCIAL_METRICS]
+        return {
+          universe: "VIOP_EQUITIES",
+          eligibleSymbols: ["ASELS", "THYAO"],
+          metrics,
+          financials: FINANCIALS
+            .filter((row) => !wanted || wanted.has(row.symbol))
+            .map((row) => ({
+              ...row,
+              metrics: Object.fromEntries(
+                metrics.flatMap((metric) => metric in row.metrics ? [[metric, row.metrics[metric]]] : []),
+              ),
+            })),
+        }
+      },
     },
     candles: {
       loadCandles: async (uid, range, interval, options) => {
@@ -225,6 +290,36 @@ function harness(patch: Partial<MarketDataSources> = {}) {
   }
   const clients: MarketDataToolClients = {
     sources: () => sources,
+    candleData: {
+      instruments: candleInstruments ?? {
+        resolveCandleInstrument: async (symbol, target) => {
+          const wanted = symbol.trim().toUpperCase()
+          const instrument = [ASELS, THYAO].find((candidate) =>
+            candidate.symbol === wanted
+            || candidate.displayName === wanted
+            || candidate.underlyingSymbol === wanted
+          )
+          if (!instrument) throw new Error(`No active VIOP contract matches ${symbol}`)
+          if (target === "UNDERLYING" && !instrument.underlyingSymbol) {
+            throw new Error(`${instrument.displayName} has no underlying cash/spot candle instrument; use target INSTRUMENT`)
+          }
+          const candleSymbol = target === "INSTRUMENT" ? instrument.symbol : instrument.underlyingSymbol
+          if (!candleSymbol) throw new Error(`No candle symbol resolved for ${instrument.displayName}`)
+          return {
+            candleSymbol,
+            contractSymbol: instrument.symbol,
+            underlyingSymbol: instrument.underlyingSymbol,
+            displayName: instrument.displayName,
+          }
+        },
+      },
+      candles: {
+        loadCandles: async (symbol, range, interval, options) => {
+          calls.feedCandles.push({ symbol, target: options?.target })
+          return candles(symbol, range, interval)
+        },
+      },
+    },
     stops: { list: async () => [] },
   }
   return { clients, calls, depth, equity }
@@ -234,6 +329,7 @@ test("offers the complete read-only market toolset", () => {
   const names = marketDataTools(harness().clients).map((tool) => tool.definition.name)
   expect(names).toEqual([
     "list_instruments",
+    "list_viop_equity_financials",
     "get_viop_quote",
     "get_contract_details",
     "get_candles",
@@ -259,6 +355,16 @@ test("searches instruments and reads current quote and contract details", async 
   expect(modelData(listed)).toMatchObject({ matched: 1, instruments: [{ uid: ASELS.uid }] })
   expect(modelData(quote)).toMatchObject({ quote: { lastPrice: 401, lastPriceSource: "CONTRACT_QUOTE", bid: 400, ask: 402 } })
   expect(modelData(details)).toMatchObject({ details: { leverage: 8, openInterest: 20_000 } })
+})
+
+test("rejects a guessed out-month instead of substituting the available front month", async () => {
+  const tools = new ChatTools(marketDataTools(harness().clients))
+
+  const result = await call(tools, "get_viop_quote", { symbol: "F_ASELS0926" })
+
+  expect(result.isError).toBe(true)
+  expect(result.blocks[0]?.text).toContain("Only nearest-expiry contracts are available")
+  expect(result.blocks[0]?.text).toContain("underlying symbol")
 })
 
 test("optionally sorts instruments before limiting them and keeps missing values last", async () => {
@@ -302,6 +408,135 @@ test("optionally sorts instruments before limiting them and keeps missing values
   expect(instrumentSymbols(volume)).toEqual(["F_ASELS0826", "F_KCHOL0826", "F_THYAO0826"])
 })
 
+test("lists scoped VİOP equity financials from either a contract or underlying symbol", async () => {
+  const testHarness = harness()
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const contract = await call(tools, "list_viop_equity_financials", {
+    symbols: ["F_THYAO0826"],
+    period: "2026/6",
+  })
+  const ranked = await call(tools, "list_viop_equity_financials", {
+    sortBy: "NET_INCOME",
+    sortDirection: "ASC",
+    limit: 1,
+  })
+
+  expect(modelData(contract)).toMatchObject({
+    universe: "VIOP_EQUITIES",
+    matched: 1,
+    metrics: [...DEFAULT_FINANCIAL_METRICS],
+    financials: [{ symbol: "THYAO", metrics: { MARKET_CAP: 600_000_000_000 } }],
+  })
+  expect(testHarness.calls.financials[0]).toMatchObject({
+    period: "2026/6",
+    symbols: ["THYAO"],
+    metrics: [...DEFAULT_FINANCIAL_METRICS],
+  })
+  expect(modelData(ranked)).toMatchObject({
+    matched: 2,
+    financials: [{ symbol: "ASELS", metrics: { NET_INCOME: 10_000_000_000 } }],
+  })
+  expect(testHarness.calls.financials[1]?.metrics).toEqual([
+    ...DEFAULT_FINANCIAL_METRICS,
+    "NET_INCOME",
+  ])
+})
+
+test("selects exact or complete signed-in financial metric sets", async () => {
+  const testHarness = harness()
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const selected = await call(tools, "list_viop_equity_financials", {
+    metrics: ["PEG", "NET_DEBT"],
+    sortBy: "PEG",
+    sortDirection: "ASC",
+    limit: 1,
+  })
+  await call(tools, "list_viop_equity_financials", {
+    includeAllMetrics: true,
+    limit: 1,
+  })
+  const conflicting = await call(tools, "list_viop_equity_financials", {
+    metrics: ["PEG"],
+    includeAllMetrics: true,
+  })
+
+  expect(modelData(selected)).toMatchObject({
+    metrics: ["PEG", "NET_DEBT"],
+    financials: [{ symbol: "THYAO", metrics: { PEG: 0.8, NET_DEBT: 3_000_000_000 } }],
+  })
+  expect(testHarness.calls.financials[0]?.metrics).toEqual(["PEG", "NET_DEBT"])
+  expect(testHarness.calls.financials[1]?.metrics).toEqual([...FINANCIAL_METRICS])
+  expect(conflicting.isError).toBe(true)
+  expect(conflicting.blocks[0]?.text).toContain("either metrics or includeAllMetrics")
+  expect(testHarness.calls.financials).toHaveLength(2)
+})
+
+test("rejects market-data views the selected contract does not provide before calling the feed", async () => {
+  const testHarness = harness(
+    {
+      instruments: {
+        listInstruments: async () => [{
+          ...ASELS,
+          uid: "gold-future",
+          symbol: "F_XAUTRYM0826",
+          displayName: "XAUTRY",
+          underlyingSymbol: "XAUTRY",
+          marketData: {
+            instrumentCandles: true,
+            underlyingSymbol: null,
+            underlyingKind: null,
+            brokerAnalytics: false,
+          },
+        }],
+      },
+    },
+    {
+      resolveCandleInstrument: async () => {
+        throw new Error("XAUTRY has no underlying cash/spot candle instrument; use target INSTRUMENT")
+      },
+    },
+  )
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const candleResult = await call(tools, "get_candles", {
+    symbol: "XAUTRY",
+    range: "MONTH",
+    interval: "DAY_1",
+    target: "UNDERLYING",
+  })
+  const quoteResult = await call(tools, "get_equity_quote", { symbol: "XAUTRY" })
+  const brokerResult = await call(tools, "get_brokerage_distribution", {
+    symbol: "XAUTRY",
+    side: "BUYER",
+  })
+  const inferredDepth = await call(tools, "get_order_book", { symbol: "XAUTRY" })
+  const underlyingDepth = await call(tools, "get_order_book", {
+    symbol: "F_XAUTRYM0826",
+    target: "UNDERLYING",
+  })
+
+  expect(candleResult.isError).toBe(true)
+  expect(candleResult.blocks[0]?.text).toContain("use target INSTRUMENT")
+  expect(quoteResult.isError).toBe(true)
+  expect(quoteResult.blocks[0]?.text).toContain("no cash-equity underlying")
+  expect(brokerResult.isError).toBe(true)
+  expect(brokerResult.blocks[0]?.text).toContain("no cash-equity underlying")
+  expect(modelData(inferredDepth)).toMatchObject({
+    symbol: "F_XAUTRYM0826",
+    instrumentSymbol: "F_XAUTRYM0826",
+    underlyingSymbol: null,
+    target: "INSTRUMENT",
+  })
+  expect(underlyingDepth.isError).toBe(true)
+  expect(underlyingDepth.blocks[0]?.text).toContain("use target INSTRUMENT")
+  expect(testHarness.calls.candles).toEqual([])
+  expect(testHarness.calls.feedCandles).toEqual([])
+  expect(testHarness.calls.brokerage).toEqual([])
+  expect(testHarness.depth.started).toEqual(["F_XAUTRYM0826"])
+})
+
 test("falls back to the latest contract candle when closed-market quote sources have no price", async () => {
   const instrument = { ...ASELS, lastPrice: null }
   const testHarness = harness({
@@ -342,7 +577,12 @@ test("falls back to the latest contract candle when closed-market quote sources 
 })
 
 test("returns every candle by default and optionally limits the result", async () => {
-  const tools = new ChatTools(marketDataTools(harness().clients))
+  const testHarness = harness({
+    instruments: {
+      listInstruments: async () => { throw new Error("brokerage instruments must not be read for candles") },
+    },
+  })
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
   const request = {
     symbol: "ASELS",
     range: "WEEK",
@@ -356,6 +596,11 @@ test("returns every candle by default and optionally limits the result", async (
   expect(complete.candles.map((candle) => candle.close)).toEqual([400, 401, 402, 403])
   expect(limited.totalCandles).toBe(4)
   expect(limited.candles.map((candle) => candle.close)).toEqual([402, 403])
+  expect(testHarness.calls.feedCandles).toEqual([
+    { symbol: "ASELS", target: "UNDERLYING" },
+    { symbol: "ASELS", target: "UNDERLYING" },
+  ])
+  expect(testHarness.calls.candles).toEqual([])
 })
 
 test("reads BIST index candles without requiring an active VIOP contract", async () => {
@@ -374,9 +619,9 @@ test("reads BIST index candles without requiring an active VIOP contract", async
 
   expect(xu100).toMatchObject({ instrument: null, symbol: "XU100", target: "BIST_100", totalCandles: 4 })
   expect(xu030).toMatchObject({ instrument: null, symbol: "XU030", target: "BIST_30", totalCandles: 4 })
-  expect(testHarness.calls.candles).toEqual([
-    { instrumentUid: "XU100", target: "BIST_100" },
-    { instrumentUid: "XU030", target: "BIST_30" },
+  expect(testHarness.calls.feedCandles).toEqual([
+    { symbol: "XU100", target: "BIST_100" },
+    { symbol: "XU030", target: "BIST_30" },
   ])
 })
 
@@ -421,7 +666,12 @@ test("takes bounded live depth and underlying-equity snapshots and closes both s
   const equity = await call(tools, "get_equity_quote", { symbol: "ASELS" })
 
   expect(modelData(depth)).toMatchObject({ bids: [{ price: 400 }], asks: [{ price: 402 }], trades: [{ id: "trade-1" }] })
-  expect(modelData(depth)).toMatchObject({ symbol: "ASELS", underlyingSymbol: "ASELS" })
+  expect(modelData(depth)).toMatchObject({
+    symbol: "ASELS",
+    instrumentSymbol: ASELS.symbol,
+    underlyingSymbol: "ASELS",
+    target: "UNDERLYING",
+  })
   expect(modelData(equity)).toMatchObject({ symbol: "ASELS", lastPrice: 80, sessionStatus: "OPEN", source: "LIVE_TICK" })
   expect(testHarness.depth.started).toEqual(["ASELS"])
   expect(testHarness.depth.stopped).toBe(1)
@@ -448,15 +698,25 @@ test("falls back to the latest underlying candle when a live equity quote is una
   expect(stream.stopped).toBe(1)
 })
 
-test("rejects a VIOP symbol instead of translating it for the cash-equity order book", async () => {
+test("selects the contract or underlying order book from the symbol and explicit target", async () => {
   const testHarness = harness()
   const tools = new ChatTools(marketDataTools(testHarness.clients))
 
-  const depth = await call(tools, "get_order_book", { symbol: ASELS.symbol })
+  const inferredContract = await call(tools, "get_order_book", { symbol: ASELS.symbol })
+  const selectedUnderlying = await call(tools, "get_order_book", {
+    symbol: ASELS.symbol,
+    target: "UNDERLYING",
+  })
+  const selectedContract = await call(tools, "get_order_book", {
+    symbol: "ASELS",
+    target: "INSTRUMENT",
+  })
 
-  expect(depth.isError).toBe(true)
-  expect(depth.blocks[0]?.text).toContain("underlying equity symbol")
-  expect(testHarness.depth.started).toEqual([])
+  expect(modelData(inferredContract)).toMatchObject({ symbol: ASELS.symbol, target: "INSTRUMENT" })
+  expect(modelData(selectedUnderlying)).toMatchObject({ symbol: "ASELS", target: "UNDERLYING" })
+  expect(modelData(selectedContract)).toMatchObject({ symbol: ASELS.symbol, target: "INSTRUMENT" })
+  expect(testHarness.depth.started).toEqual([ASELS.symbol, "ASELS", ASELS.symbol])
+  expect(testHarness.depth.stopped).toBe(3)
 })
 
 test("reads bounded brokerage and settlement reports for the requested range", async () => {

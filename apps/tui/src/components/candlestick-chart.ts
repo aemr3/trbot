@@ -119,6 +119,9 @@ interface ChartInstrument {
   uid: string
   symbol: string
   displayName: string
+  /** Targets confirmed by the server for this contract. Omit when every target is available. */
+  availableTargets?: CandleChartTarget[]
+  underlyingLabel?: string
 }
 
 export interface ChartViewportSnapshot {
@@ -163,6 +166,8 @@ export class CandlestickChart {
   private range: CandleRange
   private interval: CandleInterval
   private target: CandleChartTarget
+  private preferredTarget: CandleChartTarget
+  private availableTargets: CandleChartTarget[] = [...CANDLE_CHART_TARGETS]
   private scrollOffset = 0
   // Braille dots one candle occupies; wheel zoom shrinks/grows it.
   private zoomDots: number = CANDLE_SPACING_DOTS
@@ -195,6 +200,7 @@ export class CandlestickChart {
   ) {
     this.range = options.initialRange ?? "INTRADAY"
     this.target = options.initialTarget ?? "UNDERLYING"
+    this.preferredTarget = this.target
     this.activeIndicators = [...(options.initialIndicators ?? [])]
     const initialInterval = options.initialInterval ?? DEFAULT_INTERVAL_BY_RANGE[this.range]
     this.interval = CANDLE_INTERVALS.includes(initialInterval)
@@ -417,13 +423,29 @@ export class CandlestickChart {
 
   setInstrument(instrument: ChartInstrument): void {
     if (this.destroyed) return
-    const changed = this.instrument?.uid !== instrument.uid
+    const nextTargets = instrument.availableTargets?.length
+      ? [...new Set(instrument.availableTargets)]
+      : [...CANDLE_CHART_TARGETS]
+    const availabilityChanged = nextTargets.length !== this.availableTargets.length
+      || nextTargets.some((target, index) => target !== this.availableTargets[index])
+    this.availableTargets = nextTargets
+    const underlyingLabel = this.targetButtonLabels.get("UNDERLYING")
+    if (underlyingLabel) underlyingLabel.content = instrument.underlyingLabel ?? CHART_TARGET_LABELS.UNDERLYING
+    const nextTarget = this.availableTargets.includes(this.preferredTarget)
+      ? this.preferredTarget
+      : this.availableTargets.includes("INSTRUMENT")
+        ? "INSTRUMENT"
+        : this.availableTargets[0] ?? "BIST_100"
+    const targetChanged = nextTarget !== this.target
+    this.target = nextTarget
+    const changed = this.instrument?.uid !== instrument.uid || availabilityChanged || targetChanged
     this.instrument = instrument
     if (!changed && this.series) return
     if (changed) {
       this.pendingLivePrice = null
       this.scrollOffset = 0
     }
+    this.paintToolbar()
     this.load()
   }
 
@@ -436,6 +458,10 @@ export class CandlestickChart {
   /** The overlays currently drawn, in the order the toolbar lists them. */
   get indicators(): ChartIndicator[] {
     return [...this.activeIndicators]
+  }
+
+  get activeTarget(): CandleChartTarget {
+    return this.target
   }
 
   /** Read-only viewport geometry used by interaction diagnostics. */
@@ -502,9 +528,9 @@ export class CandlestickChart {
       // Terminals report a shifted letter either way, so both are checked; F
       // walks the assets backwards, which is the shorter way round from Stock.
       const direction = key.shift || key.sequence === "F" ? -1 : 1
-      const current = CANDLE_CHART_TARGETS.indexOf(this.target)
-      const next = (current + direction + CANDLE_CHART_TARGETS.length) % CANDLE_CHART_TARGETS.length
-      const target = CANDLE_CHART_TARGETS[next]
+      const current = this.availableTargets.indexOf(this.target)
+      const next = (current + direction + this.availableTargets.length) % this.availableTargets.length
+      const target = this.availableTargets[next]
       if (target) this.selectTarget(target)
       return true
     }
@@ -573,7 +599,8 @@ export class CandlestickChart {
   }
 
   private selectTarget(target: CandleChartTarget): void {
-    if (this.target === target) return
+    if (this.target === target || !this.availableTargets.includes(target)) return
+    this.preferredTarget = target
     this.target = target
     this.pendingLivePrice = null
     this.scrollOffset = 0
@@ -944,6 +971,7 @@ export class CandlestickChart {
       const button = this.targetButtons.get(target)
       const label = this.targetButtonLabels.get(target)
       if (!button || !label) continue
+      button.visible = this.availableTargets.includes(target)
       button.backgroundColor = selected ? ACTIVE_BUTTON_BG : undefined
       label.fg = selected ? TUI_THEME.textStrong : this.focused ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }

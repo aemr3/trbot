@@ -805,6 +805,60 @@ test("starts with saved chart choices and reports subsequent changes", async () 
   setup.renderer.destroy()
 })
 
+test("falls back to an available chart target without forgetting the trader's preferred target", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 18 })
+  const requested: Array<string | undefined> = []
+  const selected: string[] = []
+  const source: CandleSource = {
+    async loadCandles(instrumentUid, range, interval, options) {
+      requested.push(options?.target)
+      return {
+        instrumentUid,
+        range,
+        interval,
+        availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+        intervalMs: 300_000,
+        currency: "TRY",
+        candles,
+      }
+    },
+  }
+  const chart = new CandlestickChart(setup.renderer, {
+    source,
+    initialTarget: "UNDERLYING",
+    onTargetChange: (target) => selected.push(target),
+  })
+  setup.renderer.root.add(chart.targetToolbar)
+  setup.renderer.root.add(chart.root)
+
+  chart.setInstrument({
+    uid: "gold-future",
+    symbol: "F_XAUTRYM0826",
+    displayName: "XAUTRY",
+    availableTargets: ["INSTRUMENT", "BIST_100", "BIST_30"],
+    underlyingLabel: "Spot",
+  })
+  await setup.waitForFrame(() => requested.length === 1)
+  expect(chart.activeTarget).toBe("INSTRUMENT")
+  expect(requested[0]).toBe("INSTRUMENT")
+  expect(setup.captureCharFrame()).not.toContain("Spot")
+
+  chart.setInstrument({
+    uid: "equity-future",
+    symbol: "F_THYAO0826",
+    displayName: "THYAO",
+    availableTargets: ["UNDERLYING", "INSTRUMENT", "BIST_100", "BIST_30"],
+    underlyingLabel: "Stock",
+  })
+  await setup.waitForFrame(() => requested.length === 2)
+  expect(chart.activeTarget).toBe("UNDERLYING")
+  expect(requested[1]).toBe("UNDERLYING")
+  expect(selected).toEqual([])
+
+  chart.destroy()
+  setup.renderer.destroy()
+})
+
 test("scrolls through raw candle windows and jumps back to the newest candles", async () => {
   const setup = await createTestRenderer({ width: 80, height: 18 })
   const sessionStart = new Date("2026-08-07T06:55:00Z").getTime()

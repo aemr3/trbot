@@ -138,6 +138,7 @@ export class BrokeragePanel {
   private emptyMessage: string | null = null
   private distributionEntitled: boolean | null = null
   private settlementEntitled: boolean | null = null
+  private instrumentSupported: boolean | null = null
   private focused = false
   private scrollOffset = 0
 
@@ -224,6 +225,16 @@ export class BrokeragePanel {
   setSettlementEntitled(entitled: boolean | null): void {
     if (this.settlementEntitled === entitled) return
     this.settlementEntitled = entitled
+    this.render()
+  }
+
+  setInstrumentSupported(supported: boolean): void {
+    if (this.instrumentSupported === supported) return
+    this.instrumentSupported = supported
+    this.table = null
+    this.message = null
+    this.emptyMessage = null
+    this.scrollOffset = 0
     this.render()
   }
 
@@ -359,6 +370,12 @@ export class BrokeragePanel {
   }
 
   private messageState(): { text: string; color: string } | null {
+    if (this.instrumentSupported === false) {
+      return {
+        text: "Broker views are available only for futures\nwith a cash-equity underlying.",
+        color: MUTED_COLOR,
+      }
+    }
     const settlement = settlementModeOf(this.view) !== null
     const entitled = settlement ? this.settlementEntitled : this.distributionEntitled
     const subject = settlement ? "settlement analysis" : "broker distribution"

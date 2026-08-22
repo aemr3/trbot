@@ -38,6 +38,7 @@ import type { BrokerageDistributionSource, BrokerageSide } from "@trbot/market/b
 import {
   averageTrueRange,
   closedCandles,
+  type CandleChartTarget,
   type CandleInterval,
   type CandleSource,
 } from "@trbot/market/candle.ts"
@@ -45,6 +46,7 @@ import type { DepthStream } from "@trbot/market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "@trbot/market/equity-quote-stream.ts"
 import {
   contractOrderCost,
+  type InstrumentMarketKind,
   type ViopContractDetails,
   type ViopInstrument,
   type ViopInstrumentSource,
@@ -110,9 +112,9 @@ const COMPACT_SIDEBAR_WIDTH = 30
 const RIGHT_PANEL_BASE_WIDTH = 46
 const CHART_WIDTH_TRANSFER_RATIO = 0.1
 // What the instrument list spends on chrome rather than on a row: the sidebar's
-// own padding, the list's selection indicator, its scrollbar gutter, and two
-// columns of breathing room so the change column does not sit on the edge.
-const SIDEBAR_LIST_CHROME = 8
+// own padding, the list's selection indicator, its scrollbar gutter, and one
+// column of breathing room so the change column does not sit on the edge.
+const SIDEBAR_LIST_CHROME = 7
 const BROKERAGE_POLL_INTERVAL_MS = 60_000
 const DEPTH_PANEL_BASIS = 19
 const BROKERAGE_PANEL_BASIS = 9
@@ -438,7 +440,9 @@ export class TradeScreen {
   private connected = false
   private hasConnected = false
   private equityConnected = false
-  private selectedEquitySymbol: string | null = null
+  private selectedUnderlyingSymbol: string | null = null
+  private selectedUnderlyingKind: InstrumentMarketKind | null = null
+  private brokerAnalyticsAvailable = false
   private preferences: AppPreferences
   private instrumentSort: InstrumentSort
   private sortDirection: SortDirection
@@ -1166,6 +1170,7 @@ export class TradeScreen {
   // Reads whichever broker view the panel is showing. Only one is on screen at
   // a time, so a new read cancels the one in flight whichever feed it came from.
   private loadBrokerView(background = false): void {
+    if (!this.brokerAnalyticsAvailable) return
     const view = this.brokeragePanel.activeView
     const side = brokerageSideOf(view)
     if (side) void this.loadBrokerage(side, background)
@@ -1180,7 +1185,7 @@ export class TradeScreen {
   private async loadBrokerage(side: BrokerageSide, background: boolean): Promise<void> {
     const source = this.options.brokerage
     const instrument = this.instruments[this.instrumentList.selectedIndex]
-    if (!source || !instrument || !this.brokerageEntitled || this.destroyed) return
+    if (!source || !instrument || !this.brokerageEntitled || !this.brokerAnalyticsAvailable || this.destroyed) return
     const request = this.startBrokerRequest()
     try {
       const distribution = await source.loadDistribution({
@@ -1208,7 +1213,7 @@ export class TradeScreen {
   private async loadSettlement(mode: SettlementMode, background: boolean): Promise<void> {
     const source = this.options.settlement
     const instrument = this.instruments[this.instrumentList.selectedIndex]
-    if (!source || !instrument || !this.settlementEntitled || this.destroyed) return
+    if (!source || !instrument || !this.settlementEntitled || !this.brokerAnalyticsAvailable || this.destroyed) return
     const request = this.startBrokerRequest()
     try {
       const analysis = await source.loadSettlement({
@@ -1240,6 +1245,10 @@ export class TradeScreen {
 
   private openBrokerageDateModal(): void {
     if (this.destroyed || this.brokerageDateModal) return
+    if (!this.brokerAnalyticsAvailable) {
+      this.showHintStatus("Broker analytics are available only for cash-equity underlyings.", TUI_THEME.textMuted, 3_000)
+      return
+    }
     if (this.brokerageDates.length === 0 && this.brokeragePresets.length === 0) {
       this.showHintStatus("The broker calendar has not loaded yet.", TUI_THEME.warning, 3_000)
       return
@@ -1332,7 +1341,7 @@ export class TradeScreen {
 
     if (update.lastPrice !== null) instrument.lastPrice = update.lastPrice
     if (
-      this.preferences.chartTarget === "INSTRUMENT"
+      this.chart.activeTarget === "INSTRUMENT"
       && this.instruments[this.instrumentList.selectedIndex]?.uid === instrument.uid
       && update.lastPrice !== null
     ) {
@@ -1422,9 +1431,9 @@ export class TradeScreen {
   }
 
   private activeEquityQuoteSymbol(): string | null {
-    if (this.preferences.chartTarget === "BIST_100") return "XU100"
-    if (this.preferences.chartTarget === "BIST_30") return "XU030"
-    if (this.preferences.chartTarget === "UNDERLYING") return this.selectedEquitySymbol
+    if (this.chart.activeTarget === "BIST_100") return "XU100"
+    if (this.chart.activeTarget === "BIST_30") return "XU030"
+    if (this.chart.activeTarget === "UNDERLYING") return this.selectedUnderlyingSymbol
     return null
   }
 
@@ -1464,16 +1473,27 @@ export class TradeScreen {
     this.contractDetails = null
     this.refreshContractCost()
     void this.loadContractDetails(instrument)
-    this.chart.setInstrument(instrument)
-    this.selectedEquitySymbol = instrument.underlyingSymbol
+    const availability = instrument.marketData
+    this.selectedUnderlyingSymbol = availability ? availability.underlyingSymbol : instrument.underlyingSymbol
+    this.selectedUnderlyingKind = availability?.underlyingKind ?? (this.selectedUnderlyingSymbol ? "equity" : null)
+    this.brokerAnalyticsAvailable = availability?.brokerAnalytics ?? this.selectedUnderlyingSymbol !== null
+    this.chart.setInstrument({
+      ...instrument,
+      availableTargets: chartTargets(instrument),
+      underlyingLabel: chartUnderlyingLabel(this.selectedUnderlyingKind),
+    })
     this.refreshMarketClock(true)
     this.syncChartQuoteSubscription()
     this.depthPanel.selectInstrument({
       displayName: instrument.displayName,
       symbol: instrument.symbol,
-      underlyingSymbol: instrument.underlyingSymbol,
+      underlyingSymbol: this.selectedUnderlyingSymbol,
+      underlyingLabel: chartUnderlyingLabel(this.selectedUnderlyingKind),
     })
     this.syncDepthSubscription()
+    this.brokerageRequest?.abort()
+    this.brokerageRequest = null
+    this.brokeragePanel.setInstrumentSupported(this.brokerAnalyticsAvailable)
     this.brokeragePanel.reset()
     this.loadBrokerView()
     this.renderChartHeader()
@@ -2344,7 +2364,7 @@ export class TradeScreen {
     this.connected = connected
     if (connected) this.hasConnected = true
     this.renderViopHeader()
-    if (this.preferences.chartTarget === "INSTRUMENT") this.renderChartHeader()
+    if (this.chart.activeTarget === "INSTRUMENT") this.renderChartHeader()
     if (recovered) this.refreshAfterReconnect()
   }
 
@@ -2408,24 +2428,26 @@ export class TradeScreen {
 
   private renderChartHeader(): void {
     const titleColor = this.focus === "chart" ? FOCUSED_HEADER : UNFOCUSED_HEADER
-    if (this.preferences.chartTarget === "BIST_100" || this.preferences.chartTarget === "BIST_30") {
-      const index = this.preferences.chartTarget === "BIST_100" ? "XU100" : "XU030"
+    if (this.chart.activeTarget === "BIST_100" || this.chart.activeTarget === "BIST_30") {
+      const index = this.chart.activeTarget === "BIST_100" ? "XU100" : "XU030"
       const live = this.equityConnected
       const statusColor = live ? UP_COLOR : NEUTRAL_COLOR
       const status = live ? "● live" : "○ snapshot"
       this.chartHeader.content = t`${fg(titleColor)("Chart")}  ${fg(HEADER_COLOR)(`${index} index`)}  ${fg(statusColor)(status)}`
       return
     }
-    if (!this.selectedEquitySymbol) {
+    const instrument = this.instruments[this.instrumentList.selectedIndex]
+    const futures = this.chart.activeTarget === "INSTRUMENT"
+    const symbol = futures ? instrument?.displayName ?? null : this.selectedUnderlyingSymbol
+    if (!symbol) {
       this.chartHeader.content = t`${fg(titleColor)("Chart")}`
       return
     }
-    const futures = this.preferences.chartTarget === "INSTRUMENT"
     const live = futures ? this.connected : this.equityConnected
     const statusColor = live ? UP_COLOR : NEUTRAL_COLOR
     const status = live ? "● live" : "○ snapshot"
-    const asset = futures ? "futures" : "stock"
-    this.chartHeader.content = t`${fg(titleColor)("Chart")}  ${fg(HEADER_COLOR)(`${this.selectedEquitySymbol} ${asset}`)}  ${fg(statusColor)(status)}`
+    const asset = futures ? "futures" : chartUnderlyingAsset(this.selectedUnderlyingKind)
+    this.chartHeader.content = t`${fg(titleColor)("Chart")}  ${fg(HEADER_COLOR)(`${symbol} ${asset}`)}  ${fg(statusColor)(status)}`
   }
 
   // Three widths: wide terminals carry every column at once; medium ones drop
@@ -2509,6 +2531,28 @@ export class TradeScreen {
   }
 }
 
+function chartTargets(instrument: ViopInstrument): CandleChartTarget[] {
+  const availability = instrument.marketData
+  if (!availability) return ["UNDERLYING", "INSTRUMENT", "BIST_100", "BIST_30"]
+  return [
+    ...(availability.underlyingSymbol ? ["UNDERLYING" as const] : []),
+    ...(availability.instrumentCandles ? ["INSTRUMENT" as const] : []),
+    "BIST_100",
+    "BIST_30",
+  ]
+}
+
+function chartUnderlyingLabel(kind: InstrumentMarketKind | null): string {
+  if (kind === "equity") return "Stock"
+  if (kind === "index") return "Index"
+  if (kind === "currency" || kind === "commodity") return "Spot"
+  return "Underlying"
+}
+
+function chartUnderlyingAsset(kind: InstrumentMarketKind | null): string {
+  return chartUnderlyingLabel(kind).toLowerCase()
+}
+
 function newsRowContent(article: NewsArticle) {
   if (!article.tag) return t`${fg(NEWS_HEADLINE_COLOR)(article.headline)}`
   return t`${fg(NEWS_TIME_COLOR)(article.tag)}\n${fg(NEWS_HEADLINE_COLOR)(article.headline)}`
@@ -2551,7 +2595,7 @@ function changeColor(changePercent: number | null): string {
 // hard against the right edge, and the price right-aligned in what is left. The
 // two numbers therefore stay in one column each however wide the sidebar is set.
 const INSTRUMENT_ROW_WIDTH = SIDEBAR_WIDTH - SIDEBAR_LIST_CHROME
-const INSTRUMENT_NAME_WIDTH = 12
+const INSTRUMENT_NAME_WIDTH = 13
 const INSTRUMENT_CHANGE_WIDTH = 7
 const INSTRUMENT_PRICE_WIDTH =
   INSTRUMENT_ROW_WIDTH - INSTRUMENT_NAME_WIDTH - INSTRUMENT_CHANGE_WIDTH - 4

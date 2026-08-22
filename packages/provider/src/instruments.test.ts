@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { ApiHttpError } from "@trbot/api"
 import {
   marketOperations,
   type FutureDetailVariables,
@@ -22,12 +23,16 @@ function instrument(
   change: string,
   redemptionDate?: string,
   volume = "1.234.567",
+  underlyingType?: string,
 ) {
   return {
     uid,
     symbol,
     values: [
       { key: "underlyingInstrumentSymbol", value: underlying, situation: "NEUTRAL" },
+      ...(underlyingType
+        ? [{ key: "underlyingInstrumentType", value: underlyingType, situation: "NEUTRAL" }]
+        : []),
       { key: "price", value: price, situation: "NEUTRAL" },
       { key: "percentageChangeDay", value: change, situation: "NEUTRAL" },
       { key: "derivativeVolume", value: volume, situation: "NEUTRAL" },
@@ -108,6 +113,81 @@ test("aggregates all pages, dedupes by uid, and parses Turkish-formatted values"
   expect(usdtry?.changePercent).toBe(-0.12)
 })
 
+test("shares one in-flight screener load and reuses its cached instrument universe", async () => {
+  let calls = 0
+  let release!: () => void
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  const client = providerApiClient(async () => {
+    calls += 1
+    await pending
+    return {
+      screenerRetrieveResultV2: {
+        pitId: "pit-1",
+        searchAfter: null,
+        totalSize: 1,
+        sortBy: "stats.volume",
+        sortDirection: "DESC",
+        instruments: [instrument("u1", "F_XU0300826", "XU030", "₺100,00", "%1,00")],
+      },
+    }
+  })
+  const source = new ApiViopInstrumentSource(client)
+
+  const first = source.listInstruments()
+  const second = source.listInstruments()
+  await Bun.sleep(1)
+  expect(calls).toBe(1)
+  release()
+
+  expect(await Promise.all([first, second])).toEqual([
+    expect.arrayContaining([expect.objectContaining({ symbol: "F_XU0300826" })]),
+    expect.arrayContaining([expect.objectContaining({ symbol: "F_XU0300826" })]),
+  ])
+  expect(await source.listInstruments()).toHaveLength(1)
+  expect(calls).toBe(1)
+})
+
+test("serves the last instrument snapshot during a brokerage rate-limit cooldown", async () => {
+  let now = 1_000
+  let calls = 0
+  const client = providerApiClient(() => {
+    calls += 1
+    if (calls > 1) throw new ApiHttpError(429, "limited", 0, "ScreenerRetrieveResultV2")
+    return {
+      screenerRetrieveResultV2: {
+        pitId: "pit-1",
+        searchAfter: null,
+        totalSize: 1,
+        sortBy: "stats.volume",
+        sortDirection: "DESC",
+        instruments: [instrument("u1", "F_XU0300826", "XU030", "₺100,00", "%1,00")],
+      },
+    }
+  })
+  const source = new ApiViopInstrumentSource(client, { cacheTtlMs: 100, now: () => now })
+
+  const fresh = await source.listInstruments()
+  now += 101
+  expect(await source.listInstruments()).toEqual(fresh)
+  expect(await source.listInstruments()).toEqual(fresh)
+  expect(calls).toBe(2)
+})
+
+test("does not repeat a cold instrument request during a brokerage rate-limit cooldown", async () => {
+  let now = 1_000
+  let calls = 0
+  const client = providerApiClient(() => {
+    calls += 1
+    throw new ApiHttpError(429, "limited", 0, "ScreenerRetrieveResultV2")
+  })
+  const source = new ApiViopInstrumentSource(client, { now: () => now })
+
+  await expect(source.listInstruments()).rejects.toThrow("Retry in 0s")
+  now += 1_000
+  await expect(source.listInstruments()).rejects.toThrow("Retry in 29s")
+  expect(calls).toBe(1)
+})
+
 test("keeps only the nearest-expiry contract per underlying", async () => {
   const pages: ScreenerResult[] = [
     {
@@ -130,6 +210,32 @@ test("keeps only the nearest-expiry contract per underlying", async () => {
   const instruments = await source.listInstruments()
 
   expect(instruments.map((i) => i.symbol)).toEqual(["F_USDTRY0826", "F_XU0300826"])
+})
+
+test("keeps the front month for every VIOP underlying type", async () => {
+  const pages: ScreenerResult[] = [
+    {
+      pitId: "pit-1",
+      searchAfter: null,
+      totalSize: 3,
+      sortBy: "stats.volume",
+      sortDirection: "DESC",
+      instruments: [
+        instrument("u-equity", "F_THYAO0826", "THYAO", "₺300,00", "%1,00", "31/08/26", "1.000", "Hisse"),
+        instrument("u-index", "F_XU0300826", "XU030", "₺16.000,00", "%0,50", "31/08/26", "2.000", "Endeks"),
+        instrument("u-fx", "F_USDTRY0826", "USDTRY", "₺41,00", "%0,10", "31/08/26", "3.000", "PARITY"),
+      ],
+    },
+  ]
+
+  const { client } = fakeClient(pages)
+  const instruments = await new ApiViopInstrumentSource(client).listInstruments()
+
+  expect(instruments.map((entry) => entry.symbol)).toEqual([
+    "F_THYAO0826",
+    "F_XU0300826",
+    "F_USDTRY0826",
+  ])
 })
 
 test("stops paginating when totalSize is reached", async () => {

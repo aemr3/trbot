@@ -331,3 +331,17 @@ test("reports a locked panel while the entitlement is unknown", async () => {
 
   harness.renderer.destroy()
 })
+
+test("explains when the contract has no cash-equity broker analytics", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+  panel.showDistribution(distribution("BUYER"))
+
+  panel.setInstrumentSupported(false)
+  await renderOnce()
+  const frame = captureCharFrame()
+
+  expect(frame).toContain("cash-equity underlying")
+  expect(frame).not.toContain("House 1")
+
+  renderer.destroy()
+})

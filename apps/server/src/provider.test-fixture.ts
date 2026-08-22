@@ -13,6 +13,7 @@ const noOp = (): void => {}
 export function providerSources(overrides: Partial<ProviderSources> = {}): ProviderSources {
   return {
     instruments: { listInstruments: unavailable, loadContractDetails: unavailable },
+    financials: { listRecentFinancials: unavailable },
     candles: { loadCandles: unavailable },
     news: { listNews: unavailable, getArticle: unavailable },
     account: { loadAccount: unavailable },

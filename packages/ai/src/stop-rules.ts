@@ -27,7 +27,7 @@ import { reversibleToolEffect, toolText, type ChatTool, type ChatToolOutcome } f
 const ATR_PERIOD = 14
 
 const SymbolParameter = Type.String({
-  description: "Open VIOP position, given by its contract or underlying symbol, such as F_ASELS0826 or ASELS",
+  description: "Open nearest-expiry VIOP position, given by its exact listed contract or underlying symbol; never construct an expiry code",
   minLength: 1,
   maxLength: 80,
 })

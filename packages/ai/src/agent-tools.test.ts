@@ -125,6 +125,14 @@ test("adds every read-only market tool when the server provides its clients", ()
     models,
     marketData: {
       sources: () => { throw new Error("not called") },
+      candleData: {
+        instruments: {
+          resolveCandleInstrument: async () => { throw new Error("not called") },
+        },
+        candles: {
+          loadCandles: async () => { throw new Error("not called") },
+        },
+      },
       stops: { list: async () => [] },
     },
   })
@@ -133,6 +141,7 @@ test("adds every read-only market tool when the server provides its clients", ()
     "web_search",
     "fetch_content",
     "list_instruments",
+    "list_viop_equity_financials",
     "get_viop_quote",
     "get_contract_details",
     "get_candles",

@@ -8,6 +8,30 @@ export type CandleRange = (typeof CANDLE_RANGES)[number]
 export const CANDLE_CHART_TARGETS = ["UNDERLYING", "INSTRUMENT", "BIST_100", "BIST_30"] as const
 export type CandleChartTarget = (typeof CANDLE_CHART_TARGETS)[number]
 
+export type CandleInstrumentTarget = Extract<CandleChartTarget, "UNDERLYING" | "INSTRUMENT">
+
+/**
+ * A VIOP contract resolved entirely inside the market-data feed.
+ *
+ * `candleSymbol` is the exact ticker the candle endpoint accepts. It differs
+ * from `contractSymbol` when the requested chart is for the cash/spot
+ * underlying.
+ */
+export interface ResolvedCandleInstrument {
+  candleSymbol: string
+  contractSymbol: string
+  underlyingSymbol: string | null
+  displayName: string
+}
+
+export interface CandleInstrumentResolver {
+  resolveCandleInstrument(
+    symbol: string,
+    target: CandleInstrumentTarget,
+    options?: { signal?: AbortSignal },
+  ): Promise<ResolvedCandleInstrument>
+}
+
 export function isCandleChartTarget(value: string): value is CandleChartTarget {
   return CANDLE_CHART_TARGETS.some((target) => target === value)
 }

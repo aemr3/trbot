@@ -1,5 +1,25 @@
 import { z } from "zod"
 
+export const INSTRUMENT_MARKET_KINDS = ["equity", "index", "currency", "commodity", "other"] as const
+export type InstrumentMarketKind = (typeof INSTRUMENT_MARKET_KINDS)[number]
+
+export interface InstrumentMarketDataAvailability {
+  /** The feed carries candles for the VİOP contract itself. */
+  instrumentCandles: boolean
+  /** The exact cash, spot, or index symbol the feed carries, when one exists. */
+  underlyingSymbol: string | null
+  underlyingKind: InstrumentMarketKind | null
+  /** Broker distribution and settlement registers are published only for cash equities. */
+  brokerAnalytics: boolean
+}
+
+export const InstrumentMarketDataAvailabilitySchema: z.ZodType<InstrumentMarketDataAvailability> = z.object({
+  instrumentCandles: z.boolean(),
+  underlyingSymbol: z.string().min(1).nullable(),
+  underlyingKind: z.enum(INSTRUMENT_MARKET_KINDS).nullable(),
+  brokerAnalytics: z.boolean(),
+})
+
 export interface ViopInstrument {
   uid: string
   symbol: string
@@ -9,6 +29,8 @@ export interface ViopInstrument {
   changePercent: number | null
   volume: number | null
   currency: string
+  /** Present after the server has compared the contract with the market-data feed's universes. */
+  marketData?: InstrumentMarketDataAvailability
 }
 
 export const ViopInstrumentSchema: z.ZodType<ViopInstrument> = z.object({
@@ -20,6 +42,7 @@ export const ViopInstrumentSchema: z.ZodType<ViopInstrument> = z.object({
   changePercent: z.number().nullable(),
   volume: z.number().nullable(),
   currency: z.string(),
+  marketData: InstrumentMarketDataAvailabilitySchema.optional(),
 })
 
 export interface ViopContractDetails {
@@ -61,7 +84,11 @@ export function resolveViopInstrument(instruments: ViopInstrument[], rawSymbol: 
     instrument.displayName,
     instrument.underlyingSymbol,
   ].some((name) => name?.toUpperCase() === wanted))
-  if (matches.length === 0) throw new Error(`No active VIOP contract found for ${rawSymbol}`)
+  if (matches.length === 0) {
+    throw new Error(
+      `No active VIOP contract found for ${rawSymbol}. Only nearest-expiry contracts are available; use an exact listed contract or its underlying symbol instead of constructing an expiry code.`,
+    )
+  }
   if (matches.length > 1) {
     throw new Error(`More than one contract matched ${rawSymbol}: ${matches.map((item) => item.symbol).join(", ")}`)
   }
