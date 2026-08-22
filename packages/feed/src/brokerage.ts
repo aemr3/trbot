@@ -131,6 +131,8 @@ export class FeedBrokerageDistributionSource implements BrokerageDistributionSou
         // price the feed actually withheld.
         averagePrice: row.net.cost ?? 0,
         percentage: row.net.percentage * 100,
+        grossLots: row.total.size,
+        volumeShare: row.total.percentage * 100,
       }))
       .sort((left, right) => right.netLots - left.netLots)
 

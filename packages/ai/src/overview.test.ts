@@ -8,7 +8,14 @@ const DIGEST = buildOverviewDigest({
   instrument: { symbol: "ASELS", displayName: null, lastPrice: 390, contractSymbol: "F_ASELS0826", contractLastPrice: 394 },
   buyerFlow: {
     side: "BUYER",
-    shares: [{ brokerage: "Alpha", netLots: 500, averagePrice: 388, percentage: 25 }],
+    shares: [{
+      brokerage: "Alpha",
+      netLots: 500,
+      averagePrice: 388,
+      percentage: 25,
+      grossLots: 1_500,
+      volumeShare: 8,
+    }],
     topCount: 1,
     topPercentage: 25,
     topLots: 500,

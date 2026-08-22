@@ -1760,6 +1760,8 @@ class FakeBrokerageSource implements BrokerageDistributionSource {
         netLots: 900_000 - index * 100_000,
         averagePrice: 386 + index,
         percentage: 30 - index * 2,
+        grossLots: 3_000_000 - index * 200_000,
+        volumeShare: 10 - index,
       })),
       topCount: 5,
       topPercentage: 88.5,

@@ -15,7 +15,7 @@ const INSTRUMENT = {
 }
 
 function share(brokerage: string, netLots: number, averagePrice: number, percentage = 10): BrokerageShare {
-  return { brokerage, netLots, averagePrice, percentage }
+  return { brokerage, netLots, averagePrice, percentage, grossLots: netLots * 3, volumeShare: percentage / 2 }
 }
 
 function distribution(side: BrokerageDistribution["side"], shares: BrokerageShare[]): BrokerageDistribution {

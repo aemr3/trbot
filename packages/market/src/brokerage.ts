@@ -17,6 +17,17 @@ export interface BrokerageShare {
   // Volume-weighted average price this house traded at over the range.
   averagePrice: number
   percentage: number
+  /**
+   * Everything the house traded over the range, both directions counted.
+   *
+   * A net position means something different against a gross of the same size
+   * than against one ten times larger: the first is one-way accumulation, the
+   * second is two-way flow that happened to end slightly long. A house can also
+   * be the busiest in a name and appear on neither side, having finished flat.
+   */
+  grossLots: number
+  /** The house's share of everything traded in the name over the range. */
+  volumeShare: number
 }
 
 export interface BrokerageDistribution {
@@ -41,6 +52,8 @@ const BrokerageShareSchema = z.object({
   netLots: z.number(),
   averagePrice: z.number(),
   percentage: z.number(),
+  grossLots: z.number(),
+  volumeShare: z.number(),
 })
 
 export const BrokerageDistributionSchema: z.ZodType<BrokerageDistribution> = z.object({

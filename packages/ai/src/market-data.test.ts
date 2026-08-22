@@ -160,6 +160,8 @@ function harness(patch: Partial<MarketDataSources> = {}) {
             netLots: 100 - index,
             averagePrice: 400,
             percentage: 25,
+            grossLots: 500 - index,
+            volumeShare: 5,
           })),
           topCount: 3,
           topPercentage: 75,
@@ -474,7 +476,15 @@ test("reads bounded brokerage and settlement reports for the requested range", a
     limit: 1,
   })
 
-  expect(modelData(brokerage)).toMatchObject({ totalShares: 4, shares: [{ brokerage: "Broker 1" }, { brokerage: "Broker 2" }] })
+  // Gross activity and volume share ride along with the net, so the model can
+  // tell one-way accumulation from a house that traded both ways all day.
+  expect(modelData(brokerage)).toMatchObject({
+    totalShares: 4,
+    shares: [
+      { brokerage: "Broker 1", netLots: 100, grossLots: 500, volumeShare: 5 },
+      { brokerage: "Broker 2" },
+    ],
+  })
   expect(modelData(settlement)).toMatchObject({ totalHoldings: 4, holdings: [{ brokerage: "Broker 1" }] })
   expect(testHarness.calls.brokerage[0]).toMatchObject({ range: { start: "2026-08-18", end: "2026-08-19" } })
   expect(testHarness.calls.settlement[0]).toMatchObject({ range: { start: "2026-08-18", end: null } })

@@ -19,6 +19,8 @@ function distribution(side: BrokerageSide, count = 12): BrokerageDistribution {
       netLots: 1_000_000 - index * 50_000,
       averagePrice: 386.41 + index,
       percentage: 40 - index * 3,
+      grossLots: 4_000_000 - index * 100_000,
+      volumeShare: 12 - index,
     })),
     topCount: 5,
     topPercentage: 93.1,

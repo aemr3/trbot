@@ -181,6 +181,18 @@ describe("FeedBrokerageDistributionSource", () => {
     expect(sellers.shares.map((share) => share.netLots)).toEqual([600, 400])
   })
 
+  /**
+   * The net alone cannot say whether a house was accumulating: the same net can
+   * come from one-way buying or from trading both ways all day. The gross and the
+   * volume share travel with it so a reader can tell those apart.
+   */
+  test("reports what a house traded either way, and its share of the volume", async () => {
+    const { subject } = build()
+    const buyers = await subject.loadDistribution({ ...REQUEST, side: "BUYER" })
+
+    expect(buyers.shares[0]).toMatchObject({ brokerage: "Ziraat", netLots: 600, grossLots: 1_400, volumeShare: 40 })
+  })
+
   test("scales the feed's fractions into percentages", async () => {
     const { subject } = build()
     const buyers = await subject.loadDistribution({ ...REQUEST, side: "BUYER" })
@@ -190,6 +202,8 @@ describe("FeedBrokerageDistributionSource", () => {
       netLots: 600,
       averagePrice: 131.25,
       percentage: 60,
+      grossLots: 1_400,
+      volumeShare: 40,
     })
   })
 

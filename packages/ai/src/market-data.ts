@@ -456,7 +456,16 @@ function brokerageTool(clients: MarketDataToolClients): ChatTool<typeof Brokerag
   return {
     definition: {
       name: "get_brokerage_distribution",
-      description: "Rank brokerage houses accumulating or distributing the underlying equity over a date range.",
+      description: [
+        "Rank brokerage houses accumulating or distributing the underlying equity over a date range.",
+        "netLots is a magnitude on the side asked for — bought on BUYER, sold on SELLER — with the",
+        "averagePrice behind it, grossLots for everything the house traded in either direction, and",
+        "volumeShare for its share of the name's volume.",
+        "Read the net against the gross: a net that is most of a house's gross means it traded one way,",
+        "in the direction of the side asked for, while the same net on a far larger gross means it traded",
+        "both ways and merely finished on this side.",
+        "A house that finished flat appears on neither side however much it traded.",
+      ].join(" "),
       parameters: BrokerageParameters,
     },
     run: async ({ symbol, side, start, end, limit }, options) => {
