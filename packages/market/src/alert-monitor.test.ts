@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { AlertMonitor, alertRangeForInterval, type AlertTriggerEvent } from "./alert-monitor.ts"
+import { AlertMonitor, type AlertTriggerEvent } from "./alert-monitor.ts"
 import { createPriceAlert, type PriceAlert, type PriceAlertDraft, type PriceAlertStore } from "./alert.ts"
 import {
   DEFAULT_INTERVALS_BY_RANGE,
@@ -181,7 +181,7 @@ test("persists a trailing level as it advances", async () => {
 
 test("a close-based alert ignores a wick and fires on the finished candle", async () => {
   const candles = new FakeCandleSource()
-  const { monitor, triggers } = await monitorWith([alert({ basis: "CLOSE", interval: "MIN_10" })], { candles })
+  const { monitor, triggers } = await monitorWith([alert({ basis: "CLOSE", interval: "MIN_5" })], { candles })
 
   // A trade through the level is not a close through it.
   monitor.applyQuote(quote(410))
@@ -195,7 +195,7 @@ test("a close-based alert ignores a wick and fires on the finished candle", asyn
     { timestamp: NOW, open: 405, high: 440, low: 404, close: 439, volume: null },
   ]
   await monitor.refreshCandleAlerts()
-  expect(candles.requests).toEqual([{ instrumentUid: "instrument-1", interval: "MIN_10", range: "INTRADAY" }])
+  expect(candles.requests).toEqual([{ instrumentUid: "instrument-1", interval: "MIN_5", range: "INTRADAY" }])
   expect(triggers).toHaveLength(0)
 
   candles.candles = [
@@ -214,7 +214,7 @@ test("reports a close-based alert against its candles, not against ticks", async
     { timestamp: NOW - 2 * INTERVAL_MS, open: 400, high: 405, low: 399, close: 402, volume: null },
     { timestamp: NOW - INTERVAL_MS, open: 402, high: 410, low: 401, close: 408, volume: null },
   ]
-  const { monitor } = await monitorWith([alert({ basis: "CLOSE", interval: "MIN_10" })], { candles })
+  const { monitor } = await monitorWith([alert({ basis: "CLOSE", interval: "MIN_5" })], { candles })
 
   // A contract that never prints a tick is not a broken alert: this one reads
   // candles, and saying "no feed" would send the trader chasing a phantom.
@@ -234,7 +234,7 @@ test("tells the panel to repaint when what a row shows has moved", async () => {
   ]
   const store = new FakePriceAlertStore([
     alert({ id: "touch" }),
-    alert({ id: "close", basis: "CLOSE", interval: "MIN_10" }),
+    alert({ id: "close", basis: "CLOSE", interval: "MIN_5" }),
   ])
   let repaints = 0
   const monitor = new AlertMonitor({
@@ -339,12 +339,4 @@ test("stops evaluating once destroyed", async () => {
   monitor.destroy()
   monitor.applyQuote(quote(430))
   expect(triggers).toHaveLength(0)
-})
-
-test("asks for the range that serves each futures grain", () => {
-  expect(alertRangeForInterval("MIN_10")).toBe("INTRADAY")
-  expect(alertRangeForInterval("HOUR_1")).toBe("WEEK")
-  // A grain the feed never serves falls back to the session rather than
-  // silently asking for a year of candles.
-  expect(alertRangeForInterval("MIN_5")).toBe("INTRADAY")
 })

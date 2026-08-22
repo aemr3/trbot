@@ -22,8 +22,9 @@ export interface SettlementHolding {
   // standing position.
   percentageChange: number | null
   lotChange: number | null
-  // The standing position at the end of the range; the provider reports it on
-  // HELD readings only.
+  // The standing position at the end of the range. Present on every reading a
+  // source can supply it for: on HELD it is the whole subject, and on a move it
+  // says what the house was left holding after moving.
   totalLot: number | null
 }
 

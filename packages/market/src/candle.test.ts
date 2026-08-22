@@ -1,9 +1,12 @@
-import { expect, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import {
+  CANDLE_INTERVALS,
+  CANDLE_RANGES,
   DEFAULT_INTERVALS_BY_RANGE,
   applyLivePrice,
   averageTrueRange,
   closedCandles,
+  rangeForInterval,
   type Candle,
   type CandleSeries,
 } from "./candle.ts"
@@ -88,4 +91,92 @@ test("reports no ATR when the series is too short", () => {
   expect(averageTrueRange(short, 14)).toBeNull()
   expect(averageTrueRange(short, 9)).toBeCloseTo(2, 6)
   expect(averageTrueRange(short, 0)).toBeNull()
+})
+
+describe("rangeForInterval", () => {
+  /**
+   * A range no longer selects the grain — the two are independent — so this only
+   * has to be wide enough that an indicator window is satisfied. Too narrow and
+   * an ATR silently reports nothing for want of bars.
+   */
+  test("widens with the grain", () => {
+    expect(rangeForInterval("MIN_1")).toBe("INTRADAY")
+    expect(rangeForInterval("MIN_15")).toBe("WEEK")
+    expect(rangeForInterval("HOUR_1")).toBe("MONTH")
+    expect(rangeForInterval("DAY_1")).toBe("YEAR")
+    expect(rangeForInterval("MONTH_1")).toBe("ALL")
+  })
+
+  test("covers every grain", () => {
+    for (const interval of CANDLE_INTERVALS) {
+      expect(CANDLE_RANGES).toContain(rangeForInterval(interval))
+    }
+  })
+})
+
+/** A monthly series: July stamped at its first session, August at its own. */
+function monthlySeries(): CandleSeries {
+  return {
+    instrumentUid: "stock-1",
+    range: "ALL",
+    interval: "MONTH_1",
+    availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+    // The nominal width, which is what a chart spaces its axis by. It is not what
+    // decides whether a bar has closed.
+    intervalMs: 30 * 24 * 60 * 60_000,
+    calendarPeriod: "month",
+    currency: "TRY",
+    candles: [
+      { timestamp: Date.parse("2026-07-01T07:00:00Z"), open: 100, high: 110, low: 95, close: 105, volume: 10 },
+      { timestamp: Date.parse("2026-08-03T07:00:00Z"), open: 105, high: 120, low: 104, close: 118, volume: 20 },
+    ],
+  }
+}
+
+/**
+ * The failure this exists to prevent: a 31-day month treated as closed on the
+ * 31st because 30 days had passed, and a month starting on the 3rd held open into
+ * the next one. Both let a monthly close-based rule fire on the wrong day.
+ */
+test("closes a monthly candle on the calendar, not on a nominal width", () => {
+  const value = monthlySeries()
+
+  // Deep inside August: July is finished, August is not.
+  const midAugust = Date.parse("2026-08-20T10:00:00+03:00")
+  expect(closedCandles(value, midAugust).map((candle) => candle.timestamp))
+    .toEqual([Date.parse("2026-07-01T07:00:00Z")])
+
+  // The 30-day width would have closed July on the 31st, a day early.
+  const lastDayOfJuly = Date.parse("2026-07-31T10:00:00+03:00")
+  expect(closedCandles(value, lastDayOfJuly)).toEqual([])
+
+  // And once September opens, August is closed too — even before a new bar prints.
+  const september = Date.parse("2026-09-01T10:00:00+03:00")
+  expect(closedCandles(value, september)).toHaveLength(2)
+})
+
+test("opens a new candle when a price arrives in a later calendar period", () => {
+  const value = monthlySeries()
+  const september = Date.parse("2026-09-01T10:00:00+03:00")
+
+  expect(applyLivePrice(value, 130, september)).toBeTrue()
+  expect(value.candles).toHaveLength(3)
+  // Stamped where the print landed, which is how a folded calendar bar is stamped.
+  expect(value.candles.at(-1)).toEqual({
+    timestamp: september,
+    open: 130,
+    high: 130,
+    low: 130,
+    close: 130,
+    volume: null,
+  })
+})
+
+test("extends the forming candle while the price stays inside its period", () => {
+  const value = monthlySeries()
+
+  expect(applyLivePrice(value, 130, Date.parse("2026-08-25T10:00:00+03:00"))).toBeTrue()
+  expect(value.candles).toHaveLength(2)
+  expect(value.candles.at(-1)?.close).toBe(130)
+  expect(value.candles.at(-1)?.high).toBe(130)
 })

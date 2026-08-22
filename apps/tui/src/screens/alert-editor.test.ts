@@ -121,7 +121,7 @@ test("asks for a timeframe once the alert needs candles", async () => {
   expect(captureCharFrame()).toContain("Timeframe")
 
   save(editor, 3) // interval → repeat → action
-  expect(saved[0]).toMatchObject({ basis: "CLOSE", interval: "MIN_10" })
+  expect(saved[0]).toMatchObject({ basis: "CLOSE", interval: "MIN_5" })
 
   editor.destroy()
   renderer.destroy()

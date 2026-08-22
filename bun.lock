@@ -23,6 +23,7 @@
         "@trbot/chat": "workspace:*",
         "@trbot/config": "workspace:*",
         "@trbot/db": "workspace:*",
+        "@trbot/feed": "workspace:*",
         "@trbot/market": "workspace:*",
         "@trbot/member": "workspace:*",
         "@trbot/preferences": "workspace:*",
@@ -49,6 +50,7 @@
         "@trbot/preferences": "workspace:*",
         "@trbot/protocol": "workspace:*",
         "@trbot/trading": "workspace:*",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
@@ -66,6 +68,7 @@
         "@trbot/protocol": "workspace:*",
         "@trbot/trading": "workspace:*",
         "linkedom": "^0.18.13",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
@@ -75,6 +78,7 @@
       "name": "@trbot/api",
       "dependencies": {
         "@trbot/auth": "workspace:*",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
@@ -114,6 +118,9 @@
     },
     "packages/config": {
       "name": "@trbot/config",
+      "dependencies": {
+        "zod": "^4.4.3",
+      },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
       },
@@ -134,6 +141,17 @@
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
         "drizzle-kit": "^0.31.10",
+      },
+    },
+    "packages/feed": {
+      "name": "@trbot/feed",
+      "dependencies": {
+        "@trbot/market": "workspace:*",
+        "@trbot/member": "workspace:*",
+        "zod": "^4.4.3",
+      },
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
       },
     },
     "packages/market": {
@@ -184,6 +202,7 @@
         "@trbot/market": "workspace:*",
         "@trbot/member": "workspace:*",
         "@trbot/trading": "workspace:*",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
@@ -459,6 +478,8 @@
     "@trbot/config": ["@trbot/config@workspace:packages/config"],
 
     "@trbot/db": ["@trbot/db@workspace:packages/db"],
+
+    "@trbot/feed": ["@trbot/feed@workspace:packages/feed"],
 
     "@trbot/market": ["@trbot/market@workspace:packages/market"],
 

@@ -239,6 +239,20 @@
       "when": 1787308858054,
       "tag": "0033_drop_persisted_tool_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1787308859054,
+      "tag": "0034_delete_ten_minute_candle_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1787308860054,
+      "tag": "0035_remember_depth_target",
+      "breakpoints": true
     }
   ]
 }

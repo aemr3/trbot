@@ -165,8 +165,6 @@ describe("server frames the terminal will act on", () => {
           sellLots: 8,
           trades: [],
           marketClosed: false,
-          maintenance: false,
-          infoMessage: null,
         },
       },
       { type: "depthStatus", status: "live" },

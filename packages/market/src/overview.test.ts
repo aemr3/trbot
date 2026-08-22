@@ -62,8 +62,6 @@ function depthBook(overrides: Partial<DepthBook> = {}): DepthBook {
     sellLots: 1000,
     trades: [],
     marketClosed: false,
-    maintenance: false,
-    infoMessage: null,
     ...overrides,
   }
 }
@@ -189,7 +187,7 @@ test("carries both price-history timeframes in exchange-local time", () => {
       close: 100.5 + index,
       volume: 10 * index,
     })),
-    availableIntervalsByRange: { INTRADAY: [], WEEK: [], MONTH: [], THREE_MONTH: [], YEAR: [], FIVE_YEAR: [] },
+    availableIntervalsByRange: { INTRADAY: [], WEEK: [], MONTH: [], THREE_MONTH: [], YEAR: [], FIVE_YEAR: [], ALL: [] },
     intervalMs: 60_000,
     currency: "TRY",
   })

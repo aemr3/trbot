@@ -609,9 +609,12 @@ export class TradeScreen {
       this.moveFocus(key.shift || key.name === "backtab" ? -1 : 1)
       return
     }
-    // The depth panel is read-only; it swallows keys rather than letting them
-    // reach the instrument list behind it.
-    if (this.focus === "depth") return
+    // The depth panel owns the key that switches which book it shows, and
+    // swallows the rest rather than letting them reach the list behind it.
+    if (this.focus === "depth") {
+      this.depthPanel.handleKey(key)
+      return
+    }
     if (this.focus === "brokers") {
       this.brokeragePanel.handleKey(key)
       return
@@ -799,7 +802,20 @@ export class TradeScreen {
     // The order book and the broker distribution share one column: each keeps
     // the rows its fixed content needs and they split the remainder evenly.
     this.depthColumn = new BoxRenderable(renderer, { flexDirection: "column" })
-    this.depthPanel = new DepthPanel(renderer, { onFocusRequest: () => this.setFocus("depth") })
+    this.depthPanel = new DepthPanel(renderer, {
+      initialTarget: this.preferences.depthTarget,
+      onFocusRequest: () => this.setFocus("depth"),
+      onTargetChange: (depthTarget) => {
+        this.savePreferences({ depthTarget })
+        // The book is per symbol, so switching target means resubscribing. The
+        // digest's inputs go with it: what it holds describes the underlying, and
+        // keeping a half-filled tape across the switch would mix the two books'
+        // prints into one set of totals.
+        this.latestDepthBook = null
+        this.tradeFlow.reset()
+        this.syncDepthSubscription()
+      },
+    })
     this.depthPanel.setEntitled(options.memberFeatures ? null : false)
     this.depthPanel.root.flexBasis = DEPTH_PANEL_BASIS
     this.depthPanel.root.flexGrow = 1
@@ -1375,12 +1391,12 @@ export class TradeScreen {
     if (entitled) this.scheduleOverviewGeneration()
   }
 
-  // The depth book belongs to the underlying stock; VIOP contract symbols have
-  // none of their own, so the panel always follows the underlying.
+  // Both books exist: the market data feed serves one for the stock and one for
+  // the contract written on it, so the panel follows whichever the trader picked.
   private syncDepthSubscription(): void {
     const depth = this.options.depth
     if (!depth) return
-    const symbol = this.depthEntitled ? this.selectedEquitySymbol : null
+    const symbol = this.depthEntitled ? this.depthPanel.activeSymbol() : null
     if (symbol) depth.start(symbol)
     else depth.stop()
   }
@@ -1545,6 +1561,7 @@ export class TradeScreen {
     this.syncChartQuoteSubscription()
     this.depthPanel.selectInstrument({
       displayName: instrument.displayName,
+      symbol: instrument.symbol,
       underlyingSymbol: instrument.underlyingSymbol,
     })
     this.syncDepthSubscription()
@@ -2024,6 +2041,15 @@ export class TradeScreen {
     return this.brokerageLive
   }
 
+  /**
+   * Feeds the digest only the underlying equity's book and prints.
+   *
+   * The depth panel can be switched to the contract, and the digest describes its
+   * book, tape, broker flow and custody as figures about the underlying — so a
+   * contract book arriving here would be read as the stock's. The panel keeps
+   * showing whichever the trader asked for; the digest simply has no book while
+   * that is the contract, which it already handles.
+   */
   private ingestOverviewBook(book: DepthBook): void {
     if (book.symbol.toUpperCase() !== this.selectedEquitySymbol?.toUpperCase()) return
     this.latestDepthBook = book

@@ -18,12 +18,10 @@ import {
   CANDLE_RANGES,
   CANDLE_RANGE_LABELS,
   DEFAULT_INTERVAL_BY_RANGE,
-  DEFAULT_INTERVALS_BY_RANGE,
   applyLivePrice,
   type Candle,
   type CandleChartTarget,
   type CandleInterval,
-  type CandleIntervalsByRange,
   type CandleRange,
   type CandleSeries,
   type CandleSource,
@@ -165,7 +163,6 @@ export class CandlestickChart {
   private range: CandleRange
   private interval: CandleInterval
   private target: CandleChartTarget
-  private availableIntervalsByRange: CandleIntervalsByRange = { ...DEFAULT_INTERVALS_BY_RANGE }
   private scrollOffset = 0
   // Braille dots one candle occupies; wheel zoom shrinks/grows it.
   private zoomDots: number = CANDLE_SPACING_DOTS
@@ -200,7 +197,7 @@ export class CandlestickChart {
     this.target = options.initialTarget ?? "UNDERLYING"
     this.activeIndicators = [...(options.initialIndicators ?? [])]
     const initialInterval = options.initialInterval ?? DEFAULT_INTERVAL_BY_RANGE[this.range]
-    this.interval = DEFAULT_INTERVALS_BY_RANGE[this.range].includes(initialInterval)
+    this.interval = CANDLE_INTERVALS.includes(initialInterval)
       ? initialInterval
       : DEFAULT_INTERVAL_BY_RANGE[this.range]
 
@@ -525,12 +522,11 @@ export class CandlestickChart {
       return true
     }
     if (key.name !== "up" && key.name !== "down" && key.name !== "k" && key.name !== "j") return false
-    const availableIntervals = this.availableIntervalsByRange[this.range]
     const direction = key.name === "up" || key.name === "k" ? -1 : 1
-    const current = availableIntervals.indexOf(this.interval)
+    const current = CANDLE_INTERVALS.indexOf(this.interval)
     const start = current === -1 ? 0 : current
-    const next = (start + direction + availableIntervals.length) % availableIntervals.length
-    const interval = availableIntervals[next]
+    const next = (start + direction + CANDLE_INTERVALS.length) % CANDLE_INTERVALS.length
+    const interval = CANDLE_INTERVALS[next]
     if (interval) this.selectInterval(interval)
     return true
   }
@@ -563,9 +559,8 @@ export class CandlestickChart {
     if (this.range === range) return
     this.range = range
     this.scrollOffset = 0
-    if (!this.availableIntervalsByRange[range].includes(this.interval)) {
-      this.interval = DEFAULT_INTERVAL_BY_RANGE[range]
-    }
+    // The timeframe is kept: range and timeframe are independent, so widening
+    // the window must not silently change the grain being read.
     this.paintToolbar()
     this.options.onSelectionChange?.(this.range, this.interval)
     if (this.instrument) this.load()
@@ -582,7 +577,7 @@ export class CandlestickChart {
   }
 
   private selectInterval(interval: CandleInterval): void {
-    if (!this.availableIntervalsByRange[this.range].includes(interval) || this.interval === interval) return
+    if (this.interval === interval) return
     this.interval = interval
     this.scrollOffset = 0
     this.paintToolbar()
@@ -610,7 +605,6 @@ export class CandlestickChart {
         this.series = series
         this.range = series.range
         this.interval = series.interval
-        this.availableIntervalsByRange = series.availableIntervalsByRange
         const pending = this.pendingLivePrice
         if (pending?.instrumentUid === instrument.uid) {
           applyLivePrice(series, pending.price, pending.timestamp)
@@ -966,14 +960,11 @@ export class CandlestickChart {
         ? CHART_INDICATOR_COLORS[indicator]
         : this.focused ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }
-    const availableIntervals = this.availableIntervalsByRange[this.range]
     for (const interval of CANDLE_INTERVALS) {
-      const available = availableIntervals.includes(interval)
       const selected = this.interval === interval
       const button = this.intervalButtons.get(interval)
       const label = this.intervalButtonLabels.get(interval)
       if (!button || !label) continue
-      button.visible = available
       button.backgroundColor = selected ? ACTIVE_BUTTON_BG : undefined
       label.fg = selected ? TUI_THEME.textStrong : this.focused ? TUI_THEME.textSecondary : TUI_THEME.textFaint
     }

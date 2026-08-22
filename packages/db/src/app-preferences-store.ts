@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm"
 import { isCandleChartTarget, isCandleInterval, isCandleRange } from "@trbot/market/candle.ts"
+import { isDepthTarget } from "@trbot/market/depth.ts"
 import { isViopOrderKind } from "@trbot/trading/order.ts"
 import {
   DEFAULT_APP_PREFERENCES,
@@ -30,6 +31,7 @@ export class DrizzleAppPreferencesStore {
     if (!isCandleRange(row.candleRange)) return { ...DEFAULT_APP_PREFERENCES }
     if (!isCandleInterval(row.candleInterval)) return { ...DEFAULT_APP_PREFERENCES }
     if (!isCandleChartTarget(row.chartTarget)) return { ...DEFAULT_APP_PREFERENCES }
+    if (!isDepthTarget(row.depthTarget)) return { ...DEFAULT_APP_PREFERENCES }
     if (!isViopOrderKind(row.orderKind)) return { ...DEFAULT_APP_PREFERENCES }
 
     return normalizeAppPreferences({
@@ -38,6 +40,7 @@ export class DrizzleAppPreferencesStore {
       candleRange: row.candleRange,
       candleInterval: row.candleInterval,
       chartTarget: row.chartTarget,
+      depthTarget: row.depthTarget,
       chartIndicators: parseChartIndicators(row.chartIndicators),
       selectedInstrumentUid: row.selectedInstrumentUid,
       orderKind: row.orderKind,

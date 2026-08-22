@@ -42,10 +42,11 @@ const CandleRange = Type.Union([
   Type.Literal("THREE_MONTH"),
   Type.Literal("YEAR"),
   Type.Literal("FIVE_YEAR"),
+  Type.Literal("ALL"),
 ])
 const CandleInterval = Type.Union([
+  Type.Literal("MIN_1"),
   Type.Literal("MIN_5"),
-  Type.Literal("MIN_10"),
   Type.Literal("MIN_15"),
   Type.Literal("MIN_30"),
   Type.Literal("HOUR_1"),
@@ -427,7 +428,7 @@ function equityQuoteTool(clients: MarketDataToolClients): ChatTool<typeof Symbol
         return dataOutcome(`Read live equity quote for ${quote.symbol}.`, { ...quote, source: "LIVE_TICK" })
       } catch (error) {
         if (options.signal?.aborted) throw error
-        const series = await sources.candles.loadCandles(instrument.uid, "WEEK", "MIN_10", {
+        const series = await sources.candles.loadCandles(instrument.uid, "WEEK", "MIN_5", {
           signal: options.signal,
           target: "UNDERLYING",
         })

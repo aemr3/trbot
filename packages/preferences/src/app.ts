@@ -8,6 +8,7 @@ import {
   type CandleInterval,
   type CandleRange,
 } from "@trbot/market/candle.ts"
+import { DEPTH_TARGETS, type DepthTarget } from "@trbot/market/depth.ts"
 import { isChartIndicator, type ChartIndicator } from "@trbot/market/indicator.ts"
 import { VIOP_ORDER_KINDS, type ViopOrderKind } from "@trbot/trading/order.ts"
 import { z } from "zod"
@@ -43,6 +44,8 @@ export interface AppPreferences {
   candleRange: CandleRange
   candleInterval: CandleInterval
   chartTarget: CandleChartTarget
+  /** Which order book the depth panel shows: the stock or the contract. */
+  depthTarget: DepthTarget
   chartIndicators: ChartIndicator[]
   selectedInstrumentUid: string | null
   orderKind: ViopOrderKind
@@ -72,6 +75,7 @@ export const AppPreferencesSchema: z.ZodType<AppPreferences> = z.object({
   candleRange: z.enum(CANDLE_RANGES),
   candleInterval: z.enum(CANDLE_INTERVALS),
   chartTarget: z.enum(CANDLE_CHART_TARGETS),
+  depthTarget: z.enum(DEPTH_TARGETS).default("UNDERLYING"),
   chartIndicators: ChartIndicatorListSchema,
   selectedInstrumentUid: RequiredTextSchema.nullable().default(null),
   orderKind: z.enum(VIOP_ORDER_KINDS),
@@ -92,6 +96,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   candleRange: "INTRADAY",
   candleInterval: "MIN_5",
   chartTarget: "UNDERLYING",
+  depthTarget: "UNDERLYING",
   chartIndicators: [],
   selectedInstrumentUid: null,
   orderKind: "LIMIT",

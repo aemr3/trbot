@@ -12,7 +12,9 @@ const PROVIDER_PACKAGES = ["@trbot/api", "@trbot/provider"]
 // `@trbot/client` is deliberately absent: it runs the ChatGPT login on the
 // trader's machine and hands the result inward, so it holds a token in flight and
 // stores none. Anything that starts *keeping* one belongs on this list instead.
-const SERVER_ONLY_PACKAGES = [...PROVIDER_PACKAGES, "@trbot/ai", "@trbot/auth", "@trbot/db"]
+// `@trbot/feed` joins them: it holds the market data account's password and the
+// realtime licence minted from it.
+const SERVER_ONLY_PACKAGES = [...PROVIDER_PACKAGES, "@trbot/ai", "@trbot/auth", "@trbot/db", "@trbot/feed"]
 
 interface WorkspacePackage {
   name: string

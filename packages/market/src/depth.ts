@@ -25,9 +25,8 @@ export interface DepthBook {
   buyLots: number | null
   sellLots: number | null
   trades: DepthTrade[]
+  /** Whether the exchange is outside its trading hours for this symbol. */
   marketClosed: boolean
-  maintenance: boolean
-  infoMessage: string | null
 }
 
 const DepthLevelSchema = z.object({
@@ -53,9 +52,22 @@ export const DepthBookSchema: z.ZodType<DepthBook> = z.object({
   sellLots: z.number().nullable(),
   trades: z.array(DepthTradeSchema),
   marketClosed: z.boolean(),
-  maintenance: z.boolean(),
-  infoMessage: z.string().nullable(),
 })
+
+/**
+ * Which instrument's book is shown.
+ *
+ * Both exist: the market data feed serves an order book for a stock and for the
+ * contract written on it, which the brokerage feed did not — it carried only the
+ * underlying's book, so the panel had no choice to offer.
+ */
+export const DEPTH_TARGETS = ["UNDERLYING", "INSTRUMENT"] as const
+
+export type DepthTarget = (typeof DEPTH_TARGETS)[number]
+
+export function isDepthTarget(value: string): value is DepthTarget {
+  return DEPTH_TARGETS.some((target) => target === value)
+}
 
 export const DEPTH_STATUSES = [
   // No symbol subscribed.

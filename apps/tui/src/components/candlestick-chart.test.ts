@@ -601,7 +601,7 @@ test("updates OHLC from the current candle for the selected timeframe", async ()
         range,
         interval,
         availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
-        intervalMs: interval === "MIN_5" ? 300_000 : 600_000,
+        intervalMs: interval === "MIN_5" ? 300_000 : 900_000,
         currency: "TRY",
         candles: [{ timestamp: 1000, open: 10, high: 11, low: 9, close: 11, volume: 10 }, current],
       }
@@ -613,7 +613,7 @@ test("updates OHLC from the current candle for the selected timeframe", async ()
 
   await setup.waitForFrame((value) => value.includes("5m · O 12,00") && value.includes("-25.00%"))
   chart.handleKey(keyEvent("down"))
-  const frame = await setup.waitForFrame((value) => value.includes("10m · O 22,00"))
+  const frame = await setup.waitForFrame((value) => value.includes("15m · O 22,00"))
   expect(frame).toContain("H 25,00")
   expect(frame).toContain("L 20,00")
   expect(frame).toContain("C 24,00")

@@ -451,8 +451,11 @@ function distributionTable(distribution: BrokerageDistribution): TableModel {
 // house's own previous holding.
 function settlementTable(analysis: SettlementAnalysis): TableModel {
   const sign = analysis.mode === "LOST" ? "-" : "+"
+  // A standing position is the whole float in one house's custody, so it runs to
+  // ten digits on a large bank. Anything narrower pushes the share column off
+  // the row rather than truncating the figure.
   const columns: TableColumn[] = analysis.mode === "HELD"
-    ? [{ title: "Total lot", width: 11 }, { title: "%", width: 6 }]
+    ? [{ title: "Total lot", width: 14 }, { title: "%", width: 6 }]
     : [{ title: "Δ lot", width: 10 }, { title: "Δ%", width: 8 }, { title: "%", width: 6 }]
   return {
     color: VIEW_COLORS[analysis.mode],

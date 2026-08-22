@@ -1,3 +1,4 @@
+import type { ParsedKey } from "@opentui/core"
 import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
@@ -7,7 +8,14 @@ import {
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
-import type { DepthBook, DepthLevel, DepthStatus, DepthTrade } from "@trbot/market/depth.ts"
+import {
+  DEPTH_TARGETS,
+  type DepthBook,
+  type DepthLevel,
+  type DepthStatus,
+  type DepthTarget,
+  type DepthTrade,
+} from "@trbot/market/depth.ts"
 import {
   barWidth,
   padSegments,
@@ -25,10 +33,14 @@ const MUTED_COLOR = TUI_THEME.textMuted
 const FAINT_COLOR = TUI_THEME.textFaint
 const VALUE_COLOR = TUI_THEME.textPrimary
 const BID_COLOR = TUI_THEME.positive
+// The status pair the other panels use: live, or a standing snapshot of it.
+const NEUTRAL_COLOR = TUI_THEME.textNeutral
 const ASK_COLOR = TUI_THEME.negative
 const BID_BAR_BG = TUI_THEME.positiveBar
 const ASK_BAR_BG = TUI_THEME.negativeBar
 const WARNING_COLOR = TUI_THEME.warning
+
+const ACTIVE_BUTTON_BG = TUI_THEME.activeControl
 
 const PANEL_PADDING = 1
 const PRICE_WIDTH = 7
@@ -42,13 +54,23 @@ const FIXED_ROWS = 1 + 1 + 3 + 1 + 1 + LADDER_LEVELS + 1 + 1
 
 export interface DepthPanelInstrument {
   displayName: string
-  // The underlying stock symbol; VIOP contracts have no book of their own.
+  /** The contract's own symbol, which now has a book of its own. */
+  symbol: string
+  /** The stock the contract settles against, which has a separate book. */
   underlyingSymbol: string | null
 }
 
 export interface DepthPanelOptions {
   onFocusRequest?: () => void
+  onTargetChange?: (target: DepthTarget) => void
+  /** The book the trader was last looking at. */
+  initialTarget?: DepthTarget
 }
+
+const TARGET_LABELS = {
+  UNDERLYING: "Stock",
+  INSTRUMENT: "Futures",
+} satisfies Record<DepthTarget, string>
 
 // Renders one symbol's order book: the resting buy/sell balance, the price
 // ladder either side of the spread, and the trade tape beneath it.
@@ -57,10 +79,14 @@ export class DepthPanel {
 
   private readonly header: TextRenderable
   private readonly content: TextRenderable
+  private readonly headerRow: BoxRenderable
+  private readonly targetButtons = new Map<DepthTarget, BoxRenderable>()
+  private readonly targetButtonLabels = new Map<DepthTarget, TextRenderable>()
   private instrument: DepthPanelInstrument | null = null
   private book: DepthBook | null = null
   private status: DepthStatus = "idle"
   private entitled: boolean | null = null
+  private target: DepthTarget
   private focused = false
   // Depth is the busiest stream at market open; book events overwrite state
   // and the full-panel rebuild is coalesced per burst.
@@ -72,6 +98,7 @@ export class DepthPanel {
     renderer: RenderContext,
     private readonly options: DepthPanelOptions = {},
   ) {
+    this.target = options.initialTarget ?? "UNDERLYING"
     this.root = new BoxRenderable(renderer, {
       flexDirection: "column",
       paddingLeft: PANEL_PADDING,
@@ -85,9 +112,46 @@ export class DepthPanel {
     this.header = new TextRenderable(renderer, {
       content: "Depth",
       fg: HEADING_COLOR,
-      marginBottom: 1,
       wrapMode: "none",
+      flexShrink: 0,
     })
+    // Title and book switches share one row, matching the chart's own header so
+    // the two panels read as the same control.
+    const headerRow = new BoxRenderable(renderer, {
+      height: 1,
+      flexDirection: "row",
+      flexShrink: 0,
+      marginBottom: 1,
+      overflow: "hidden",
+    })
+    const targetToolbar = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      height: 1,
+      marginLeft: 1,
+      flexShrink: 0,
+    })
+    for (const target of DEPTH_TARGETS) {
+      const button = new BoxRenderable(renderer, {
+        height: 1,
+        paddingLeft: 1,
+        paddingRight: 1,
+        onMouseDown: (event) => {
+          if (event.button !== 0) return
+          this.options.onFocusRequest?.()
+          this.selectTarget(target)
+        },
+      })
+      // Text is selectable by default, so a left click on a label would both
+      // press the button and anchor a drag-selection that paints it inverted.
+      const label = new TextRenderable(renderer, { content: TARGET_LABELS[target], selectable: false })
+      button.add(label)
+      targetToolbar.add(button)
+      this.targetButtons.set(target, button)
+      this.targetButtonLabels.set(target, label)
+    }
+    headerRow.add(this.header)
+    headerRow.add(targetToolbar)
+    this.headerRow = headerRow
     this.content = new TextRenderable(renderer, {
       content: "",
       fg: MUTED_COLOR,
@@ -95,7 +159,7 @@ export class DepthPanel {
       flexGrow: 1,
       wrapMode: "none",
     })
-    this.root.add(this.header)
+    this.root.add(this.headerRow)
     this.root.add(this.content)
     this.render()
   }
@@ -121,7 +185,9 @@ export class DepthPanel {
   }
 
   showBook(book: DepthBook): void {
-    if (book.symbol.toUpperCase() !== this.instrument?.underlyingSymbol?.toUpperCase()) return
+    // Whichever side the panel is showing: the contract has its own book, and
+    // comparing against the underlying alone would drop every one of them.
+    if (book.symbol.toUpperCase() !== this.activeSymbol()?.toUpperCase()) return
     this.book = book
     this.liveRender.schedule()
   }
@@ -150,26 +216,79 @@ export class DepthPanel {
       ...ladderChunks(book, width),
       newline(),
       newline(),
-      ...tradeChunks(book.trades, width, this.tradeCapacity()),
+      ...tradeChunks(book.trades, width, this.tradeCapacity(), book.marketClosed),
     ]
     this.content.content = new StyledText(chunks)
   }
 
+  /** The symbol whose book is on screen, which the target decides. */
+  activeSymbol(): string | null {
+    if (!this.instrument) return null
+    return this.target === "INSTRUMENT" ? this.instrument.symbol : this.instrument.underlyingSymbol
+  }
+
+  setTarget(target: DepthTarget): void {
+    if (this.target === target) return
+    this.target = target
+    // The book on screen belongs to the symbol being left behind.
+    this.book = null
+    this.status = "idle"
+    this.render()
+  }
+
+  /**
+   * Switches between the stock's book and the contract's.
+   *
+   * `s` is deliberately not bound: the screen claims it for the sell ticket
+   * before a panel ever sees it.
+   */
+  handleKey(key: ParsedKey): boolean {
+    const toggle = key.sequence === "f" || key.name === "left" || key.name === "right"
+      || key.name === "h" || key.name === "l"
+    if (!toggle) return false
+    this.selectTarget(this.target === "UNDERLYING" ? "INSTRUMENT" : "UNDERLYING")
+    return true
+  }
+
+  private selectTarget(target: DepthTarget): void {
+    if (this.target === target) return
+    this.setTarget(target)
+    this.options.onTargetChange?.(target)
+  }
+
   private renderHeader(): void {
     const titleColor = this.focused ? TUI_THEME.textStrong : FAINT_COLOR
-    const symbol = this.instrument?.underlyingSymbol
-    if (!symbol) {
+    // The instrument is not named here: the switches say which book is showing,
+    // and the chart beside this panel already carries the ticker.
+    if (!this.activeSymbol()) {
       this.header.content = new StyledText([fg(titleColor)("Depth")])
+      this.paintTargets()
       return
     }
-    const live = this.status === "live"
+    // The connection and the market are different questions: the socket can be
+    // live on a symbol whose session ended hours ago, and saying "live" over an
+    // empty ladder would read as a fault.
+    const closed = this.book?.marketClosed === true
+    const live = this.status === "live" && !closed
+    const state = closed ? "○ closed" : live ? "● live" : "○ snapshot"
     this.header.content = new StyledText([
       fg(titleColor)("Depth"),
       fg(MUTED_COLOR)("  "),
-      fg(HEADING_COLOR)(symbol),
-      fg(MUTED_COLOR)("  "),
-      fg(live ? BID_COLOR : MUTED_COLOR)(live ? "● live" : "○ —"),
+      fg(live ? BID_COLOR : NEUTRAL_COLOR)(state),
     ])
+    this.paintTargets()
+  }
+
+  /** Paints the switches the way the chart paints its own. */
+  private paintTargets(): void {
+    for (const target of DEPTH_TARGETS) {
+      const selected = this.target === target
+      const button = this.targetButtons.get(target)
+      const label = this.targetButtonLabels.get(target)
+      if (!button || !label) continue
+      button.backgroundColor = selected ? ACTIVE_BUTTON_BG : undefined
+      label.fg = selected ? TUI_THEME.textStrong : this.focused ? TUI_THEME.textSecondary : TUI_THEME.textFaint
+    }
   }
 
   // The one message that stands in for the whole book, or null when there is a
@@ -183,14 +302,17 @@ export class DepthPanel {
       }
     }
     if (!this.instrument) return { text: "Select a VIOP contract.", color: MUTED_COLOR }
-    if (!this.instrument.underlyingSymbol) {
+    const symbol = this.activeSymbol()
+    if (!symbol) {
       return { text: `${this.instrument.displayName} has no underlying stock.`, color: MUTED_COLOR }
     }
     if (this.status === "unavailable") {
-      return { text: `No depth book for ${this.instrument.underlyingSymbol}.`, color: MUTED_COLOR }
+      return { text: `No depth book for ${symbol}.`, color: MUTED_COLOR }
     }
     if (!this.book) return { text: "Loading depth…", color: MUTED_COLOR }
-    if (this.book.maintenance) return { text: "Market data provider is in maintenance.", color: WARNING_COLOR }
+    // A closed market is not a missing book: the exchange has cleared every level
+    // and that is what an empty ladder means. It draws as the empty scaffold, with
+    // the header saying why, rather than as a sentence where the book should be.
     return null
   }
 
@@ -205,7 +327,23 @@ function ratioChunks(book: DepthBook, width: number): TextChunk[] {
   const buy = book.buyLots ?? 0
   const sell = book.sellLots ?? 0
   const total = buy + sell
-  if (total <= 0) return [fg(MUTED_COLOR)("Buy / sell balance unavailable")]
+  if (total <= 0) {
+    // Nothing resting on either side — a closed market, or a session whose totals
+    // have not arrived. The block keeps its three lines so the ladder beneath does
+    // not jump when they do, and the gauge is drawn as an empty track.
+    const labels = { buy: "Buy", sell: "Sell", none: "—" }
+    return [
+      fg(FAINT_COLOR)(labels.buy),
+      fg(FAINT_COLOR)(" ".repeat(gap(width, labels.buy.length, labels.sell.length))),
+      fg(FAINT_COLOR)(labels.sell),
+      newline(),
+      fg(FAINT_COLOR)("─".repeat(Math.max(0, width))),
+      newline(),
+      fg(FAINT_COLOR)(labels.none),
+      fg(FAINT_COLOR)(" ".repeat(gap(width, labels.none.length, labels.none.length))),
+      fg(FAINT_COLOR)(labels.none),
+    ]
+  }
 
   const buyShare = buy / total
   const buyLabel = `Buy ${formatPercent(buyShare)}`
@@ -319,11 +457,13 @@ function askRow(
   return shade(padded, 0, level ? barWidth(level.lots, maxLots, sideWidth) : 0, ASK_BAR_BG)
 }
 
-function tradeChunks(trades: DepthTrade[], width: number, capacity: number): TextChunk[] {
+function tradeChunks(trades: DepthTrade[], width: number, capacity: number, marketClosed: boolean): TextChunk[] {
   const chunks: TextChunk[] = [fg(HEADING_COLOR)("Trades")]
   if (capacity <= 0) return chunks
   if (trades.length === 0) {
-    chunks.push(newline(), fg(MUTED_COLOR)("No trades yet."))
+    // The tape is per session and empties at the boundary, so after the close
+    // there is nothing still to come.
+    chunks.push(newline(), fg(MUTED_COLOR)(marketClosed ? "No trades." : "No trades yet."))
     return chunks
   }
   const counterpartyWidth = Math.max(0, width - PRICE_WIDTH - 1 - 8 - 1)

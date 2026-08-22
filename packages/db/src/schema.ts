@@ -155,6 +155,7 @@ export const appPreferences = sqliteTable("app_preferences", {
   candleRange: text("candle_range").notNull(),
   candleInterval: text("candle_interval").notNull(),
   chartTarget: text("chart_target").notNull().default("UNDERLYING"),
+  depthTarget: text("depth_target").notNull().default("UNDERLYING"),
   // Comma-separated indicator names; empty means a bare price chart.
   chartIndicators: text("chart_indicators").notNull().default(""),
   selectedInstrumentUid: text("selected_instrument_uid"),

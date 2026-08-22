@@ -12,6 +12,7 @@ This is a Bun workspace. Shared code lives in `packages/*`, runnable programs in
 
 - Organize domain contracts by feature package, such as `packages/auth`, `packages/chat`, `packages/market`, and `packages/trading`.
 - Keep external API transport, GraphQL operations, and client behavior in `packages/api`.
+- Keep market data — candles, quotes, depth, and the instrument universe — in `packages/feed`. It is a separate vendor and a separate account from the brokerage, which keeps orders, positions, and contract specifications.
 - Keep database connections, schemas, migrations, and store implementations in `packages/db`.
 - Keep full-screen views in `apps/tui/src/screens` and reusable TUI controls in `apps/tui/src/components`.
 - Keep the model harness behind `packages/ai`. Only a provider login reaches it from a client, through `packages/client`.
@@ -25,7 +26,7 @@ This is a Bun workspace. Shared code lives in `packages/*`, runnable programs in
 - Keep the package graph acyclic. A new import that closes a cycle is a sign the contract belongs in a lower package.
 - Keep domain contract packages free of transport, storage, and terminal concerns so a server and a client can both depend on them.
 - Client applications never reach the provider. Only the server may depend on `@trbot/api` or `@trbot/provider`, including transitively. See [docs/server-architecture.md](docs/server-architecture.md).
-- Client applications hold no credentials. `@trbot/ai` (model-provider credentials), `@trbot/auth`, and `@trbot/db` are server-only for the same reason. Both rules are enforced by `apps/tui/src/boundaries.test.ts`.
+- Client applications hold no credentials. `@trbot/ai` (model-provider credentials), `@trbot/auth`, `@trbot/db`, and `@trbot/feed` are server-only for the same reason. Both rules are enforced by `apps/tui/src/boundaries.test.ts`.
 - Declare every package a package imports in its own `package.json`.
 - Extend `@trbot/tsconfig/base.json` from every workspace member rather than repeating compiler settings. Add a named config to that package when a member genuinely needs a different shape.
 - Define runnable scripts on the root `package.json`. Never launch the terminal application through `bun run --filter`: it pipes the child's output, which breaks terminal rendering. Filtering is fine for tools that need their own working directory, such as drizzle-kit.

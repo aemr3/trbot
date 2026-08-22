@@ -44,7 +44,7 @@ describe("price alert store", () => {
       direction: "BELOW",
       kind: "TRAILING_ATR",
       value: 2,
-      interval: "MIN_10",
+      interval: "MIN_5",
       extremePrice: 430,
       triggerPrice: 422,
       atrValue: 4,

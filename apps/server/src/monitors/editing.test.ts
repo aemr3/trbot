@@ -9,7 +9,8 @@ import type { StopRule, StopRuleStore } from "@trbot/trading/stop.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import { startServer } from "../http/server.ts"
 import { serverDeps } from "../http/server.test-fixture.ts"
-import { ProviderSession } from "../session.ts"
+import { unusedFeed } from "../provider.test-fixture.ts"
+import { ProviderSession, providerConnector } from "../session.ts"
 import { StreamHub } from "../stream-hub.ts"
 import type { SocketData } from "../stream-hub.ts"
 import { AlertController } from "./alert.ts"
@@ -115,7 +116,11 @@ describe("editing the rules the server evaluates", () => {
 
   beforeEach(() => {
     broadcasts = []
-    const session = new ProviderSession({ openAuthSession: emptyAuthSession, credentials: null })
+    const session = new ProviderSession({
+      openAuthSession: emptyAuthSession,
+      credentials: null,
+      connector: providerConnector(unusedFeed()),
+    })
     stops = new StopController({
       store: memoryStopStore(),
       exits: () => null,

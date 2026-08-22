@@ -1,0 +1,17 @@
+{
+  "name": "@trbot/feed",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@trbot/market": "workspace:*",
+    "@trbot/member": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@trbot/tsconfig": "workspace:*"
+  }
+}

@@ -80,6 +80,7 @@ describe("loadConfig", () => {
     expect(loadConfig({})).toEqual({
       databaseUrl: resolve(workspaceRoot(), "data/db.sqlite"),
       credentials: null,
+      feedCredentials: null,
     })
   })
 })

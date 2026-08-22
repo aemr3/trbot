@@ -1312,6 +1312,7 @@ test("restores and reports list and chart display choices", async () => {
       candleRange: "WEEK",
       candleInterval: "MIN_15",
       chartTarget: "UNDERLYING",
+      depthTarget: "UNDERLYING",
       chartIndicators: [],
       selectedInstrumentUid: "u1",
       orderKind: "LIMIT",
@@ -1339,7 +1340,9 @@ test("restores and reports list and chart display choices", async () => {
   focusPanel(mockInput, "chart")
   mockInput.pressArrow("right")
   await waitFor(() => changes.some((preferences) => preferences.candleRange === "MONTH"))
-  expect(changes.at(-1)).toMatchObject({ candleRange: "MONTH", candleInterval: "HOUR_1" })
+  // Range and timeframe are independent, so widening the window keeps the
+  // restored grain instead of resetting it to whatever the range used to imply.
+  expect(changes.at(-1)).toMatchObject({ candleRange: "MONTH", candleInterval: "MIN_15" })
 
   await mockInput.typeText("f")
   await waitForFrame((frame) => frame.includes("Chart  THYAO futures"))
@@ -1368,6 +1371,7 @@ test("falls back to an available contract when the saved contract no longer exis
       candleRange: "INTRADAY",
       candleInterval: "MIN_5",
       chartTarget: "UNDERLYING",
+      depthTarget: "UNDERLYING",
       chartIndicators: [],
       selectedInstrumentUid: "expired-contract",
       orderKind: "LIMIT",
@@ -1501,12 +1505,13 @@ test("switches chart ranges and timeframes from the focused chart panel", async 
   expect(plotY).toBeGreaterThanOrEqual(0)
   await mockMouse.click(plotX, plotY)
   mockInput.pressArrow("right")
-  await waitFor(() => requested.some((request) => request.range === "WEEK" && request.interval === "HOUR_1"))
+  // The range moves on its own; the timeframe stays as it was.
+  await waitFor(() => requested.some((request) => request.range === "WEEK" && request.interval === "MIN_5"))
   mockInput.pressArrow("down")
-  await waitFor(() => requested.some((request) => request.range === "WEEK" && request.interval === "MIN_10"))
+  await waitFor(() => requested.some((request) => request.range === "WEEK" && request.interval === "MIN_15"))
 
-  expect(requested).toContainEqual({ range: "WEEK", interval: "HOUR_1" })
-  expect(requested).toContainEqual({ range: "WEEK", interval: "MIN_10" })
+  expect(requested).toContainEqual({ range: "WEEK", interval: "MIN_5" })
+  expect(requested).toContainEqual({ range: "WEEK", interval: "MIN_15" })
   screen.destroy()
   renderer.destroy()
 })
@@ -1681,8 +1686,6 @@ function depthBook(symbol: string): DepthBook {
     sellLots: 2_166_667,
     trades: [{ id: "1", price: 390, lots: 111, side: "BUY", buyer: "Gedik Yatırım", seller: "Ak Yatırım" }],
     marketClosed: false,
-    maintenance: false,
-    infoMessage: null,
   }
 }
 
@@ -1705,12 +1708,11 @@ test("streams the underlying stock's order book beside the chart", async () => {
   renderer.root.add(screen.root)
   screen.mount()
 
-  // The watchlist holds VIOP contracts, which have no book of their own, so the
-  // panel follows the underlying stock.
+  // Both books exist now, and the panel opens on the stock's.
   await waitFor(() => depth.startedSymbols.includes("XU030"))
   depth.emitStatus("live")
   depth.emit(depthBook("XU030"))
-  const frame = await waitForFrame((value) => value.includes("Depth  XU030  ● live"))
+  const frame = await waitForFrame((value) => value.includes("Depth  ● live"))
   expect(frame).toContain("38.384  389,75│390,00")
   expect(frame).toContain("Gedik ← Ak")
 
@@ -2566,3 +2568,42 @@ function idlePanel(renderer: RenderContext): IdlePanel {
     },
   }
 }
+
+/**
+ * The digest describes the underlying: its book, its tape, its broker flow. The
+ * depth panel can be switched to the contract, and a contract book reaching the
+ * digest would be read as the stock's own.
+ */
+test("keeps the overview off the contract's book when the depth panel shows it", async () => {
+  const { renderer, mockInput, waitFor } = await createTestRenderer({ width: 200, height: 44 })
+  const overview = new FakeOverviewGenerator()
+  const depth = new FakeDepthStream()
+  const screen = new TradeScreen(renderer, { ...overviewScreenOptions(overview), depth })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  await waitFor(() => depth.startedSymbols.includes("XU030"))
+  const underlying = depthBook("XU030")
+  depth.emit({ ...underlying, trades: [{ ...underlying.trades[0]!, id: "underlying-1" }] })
+  await waitFor(() => overview.digests.some((digest) => (digest.tape?.tradeCount ?? 0) > 0))
+
+  focusPanel(mockInput, "depth")
+  mockInput.pressKey("f")
+  await waitFor(() => depth.startedSymbols.includes("F_XU0300826"))
+  const contract = depthBook("F_XU0300826")
+  depth.emit({ ...contract, trades: [{ ...contract.trades[0]!, id: "contract-1" }] })
+
+  // Force a run so the digest reflects everything ingested since the switch.
+  focusPanel(mockInput, "overview")
+  mockInput.pressKey("r")
+  await waitFor(() => overview.digests.length > 1)
+
+  const digest = overview.digests.at(-1)
+  // The contract"s book is not the stock"s, and its prints are not on the stock"s
+  // tape: the switch cleared both, and the contract refilled neither.
+  expect(digest?.book).toBeNull()
+  expect(digest?.tape?.tradeCount ?? 0).toBe(0)
+
+  screen.destroy()
+  renderer.destroy()
+})

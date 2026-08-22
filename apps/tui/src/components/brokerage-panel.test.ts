@@ -234,6 +234,28 @@ test("shows the standing position behind the held view", async () => {
   renderer.destroy()
 })
 
+/**
+ * A custody figure is the float itself, not a session's trading: a large bank
+ * holds billions of lots. The share beside it has to survive that.
+ */
+test("keeps the share column beside a ten-digit custody figure", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
+  selectView(panel, "HELD")
+
+  const held = analysis("HELD", 1)
+  panel.showSettlement({
+    ...held,
+    holdings: [{ ...held.holdings[0]!, brokerage: "Garanti Bank.", percentage: 76.02, totalLot: 1_866_236_548 }],
+  })
+  await renderOnce()
+  const frame = captureCharFrame()
+
+  expect(frame).toContain("1.866.236.548")
+  expect(frame).toContain("76,0%")
+
+  renderer.destroy()
+})
+
 test("signs a settled move from its own view rather than the provider", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
 

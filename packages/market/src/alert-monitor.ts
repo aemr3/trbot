@@ -5,10 +5,9 @@
 import {
   averageTrueRange,
   closedCandles,
-  futuresRangeForInterval,
+  rangeForInterval,
   type Candle,
   type CandleInterval,
-  type CandleRange,
   type CandleSource,
 } from "./candle.ts"
 import {
@@ -223,7 +222,7 @@ export class AlertMonitor<
     try {
       let changed = false
       for (const { instrumentUid, interval } of wanted.values()) {
-        const series = await source.loadCandles(instrumentUid, alertRangeForInterval(interval), interval, {
+        const series = await source.loadCandles(instrumentUid, rangeForInterval(interval), interval, {
           signal: request.signal,
           target: "INSTRUMENT",
         })
@@ -405,14 +404,7 @@ export class AlertMonitor<
   }
 }
 
-/**
- * The range to ask for so a futures contract comes back at `interval`. Alerts
- * watch the contracts on the watchlist, and that feed infers the grain from the
- * range rather than taking a requested interval.
- */
-export function alertRangeForInterval(interval: CandleInterval): CandleRange {
-  return futuresRangeForInterval(interval) ?? "INTRADAY"
-}
+
 
 function sampleState(sample: QuoteSample | undefined, now: number, staleAfter: number): AlertFeedState {
   if (!sample) return "missing"

@@ -188,7 +188,7 @@ test("persists a trailing level as it advances, and never loosens it", async () 
 test("a close-based rule ignores a wick and fires on the finished candle", async () => {
   const candles = new FakeCandleSource()
   const { monitor, triggers } = await monitorWith(
-    [rule({ basis: "CLOSE", interval: "MIN_10" })],
+    [rule({ basis: "CLOSE", interval: "MIN_5" })],
     { candles },
   )
 
@@ -204,7 +204,7 @@ test("a close-based rule ignores a wick and fires on the finished candle", async
     { timestamp: NOW, open: 385, high: 386, low: 360, close: 361, volume: null },
   ]
   await monitor.refreshCandleRules()
-  expect(candles.requests).toEqual([{ instrumentUid: "instrument-1", interval: "MIN_10", range: "INTRADAY" }])
+  expect(candles.requests).toEqual([{ instrumentUid: "instrument-1", interval: "MIN_5", range: "INTRADAY" }])
   expect(triggers).toHaveLength(0)
 
   // Once a candle closes below the level, the rule fires on its close.
@@ -224,7 +224,7 @@ test("reports a close-based rule against its candles, not against ticks", async 
     { timestamp: NOW - 2 * INTERVAL_MS, open: 400, high: 401, low: 395, close: 398, volume: null },
     { timestamp: NOW - INTERVAL_MS, open: 398, high: 399, low: 390, close: 392, volume: null },
   ]
-  const { monitor } = await monitorWith([rule({ basis: "CLOSE", interval: "MIN_10" })], { candles })
+  const { monitor } = await monitorWith([rule({ basis: "CLOSE", interval: "MIN_5" })], { candles })
 
   // A contract that never prints a tick is not a broken rule: this one reads
   // candles, and saying "no feed" would send the trader chasing a phantom.
@@ -245,7 +245,7 @@ test("tells the panel to repaint when what a row shows has moved", async () => {
   ]
   const store = new FakeStopRuleStore([
     rule({ id: "touch" }),
-    rule({ id: "close", basis: "CLOSE", interval: "MIN_10" }),
+    rule({ id: "close", basis: "CLOSE", interval: "MIN_5" }),
   ])
   let repaints = 0
   const monitor = new StopMonitor({
@@ -280,8 +280,8 @@ test("refreshes the width an ATR trail follows, but not a standing ATR level", a
     close: 400,
     volume: null,
   }))
-  const standing = rule({ id: "rule-1", kind: "ATR", value: 2, interval: "MIN_10", atrValue: 3 })
-  const trailing = rule({ id: "rule-2", kind: "TRAILING_ATR", value: 2, interval: "MIN_10", atrValue: 3 })
+  const standing = rule({ id: "rule-1", kind: "ATR", value: 2, interval: "MIN_5", atrValue: 3 })
+  const trailing = rule({ id: "rule-2", kind: "TRAILING_ATR", value: 2, interval: "MIN_5", atrValue: 3 })
   const { monitor, store } = await monitorWith([standing, trailing], { candles })
 
   await monitor.refreshCandleRules()
@@ -348,14 +348,10 @@ test("stops evaluating once destroyed", async () => {
   expect(triggers).toHaveLength(0)
 })
 
-test("asks for the range that serves each futures grain", () => {
-  // The futures feed picks the grain from the range, so the range is how a
-  // rule asks for the candles it watches.
-  expect(rangeForInterval("MIN_10")).toBe("INTRADAY")
-  expect(rangeForInterval("HOUR_1")).toBe("WEEK")
-  expect(rangeForInterval("HOUR_4")).toBe("MONTH")
-  expect(rangeForInterval("DAY_1")).toBe("THREE_MONTH")
-  // A grain the feed never serves falls back to the session rather than
-  // silently asking for a year of candles.
+test("asks for a range wide enough to read each grain", () => {
+  // Range and grain are independent now; the range only has to be wide enough
+  // that an indicator window has bars to work with.
   expect(rangeForInterval("MIN_5")).toBe("INTRADAY")
+  expect(rangeForInterval("HOUR_1")).toBe("MONTH")
+  expect(rangeForInterval("DAY_1")).toBe("YEAR")
 })

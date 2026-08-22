@@ -1,4 +1,5 @@
 import { loadConfig, loadServerConfig } from "@trbot/config"
+import { MarketFeed, type FeedEntitlements } from "@trbot/feed"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import { requiresAuthentication } from "@trbot/protocol/error.ts"
 import { openAuthSession } from "@trbot/db/auth-store.ts"
@@ -35,7 +36,7 @@ import { MarketMonitorController } from "./monitors/market-monitor.ts"
 import { isDefiniteRefusal, toProtocolError } from "./errors.ts"
 import { IdempotencyStore } from "./http/idempotency.ts"
 import { startServer } from "./http/server.ts"
-import { ProviderSession } from "./session.ts"
+import { ProviderSession, providerConnector } from "./session.ts"
 import { StopController } from "./monitors/stop.ts"
 import { StreamHub } from "./stream-hub.ts"
 
@@ -64,10 +65,52 @@ async function startTrbotServer(): Promise<void> {
     if (requiresAuthentication(toProtocolError(cause))) void session.recover()
   }
 
+  // The market data feed is a separate account from the brokerage and outlives
+  // any brokerage sign-in, so it is built once here. It is also the only source
+  // of prices, candles, books and broker readings, so a server without it could
+  // not answer a chart — better to say so at startup than to fail one panel at a
+  // time later.
+  if (!config.feedCredentials) {
+    throw new Error(
+      "Market data requires FINTABLES_USERNAME and FINTABLES_PASSWORD; see .env.example",
+    )
+  }
+  const feed = new MarketFeed({
+    credentials: config.feedCredentials,
+    onError: log,
+    // The exchange licence is valid on one device at a time. Losing it is not an
+    // error to retry: something else now holds it, and live prices have stopped
+    // until it comes back.
+    onLicenseTaken: () => {
+      log("Market data feed", new Error("realtime licence claimed by another device; live prices have stopped"))
+    },
+  })
+
+  // Stops, alerts and monitors decide on price, and this server acts on those
+  // decisions unattended. Exchange prices arrive a quarter of an hour late without
+  // the realtime licence, which would make every one of those decisions wrong
+  // about the present, so the account has to say it holds one before any of it
+  // runs. A login that cannot be reached at all is left to the feed's own retry:
+  // the check refuses a definite "no", not an unanswered question.
+  let entitlements: FeedEntitlements | null = null
+  try {
+    entitlements = await feed.session.loadEntitlements()
+  } catch (cause) {
+    // An unanswered question, not a "no". The feed retries on first use.
+    log("Market data feed", cause)
+  }
+  if (entitlements && !entitlements.realtimePrices) {
+    throw new Error(
+      "The market data account has no realtime price entitlement (prices.realtime). Exchange prices "
+      + "would arrive 15 minutes late and drive stops and alerts on stale prices. Check the subscription.",
+    )
+  }
+
   const session = new ProviderSession({
     openAuthSession: () => openAuthSession(config.databaseUrl),
     credentials: config.credentials,
     onError: reportProviderError,
+    connector: providerConnector(feed),
   })
 
   // Close-based rules and ATR levels are read from candles. The source is
@@ -424,6 +467,7 @@ async function startTrbotServer(): Promise<void> {
     chat.destroy()
     automations.destroy()
     closeHarness()
+    feed?.close()
     stops.destroy()
     alerts.destroy()
     marketMonitors.destroy()

@@ -125,7 +125,7 @@ test("names the feed a rule actually reads when it is missing", async () => {
   panel.selectTab("stops")
   // A close-based rule never reads the tick stream, so "no feed" would send the
   // trader looking at a stream this rule does not use.
-  panel.showStopRules([view(rule({ basis: "CLOSE", interval: "MIN_10" }), { feed: "missing" })])
+  panel.showStopRules([view(rule({ basis: "CLOSE", interval: "MIN_5" }), { feed: "missing" })])
   await Bun.sleep(0)
   await renderOnce()
 

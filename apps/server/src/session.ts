@@ -1,6 +1,14 @@
 import { createApiClient, resumeApiClient, type ApiClient, type ApiClientHandle } from "@trbot/api"
 import type { OpenAuthSession } from "@trbot/auth/session.ts"
 import type { AppCredentials } from "@trbot/config"
+import {
+  FeedBrokerageDistributionSource,
+  FeedMemberFeatureSource,
+  FeedSettlementSource,
+  InstrumentCandleSource,
+  InstrumentSymbols,
+  type MarketFeed,
+} from "@trbot/feed"
 import type { BrokerageDistributionSource } from "@trbot/market/brokerage.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import type { DepthStream } from "@trbot/market/depth.ts"
@@ -13,16 +21,10 @@ import type { MemberFeatureSource } from "@trbot/member/features.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import { ApiAccountSource } from "@trbot/provider/account.ts"
 import { ApiAccountStream } from "@trbot/provider/account-stream.ts"
-import { ApiBrokerageDistributionSource } from "@trbot/provider/brokerage.ts"
-import { ApiCandleSource } from "@trbot/provider/candles.ts"
-import { ApiDepthStream } from "@trbot/provider/depth-stream.ts"
-import { ApiEquityQuoteStream } from "@trbot/provider/equity-quote-stream.ts"
 import { ApiMemberFeatureSource } from "@trbot/provider/features.ts"
 import { ApiViopInstrumentSource } from "@trbot/provider/instruments.ts"
 import { ApiNewsSource } from "@trbot/provider/news.ts"
 import { ApiViopOrderSource } from "@trbot/provider/order.ts"
-import { ApiQuoteStream } from "@trbot/provider/quote-stream.ts"
-import { ApiSettlementSource } from "@trbot/provider/settlement.ts"
 import type { AccountSource, AccountStream } from "@trbot/trading/account.ts"
 import type {
   ViopOrderCancellationSource,
@@ -56,7 +58,11 @@ export interface ProviderSessionOptions {
   openAuthSession: OpenAuthSession
   credentials: AppCredentials | null
   onError?: (label: string, cause: unknown) => void
-  connector?: ProviderSessionConnector
+  /**
+   * Opens provider handles. `providerConnector(feed)` is the real one; it carries
+   * the market data feed because it is what builds sources from it.
+   */
+  connector: ProviderSessionConnector
 }
 
 interface StoppableProviderStream {
@@ -111,7 +117,7 @@ export class ProviderSession implements ProviderSessionAccess {
   private readonly connector: ProviderSessionConnector
 
   constructor(private readonly options: ProviderSessionOptions) {
-    this.connector = options.connector ?? defaultProviderSessionConnector
+    this.connector = options.connector
   }
 
   get authenticated(): boolean {
@@ -270,17 +276,26 @@ export class ProviderSession implements ProviderSessionAccess {
   }
 }
 
-const defaultProviderSessionConnector: ProviderSessionConnector = {
-  async open(openAuthSession, credentials) {
-    return providerHandle(await createApiClient(openAuthSession, credentials))
-  },
-  async resume(openAuthSession, credentials) {
-    const handle = await resumeApiClient(openAuthSession, credentials)
-    return handle ? providerHandle(handle) : null
-  },
+/**
+ * The real connector, bound to the feed its sources read market data from.
+ *
+ * The feed arrives here rather than on the session because this is the only
+ * place that builds sources with it: a session given a test connector never
+ * touches market data at all, and should not have to hold a feed to prove it.
+ */
+export function providerConnector(feed: MarketFeed): ProviderSessionConnector {
+  return {
+    async open(openAuthSession, credentials) {
+      return providerHandle(await createApiClient(openAuthSession, credentials), feed)
+    },
+    async resume(openAuthSession, credentials) {
+      const handle = await resumeApiClient(openAuthSession, credentials)
+      return handle ? providerHandle(handle, feed) : null
+    },
+  }
 }
 
-function providerHandle(handle: ApiClientHandle): ProviderSessionHandle {
+function providerHandle(handle: ApiClientHandle, feed: MarketFeed): ProviderSessionHandle {
   return {
     async authenticate(): Promise<void> {
       await handle.client.authenticate()
@@ -291,32 +306,59 @@ function providerHandle(handle: ApiClientHandle): ProviderSessionHandle {
     async completeLogin(code: string): Promise<void> {
       await handle.client.completeLogin(code)
     },
-    sources: (options) => providerSources(handle.client, options),
+    sources: (options) => providerSources(handle.client, feed, options),
     close: () => handle.close(),
   }
 }
 
-function providerSources(client: ApiClient, options: ProviderSourceOptions): ProviderSources {
+/**
+ * Builds the sources a session hands out.
+ *
+ * The split is by ownership, not by preference: every price, candle, book and
+ * broker reading comes from the market data feed, while orders, positions,
+ * contract terms and news stay with the brokerage that executes them. There is
+ * no brokerage market-data path to fall back to — it was removed once the feed
+ * replaced it, because a second, delayed, differently-shaped source of the same
+ * numbers is worse than none.
+ */
+function providerSources(client: ApiClient, feed: MarketFeed, options: ProviderSourceOptions): ProviderSources {
   const orders = new ApiViopOrderSource(client)
   const report = (label: string) => (cause: unknown) => options.report(label, cause)
+  const instruments = new ApiViopInstrumentSource(client)
+  // Callers address market data by brokerage instrument uid, including persisted
+  // rules, while the feed knows only tickers. The translation needs the
+  // brokerage's instrument list, so it is composed here rather than inside the
+  // feed, which has no business knowing about the brokerage. One resolver serves
+  // every feed source, so the list is read once for all of them.
+  const symbols = new InstrumentSymbols(instruments)
+  const brokerFeeds = {
+    session: feed.session,
+    symbols,
+    tradingDays: feed.tradingDays,
+    brokerages: feed.brokerages,
+  }
   return {
-    instruments: new ApiViopInstrumentSource(client),
-    candles: new ApiCandleSource(client),
+    instruments,
+    candles: new InstrumentCandleSource(feed.candles, symbols),
     news: new ApiNewsSource(client),
     account: new ApiAccountSource(client),
     orders,
-    brokerage: new ApiBrokerageDistributionSource(client),
-    settlement: new ApiSettlementSource(client),
-    memberFeatures: new ApiMemberFeatureSource(client),
-    quotes: new ApiQuoteStream(client, { onError: report("Quote stream") }),
+    brokerage: new FeedBrokerageDistributionSource(brokerFeeds),
+    settlement: new FeedSettlementSource(brokerFeeds),
+    // Whoever serves the data answers for what may be read from it.
+    memberFeatures: new FeedMemberFeatureSource(feed.session, {
+      brokerage: new ApiMemberFeatureSource(client),
+      onError: report("Member features"),
+    }),
+    quotes: feed.openQuoteStream(),
     accountStream: new ApiAccountStream(client, { onError: report("Account stream") }),
     openDepthStream: () => {
-      const stream = new ApiDepthStream(client, { onError: report("Depth stream") })
+      const stream = feed.openDepthStream()
       options.track(stream)
       return stream
     },
     openEquityQuoteStream: () => {
-      const stream = new ApiEquityQuoteStream(client, { onError: report("Equity quote stream") })
+      const stream = feed.openEquityQuoteStream()
       options.track(stream)
       return stream
     },

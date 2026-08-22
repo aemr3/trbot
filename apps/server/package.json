@@ -10,6 +10,7 @@
     "@trbot/chat": "workspace:*",
     "@trbot/config": "workspace:*",
     "@trbot/db": "workspace:*",
+    "@trbot/feed": "workspace:*",
     "@trbot/market": "workspace:*",
     "@trbot/member": "workspace:*",
     "@trbot/preferences": "workspace:*",

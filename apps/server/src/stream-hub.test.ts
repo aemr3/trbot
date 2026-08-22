@@ -122,8 +122,6 @@ function book(symbol: string): DepthBook {
     sellLots: null,
     trades: [],
     marketClosed: false,
-    maintenance: false,
-    infoMessage: null,
   }
 }
 

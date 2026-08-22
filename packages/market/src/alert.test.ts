@@ -43,12 +43,12 @@ test("resolves a percent level on the side it watches", () => {
 })
 
 test("measures an ATR level in multiples of the reading it was built with", () => {
-  const above = alert({ kind: "ATR", value: 2, atrValue: 6, interval: "MIN_10" })
+  const above = alert({ kind: "ATR", value: 2, atrValue: 6, interval: "MIN_5" })
   expect(resolveAlertLevel(above)).toBeCloseTo(412, 6)
 
   // Without a reading there is no level to watch, rather than a level at zero
   // distance that fires immediately.
-  expect(resolveAlertLevel(alert({ kind: "ATR", value: 2, atrValue: null, interval: "MIN_10" }))).toBeNull()
+  expect(resolveAlertLevel(alert({ kind: "ATR", value: 2, atrValue: null, interval: "MIN_5" }))).toBeNull()
 })
 
 test("a trail follows the price away from the level and never loosens", () => {
@@ -80,7 +80,7 @@ test("a touch reads the tick and a close reads the finished candle", () => {
   // The tick is irrelevant to a close-based alert, and vice versa.
   expect(isAlertReached(touch, { closedCandle: candle(430) })).toBeFalse()
 
-  const close = alert({ basis: "CLOSE", interval: "MIN_10" })
+  const close = alert({ basis: "CLOSE", interval: "MIN_5" })
   expect(isAlertReached(close, { lastPrice: 430 })).toBeFalse()
   expect(isAlertReached(close, { closedCandle: candle(421) })).toBeTrue()
 })
@@ -97,7 +97,7 @@ test("refuses a level the market has already passed", () => {
 test("refuses a rule that cannot resolve the level it claims to watch", () => {
   expect(validatePriceAlert(draft({ value: 0 }), 400)).toBe("Value must be greater than zero")
   expect(validatePriceAlert(draft({ basis: "CLOSE", interval: null }), 400)).toBe("Close-based alerts need a timeframe")
-  expect(validatePriceAlert(draft({ kind: "ATR", value: 2, interval: "MIN_10", atrValue: null }), 400))
+  expect(validatePriceAlert(draft({ kind: "ATR", value: 2, interval: "MIN_5", atrValue: null }), 400))
     .toBe("ATR is unavailable for this timeframe")
   expect(validatePriceAlert(draft({ kind: "PERCENT", value: 5, referencePrice: null }), 400))
     .toBe("No market price to measure from")

@@ -103,7 +103,7 @@ test("asks for a timeframe once the rule needs candles", async () => {
   expect(captureCharFrame()).toContain("Timeframe")
 
   save(editor, 3) // interval → quantity → action
-  expect(saved[0]).toMatchObject({ basis: "CLOSE", interval: "MIN_10" })
+  expect(saved[0]).toMatchObject({ basis: "CLOSE", interval: "MIN_5" })
 
   editor.destroy()
   renderer.destroy()
@@ -123,7 +123,7 @@ test("reads the ATR a multiple is measured against", async () => {
   expect(captureCharFrame()).toContain("ATR")
 
   save(editor, 4) // basis → interval → quantity → action
-  expect(saved[0]).toMatchObject({ kind: "ATR", value: 2, interval: "MIN_10", atrValue: 4 })
+  expect(saved[0]).toMatchObject({ kind: "ATR", value: 2, interval: "MIN_5", atrValue: 4 })
 
   editor.destroy()
   renderer.destroy()

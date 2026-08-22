@@ -1,3 +1,4 @@
+import { MarketFeed } from "@trbot/feed"
 import { memberFeatureSet } from "@trbot/member/features.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import type { ProviderSessionAccess, ProviderSources } from "./session.ts"
@@ -94,4 +95,15 @@ export class TestProviderSession implements ProviderSessionAccess {
       for (const listener of this.sessionListeners) listener()
     }
   }
+}
+
+/**
+ * A feed for tests that exercise the real connector.
+ *
+ * None of them reach market data — they fail at login or resume first — so this
+ * exists only to satisfy the connector that builds sources. Constructing it opens
+ * nothing: the socket dials on first subscription.
+ */
+export function unusedFeed(): MarketFeed {
+  return new MarketFeed({ credentials: { username: "feed", password: "feed" } })
 }

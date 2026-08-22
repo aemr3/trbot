@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { ToolCall } from "@earendil-works/pi-ai"
-import { FUTURES_INTERVALS_BY_RANGE, type CandleSeries } from "@trbot/market/candle.ts"
+import { DEFAULT_INTERVALS_BY_RANGE, type CandleSeries } from "@trbot/market/candle.ts"
 import type { DepthBook, DepthBookListener, DepthStatusListener, DepthStream } from "@trbot/market/depth.ts"
 import type { EquityQuoteListener, EquityQuoteStream } from "@trbot/market/equity-quote-stream.ts"
 import { ViopInstrumentSchema, type ViopInstrument } from "@trbot/market/instrument.ts"
@@ -440,7 +440,7 @@ test("falls back to the latest underlying candle when a live equity quote is una
     sessionStatus: null,
     source: "CANDLE_CLOSE",
     candleRange: "WEEK",
-    candleInterval: "MIN_10",
+    candleInterval: "MIN_5",
   })
   expect(testHarness.calls.candles).toEqual([{ instrumentUid: ASELS.uid, target: "UNDERLYING" }])
   expect(stream.stopped).toBe(1)
@@ -550,7 +550,7 @@ function candles(
       close: 400 + index,
       volume: 1_000 + index,
     })),
-    availableIntervalsByRange: FUTURES_INTERVALS_BY_RANGE,
+    availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
     intervalMs: 60_000,
     currency: "TRY",
   }
@@ -574,7 +574,5 @@ function depthBook(): DepthBook {
       { id: "trade-2", price: 400, lots: 1, side: "SELL", buyer: "C", seller: "D" },
     ],
     marketClosed: false,
-    maintenance: false,
-    infoMessage: null,
   }
 }

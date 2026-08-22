@@ -16,7 +16,12 @@ import {
   type PriceAlertKind,
   type PriceAlertRepeat,
 } from "@trbot/market/alert.ts"
-import { CANDLE_INTERVAL_LABELS, FUTURES_INTERVALS, type CandleInterval } from "@trbot/market/candle.ts"
+import {
+  CANDLE_INTERVAL_LABELS,
+  DEFAULT_RULE_INTERVAL,
+  RULE_INTERVALS,
+  type CandleInterval,
+} from "@trbot/market/candle.ts"
 import { LEVEL_DIRECTIONS, type LevelDirection } from "@trbot/market/price-level.ts"
 import type { ViopInstrument } from "@trbot/market/instrument.ts"
 
@@ -32,8 +37,8 @@ const ERROR_COLOR = TUI_THEME.softError
 // Only the grains the futures feed actually serves. Offering 5m here would be a
 // lie: the provider would answer with its 10m series and the alert would fire
 // on closes it never named.
-const ALERT_INTERVALS: CandleInterval[] = FUTURES_INTERVALS
-const DEFAULT_ALERT_INTERVAL: CandleInterval = FUTURES_INTERVALS[0] ?? "MIN_10"
+const ALERT_INTERVALS: CandleInterval[] = RULE_INTERVALS
+const DEFAULT_ALERT_INTERVAL: CandleInterval = DEFAULT_RULE_INTERVAL
 
 const KIND_LABELS = {
   PRICE: "Price",

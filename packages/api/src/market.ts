@@ -113,157 +113,8 @@ export interface FutureDetailVariables {
   instrumentUid: string
 }
 
-interface BrokerageDistributionEntry {
-  brokerage: string
-  netShares: number
-  // Volume-weighted average price the brokerage traded at over the range.
-  cost: number
-  percentage: number
-}
-
-export interface BrokerageCalendarPreset {
-  title: string
-  subtitle: string | null
-  start: string | null
-  end: string | null
-  isDefault: boolean
-  action: string
-}
-
-export interface BrokerageDistributionData {
-  brokerageDistribution?: {
-    calendar: {
-      // Every trading day the provider will report on, newest first.
-      dateSet: string[]
-      presets: BrokerageCalendarPreset[]
-    }
-    distribution: BrokerageDistributionEntry[]
-    position: string
-    topNSize: number
-    topNPercentage: number
-    // True while the range includes the current session and the figures keep moving.
-    dynamic: boolean
-    topNShares: number
-    otherShares: number
-    lastUpdate: string | null
-    sessionStatusEnabled: boolean
-  } | null
-}
-
-export interface BrokerageDistributionVariables {
-  uid: string
-  brokeragePosition: string
-  start: string | null
-  end: string | null
-}
-
 // The provider's own name for each reading of the settlement register: the
 // standing positions, and the houses that grew or shrank theirs.
-export type SettlementAnalysisType = "TOTAL" | "UP" | "DOWN"
-
-interface SettlementAnalysisEntry {
-  brokerage: string
-  percentage: number | null
-  percentageChange: number | null
-  lotChange: number | null
-  totalLot: number | null
-}
-
-export interface SettlementAnalysisData {
-  settlementAnalysis?: {
-    calendar: {
-      // Every trading day the provider will report on, newest first.
-      dateSet: string[]
-      presets: BrokerageCalendarPreset[]
-    }
-    settlements: SettlementAnalysisEntry[]
-    type: SettlementAnalysisType
-    topNSize: number
-    topNPercentage: number
-    // Lots held on a TOTAL reading, lots moved on an UP or DOWN one.
-    topNLotChange: number
-    otherLotChange: number
-    // True while the range includes the current session and the figures keep moving.
-    dynamic: boolean
-    lastUpdate: string | null
-    // Set when the range runs past the last day the register was published for.
-    lastDateErrorMessage: string | null
-  } | null
-}
-
-export interface SettlementAnalysisVariables {
-  uid: string
-  settlementType: SettlementAnalysisType
-  start: string | null
-  end: string | null
-}
-
-interface AdvancedChartEntry {
-  o: number
-  h: number
-  l: number
-  c: number
-  d: number | null
-  v2: number | null
-  ed: number | null
-  m: boolean | null
-}
-
-export interface AdvancedChartData {
-  advancedChart?: {
-    data: AdvancedChartEntry[]
-    timeRange: string | null
-    selectedInterval: { id: string; displayName: string } | null
-    availableIntervalsByTimeRange: {
-      timeRange: string
-      intervals: { id: string; displayName: string }[]
-    }[]
-    currency: string | null
-    intervalMs: number | null
-    missingTimestampLabel: string | null
-    marketDataProviderInMaintenance: boolean | null
-  } | null
-}
-
-export interface AdvancedChartVariables {
-  instrumentUid: string
-  selectedIndicatorIds: string[]
-  timeRange: string
-  intervalId: string
-}
-
-interface CandlestickChartEntry {
-  o: number
-  h: number
-  l: number
-  c: number
-  d: number | null
-  v: number | null
-  ed: number | null
-  ts: string | null
-}
-
-export interface CandlestickChartData {
-  candlestickChartV2?: {
-    data: CandlestickChartEntry[]
-    timeRange: string
-    availableTimeRanges: string[]
-    currency: string
-    maxCount: number
-    intervalMs: number
-    missingTimestampLabel: string | null
-    rangeStartPrice: number
-    marketDataProviderInMaintenance: boolean | null
-    sessionInfoFeatureEnabled: boolean | null
-  } | null
-}
-
-export interface CandlestickChartVariables {
-  instrumentId: string
-  timeRange: string
-  currency: string
-}
-
 // VIOP futures live prices arrive over SSE on the streaming host. The event is
 // named `PriceUpdate` and the payload keys are single letters.
 export const VIOP_PRICE_STREAM_PATH = "/reactive-viop-api/v1/viop/futures/price-quote"
@@ -467,31 +318,11 @@ export const marketOperations = {
     "query",
     "query searchByAdvancedTools($query: String!, $tool: DiscoveryAdvancedTool!, $page: Int!, $size: Int!) { searchByAdvancedTools(query: $query, tool: $tool, page: $page, size: $size) { results { __typename uid type ... on InstrumentSearchResultItem { symbol } } page hasNext } }",
   ),
-  brokerageDistribution: defineOperation<BrokerageDistributionData, BrokerageDistributionVariables>(
-    "brokerageDistribution",
-    "query",
-    "query brokerageDistribution($uid: String!, $brokeragePosition: BrokeragePosition, $start: Date, $end: Date) { brokerageDistribution(uid: $uid, brokeragePosition: $brokeragePosition, start: $start, end: $end) { calendar { dateSet presets { title subtitle start end isDefault action } } distribution { brokerage netShares cost percentage } position topNSize topNPercentage dynamic topNShares otherShares lastUpdate sessionStatusEnabled } }",
-  ),
   // The provider checksums the document it registered, so the selection set is
   // sent as published even where the app maps only part of it.
-  settlementAnalysis: defineOperation<SettlementAnalysisData, SettlementAnalysisVariables>(
-    "settlementAnalysis",
-    "query",
-    "query settlementAnalysis($uid: String!, $settlementType: SettlementType, $start: Date, $end: Date) { settlementAnalysis(uid: $uid, settlementType: $settlementType, start: $start, end: $end) { calendar { dateSet presets { title subtitle start end isDefault action } } settlements { brokerage percentage percentageChange lotChange totalLot info { title url } } type availableColumns topNTitle topNSize topNPercentage topNLotChange otherLotChange totalLotInfo dynamic lastUpdate lastDateErrorMessage } }",
-  ),
   futureDetail: defineOperation<FutureDetailData, FutureDetailVariables>(
     "futureDetail",
     "query",
     "query futureDetail($instrumentUid: String!) { futureDetail(futureUid: $instrumentUid) { contractDetails { title description items { key text value info { title url } } } stats { title description items { key text value info { title url } } } } }",
-  ),
-  advancedChart: defineOperation<AdvancedChartData, AdvancedChartVariables>(
-    "advancedChart",
-    "query",
-    "query advancedChart($instrumentUid: String!, $selectedIndicatorIds: [String!], $timeRange: TimeRange, $intervalId: String) { advancedChart(instrumentUid: $instrumentUid, selectedIndicatorIds: $selectedIndicatorIds, timeRange: $timeRange, intervalId: $intervalId, availableIndicatorPackVersion: \"1\") { data { o h l c v2 d ed m } currency availableIntervalsByTimeRange { timeRange intervals { id displayName } } timeRange selectedInterval { id displayName } intervalMs missingTimestampLabel marketDataProviderInMaintenance } }",
-  ),
-  candlestickChartV2: defineOperation<CandlestickChartData, CandlestickChartVariables>(
-    "candlestickChartV2",
-    "query",
-    "query candlestickChartV2($instrumentId: String!, $timeRange: TimeRange, $currency: CurrencyCode) { candlestickChartV2(instrumentUid: $instrumentId, timeRange: $timeRange, currency: $currency) { data { o h l c d v ed ts } timeRange availableTimeRanges currency maxCount intervalMs missingTimestampLabel rangeStartPrice marketDataProviderInMaintenance sessionInfoFeatureEnabled } }",
   ),
 } as const

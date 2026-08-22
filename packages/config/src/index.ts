@@ -11,6 +11,7 @@ export interface AppCredentials {
 export interface AppConfig {
   databaseUrl: string
   credentials: AppCredentials | null
+  feedCredentials: AppCredentials | null
 }
 
 const DEFAULT_DATABASE_URL = "./data/db.sqlite"
@@ -49,6 +50,7 @@ export function loadConfig(env: Record<string, string | undefined> = environment
   return {
     databaseUrl: loadDatabaseUrl(env),
     credentials: loadCredentials(env),
+    feedCredentials: loadFeedCredentials(env),
   }
 }
 
@@ -134,6 +136,18 @@ function parsePort(value: string | undefined): number {
 export function loadCredentials(env: Record<string, string | undefined> = environment()): AppCredentials | null {
   const username = env.TRBOT_USERNAME?.trim()
   const password = env.TRBOT_PASSWORD
+  if (!username || !password) return null
+  return { username, password }
+}
+
+/**
+ * Credentials for the market data feed, which is a separate account from the
+ * brokerage: the feed serves prices, the brokerage places orders. The variable
+ * names say whose account it is, which is the one place the vendor belongs.
+ */
+export function loadFeedCredentials(env: Record<string, string | undefined> = environment()): AppCredentials | null {
+  const username = env.FINTABLES_USERNAME?.trim()
+  const password = env.FINTABLES_PASSWORD
   if (!username || !password) return null
   return { username, password }
 }

@@ -57,10 +57,14 @@ const BasisParameter = Type.Union([Type.Literal("TOUCH"), Type.Literal("CLOSE")]
   description: "TOUCH reacts to a live trade; CLOSE ignores wicks and waits for a completed candle beyond the level. New rules default to TOUCH when omitted",
 })
 const IntervalParameter = Type.Union([
-  Type.Literal("MIN_10"),
+  Type.Literal("MIN_1"),
+  Type.Literal("MIN_5"),
+  Type.Literal("MIN_15"),
+  Type.Literal("MIN_30"),
   Type.Literal("HOUR_1"),
   Type.Literal("HOUR_4"),
   Type.Literal("DAY_1"),
+  Type.Literal("WEEK_1"),
 ], { description: "Candle timeframe used for CLOSE triggers and ATR calculation; required for CLOSE, ATR, and TRAILING_ATR rules" })
 
 const ValueParameter = Type.Number({
@@ -328,7 +332,7 @@ async function buildDraft(
 
   let series = null
   if (isAtrStopRule(configuration.kind) || position.currentPrice === null && instrument.lastPrice === null) {
-    const candleInterval = interval ?? "MIN_10"
+    const candleInterval = interval ?? "MIN_5"
     series = await sources.candles.loadCandles(instrument.uid, rangeForInterval(candleInterval), candleInterval, {
       signal,
       target: "INSTRUMENT",

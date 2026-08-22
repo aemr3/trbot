@@ -3,7 +3,12 @@ import { TUI_THEME } from "../theme.ts"
 // the monitor decides when the level is reached, and nothing here trades.
 import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
 import { z } from "zod"
-import { CANDLE_INTERVAL_LABELS, FUTURES_INTERVALS, type CandleInterval } from "@trbot/market/candle.ts"
+import {
+  CANDLE_INTERVAL_LABELS,
+  DEFAULT_RULE_INTERVAL,
+  RULE_INTERVALS,
+  type CandleInterval,
+} from "@trbot/market/candle.ts"
 import type { AccountPosition } from "@trbot/trading/account.ts"
 import {
   STOP_RULE_BASES,
@@ -31,8 +36,6 @@ const ERROR_COLOR = TUI_THEME.softError
 // Only the grains the futures feed actually serves. Offering 5m here would be
 // a lie: the provider would answer with its 10m series and the rule would act
 // on closes it never named.
-const RULE_INTERVALS: CandleInterval[] = FUTURES_INTERVALS
-const DEFAULT_RULE_INTERVAL: CandleInterval = FUTURES_INTERVALS[0] ?? "MIN_10"
 
 const KIND_LABELS = {
   PRICE: "Price",

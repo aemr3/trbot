@@ -4,9 +4,10 @@ import type { AuthState } from "@trbot/auth/state.ts"
 import type { AuthStore } from "@trbot/auth/store.ts"
 import type { AppCredentials } from "@trbot/config"
 import { ProtocolError } from "@trbot/protocol/error.ts"
-import { providerSources } from "./provider.test-fixture.ts"
+import { providerSources, unusedFeed } from "./provider.test-fixture.ts"
 import {
   ProviderSession,
+  providerConnector,
   type ProviderSessionConnector,
   type ProviderSessionHandle,
   type ProviderSourceOptions,
@@ -122,6 +123,7 @@ describe("provider session recovery", () => {
     const session = new ProviderSession({
       openAuthSession: sessionWith(state, { count: 0 }),
       credentials: null,
+      connector: providerConnector(unusedFeed()),
     })
 
     const error = await session.login(username, "password").catch((cause: unknown) => cause)
@@ -132,7 +134,11 @@ describe("provider session recovery", () => {
 
   test("expires and tells listeners when there are no credentials to retry with", async () => {
     const opened = { count: 0 }
-    const session = new ProviderSession({ openAuthSession: sessionWith(null, opened), credentials: null })
+    const session = new ProviderSession({
+      openAuthSession: sessionWith(null, opened),
+      credentials: null,
+      connector: providerConnector(unusedFeed()),
+    })
     let expired = 0
     session.onExpired(() => (expired += 1))
 

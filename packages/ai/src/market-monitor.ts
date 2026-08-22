@@ -15,7 +15,7 @@ import type {
 import {
   averageTrueRange,
   closedCandles,
-  futuresRangeForInterval,
+  rangeForInterval,
   type CandleInterval,
   type CandleSource,
 } from "@trbot/market/candle.ts"
@@ -41,10 +41,14 @@ const Basis = Type.Union([Type.Literal("TOUCH"), Type.Literal("CLOSE")], {
   description: "TOUCH reacts to a live trade crossing; CLOSE waits for a completed candle beyond the level",
 })
 const Interval = Type.Union([
-  Type.Literal("MIN_10"),
+  Type.Literal("MIN_1"),
+  Type.Literal("MIN_5"),
+  Type.Literal("MIN_15"),
+  Type.Literal("MIN_30"),
   Type.Literal("HOUR_1"),
   Type.Literal("HOUR_4"),
   Type.Literal("DAY_1"),
+  Type.Literal("WEEK_1"),
 ], { description: "Completed-candle timeframe for CLOSE monitors and ATR measurement" })
 const Repeat = Type.Union([Type.Literal("ONCE"), Type.Literal("ALWAYS")], {
   description: "ONCE stops after triggering; ALWAYS re-arms after price returns to the near side and crosses again",
@@ -353,9 +357,7 @@ async function readAtr(
   signal?: AbortSignal,
 ): Promise<number | null> {
   if (!isAtrAlert(kind) || !interval) return null
-  const range = futuresRangeForInterval(interval)
-  if (!range) throw new Error(`${interval} is not available for VIOP market monitors`)
-  const series = await service.candles.loadCandles(instrumentUid, range, interval, {
+  const series = await service.candles.loadCandles(instrumentUid, rangeForInterval(interval), interval, {
     signal,
     target: "INSTRUMENT",
   })

@@ -5,10 +5,9 @@
 import {
   averageTrueRange,
   closedCandles,
-  futuresRangeForInterval,
+  rangeForInterval,
   type Candle,
   type CandleInterval,
-  type CandleRange,
   type CandleSource,
 } from "@trbot/market/candle.ts"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
@@ -442,14 +441,7 @@ export class StopMonitor {
   }
 }
 
-/**
- * The range to ask for so a futures contract comes back at `interval`. Rules
- * protect futures positions, and that feed infers the grain from the range
- * rather than taking a requested interval.
- */
-export function rangeForInterval(interval: CandleInterval): CandleRange {
-  return futuresRangeForInterval(interval) ?? "INTRADAY"
-}
+
 
 function candleKey(rule: StopRule): string {
   return `${rule.instrumentUid}:${rule.interval}`
@@ -463,3 +455,6 @@ function sampleState(sample: QuoteSample | undefined, now: number, staleAfter: n
 function isAbortError(cause: unknown): boolean {
   return cause instanceof DOMException && cause.name === "AbortError"
 }
+
+// Re-exported so callers that already reach for the monitor keep one import.
+export { rangeForInterval }

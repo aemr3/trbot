@@ -15,8 +15,6 @@ function book(trades: DepthTrade[]): DepthBook {
     sellLots: null,
     trades,
     marketClosed: false,
-    maintenance: false,
-    infoMessage: null,
   }
 }
 

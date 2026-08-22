@@ -4,7 +4,7 @@ import {
   type MarketMonitor,
   type MarketMonitorDraft,
 } from "@trbot/market/market-monitor.ts"
-import { FUTURES_INTERVALS_BY_RANGE, type CandleSeries } from "@trbot/market/candle.ts"
+import { DEFAULT_INTERVALS_BY_RANGE, type CandleSeries } from "@trbot/market/candle.ts"
 import type { ViopInstrument } from "@trbot/market/instrument.ts"
 import { marketMonitorTools, type MarketMonitorToolClients } from "./market-monitor.ts"
 import { ChatTools } from "./tool.ts"
@@ -278,7 +278,7 @@ function candleSeries(
       close: 400,
       volume: 1_000,
     })),
-    availableIntervalsByRange: FUTURES_INTERVALS_BY_RANGE,
+    availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
     intervalMs: 3_600_000,
     currency: "TRY",
   }

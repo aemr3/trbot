@@ -45,7 +45,7 @@ const ACCOUNT: AccountSnapshot = {
 const CANDLES: CandleSeries = {
   instrumentUid: INSTRUMENT.uid,
   range: "INTRADAY",
-  interval: "MIN_10",
+  interval: "MIN_5",
   candles: Array.from({ length: 16 }, (_, index) => ({
     timestamp: index * 600_000,
     open: 98 + index * 0.1,
@@ -55,12 +55,12 @@ const CANDLES: CandleSeries = {
     volume: 1_000,
   })),
   availableIntervalsByRange: {
-    INTRADAY: ["MIN_10"],
+    INTRADAY: ["MIN_5"],
     WEEK: ["HOUR_1"],
     MONTH: ["HOUR_4"],
     THREE_MONTH: ["DAY_1"],
     YEAR: ["DAY_1"],
-    FIVE_YEAR: ["DAY_1"],
+    FIVE_YEAR: ["DAY_1"], ALL: ["DAY_1"]
   },
   intervalMs: 600_000,
   currency: "TRY",
@@ -159,7 +159,7 @@ test("derives ATR from contract candles instead of trusting a model-supplied val
       kind: "TRAILING_ATR",
       value: 1.5,
       basis: "TOUCH",
-      interval: "MIN_10",
+      interval: "MIN_5",
     },
   }, { chatSessionId: "chat-1" })
 
