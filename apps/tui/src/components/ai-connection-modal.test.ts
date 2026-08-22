@@ -56,7 +56,7 @@ function account(options: {
       options.disconnected?.push(providerId)
     },
     async preferences() {
-      return { overview: null, chat: null }
+      return { chat: null }
     },
     async setPreferences(preferences) {
       return preferences

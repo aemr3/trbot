@@ -73,9 +73,9 @@ const DistributionSchema = z.object({
 /**
  * How long a reading is reused.
  *
- * Both sides come from one response, and the panel and the overview each ask for
- * the two separately, so without this every reading is fetched twice. Short
- * enough that a reading of the open session still keeps up with it.
+ * Both sides come from one response but callers ask for them separately, so
+ * without this switching sides would fetch the same reading twice. Short enough
+ * that a reading of the open session still keeps up with it.
  */
 const READING_TTL_MS = 15_000
 

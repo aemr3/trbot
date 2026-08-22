@@ -6,11 +6,6 @@ import {
 } from "@earendil-works/pi-ai"
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all"
 import type {
-  MarketOverviewDigest,
-  OverviewGenerateOptions,
-  OverviewGenerator,
-} from "@trbot/market/overview.ts"
-import type {
   AiAccount,
   AiAuthType,
   AiCredentials,
@@ -24,15 +19,11 @@ import {
   AiCredentialSchema,
   AiProviderSummarySchema,
   AiModelSummarySchema,
-  OverviewStreamFrameSchema,
 } from "@trbot/protocol/ai.ts"
-import { parseErrorBody, ProtocolError } from "@trbot/protocol/error.ts"
 import { OkResponseSchema, ROUTES } from "@trbot/protocol/routes.ts"
 import { openExternalUrl } from "./browser.ts"
 import type { HttpClient } from "./http.ts"
 import { z } from "zod"
-
-const OverviewErrorMarkerSchema = z.object({ error: z.unknown() })
 
 /**
  * Running a provider's authorization flow on this machine.
@@ -181,53 +172,6 @@ export class HttpAiAccount implements AiAccount {
   async disconnect(providerId: string): Promise<void> {
     await this.http.delete(ROUTES.aiProvider(providerId), OkResponseSchema)
   }
-}
-
-/** Streams the server's commentary, which the model produces a piece at a time. */
-export class HttpOverviewGenerator implements OverviewGenerator {
-  constructor(private readonly http: HttpClient) {}
-
-  async generate(digest: MarketOverviewDigest, options: OverviewGenerateOptions): Promise<void> {
-    const stream = await this.http.stream(ROUTES.overview, { body: digest, signal: options.signal })
-    for await (const line of readLines(stream)) {
-      const decoded: unknown = JSON.parse(line)
-      const parsed = OverviewStreamFrameSchema.safeParse(decoded)
-
-      if (parsed.success && "delta" in parsed.data) {
-        options.onDelta(parsed.data.delta)
-        continue
-      }
-
-      // A failure part way through a response arrives as a frame, since the
-      // status was already sent.
-      const streamError = parseErrorBody(decoded)
-      if (streamError) throw streamError
-
-      if (OverviewErrorMarkerSchema.safeParse(decoded).success) {
-        throw new ProtocolError("internal", "The server sent an invalid error frame")
-      }
-
-      // Anything else is a heartbeat, or a frame from a newer server. Both are
-      // ignored on purpose: only an error frame ends the stream early.
-    }
-  }
-}
-
-async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
-  const decoder = new TextDecoder()
-  let buffer = ""
-  for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true })
-    let newline = buffer.indexOf("\n")
-    while (newline >= 0) {
-      const line = buffer.slice(0, newline).trim()
-      buffer = buffer.slice(newline + 1)
-      if (line) yield line
-      newline = buffer.indexOf("\n")
-    }
-  }
-  const rest = buffer.trim()
-  if (rest) yield rest
 }
 
 function abortError(): DOMException {

@@ -267,7 +267,7 @@ function account(options: {
   onSetPreferences?: (preferences: AiPreferences) => void
 } = {}): AiAccount {
   let joined = options.connected ?? false
-  let preferences: AiPreferences = options.preferences ?? { overview: null, chat: null }
+  let preferences: AiPreferences = options.preferences ?? { chat: null }
   const summary = (): AiProviderSummary => ({
     providerId: "test-provider",
     name: "Test Provider",
@@ -1385,13 +1385,12 @@ test("a chosen model and reasoning become the default for new chats", async () =
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   await chats.create()
-  const overview: AiModelChoice = { providerId: "groq", modelId: "llama-4", reasoning: null }
   const saved: AiPreferences[] = []
   const screen = new ChatScreen(renderer, {
     chats,
     account: account({
       connected: true,
-      preferences: { overview, chat: null },
+      preferences: { chat: null },
       onSetPreferences: (preferences) => saved.push(preferences),
     }),
     logs: new ApplicationLog(),
@@ -1410,7 +1409,6 @@ test("a chosen model and reasoning become the default for new chats", async () =
   await waitForFrame((frame) => saved.length === 1 && !frame.includes("Model for this chat"))
 
   expect(saved).toEqual([{
-    overview,
     chat: { providerId: "test-provider", modelId: "test-model", reasoning: "high" },
   }])
 

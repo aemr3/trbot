@@ -131,7 +131,7 @@ describe("InstrumentCandleSource", () => {
     expect(listCalls()).toBe(1)
   })
 
-  // Charts, overview panels, and rules all resolve at once on a screen open.
+  // Charts and rules can resolve at once on a screen open.
   test("shares one list read across concurrent loads", async () => {
     const { subject, listCalls } = build()
     await Promise.all([

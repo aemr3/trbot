@@ -87,8 +87,7 @@ type Movement = z.infer<typeof MovementSchema>
  *
  * A settled day does not change, and even the current one moves slowly, but the
  * reason for holding them at all is that the three readings overlap: "who added"
- * and "who shed" are the same two registers read twice, and the overview asks for
- * both at once.
+ * and "who shed" are the same two registers read twice.
  */
 const REGISTER_TTL_MS = 60_000
 

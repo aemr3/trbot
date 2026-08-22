@@ -72,13 +72,7 @@ and the same screen runs whichever flow the chosen one uses: it opens a browser 
 catches the redirect, shows a device code, or takes a key you type. The server
 stores the credential and refreshes it from then on; the terminal keeps nothing.
 
-Then pick what answers:
-
-- `m` in the `CHAT` tab sets the model for that chat session, and `r` its
-  reasoning effort. Each session records its own, so two sessions can run on two
-  providers at once.
-- `M` on the trade screen, with the overview panel focused, sets the model behind
-  the market overview.
-
-Until something is picked, the overview and the composer say so and name the key
-that fixes it.
+Then pick what answers: `m` in the `CHAT` tab sets the model for that chat
+session, and `r` its reasoning effort. Each session records its own, so two
+sessions can run on two providers at once. Until something is picked, the
+composer says so and names the key that fixes it.

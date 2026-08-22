@@ -2,20 +2,18 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Server } from "bun"
 import { createHarness } from "@trbot/ai/harness.ts"
 import type { AiCredentialRecord, AiCredentialStore, AiPreferencesRecord, AiPreferencesStore } from "@trbot/ai/credential-store.ts"
-import { HttpAiAccount, HttpOverviewGenerator } from "@trbot/client/ai.ts"
+import { HttpAiAccount } from "@trbot/client/ai.ts"
 import { HttpChatSessions } from "@trbot/client/chat.ts"
 import { HttpClient } from "@trbot/client/http.ts"
 import type { ChatNotification, ChatNotificationStore } from "@trbot/chat/notification.ts"
 import type { ChatSessionDetail } from "@trbot/chat/session.ts"
 import { HttpInstrumentSource, HttpMemberFeatureSource, HttpOrderSource } from "@trbot/client/sources.ts"
-import { buildOverviewDigest } from "@trbot/market/overview.ts"
 import { memberFeatureSet, type MemberFeatureSet } from "@trbot/member/features.ts"
 import { AiProviderSummarySchema, type AiPreferences } from "@trbot/protocol/ai.ts"
 import { isProtocolError, requiresAuthentication, type ProtocolError } from "@trbot/protocol/error.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
 import { openDatabase, type DatabaseConnection } from "@trbot/db/client.ts"
 import { DrizzleAppPreferencesStore } from "@trbot/db/app-preferences-store.ts"
-import { DrizzleOverviewSnapshotStore } from "@trbot/db/overview-snapshot-store.ts"
 import { AiService } from "../ai.ts"
 import { IdempotencyStore } from "./idempotency.ts"
 import { startServer } from "./server.ts"
@@ -28,18 +26,6 @@ import { z } from "zod"
 import type { ChatController } from "../chat.ts"
 
 const TOKEN = "integration-token"
-
-const DIGEST = buildOverviewDigest({
-  mode: "DAILY",
-  instrument: {
-    symbol: "ASELS",
-    displayName: "Aselsan",
-    lastPrice: 390,
-    contractSymbol: "F_ASELS0826",
-    contractLastPrice: 394,
-  },
-  range: { start: null, end: null },
-})
 
 function memoryCredentials(): AiCredentialStore {
   const records = new Map<string, AiCredentialRecord>()
@@ -78,7 +64,6 @@ describe("server and client over the wire", () => {
   let url: string
   let connection: DatabaseConnection
   let session: TestProviderSession
-  let overviewFailure: Error | null = null
   let notifications: ChatNotificationController
   const compactedChats: string[] = []
   const detailedChats: Array<{ sessionId: string; topLevelLimit?: number }> = []
@@ -92,13 +77,6 @@ describe("server and client over the wire", () => {
       models: createHarness(credentials),
       credentials,
       preferences: memoryPreferences(),
-      generator: {
-        async generate(_digest, options) {
-          options.onDelta("Flow is ")
-          if (overviewFailure) throw overviewFailure
-          options.onDelta("one-sided.")
-        },
-      },
     })
     const notificationRows: ChatNotification[] = []
     const notificationStore: ChatNotificationStore = {
@@ -117,7 +95,6 @@ describe("server and client over the wire", () => {
         hub,
         idempotency: new IdempotencyStore(connection.db),
         preferences: new DrizzleAppPreferencesStore(connection.db),
-        overviewSnapshots: new DrizzleOverviewSnapshotStore(connection.db),
         ai,
         // SAFETY: this integration suite exercises only these two controller surfaces.
         chat: {
@@ -320,87 +297,16 @@ describe("server and client over the wire", () => {
 
   test("the chosen models round-trip, and clearing one is a real answer", async () => {
     const account = new HttpAiAccount(client)
-    expect(await account.preferences()).toEqual({ overview: null, chat: null })
+    expect(await account.preferences()).toEqual({ chat: null })
 
     const saved = await account.setPreferences({
-      overview: { providerId: "groq", modelId: "llama-4", reasoning: "high" },
-      chat: null,
+      chat: { providerId: "groq", modelId: "llama-4", reasoning: "high" },
     })
-    expect(saved).toEqual({ overview: { providerId: "groq", modelId: "llama-4", reasoning: "high" }, chat: null })
+    expect(saved).toEqual({ chat: { providerId: "groq", modelId: "llama-4", reasoning: "high" } })
     expect(await account.preferences()).toEqual(saved)
 
-    const cleared: AiPreferences = { overview: null, chat: null }
+    const cleared: AiPreferences = { chat: null }
     expect(await account.setPreferences(cleared)).toEqual(cleared)
-  })
-
-  // Every stream opens with a heartbeat, so this also proves the client passes
-  // only real commentary to the panel and never renders a keep-alive frame.
-  //
-  // A model has to be chosen and reachable first, because that is what the route
-  // checks before it opens a stream at all.
-  test("the overview streams from the server a piece at a time", async () => {
-    const account = new HttpAiAccount(client)
-    await client.post(ROUTES.aiProvider("groq"), AiProviderSummarySchema, {
-      body: { providerId: "groq", credential: { type: "api_key", key: "gsk-not-a-real-key" } },
-    })
-    await account.setPreferences({
-      overview: { providerId: "groq", modelId: "llama-4", reasoning: null },
-      chat: null,
-    })
-
-    const deltas: string[] = []
-    await new HttpOverviewGenerator(client).generate(DIGEST, { onDelta: (text) => deltas.push(text) })
-    expect(deltas).toEqual(["Flow is ", "one-sided."])
-  })
-
-
-  // The status is long gone by the time the model fails, so the failure has to
-  // travel as a frame. What the client rethrows is still a protocol error.
-  test("a failure part way through the overview reaches the client", async () => {
-    overviewFailure = new Error("the model gave up")
-    const deltas: string[] = []
-    const error = await new HttpOverviewGenerator(client)
-      .generate(DIGEST, { onDelta: (text) => deltas.push(text) })
-      .catch((cause: unknown) => cause)
-
-    expect(deltas).toEqual(["Flow is "])
-    expect(isProtocolError(error) && error.message).toContain("the model gave up")
-    overviewFailure = null
-  })
-
-  test("an overview for an unknown mode is refused before anything streams", async () => {
-    const error = await client
-      .stream(ROUTES.overview, { body: { mode: "HOURLY" } })
-      .catch((cause: unknown) => cause)
-    expect(isProtocolError(error) && error.code).toBe("invalid_request")
-  })
-
-  /**
-   * Two ways an overview has nowhere to come from, and both are refused before a
-   * stream opens rather than reported inside one. They read differently on purpose:
-   * one is fixed by picking a model, the other by reconnecting a provider.
-   */
-  test("the overview is refused outright when it has no model to run on", async () => {
-    const account = new HttpAiAccount(client)
-
-    await account.setPreferences({ overview: null, chat: null })
-    const unchosen = await new HttpOverviewGenerator(client)
-      .generate(DIGEST, { onDelta: () => {} })
-      .catch((cause: unknown) => cause)
-    expect(isProtocolError(unchosen) && unchosen.code).toBe("invalid_request")
-    expect(isProtocolError(unchosen) && unchosen.message).toContain("No model chosen")
-
-    // Chosen, but its provider has been disconnected since.
-    await account.setPreferences({
-      overview: { providerId: "groq", modelId: "llama-4", reasoning: null },
-      chat: null,
-    })
-    await account.disconnect("groq")
-    const gone = await new HttpOverviewGenerator(client)
-      .generate(DIGEST, { onDelta: () => {} })
-      .catch((cause: unknown) => cause)
-    expect(isProtocolError(gone) && gone.code).toBe("invalid_request")
-    expect(isProtocolError(gone) && gone.message).toContain("not connected")
   })
 
   // The preferences store falls back to defaults for anything it does not
@@ -425,14 +331,6 @@ describe("server and client over the wire", () => {
 
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
     expect(isProtocolError(error) && error.message).toContain("instrumentSort")
-  })
-
-  test("an overview snapshot without the fields it is stored under is refused", async () => {
-    const error = await client
-      .put(ROUTES.overviewSnapshots, z.unknown(), { body: { commentary: "words", digest: {} } })
-      .catch((cause: unknown) => cause)
-
-    expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })
 
   test("an unreachable server surfaces as a transient error", async () => {

@@ -258,8 +258,8 @@ describe("FeedBrokerageDistributionSource", () => {
   })
 
   /**
-   * Both sides arrive in one response, and the panel and the overview each ask
-   * for them separately, so the range is read once however many sides want it.
+   * Both sides arrive in one response but callers ask for them separately, so
+   * the range is read once however many sides want it.
    */
   test("reads one range once for both sides", async () => {
     const { subject, requests } = build()

@@ -21,7 +21,7 @@ export interface AiCredentialStore {
   delete(providerId: string): Promise<void>
 }
 
-/** Which model answers, in one of the two places trbot asks for one. */
+/** Which model answers a new chat session. */
 export interface AiModelChoice {
   providerId: string
   modelId: string
@@ -37,12 +37,11 @@ export interface AiModelChoice {
  * model answered this?" unanswerable.
  */
 export interface AiPreferencesRecord {
-  overview: AiModelChoice | null
   chat: AiModelChoice | null
   updatedAt: number
 }
 
 export interface AiPreferencesStore {
   get(): Promise<AiPreferencesRecord | null>
-  put(preferences: { overview: AiModelChoice | null; chat: AiModelChoice | null }): Promise<AiPreferencesRecord>
+  put(preferences: { chat: AiModelChoice | null }): Promise<AiPreferencesRecord>
 }

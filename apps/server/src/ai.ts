@@ -1,12 +1,6 @@
 import { AiConnections } from "@trbot/ai/connections.ts"
-import { harnessModel, type AiHarness } from "@trbot/ai/harness.ts"
-import { ModelOverviewGenerator } from "@trbot/ai/overview.ts"
+import type { AiHarness } from "@trbot/ai/harness.ts"
 import type { AiCredentialStore, AiPreferencesStore } from "@trbot/ai/credential-store.ts"
-import type {
-  MarketOverviewDigest,
-  OverviewGenerateOptions,
-  OverviewGenerator,
-} from "@trbot/market/overview.ts"
 import type {
   AiCredentials,
   AiModelSummary,
@@ -20,13 +14,11 @@ export interface AiServiceOptions {
   models: AiHarness
   credentials: AiCredentialStore
   preferences: AiPreferencesStore
-  /** Overridden in tests; the real generator streams from the chosen model. */
-  generator?: OverviewGenerator
 }
 
 /**
  * Everything the server does with model providers: holding their credentials, saying
- * which models are usable, and generating the market overview from the chosen one.
+ * which models are usable, and remembering the default for new chats.
  *
  * No provider is special here. A login is not here either: a provider only redirects
  * an authorization to a loopback address, which is the trader's machine and not
@@ -78,21 +70,15 @@ export class AiService {
   }
 
   /**
-   * Fails before a response starts streaming when the model cannot be reached, so a
-   * client sees an ordinary error rather than an empty overview.
+   * Fails before a chat starts when the model cannot be reached.
    *
    * Two separate refusals, because they have different fixes: nothing chosen, and a
    * provider whose credential has gone. A credential that has merely lapsed is
    * neither — the harness refreshes it as part of the request.
    */
-  async requireModel(place: "overview" | "chat", providerId?: string, modelId?: string): Promise<void> {
+  async requireModel(providerId?: string, modelId?: string): Promise<void> {
     if (!providerId || !modelId) {
-      throw new ProtocolError(
-        "invalid_request",
-        place === "overview"
-          ? "No model chosen for the market overview"
-          : "No model chosen for this chat session",
-      )
+      throw new ProtocolError("invalid_request", "No model chosen for this chat session")
     }
     if (!(await this.connections.isConnected(providerId))) {
       const name = this.options.models.getProvider(providerId)?.name ?? providerId
@@ -100,35 +86,4 @@ export class AiService {
     }
   }
 
-  /**
-   * Refuses before a stream starts when the overview has nowhere to come from.
-   *
-   * Separate from `generate` so the refusal is the route's behaviour rather than the
-   * generator's: a client must get an ordinary error response, not a stream that
-   * opens and then yields an error frame nobody is looking for yet.
-   */
-  async requireOverviewModel(): Promise<void> {
-    const choice = (await this.connections.preferences()).overview
-    await this.requireModel("overview", choice?.providerId, choice?.modelId)
-  }
-
-  /**
-   * Streams the overview from whichever model is chosen right now.
-   *
-   * The generator is built per call rather than held, which is what lets a trader
-   * change the model and see the next overview come from it without a restart.
-   */
-  async generate(digest: MarketOverviewDigest, options: OverviewGenerateOptions): Promise<void> {
-    if (this.options.generator) return await this.options.generator.generate(digest, options)
-
-    const choice = (await this.connections.preferences()).overview
-    if (!choice) throw new ProtocolError("invalid_request", "Choose an overview model first")
-    await this.requireModel("overview", choice?.providerId, choice?.modelId)
-    const generator = new ModelOverviewGenerator(
-      this.options.models,
-      harnessModel(this.options.models, choice.providerId, choice.modelId),
-      { reasoningEffort: choice.reasoning ?? undefined },
-    )
-    await generator.generate(digest, options)
-  }
 }

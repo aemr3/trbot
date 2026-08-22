@@ -1,8 +1,6 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable, TextRenderable, type KeyEvent, type Renderable, type RenderContext } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import type { OverviewGenerateOptions, OverviewGenerator } from "@trbot/market/overview.ts"
-import type { MarketOverviewDigest } from "@trbot/market/overview.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import type {
   BrokerageDistribution,
@@ -51,7 +49,7 @@ import { DEFAULT_APP_PREFERENCES, type AppPreferences } from "@trbot/preferences
 
 // Tab cycles the panels in this order from a freshly mounted screen. Naming the
 // destination keeps the tests readable, and adding a panel only moves this list.
-const FOCUS_ORDER = ["instruments", "portfolio", "chart", "depth", "brokers", "account", "news", "overview"] as const
+const FOCUS_ORDER = ["instruments", "portfolio", "chart", "depth", "brokers", "account", "news"] as const
 
 function focusPanel(mockInput: { pressTab(): void }, panel: (typeof FOCUS_ORDER)[number]): void {
   for (let step = 0; step < FOCUS_ORDER.indexOf(panel); step++) mockInput.pressTab()
@@ -426,7 +424,6 @@ test("switches the news panel to its embedded chat and releases input for ticker
   const toolbarLine = chatLines.findIndex((line) => line.includes("News") && line.includes("Chat"))
   const contentLine = chatLines.findIndex((line) => line.includes("SIDE CHAT"))
   expect(contentLine - toolbarLine).toBe(1)
-  expect(chatFrame).not.toContain("AI Overview")
   expect(chatFrame).not.toContain("BIST 30 güne yükselişle başladı")
   expect(chat.mounted).toBe(true)
   expect(chat.modalHost).toBe(screen.root)
@@ -473,9 +470,7 @@ test("switches the news panel to its embedded chat and releases input for ticker
   expect(chat.activations).toBeGreaterThan(activationsBeforeNotification)
 
   mockInput.pressKey("n", { meta: true })
-  const newsFrame = await waitForFrame((frame) => (
-    frame.includes("BIST 30 güne yükselişle başladı") && frame.includes("AI Overview")
-  ))
+  const newsFrame = await waitForFrame((frame) => frame.includes("BIST 30 güne yükselişle başladı"))
   expect(newsFrame).not.toContain("SIDE CHAT")
   expect(screen.isShowingSession("another-session")).toBe(false)
   expect(screen.hasEmbeddedChat()).toBe(true)
@@ -524,7 +519,6 @@ test("restores the embedded chat as the selected trade-side view", async () => {
   screen.mount()
 
   const frame = await waitForFrame((output) => output.includes("SIDE CHAT"))
-  expect(frame).not.toContain("AI Overview")
   expect(frame).not.toContain("BIST 30 güne yükselişle başladı")
   expect(screen.isShowingSession("side-session")).toBe(true)
 
@@ -1951,199 +1945,6 @@ test("locks the settlement tabs on their own entitlement", async () => {
   renderer.destroy()
 })
 
-// Records every digest it is asked to phrase and streams a canned line, so the
-// tests can assert both what the screen computed and what reached the panel.
-class FakeOverviewGenerator implements OverviewGenerator {
-  digests: MarketOverviewDigest[] = []
-  failWith: Error | null = null
-
-  async generate(digest: MarketOverviewDigest, options: OverviewGenerateOptions): Promise<void> {
-    this.digests.push(digest)
-    if (this.failWith) throw this.failWith
-    options.onDelta(`Overview ${this.digests.length} for ${digest.instrument.symbol}.`)
-  }
-}
-
-function overviewScreenOptions(overview: FakeOverviewGenerator) {
-  return {
-    instruments,
-    candles,
-    news,
-    brokerage: new FakeBrokerageSource(),
-    settlement: new FakeSettlementSource(),
-    overview,
-    memberFeatures: entitledFeatures,
-    overviewDebounceMs: 10,
-    overviewIntervalMs: 40,
-  }
-}
-
-test("generates the intraday overview by default and streams the commentary", async () => {
-  const { renderer, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
-  const overview = new FakeOverviewGenerator()
-  const options = overviewScreenOptions(overview)
-  const screen = new TradeScreen(renderer, options)
-  renderer.root.add(screen.root)
-  screen.mount()
-
-  await waitFor(() => overview.digests.length === 1)
-  const frame = await waitForFrame((value) => value.includes("Overview 1 for XU030."))
-  expect(frame).toContain("AI Overview")
-
-  // The live reading takes both flow sides and the session candles, but never
-  // pays for the lagged custody register.
-  expect(options.brokerage.requests.filter((request) => request.side === "SELLER")).toHaveLength(1)
-  expect(options.settlement.requests).toEqual([])
-
-  const digest = overview.digests[0]
-  expect(digest?.mode).toBe("INTRADAY")
-  // Every feed in the digest reads the underlying, so it is priced on the
-  // underlying's own last close; the contract rides alongside with its basis.
-  expect(digest?.instrument).toMatchObject({
-    symbol: "XU030",
-    lastPrice: 102,
-    contractSymbol: "F_XU0300826",
-    contractLastPrice: 15910,
-    basis: 15_808,
-  })
-  expect(digest?.flow?.buyers[0]?.brokerage).toBe("Buyer 1 Yatırım")
-  expect(digest?.custody).toBeNull()
-  expect(digest?.houses.length).toBeGreaterThan(0)
-  expect(digest?.history?.intraday?.candles).toHaveLength(2)
-  expect(digest?.history?.daily?.interval).toBe("DAY_1")
-
-  screen.destroy()
-  renderer.destroy()
-})
-
-test("prices the overview from the underlying's own tape when the book is live", async () => {
-  const { renderer, waitFor } = await createTestRenderer({ width: 200, height: 44 })
-  const overview = new FakeOverviewGenerator()
-  const depth = new FakeDepthStream()
-  const screen = new TradeScreen(renderer, { ...overviewScreenOptions(overview), depth })
-  renderer.root.add(screen.root)
-  screen.mount()
-  await waitFor(() => depth.startedSymbols.includes("XU030"))
-  depth.emit(depthBook("XU030"))
-
-  // The newest print on the underlying's tape beats its last candle close, and
-  // the contract's own 15910 never stands in for either.
-  await waitFor(() => overview.digests.some((digest) => digest.instrument.lastPrice === 390))
-  expect(overview.digests.map((digest) => digest.instrument.contractLastPrice)).not.toContain(390)
-
-  screen.destroy()
-  renderer.destroy()
-})
-
-test("switching to the daily view reads the custody register", async () => {
-  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
-  const overview = new FakeOverviewGenerator()
-  const options = overviewScreenOptions(overview)
-  const screen = new TradeScreen(renderer, options)
-  renderer.root.add(screen.root)
-  screen.mount()
-  await waitFor(() => overview.digests.length === 1)
-
-  focusPanel(mockInput, "overview")
-  mockInput.pressArrow("right")
-  await waitFor(() => overview.digests.length === 2)
-  await waitForFrame((value) => value.includes("Overview 2 for XU030."))
-
-  expect(options.settlement.requests.map((request) => request.mode).sort()).toEqual(["GAINED", "LOST"])
-  const digest = overview.digests[1]
-  expect(digest?.mode).toBe("DAILY")
-  expect(digest?.custody?.gainers[0]?.lotChange).toBe(900_000)
-  expect(digest?.custody?.losers[0]?.lotChange).toBe(-900_000)
-  expect(digest?.book).toBeNull()
-  expect(digest?.history?.intraday).toBeNull()
-
-  // Each view keeps its own cache: switching back is free.
-  mockInput.pressArrow("left")
-  await waitForFrame((value) => value.includes("Overview 1 for XU030."))
-  await Bun.sleep(60)
-  expect(overview.digests).toHaveLength(2)
-
-  screen.destroy()
-  renderer.destroy()
-})
-
-test("serves a cached overview when revisiting an instrument", async () => {
-  const { renderer, mockInput, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
-  const overview = new FakeOverviewGenerator()
-  const screen = new TradeScreen(renderer, overviewScreenOptions(overview))
-  renderer.root.add(screen.root)
-  screen.mount()
-  await waitFor(() => overview.digests.length === 1)
-
-  // The second instrument has no cache, so it generates its own run.
-  mockInput.pressArrow("down")
-  await waitFor(() => overview.digests.length === 2)
-  expect(overview.digests[1]?.instrument).toMatchObject({ symbol: "THYAO", contractSymbol: "F_THYAO0826" })
-  await waitForFrame((value) => value.includes("Overview 2 for THYAO."))
-
-  // Back to the first: the cached run shows without another generation.
-  mockInput.pressArrow("up")
-  await waitForFrame((value) => value.includes("Overview 1 for XU030."))
-  await Bun.sleep(120)
-  expect(overview.digests).toHaveLength(2)
-
-  screen.destroy()
-  renderer.destroy()
-})
-
-test("skips the periodic refresh while the digest stands still", async () => {
-  const { renderer, mockInput, waitFor } = await createTestRenderer({ width: 200, height: 44 })
-  const overview = new FakeOverviewGenerator()
-  const screen = new TradeScreen(renderer, overviewScreenOptions(overview))
-  renderer.root.add(screen.root)
-  screen.mount()
-  await waitFor(() => overview.digests.length === 1)
-
-  // The fake feeds never move, so ticks keep building the same digest.
-  await Bun.sleep(150)
-  expect(overview.digests).toHaveLength(1)
-
-  // A forced regeneration ignores the unchanged digest.
-  await mockInput.typeText("O")
-  await waitFor(() => overview.digests.length === 2)
-
-  screen.destroy()
-  renderer.destroy()
-})
-
-test("locks the overview when no broker feed is entitled", async () => {
-  const { renderer, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
-  const overview = new FakeOverviewGenerator()
-  const screen = new TradeScreen(renderer, {
-    ...overviewScreenOptions(overview),
-    memberFeatures: { async loadFeatures() { return memberFeatureSet(["SUBSCRIPTION"]) } },
-  })
-  renderer.root.add(screen.root)
-  screen.mount()
-
-  await waitForFrame((value) => value.includes("Broker data requires a subscription."))
-  await Bun.sleep(60)
-  expect(overview.digests).toEqual([])
-
-  screen.destroy()
-  renderer.destroy()
-})
-
-test("asks for the ChatGPT account when the overview cannot authenticate", async () => {
-  const { renderer, waitFor, waitForFrame } = await createTestRenderer({ width: 200, height: 44 })
-  const overview = new FakeOverviewGenerator()
-  overview.failWith = new Error("ChatGPT is not connected")
-  const screen = new TradeScreen(renderer, overviewScreenOptions(overview))
-  renderer.root.add(screen.root)
-  screen.mount()
-
-  await waitFor(() => overview.digests.length === 1)
-  await waitForFrame((value) => value.includes("Connect ChatGPT with A"))
-
-  screen.destroy()
-  renderer.destroy()
-})
-
 // A rule protecting the fixture's long THYAO position, 305 under a 312 market.
 function stopRuleFixture(): StopRule {
   return createStopRule(
@@ -2570,42 +2371,3 @@ function idlePanel(renderer: RenderContext): IdlePanel {
     },
   }
 }
-
-/**
- * The digest describes the underlying: its book, its tape, its broker flow. The
- * depth panel can be switched to the contract, and a contract book reaching the
- * digest would be read as the stock's own.
- */
-test("keeps the overview off the contract's book when the depth panel shows it", async () => {
-  const { renderer, mockInput, waitFor } = await createTestRenderer({ width: 200, height: 44 })
-  const overview = new FakeOverviewGenerator()
-  const depth = new FakeDepthStream()
-  const screen = new TradeScreen(renderer, { ...overviewScreenOptions(overview), depth })
-  renderer.root.add(screen.root)
-  screen.mount()
-
-  await waitFor(() => depth.startedSymbols.includes("XU030"))
-  const underlying = depthBook("XU030")
-  depth.emit({ ...underlying, trades: [{ ...underlying.trades[0]!, id: "underlying-1" }] })
-  await waitFor(() => overview.digests.some((digest) => (digest.tape?.tradeCount ?? 0) > 0))
-
-  focusPanel(mockInput, "depth")
-  mockInput.pressKey("f")
-  await waitFor(() => depth.startedSymbols.includes("F_XU0300826"))
-  const contract = depthBook("F_XU0300826")
-  depth.emit({ ...contract, trades: [{ ...contract.trades[0]!, id: "contract-1" }] })
-
-  // Force a run so the digest reflects everything ingested since the switch.
-  focusPanel(mockInput, "overview")
-  mockInput.pressKey("r")
-  await waitFor(() => overview.digests.length > 1)
-
-  const digest = overview.digests.at(-1)
-  // The contract"s book is not the stock"s, and its prints are not on the stock"s
-  // tape: the switch cleared both, and the contract refilled neither.
-  expect(digest?.book).toBeNull()
-  expect(digest?.tape?.tradeCount ?? 0).toBe(0)
-
-  screen.destroy()
-  renderer.destroy()
-})

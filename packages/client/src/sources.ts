@@ -21,11 +21,6 @@ import {
 } from "@trbot/market/instrument.ts"
 import { NewsArticleSchema, type NewsArticle, type NewsSource } from "@trbot/market/news.ts"
 import {
-  StoredOverviewSnapshotSchema,
-  type OverviewSnapshotStore,
-  type StoredOverviewSnapshot,
-} from "@trbot/market/overview.ts"
-import {
   SettlementAnalysisSchema,
   type SettlementAnalysis,
   type SettlementRequest,
@@ -34,7 +29,7 @@ import {
 import { MemberFeatureSchema, memberFeatureSet, type MemberFeatureSet, type MemberFeatureSource } from "@trbot/member/features.ts"
 import { AppPreferencesSchema, type AppPreferences } from "@trbot/preferences/app.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
-import { OkResponseSchema, ROUTES } from "@trbot/protocol/routes.ts"
+import { ROUTES } from "@trbot/protocol/routes.ts"
 import { AccountSnapshotSchema, type AccountSnapshot, type AccountSource, type PortfolioRange } from "@trbot/trading/account.ts"
 import type {
   CancelPendingViopOrdersRequest,
@@ -248,17 +243,5 @@ export class HttpAppPreferences {
     } finally {
       this.writing = false
     }
-  }
-}
-
-export class HttpOverviewSnapshotStore implements OverviewSnapshotStore {
-  constructor(private readonly http: HttpClient) {}
-
-  list(): Promise<StoredOverviewSnapshot[]> {
-    return this.http.get(ROUTES.overviewSnapshots, z.array(StoredOverviewSnapshotSchema))
-  }
-
-  async put(snapshot: StoredOverviewSnapshot): Promise<void> {
-    await this.http.put(ROUTES.overviewSnapshots, OkResponseSchema, { body: snapshot })
   }
 }

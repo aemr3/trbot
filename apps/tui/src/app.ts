@@ -6,7 +6,7 @@ import {
   type CliRendererErrorEvent,
   type KeyEvent,
 } from "@opentui/core"
-import { HttpAiAccount, HttpOverviewGenerator } from "@trbot/client/ai.ts"
+import { HttpAiAccount } from "@trbot/client/ai.ts"
 import { ChatClient, HttpChatSessions } from "@trbot/client/chat.ts"
 import {
   HttpAccountSource,
@@ -16,7 +16,6 @@ import {
   HttpMemberFeatureSource,
   HttpNewsSource,
   HttpOrderSource,
-  HttpOverviewSnapshotStore,
   HttpSettlementSource,
   HttpAppPreferences,
 } from "@trbot/client/sources.ts"
@@ -35,7 +34,6 @@ import { SystemSoundPlayer, type SoundPlayer } from "./components/sound.ts"
 import { rendererOutput } from "./renderer-output.ts"
 import { copySelection, SystemClipboard, type ClipboardWriter, type SelectionReader } from "./clipboard.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
-import type { OverviewGenerator, OverviewSnapshotStore } from "@trbot/market/overview.ts"
 import { ConnectingScreen } from "./screens/connecting.ts"
 import { LoginScreen } from "./screens/login.ts"
 import { ChatScreen } from "./screens/chat.ts"
@@ -79,8 +77,6 @@ interface AppOptions {
   closePreferences?: () => void
   exit?: () => void
   aiAccount?: AiAccount
-  overview?: OverviewGenerator
-  overviewSnapshots?: OverviewSnapshotStore
   sound?: SoundPlayer
   clipboard?: ClipboardWriter
   selection?: SelectionReader
@@ -129,8 +125,6 @@ export async function startApp(): Promise<void> {
       // The ChatGPT connection and the model both live on the server; the
       // terminal only asks for the words and shows them.
       aiAccount: new HttpAiAccount(http),
-      overviewSnapshots: new HttpOverviewSnapshotStore(http),
-      overview: new HttpOverviewGenerator(http),
       // Cues are written through the renderer so a bell never races a frame.
       sound: new SystemSoundPlayer({
         write: (data) => rendererOutput(renderer).writeOut(data),
@@ -174,8 +168,6 @@ export class App {
   private readonly closePreferences: (() => void) | undefined
   private readonly exit: () => void
   private readonly aiAccount: AiAccount | undefined
-  private readonly overview: OverviewGenerator | undefined
-  private readonly overviewSnapshots: OverviewSnapshotStore | undefined
   private readonly sound: SoundPlayer | undefined
   private readonly clipboard: ClipboardWriter
   private readonly selection: SelectionReader
@@ -220,8 +212,6 @@ export class App {
     this.closePreferences = options.closePreferences
     this.exit = options.exit ?? exitWithSigint
     this.aiAccount = options.aiAccount
-    this.overview = options.overview
-    this.overviewSnapshots = options.overviewSnapshots
     this.sound = options.sound
     this.clipboard = options.clipboard ?? new SystemClipboard(renderer)
     this.selection = options.selection ?? renderer
@@ -424,9 +414,6 @@ export class App {
         if (this.preferencesLoaded) this.persistPreferences?.(next)
       },
       onSessionExpired: () => this.showLogin(),
-      aiAccount: this.aiAccount,
-      overview: this.overview,
-      overviewSnapshots: this.overviewSnapshots,
       stops: this.stops,
       alerts: this.alerts,
       sound: this.sound,

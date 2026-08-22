@@ -32,38 +32,19 @@ export const aiCredentials = sqliteTable("ai_credentials", {
 })
 
 /**
- * Which model answers, for each of the two places one is asked.
+ * Which model a new chat session starts on.
  *
  * A single row. Every column is nullable and nothing stands behind them: null means
- * nobody has chosen yet, which the overview panel and the composer say out loud
- * rather than guessing a model on the trader's behalf.
+ * nobody has chosen yet, which the composer says out loud rather than guessing
+ * a model on the trader's behalf.
  */
 export const aiPreferences = sqliteTable("ai_preferences", {
   id: text("id").primaryKey(),
-  overviewProvider: text("overview_provider"),
-  overviewModel: text("overview_model"),
-  overviewReasoning: text("overview_reasoning"),
   chatProvider: text("chat_provider"),
   chatModel: text("chat_model"),
   chatReasoning: text("chat_reasoning"),
   updatedAt: integer("updated_at").notNull(),
 })
-
-// One finished AI overview per instrument and horizon, so a reopened app shows
-// the last reading instead of paying for a new one. `digest` holds the JSON the
-// commentary was written from, which the next run compares against.
-export const overviewSnapshots = sqliteTable(
-  "overview_snapshots",
-  {
-    instrumentUid: text("instrument_uid").notNull(),
-    mode: text("mode").notNull(),
-    digest: text("digest").notNull(),
-    commentary: text("commentary").notNull(),
-    generatedAt: integer("generated_at").notNull(),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (table) => [primaryKey({ columns: [table.instrumentUid, table.mode] })],
-)
 
 // Protective levels for open positions. They outlive the process on purpose: a
 // trailing stop that forgot its high-water mark would silently reopen risk the

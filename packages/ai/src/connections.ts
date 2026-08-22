@@ -19,7 +19,7 @@ const CredentialAccountSchema = z.object({ accountId: z.string().min(1).optional
  * credential usable is the harness's work; knowing which providers exist and which
  * models they offer is the harness's too. What is left here is what it has no opinion
  * about: where a credential lives, when it was connected, and which of its 1200-odd
- * models this trader chose for the two places trbot asks for one.
+ * models this trader chose as the default for new chats.
  */
 export class AiConnections {
   private readonly credentials: StoredCredentials
@@ -116,12 +116,12 @@ export class AiConnections {
 
   async preferences(): Promise<AiPreferences> {
     const stored = await this.preferencesStore.get()
-    return { overview: stored?.overview ?? null, chat: stored?.chat ?? null }
+    return { chat: stored?.chat ?? null }
   }
 
   async setPreferences(preferences: AiPreferences): Promise<AiPreferences> {
     const saved = await this.preferencesStore.put(preferences)
-    return { overview: saved.overview, chat: saved.chat }
+    return { chat: saved.chat }
   }
 }
 

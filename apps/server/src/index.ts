@@ -4,7 +4,6 @@ import type { CandleSource } from "@trbot/market/candle.ts"
 import { requiresAuthentication } from "@trbot/protocol/error.ts"
 import { openAuthSession } from "@trbot/db/auth-store.ts"
 import { openDatabase } from "@trbot/db/client.ts"
-import { DrizzleOverviewSnapshotStore } from "@trbot/db/overview-snapshot-store.ts"
 import { DrizzlePriceAlertStore } from "@trbot/db/price-alert-store.ts"
 import { DrizzleMarketMonitorStore } from "@trbot/db/market-monitor-store.ts"
 import { DrizzleAiCredentialStore } from "@trbot/db/ai-credential-store.ts"
@@ -307,7 +306,7 @@ async function startTrbotServer(): Promise<void> {
       model: model.model,
       signal,
     }),
-    requireModel: (choice) => ai.requireModel("chat", choice?.providerId, choice?.modelId),
+    requireModel: (choice) => ai.requireModel(choice?.providerId, choice?.modelId),
     onTurnSettled: (sessionId, event) => automations.onTurnSettled(sessionId, event),
     broadcast: (frame) => hub?.broadcast(frame),
     onError: (error) => log("Chat", error),
@@ -340,7 +339,7 @@ async function startTrbotServer(): Promise<void> {
     resolveModel: async (detail) => {
       const { provider, model, reasoning } = detail.session
       if (!provider || !model) throw new Error("The goal's chat has no model")
-      await ai.requireModel("chat", provider, model)
+      await ai.requireModel(provider, model)
       return { model: harnessModel(models, provider, model), reasoningEffort: reasoning }
     },
     evaluator: goalEvaluator,
@@ -431,7 +430,6 @@ async function startTrbotServer(): Promise<void> {
     alerts,
     marketMonitors,
     stops,
-    overviewSnapshots: new DrizzleOverviewSnapshotStore(connection.db),
     ai,
     chat,
     questions,

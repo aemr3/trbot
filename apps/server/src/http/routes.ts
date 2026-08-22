@@ -1,4 +1,3 @@
-import type { OverviewSnapshotStore } from "@trbot/market/overview.ts"
 import { BrokerageDistributionRequestSchema } from "@trbot/market/brokerage.ts"
 import { SettlementRequestSchema } from "@trbot/market/settlement.ts"
 import { PriceAlertStatusRequestSchema } from "@trbot/market/alert.ts"
@@ -35,7 +34,7 @@ import type { AlertController } from "../monitors/alert.ts"
 import type { MarketMonitorController } from "../monitors/market-monitor.ts"
 import type { StopController } from "../monitors/stop.ts"
 import { hashRequest, type IdempotencyStore, type IdempotentInput } from "./idempotency.ts"
-import { AttemptLimiter, json, ndjson, readJsonObject, readJsonObjectOrEmpty } from "./request.ts"
+import { AttemptLimiter, json, readJsonObject, readJsonObjectOrEmpty } from "./request.ts"
 import type { ProviderSessionAccess } from "../session.ts"
 import * as check from "./validate.ts"
 
@@ -52,7 +51,6 @@ export interface RouteContext {
   alerts: AlertController
   marketMonitors: MarketMonitorController
   stops: StopController
-  overviewSnapshots: OverviewSnapshotStore
   ai: AiService
   chat: ChatController
   questions: ChatQuestionController
@@ -258,14 +256,6 @@ export const HANDLERS: HandlerRegistry = {
     },
   },
 
-  [ROUTES.overviewSnapshots]: {
-    GET: async (_request, { overviewSnapshots }) => json(await overviewSnapshots.list()),
-    PUT: async (request, { overviewSnapshots }) => {
-      await overviewSnapshots.put(check.overviewSnapshot(await readJsonObject(request)))
-      return json({ ok: true })
-    },
-  },
-
   [ROUTES.aiProviders]: {
     GET: async (_request, { ai }) => json(await ai.providers()),
   },
@@ -298,22 +288,6 @@ export const HANDLERS: HandlerRegistry = {
 
   [ROUTES.chatNotifications]: {
     GET: async (_request, { notifications }) => json(notifications.list()),
-  },
-
-  // The commentary streams because the trader reads it as it arrives. Whether a
-  // model is chosen and reachable is checked first, so "no model chosen" is an
-  // ordinary error response rather than a stream that yields nothing.
-  [ROUTES.overview]: {
-    POST: async (request, { ai }) => {
-      const digest = check.overviewDigest(await readJsonObject(request))
-      await ai.requireOverviewModel()
-      return ndjson((emit) =>
-        ai.generate(digest, {
-          signal: request.signal,
-          onDelta: (text) => emit({ delta: text }),
-        }),
-      )
-    },
   },
 
   [ROUTES.stops]: {

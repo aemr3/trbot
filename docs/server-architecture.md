@@ -248,23 +248,8 @@ take — a wide brokerage or settlement range among them. A request cut off that
 is indistinguishable from a dead server at the client, so the limit is set
 explicitly to 120 seconds.
 
-Streamed responses do not rely on that limit; they heartbeat. `POST /v1/ai/overview`
-answers with newline-delimited JSON, and alongside `{"delta":"…"}` it sends
-`{"heartbeat":true}` while there is nothing else to say. A reasoning model can
-think for far longer than a connection may stay quiet, and a silent socket is a
-closed socket — without heartbeats the server drops its own response and the
-client can only report that the server became unreachable. One goes out
-immediately, which also flushes the headers so the client learns the request was
-accepted rather than waiting on the first token to find out.
-
-A response that has already begun cannot change its status, so a failure part way
-through arrives as an `{"error":{…}}` frame and the client rethrows it as the
-protocol error it is. Clients ignore frames they do not recognise, so only an
-error frame ends a stream early — which is what lets a frame be added later
-without breaking an older client.
-
-WebSocket connections need none of this: Bun keeps them alive itself, so a quiet
-market never costs a client its stream.
+WebSocket connections are kept alive by Bun, so a quiet market never costs a
+client its stream.
 
 A client that does lose its socket reconnects on its own and never gives up, so
 the first failure of an outage is reported and the rest are not — a reconnect
@@ -320,7 +305,7 @@ retries that exit instead of sending a second set of orders, and drops it once
 the server has answered — because pressing again after that means the positions
 open now.
 
-## The AI overview and the model providers
+## Model providers
 
 A model-provider credential is a credential, so it belongs where the trading
 provider's credentials are. `packages/ai` is a server-only package: the models run
@@ -342,18 +327,11 @@ requests cannot both refresh and lose a rotated token between them. What this
 application keeps is the part the harness has no opinion about: where a credential
 lives, which account it belongs to, and when it was connected.
 
-Which model answers is a trader's choice, recorded in `ai_preferences` — one for the
-market overview, one for a new chat session — and each chat session then records its
-own, so a transcript still says what wrote it after the default moves on. **Nothing
-stands behind those choices.** There is no environment variable naming a model any
-more: with nothing chosen, the overview and a chat send each refuse with a named
-reason and the terminal says which key fixes it. A model named in two places, one of
-which quietly wins at startup, makes "which model answered this?" unanswerable.
-
-The terminal still builds the digest, because every figure in it comes from data
-already on its screen. It posts that digest to `POST /v1/ai/overview` and renders
-the words as they stream back. The prompt is the server's; the model and the effort
-are whatever the trader picked.
+The default model for a new chat is a trader's choice, recorded in
+`ai_preferences`, and each chat session then records its own model so a transcript
+still says what wrote it after the default moves on. **Nothing stands behind that
+choice.** There is no environment variable naming a model: with nothing chosen, a
+chat refuses with a named reason and the terminal says which key fixes it.
 
 ### Why the login runs on the trader's machine
 

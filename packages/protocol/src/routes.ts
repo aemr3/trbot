@@ -52,9 +52,8 @@ export const ROUTES = {
   aiProvider: (providerId: string) => `${API_PREFIX}/ai/providers/${encodeURIComponent(providerId)}`,
   /** The models usable right now, across every connected provider. */
   aiModels: `${API_PREFIX}/ai/models`,
-  /** Which model answers the overview, and which a new chat session starts on. */
+  /** Which model a new chat session starts on. */
   aiPreferences: `${API_PREFIX}/ai/preferences`,
-  overview: `${API_PREFIX}/ai/overview`,
   chatSessions: `${API_PREFIX}/ai/chat/sessions`,
   chatSession: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}`,
   chatSessionChildren: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/children`,
@@ -75,7 +74,6 @@ export const ROUTES = {
   chatPermissionReply: (id: string) => `${API_PREFIX}/ai/chat/permissions/${encodeURIComponent(id)}/reply`,
   chatNotifications: `${API_PREFIX}/ai/chat/notifications`,
   chatNotification: (id: string) => `${API_PREFIX}/ai/chat/notifications/${encodeURIComponent(id)}`,
-  overviewSnapshots: `${API_PREFIX}/overview-snapshots`,
   streamTicket: `${API_PREFIX}/stream/ticket`,
   stream: `${API_PREFIX}/stream`,
   health: `${API_PREFIX}/health`,

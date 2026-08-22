@@ -24,12 +24,6 @@ import {
   type CandleRange,
 } from "@trbot/market/candle.ts"
 import {
-  MarketOverviewDigestSchema,
-  StoredOverviewSnapshotSchema,
-  type MarketOverviewDigest,
-  type StoredOverviewSnapshot,
-} from "@trbot/market/overview.ts"
-import {
   AppPreferencesSchema,
   normalizeAppPreferences,
   type AppPreferences,
@@ -91,13 +85,6 @@ export function candleSelection(rangeValue: string | null, intervalValue: string
   return { range: rangeValue, interval: intervalValue }
 }
 
-/** A complete client-built digest, checked before it reaches the model or storage. */
-export function overviewDigest(value: z.input<typeof RequestValueSchema>): MarketOverviewDigest {
-  const parsed = MarketOverviewDigestSchema.safeParse(value)
-  if (!parsed.success) throw invalidSchema(parsed.error, "digest", "is not a valid market overview")
-  return parsed.data
-}
-
 /**
  * The check the editor runs, run again here.
  *
@@ -151,12 +138,6 @@ export function appPreferences(body: JsonObject): AppPreferences {
   return normalizeAppPreferences(parsed.data)
 }
 
-export function overviewSnapshot(body: JsonObject): StoredOverviewSnapshot {
-  const snapshot = payload(body, StoredOverviewSnapshotSchema, "snapshot")
-  if (snapshot.mode !== snapshot.digest.mode) throw invalid("mode", "must match digest.mode")
-  return snapshot
-}
-
 /** Which model answers. The ids stay free-form: they are the harness's vocabulary. */
 export function aiModelChoice(body: JsonObject): AiModelChoice {
   const parsed = AiModelChoiceSchema.safeParse({ ...body, reasoning: body.reasoning ?? null })
@@ -165,14 +146,13 @@ export function aiModelChoice(body: JsonObject): AiModelChoice {
 }
 
 /**
- * The chosen models, either of which may be unset.
+ * The default chat model, which may be unset.
  *
  * Null is a real value here — it is how a trader clears a choice — so it is accepted
  * rather than treated as a missing field.
  */
 export function aiPreferences(body: JsonObject): AiPreferences {
   const parsed = AiPreferencesSchema.safeParse({
-    overview: body.overview ?? null,
     chat: body.chat ?? null,
   })
   if (!parsed.success) {

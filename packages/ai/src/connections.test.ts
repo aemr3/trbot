@@ -106,14 +106,14 @@ describe("model providers", () => {
 
   test("the chosen models round-trip, including clearing one", async () => {
     const connections = build()
-    expect(await connections.preferences()).toEqual({ overview: null, chat: null })
+    expect(await connections.preferences()).toEqual({ chat: null })
 
     const choice: AiModelChoice = { providerId: "groq", modelId: "llama-4", reasoning: "high" }
-    await connections.setPreferences({ overview: choice, chat: null })
-    expect(await connections.preferences()).toEqual({ overview: choice, chat: null })
+    await connections.setPreferences({ chat: choice })
+    expect(await connections.preferences()).toEqual({ chat: choice })
 
-    await connections.setPreferences({ overview: null, chat: null })
-    expect(await connections.preferences()).toEqual({ overview: null, chat: null })
+    await connections.setPreferences({ chat: null })
+    expect(await connections.preferences()).toEqual({ chat: null })
   })
 })
 

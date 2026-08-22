@@ -1,5 +1,4 @@
 import { z } from "zod"
-import { ProtocolErrorBodySchema, type ProtocolErrorBody } from "./error.ts"
 
 /**
  * A model provider as a client sees it.
@@ -81,19 +80,12 @@ export const AiModelChoiceSchema: z.ZodType<AiModelChoice> = z.object({
   reasoning: RequiredTextSchema.nullable(),
 })
 
-/**
- * The chosen models: one for the market overview, one for a new chat session.
- *
- * Null means nothing has been chosen. There is no environment variable behind these,
- * so an unset choice is reported as unset and the terminal says which key sets it.
- */
+/** The default model for a new chat session. */
 export interface AiPreferences {
-  overview: AiModelChoice | null
   chat: AiModelChoice | null
 }
 
 export const AiPreferencesSchema: z.ZodType<AiPreferences> = z.object({
-  overview: AiModelChoiceSchema.nullable(),
   chat: AiModelChoiceSchema.nullable(),
 })
 
@@ -176,11 +168,3 @@ export interface AiAccount {
   preferences(): Promise<AiPreferences>
   setPreferences(preferences: AiPreferences): Promise<AiPreferences>
 }
-
-export type OverviewStreamFrame = { delta: string } | { heartbeat: true } | ProtocolErrorBody
-
-export const OverviewStreamFrameSchema: z.ZodType<OverviewStreamFrame> = z.union([
-  z.object({ delta: z.string() }),
-  z.object({ heartbeat: z.literal(true) }),
-  ProtocolErrorBodySchema,
-])
