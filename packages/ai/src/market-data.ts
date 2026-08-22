@@ -19,6 +19,8 @@ import { toolText, type ChatTool } from "./tool.ts"
 
 const STREAM_SNAPSHOT_TIMEOUT_MS = 10_000
 const MAX_ARTICLE_CHARS = 30_000
+const CANDLE_INTERVAL_HELP =
+  "Supported intervals: MIN_1, MIN_5, MIN_15, MIN_30, HOUR_1, HOUR_4, DAY_1, WEEK_1, MONTH_1."
 
 const SymbolParameter = Type.String({
   description: "VIOP contract or underlying symbol, such as F_ASELS0826 or ASELS",
@@ -54,7 +56,7 @@ const CandleInterval = Type.Union([
   Type.Literal("DAY_1"),
   Type.Literal("WEEK_1"),
   Type.Literal("MONTH_1"),
-])
+], { description: CANDLE_INTERVAL_HELP })
 const CandleTarget = Type.Union([
   Type.Literal("UNDERLYING"),
   Type.Literal("INSTRUMENT"),
@@ -304,6 +306,7 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
       description: [
         "Read the complete OHLCV candle series for a VIOP contract, its underlying equity, BIST 100, or BIST 30.",
         "For indices, pass XU100/XU030 as symbol or select BIST_100/BIST_30 without a symbol.",
+        CANDLE_INTERVAL_HELP,
       ].join(" "),
       parameters: CandleParameters,
     },

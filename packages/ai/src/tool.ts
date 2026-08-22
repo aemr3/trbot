@@ -73,6 +73,21 @@ export interface ChatToolRegistry {
   call(call: ToolCall, options: ChatToolRunOptions): Promise<ChatToolOutcome>
 }
 
+type JsonLiteral = string | number | boolean | null
+
+interface ToolValidationSchema {
+  properties?: Record<string, ToolValidationSchema>
+  anyOf?: ToolValidationSchema[]
+  oneOf?: ToolValidationSchema[]
+  enum?: JsonLiteral[]
+  const?: JsonLiteral
+}
+
+interface ToolValidationIssue {
+  path: string
+  message: string
+}
+
 /**
  * A registry of tools available to an agent.
  *
@@ -104,7 +119,8 @@ export class ChatTools implements ChatToolRegistry {
     try {
       args = validateToolCall(this.list(), call)
     } catch (error) {
-      return toolFailure(error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+      return toolFailure(formatToolValidationFailure(tool.definition, call, message))
     }
     try {
       return await tool.run(args, options)
@@ -112,6 +128,61 @@ export class ChatTools implements ChatToolRegistry {
       return toolFailure(error instanceof Error ? error.message : String(error))
     }
   }
+}
+
+/** Turn noisy union-branch failures into one actionable message per argument. */
+function formatToolValidationFailure(tool: Tool, call: ToolCall, message: string): string {
+  if (!message.startsWith(`Validation failed for tool "${call.name}":`)) return message
+
+  const issues = parseToolValidationIssues(message)
+  if (issues.length === 0) return message
+
+  // SAFETY: Tool parameters are internal TypeBox schemas, whose union/object fields
+  // use the JSON Schema shapes read below.
+  const schema = tool.parameters as ToolValidationSchema
+  const paths = [...new Set(issues.map((issue) => issue.path))]
+  const lines = paths.map((path) => {
+    const accepted = acceptedValues(schemaAtPath(schema, path))
+    if (accepted.length > 0) {
+      return `  - ${path}: expected one of ${accepted.join(", ")}`
+    }
+    const descriptions = [...new Set(
+      issues.filter((issue) => issue.path === path).map((issue) => issue.message),
+    )]
+    return `  - ${path}: ${descriptions.join("; ")}`
+  })
+
+  return [
+    `Invalid arguments for tool "${call.name}":`,
+    ...lines,
+    `Received arguments: ${JSON.stringify(call.arguments)}`,
+  ].join("\n")
+}
+
+function parseToolValidationIssues(message: string): ToolValidationIssue[] {
+  return message.split("\n").flatMap((line) => {
+    const match = /^\s*-\s+([^:]+):\s*(.+)$/.exec(line)
+    const path = match?.[1]?.trim()
+    const issue = match?.[2]?.trim()
+    return path && issue ? [{ path, message: issue }] : []
+  })
+}
+
+function schemaAtPath(schema: ToolValidationSchema, path: string): ToolValidationSchema | undefined {
+  if (path === "root") return schema
+  let current: ToolValidationSchema | undefined = schema
+  for (const part of path.split(".")) current = current?.properties?.[part]
+  return current
+}
+
+function acceptedValues(schema: ToolValidationSchema | undefined): JsonLiteral[] {
+  if (!schema) return []
+  if (schema.enum) return schema.enum
+  const branches = schema.anyOf ?? schema.oneOf ?? []
+  return branches.flatMap((branch) => {
+    if (branch.enum) return branch.enum
+    return branch.const === undefined ? [] : [branch.const]
+  })
 }
 
 /** An empty registry: what the chat runs with until tools are added. */

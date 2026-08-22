@@ -212,6 +212,37 @@ test("a tool called with arguments it cannot use fails without running", async (
   expect(calls).toEqual([{ symbol: "42" }])
 })
 
+test("reports accepted enum values once when a tool argument is invalid", async () => {
+  const CandleParameters = Type.Object({
+    interval: Type.Union([Type.Literal("MIN_5"), Type.Literal("MIN_15")]),
+  })
+  const calls: unknown[] = []
+  const candles: ChatTool<typeof CandleParameters> = {
+    definition: {
+      name: "get_candles",
+      description: "Read candles",
+      parameters: CandleParameters,
+    },
+    run: async (args) => {
+      calls.push(args)
+      return { blocks: [], details: null, isError: false }
+    },
+  }
+
+  const result = await new ChatTools([candles]).call(
+    { type: "toolCall", id: "call-1", name: "get_candles", arguments: { interval: "MIN_10" } },
+    {},
+  )
+
+  expect(result.isError).toBe(true)
+  expect(result.blocks).toEqual([toolText([
+    "Invalid arguments for tool \"get_candles\":",
+    "  - interval: expected one of MIN_5, MIN_15",
+    'Received arguments: {"interval":"MIN_10"}',
+  ].join("\n"))])
+  expect(calls).toEqual([])
+})
+
 test("keeps a reply that failed part way and reports why", async () => {
   const { faux, models } = scripted()
   faux.setResponses([
