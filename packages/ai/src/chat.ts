@@ -214,7 +214,12 @@ export class ChatAgent {
         }
         if (outcome.usage) result.usage = harnessUsage(outcome.usage)
         context.messages.push(result)
-        await turn.events.onMessage(toolResultDraft(result, outcome.blocks, outcome.usage ?? null))
+        await turn.events.onMessage(toolResultDraft(
+          result,
+          outcome.blocks,
+          outcome.usage ?? null,
+          outcome.effects,
+        ))
       }
     }
   }
@@ -288,6 +293,7 @@ function toolResultDraft(
   result: Message & { role: "toolResult" },
   blocks: ChatBlock[],
   usage: ChatUsage | null,
+  effects?: ChatMessageDraft["effects"],
 ): ChatMessageDraft {
   const message: ChatMessage = {
     id: crypto.randomUUID(),
@@ -306,7 +312,7 @@ function toolResultDraft(
     thinkingMs: null,
     createdAt: result.timestamp,
   }
-  return { message, record: result }
+  return { message, record: result, effects }
 }
 
 function assistantStatus(reply: AssistantMessage): ChatMessage["status"] {

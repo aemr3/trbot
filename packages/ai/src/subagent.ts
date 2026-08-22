@@ -3,6 +3,7 @@ import type { ChatMessageDraft, ChatUsage } from "@trbot/chat/session.ts"
 import { ChatAgent } from "./chat.ts"
 import {
   createChatDelegationContext,
+  externalToolEffect,
   toolText,
   type ChatDelegationContext,
   type ChatTool,
@@ -177,6 +178,7 @@ async function runSingle(
     details: { mode: "single", results: [result] } satisfies SubagentDetails,
     isError: result.error !== null,
     usage: result.usage ?? undefined,
+    ...delegatedEffects([result]),
   }
 }
 
@@ -202,6 +204,7 @@ async function runParallel(
     details: { mode: "parallel", results } satisfies SubagentDetails,
     isError: false,
     usage: combinedUsage(results),
+    ...delegatedEffects(results),
   }
 }
 
@@ -228,6 +231,7 @@ async function runChain(
         details: { mode: "chain", results } satisfies SubagentDetails,
         isError: true,
         usage: combinedUsage(results),
+        ...delegatedEffects(results),
       }
     }
     previous = result.answer
@@ -239,6 +243,7 @@ async function runChain(
     details: { mode: "chain", results } satisfies SubagentDetails,
     isError: false,
     usage: combinedUsage(results),
+    ...delegatedEffects(results),
   }
 }
 
@@ -393,6 +398,16 @@ function invalidModeOutcome() {
     blocks: [toolText('Invalid parameters. Provide exactly one mode. Available agent: "worker".')],
     details: { mode: "single", results: [] } satisfies SubagentDetails,
     isError: true,
+  }
+}
+
+function delegatedEffects(results: SubagentResult[]) {
+  const count = results.filter((result) => result.sessionId !== null).length
+  if (count === 0) return {}
+  return {
+    effects: [externalToolEffect(
+      `${count} delegated worker${count === 1 ? " and its transcript remain" : "s and their transcripts remain"}`,
+    )],
   }
 }
 

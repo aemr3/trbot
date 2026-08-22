@@ -21,7 +21,7 @@ import {
 } from "@trbot/market/candle.ts"
 import { resolveViopInstrument, type ViopInstrumentSource } from "@trbot/market/instrument.ts"
 import type { LevelDirection } from "@trbot/market/price-level.ts"
-import { toolText, type ChatTool, type ChatToolRunOptions } from "./tool.ts"
+import { reversibleToolEffect, toolText, type ChatTool, type ChatToolRunOptions } from "./tool.ts"
 
 const ATR_PERIOD = 14
 
@@ -170,7 +170,7 @@ export function createMarketMonitorTool(
       }
       requireValidDraft(draft, instrument.lastPrice)
       const alert = await service.monitors.save(draft)
-      return monitorOutcome(`Created market monitor ${alert.id}: ${shortMonitor(alert)}.`, alert)
+      return monitorOutcome(`Created market monitor ${alert.id}: ${shortMonitor(alert)}.`, alert, null)
     },
   }
 }
@@ -252,7 +252,7 @@ function updateMarketMonitorTool(
       }
       requireValidDraft(draft, instrument.lastPrice)
       const alert = await service.monitors.save(draft)
-      return monitorOutcome(`Updated market monitor ${alert.id}: ${shortMonitor(alert)}.`, alert)
+      return monitorOutcome(`Updated market monitor ${alert.id}: ${shortMonitor(alert)}.`, alert, existing)
     },
   }
 }
@@ -268,10 +268,14 @@ function setMarketMonitorStatusTool(
     },
     run: async ({ id, status }, options) => {
       const chatSessionId = requireChatSession(options)
-      await requireMonitor(service, id, chatSessionId)
+      const previous = await requireMonitor(service, id, chatSessionId)
       await service.monitors.setStatus(id, status)
       const alert = await requireMonitor(service, id, chatSessionId)
-      return monitorOutcome(`${status === "PAUSED" ? "Paused" : "Armed"} market monitor ${alert.id}.`, alert)
+      return monitorOutcome(
+        `${status === "PAUSED" ? "Paused" : "Armed"} market monitor ${alert.id}.`,
+        alert,
+        previous,
+      )
     },
   }
 }
@@ -297,6 +301,13 @@ function cancelMarketMonitorTool(
         modelBlocks: [toolText(`Cancelled:\n${fullMonitor(alert)}`)],
         details: { monitor: alert },
         isError: false,
+        effects: [reversibleToolEffect(
+          "MARKET_MONITOR",
+          alert.id,
+          `Market monitor ${alert.id} for ${alert.displayName} was cancelled`,
+          alert,
+          null,
+        )],
       }
     },
   }
@@ -369,12 +380,19 @@ function requireValidDraft(draft: MarketMonitorDraft, lastPrice: number | null):
   if (problem) throw new Error(problem)
 }
 
-function monitorOutcome(text: string, alert: MarketMonitor) {
+function monitorOutcome(text: string, alert: MarketMonitor, before: MarketMonitor | null) {
   return {
     blocks: [toolText(text)],
     modelBlocks: [toolText(fullMonitor(alert))],
     details: { monitor: alert },
     isError: false,
+    effects: [reversibleToolEffect(
+      "MARKET_MONITOR",
+      alert.id,
+      `Market monitor ${alert.id} for ${alert.displayName} was ${before ? "changed" : "created"}`,
+      before,
+      alert,
+    )],
   }
 }
 

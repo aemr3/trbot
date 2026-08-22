@@ -10,6 +10,7 @@ import {
 } from "@trbot/chat/automation.ts"
 import { isValidCronExpression, nextCronOccurrence } from "@trbot/chat/schedule.ts"
 import type { ChatApplicationEvent, ChatSessionDetail } from "@trbot/chat/session.ts"
+import type { ChatNotification } from "@trbot/chat/notification.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import type { ChatTurnModel } from "@trbot/ai/chat.ts"
 
@@ -34,7 +35,7 @@ export interface ChatAutomationControllerOptions {
   resolveModel: (detail: ChatSessionDetail) => Promise<ChatTurnModel>
   evaluator: ChatGoalEvaluatorRunner
   defaultLoopPrompt?: () => Promise<string | null>
-  notify?: (input: { sessionId: string; title: string; message: string }) => Promise<void>
+  notify?: (input: { sessionId: string; title: string; message: string }) => Promise<ChatNotification>
   onError: (cause: unknown) => void
   now?: () => number
   pollMs?: number
@@ -126,13 +127,22 @@ export class ChatAutomationController {
 
   /** The agent may finish its own goal, but cannot pause, resume, or clear it. */
   async finishGoal(sessionId: string, status: "COMPLETE" | "BLOCKED", reason: string): Promise<ChatGoal> {
+    return (await this.finishGoalWithNotice(sessionId, status, reason)).goal
+  }
+
+  /** The tool path also journals the durable notice emitted by goal completion. */
+  async finishGoalWithNotice(
+    sessionId: string,
+    status: "COMPLETE" | "BLOCKED",
+    reason: string,
+  ): Promise<{ goal: ChatGoal; notification: ChatNotification | null }> {
     const root = await this.rootSessionId(sessionId)
     const goal = await this.options.store.getGoal(root)
     if (!goal) throw new ProtocolError("not_found", "This chat has no goal")
     const updated = { ...goal, status, lastEvaluation: reason.trim(), pendingEventKey: null, updatedAt: this.now() }
     await this.options.store.putGoal(updated)
-    await this.noticeGoal(updated)
-    return updated
+    const notification = await this.noticeGoal(updated)
+    return { goal: updated, notification }
   }
 
   async createLoop(sessionId: string, input: CreateChatLoop): Promise<ChatLoop> {
@@ -194,6 +204,26 @@ export class ChatAutomationController {
     if (!loop) throw new ProtocolError("not_found", "No such loop in this chat")
     await this.options.cancelQueuedEvents?.(root, "loop", loop.id)
     await this.options.store.removeLoop(loopId)
+  }
+
+  /** Restores an exact goal snapshot after a conversation rewind. */
+  async restoreGoal(sessionId: string, goal: ChatGoal | null): Promise<void> {
+    const root = await this.rootSessionId(sessionId)
+    if (goal && goal.sessionId !== root) throw new Error("The restored goal belongs to another chat")
+    const current = await this.options.store.getGoal(root)
+    if (current) await this.options.cancelQueuedEvents?.(root, "goal", current.id)
+    if (goal) await this.options.store.putGoal(goal)
+    else await this.options.store.removeGoal(root)
+  }
+
+  /** Restores or removes one exact scheduled-task snapshot after rewind. */
+  async restoreLoop(sessionId: string, loopId: string, loop: ChatLoop | null): Promise<void> {
+    const root = await this.rootSessionId(sessionId)
+    if (loop && loop.sessionId !== root) throw new Error("The restored scheduled task belongs to another chat")
+    const current = (await this.options.store.listLoops(root)).find((entry) => entry.id === loopId)
+    if (current) await this.options.cancelQueuedEvents?.(root, "loop", loopId)
+    if (loop) await this.options.store.putLoop(loop)
+    else await this.options.store.removeLoop(loopId)
   }
 
   /** Called only after a root turn, its tools, retries, and compaction have settled. */
@@ -365,16 +395,17 @@ export class ChatAutomationController {
     return detail.session.id
   }
 
-  private async noticeGoal(goal: ChatGoal): Promise<void> {
-    if (!this.options.notify) return
+  private async noticeGoal(goal: ChatGoal): Promise<ChatNotification | null> {
+    if (!this.options.notify) return null
     try {
-      await this.options.notify({
+      return await this.options.notify({
         sessionId: goal.sessionId,
         title: goal.status === "COMPLETE" ? "Goal complete" : "Goal needs attention",
         message: goal.lastEvaluation ?? goal.objective,
       })
     } catch (error) {
       this.options.onError(error)
+      return null
     }
   }
 }

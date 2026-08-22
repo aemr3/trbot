@@ -311,6 +311,9 @@ export const chatMessages = sqliteTable(
     toolName: text("tool_name"),
     isError: integer("is_error"),
     details: text("details"),
+    // Successful mutations are kept outside the harness record: they are for
+    // application rewind and must never become model context.
+    effects: text("effects"),
     /** Which harness version wrote this row, for when a round trip starts failing. */
     harnessVersion: text("harness_version"),
     extra: text("extra"),

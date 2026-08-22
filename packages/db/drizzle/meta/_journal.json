@@ -260,6 +260,13 @@
       "when": 1787399970205,
       "tag": "0036_remove_ai_overview",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1787400000000,
+      "tag": "0037_journal_chat_tool_effects",
+      "breakpoints": true
     }
   ]
 }

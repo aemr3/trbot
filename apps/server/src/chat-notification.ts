@@ -59,6 +59,19 @@ export class ChatNotificationController implements ChatNotifier {
     this.options.broadcast({ type: "chatNotificationDismissed", notificationId: id })
   }
 
+  /** Restores or removes an exact notice snapshot after conversation rewind. */
+  async restore(id: string, notification: ChatNotification | null): Promise<void> {
+    if (notification) {
+      await this.options.store.put(notification)
+      this.pending.set(id, notification)
+      this.options.broadcast({ type: "chatNotification", notification })
+      return
+    }
+    await this.options.store.remove(id)
+    this.pending.delete(id)
+    this.options.broadcast({ type: "chatNotificationDismissed", notificationId: id })
+  }
+
   backlog(): ChatFrame[] {
     return this.list().map((notification) => ({ type: "chatNotification", notification }))
   }

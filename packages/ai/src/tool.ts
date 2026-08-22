@@ -7,7 +7,7 @@ import {
   type ToolCall,
   type TSchema,
 } from "@earendil-works/pi-ai"
-import type { ChatBlock, ChatUsage } from "@trbot/chat/session.ts"
+import type { ChatBlock, ChatToolEffect, ChatUsage } from "@trbot/chat/session.ts"
 
 /**
  * What a tool call produced: what the trader sees, what the model is told, and
@@ -23,6 +23,8 @@ export interface ChatToolOutcome {
   modelBlocks?: ChatBlock[]
   details: unknown
   isError: boolean
+  /** Successful state changes journaled for optional conversation rewind. */
+  effects?: ChatToolEffect[]
   /** Model usage incurred inside the tool, such as delegated agent work. */
   usage?: ChatUsage
 }
@@ -119,6 +121,27 @@ export function noTools(): ChatToolRegistry {
 
 export function toolText(text: string): ChatBlock {
   return { kind: "TEXT", text, toolName: null, toolCallId: null, toolArguments: null }
+}
+
+export function reversibleToolEffect(
+  kind: Exclude<ChatToolEffect["kind"], "EXTERNAL">,
+  resourceId: string,
+  description: string,
+  before: unknown | null,
+  after: unknown | null,
+): ChatToolEffect {
+  return { kind, resourceId, description, reversible: true, before, after }
+}
+
+export function externalToolEffect(description: string): ChatToolEffect {
+  return {
+    kind: "EXTERNAL",
+    resourceId: null,
+    description,
+    reversible: false,
+    before: null,
+    after: null,
+  }
 }
 
 function toolFailure(message: string): ChatToolOutcome {

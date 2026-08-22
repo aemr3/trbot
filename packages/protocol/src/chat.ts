@@ -1,4 +1,12 @@
-import type { ChatCompactionReport, ChatMessage, ChatModelChoice, ChatSession, ChatSessionDetail } from "@trbot/chat/session.ts"
+import type {
+  ChatCompactionReport,
+  ChatMessage,
+  ChatModelChoice,
+  ChatSession,
+  ChatSessionDetail,
+  ChatUndoPreview,
+  ChatUndoResult,
+} from "@trbot/chat/session.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type {
@@ -36,6 +44,10 @@ export interface ChatSessions {
   send(sessionId: string, text: string): Promise<ChatMessage>
   /** Takes back a message that has not had its turn yet. */
   cancel(sessionId: string, messageId: string): Promise<void>
+  /** Returns to just before a completed user prompt and restores it for editing. */
+  undo(sessionId: string, messageId: string, revertEffects?: boolean): Promise<ChatUndoResult>
+  /** Read-only preview of the tool effects after a prospective rewind point. */
+  previewUndo(sessionId: string, messageId: string): Promise<ChatUndoPreview>
   /** Stops the reply being generated now, keeping whatever it produced. */
   abort(sessionId: string): Promise<void>
   /** Replaces the current model-facing history with a fresh rolling summary. */

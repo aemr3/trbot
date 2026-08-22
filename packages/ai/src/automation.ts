@@ -6,7 +6,9 @@ import type {
   CreateChatGoal,
   CreateChatLoop,
 } from "@trbot/chat/automation.ts"
-import { toolText, type ChatTool } from "./tool.ts"
+import type { ChatToolEffect } from "@trbot/chat/session.ts"
+import type { ChatNotification } from "@trbot/chat/notification.ts"
+import { reversibleToolEffect, toolText, type ChatTool } from "./tool.ts"
 
 const GetGoalParameters = Type.Object({})
 const CreateGoalParameters = Type.Object({
@@ -54,7 +56,10 @@ const RescheduleLoopParameters = Type.Object({
 export interface ChatAutomationToolsClient {
   state(sessionId: string): Promise<ChatAutomationState>
   createGoal(sessionId: string, input: CreateChatGoal): Promise<ChatGoal>
-  finishGoal(sessionId: string, status: "COMPLETE" | "BLOCKED", reason: string): Promise<ChatGoal>
+  finishGoal(sessionId: string, status: "COMPLETE" | "BLOCKED", reason: string): Promise<{
+    goal: ChatGoal
+    notification: ChatNotification | null
+  }>
   createLoop(sessionId: string, input: CreateChatLoop): Promise<ChatLoop>
   rescheduleLoop(sessionId: string, loopId: string, intervalMs: number): Promise<ChatLoop>
   cancelLoop(sessionId: string, loopId: string): Promise<void>
@@ -90,11 +95,23 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         parameters: CreateGoalParameters,
       },
       run: async ({ objective, max_turns, token_budget }, options) => {
+        const sessionId = requireSession(options.chatSessionId)
+        const before = (await client.state(sessionId)).goal
         const input: CreateChatGoal = { objective }
         if (max_turns !== undefined) input.maxTurns = max_turns
         if (token_budget !== undefined) input.tokenBudget = token_budget
-        const goal = await client.createGoal(requireSession(options.chatSessionId), input)
-        return outcome(`Created goal ${goal.id}: ${goal.objective}`, { goal })
+        const goal = await client.createGoal(sessionId, input)
+        return outcome(
+          `Created goal ${goal.id}: ${goal.objective}`,
+          { goal },
+          [reversibleToolEffect(
+            "CHAT_GOAL",
+            goal.id,
+            `${before ? "Replaced" : "Created"} goal: ${goal.objective}`,
+            before,
+            goal,
+          )],
+        )
       },
     },
     {
@@ -109,8 +126,29 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         parameters: UpdateGoalParameters,
       },
       run: async ({ status, reason }, options) => {
-        const goal = await client.finishGoal(requireSession(options.chatSessionId), status, reason)
-        return outcome(`Goal ${status.toLowerCase()}: ${reason}`, { goal })
+        const sessionId = requireSession(options.chatSessionId)
+        const before = (await client.state(sessionId)).goal
+        const { goal, notification } = await client.finishGoal(sessionId, status, reason)
+        return outcome(
+          `Goal ${status.toLowerCase()}: ${reason}`,
+          { goal },
+          [
+            reversibleToolEffect(
+              "CHAT_GOAL",
+              goal.id,
+              `Goal was marked ${status.toLowerCase()}`,
+              before,
+              goal,
+            ),
+            ...(notification ? [reversibleToolEffect(
+              "CHAT_NOTIFICATION",
+              notification.id,
+              `Notification “${notification.title}” was sent`,
+              null,
+              notification,
+            )] : []),
+          ],
+        )
       },
     },
     {
@@ -128,6 +166,7 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         parameters: CreateLoopParameters,
       },
       run: async ({ prompt, schedule, interval_minutes, cron_expression, run_at, max_runs }, options) => {
+        const sessionId = requireSession(options.chatSessionId)
         const common: CreateLoopCommonInput = {}
         if (prompt !== undefined) common.prompt = prompt
         if (max_runs !== undefined) common.maxRuns = max_runs
@@ -151,8 +190,18 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
           if (!Number.isFinite(runAt)) throw new Error("run_at must be an ISO 8601 timestamp")
           input = { ...common, schedule, runAt }
         }
-        const loop = await client.createLoop(requireSession(options.chatSessionId), input)
-        return outcome(`Created loop ${loop.id}; next run ${new Date(loop.nextRunAt).toISOString()}.`, { loop })
+        const loop = await client.createLoop(sessionId, input)
+        return outcome(
+          `Created loop ${loop.id}; next run ${new Date(loop.nextRunAt).toISOString()}.`,
+          { loop },
+          [reversibleToolEffect(
+            "CHAT_LOOP",
+            loop.id,
+            `Scheduled task ${loop.id} was created`,
+            null,
+            loop,
+          )],
+        )
       },
     },
     {
@@ -178,8 +227,20 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         parameters: CancelLoopParameters,
       },
       run: async ({ loop_id }, options) => {
-        await client.cancelLoop(requireSession(options.chatSessionId), loop_id)
-        return outcome(`Cancelled loop ${loop_id}.`, { loopId: loop_id })
+        const sessionId = requireSession(options.chatSessionId)
+        const before = (await client.state(sessionId)).loops.find((loop) => loop.id === loop_id) ?? null
+        await client.cancelLoop(sessionId, loop_id)
+        return outcome(
+          `Cancelled loop ${loop_id}.`,
+          { loopId: loop_id },
+          before ? [reversibleToolEffect(
+            "CHAT_LOOP",
+            loop_id,
+            `Scheduled task ${loop_id} was cancelled`,
+            before,
+            null,
+          )] : undefined,
+        )
       },
     },
     {
@@ -196,12 +257,24 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         if (options.automationEvent?.label !== "loop" || options.automationEvent.referenceId !== loop_id) {
           throw new Error("reschedule_loop is only available to the dynamic loop currently running")
         }
+        const sessionId = requireSession(options.chatSessionId)
+        const before = (await client.state(sessionId)).loops.find((loop) => loop.id === loop_id) ?? null
         const loop = await client.rescheduleLoop(
-          requireSession(options.chatSessionId),
+          sessionId,
           loop_id,
           next_interval_minutes * 60_000,
         )
-        return outcome(`Next run in ${next_interval_minutes} minutes.`, { loop })
+        return outcome(
+          `Next run in ${next_interval_minutes} minutes.`,
+          { loop },
+          before ? [reversibleToolEffect(
+            "CHAT_LOOP",
+            loop.id,
+            `Scheduled task ${loop.id} was rescheduled`,
+            before,
+            loop,
+          )] : undefined,
+        )
       },
     },
   ]
@@ -231,6 +304,6 @@ function scheduleText(loop: ChatLoop): string {
   return `every ${formatInterval(loop.intervalMs ?? 60_000)}`
 }
 
-function outcome<T>(text: string, details: T) {
-  return { blocks: [toolText(text)], details, isError: false }
+function outcome<T>(text: string, details: T, effects?: ChatToolEffect[]) {
+  return { blocks: [toolText(text)], details, isError: false, effects }
 }

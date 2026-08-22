@@ -23,8 +23,12 @@ export interface SelectableListOptions {
   selectedBackgroundColor?: string
   backgroundColor?: string
   indicatorColor?: string
+  /** Two-cell marker for the active row. Defaults to the heavier table cursor. */
+  selectedIndicator?: string
   wrapContent?: boolean
   rowGap?: number
+  /** Opens a scrollable list at its final rows. */
+  startAtBottom?: boolean
 }
 
 export interface SelectableListSetRowsOptions {
@@ -51,6 +55,8 @@ export class SelectableList {
       flexGrow: 1,
       width: "100%",
       backgroundColor: options.backgroundColor,
+      stickyScroll: options.startAtBottom ?? false,
+      stickyStart: options.startAtBottom ? "bottom" : undefined,
       contentOptions: { flexDirection: "column", gap: options.rowGap, paddingRight: 2, backgroundColor: options.backgroundColor },
     })
   }
@@ -221,7 +227,7 @@ export class SelectableList {
     const currentBox = this.rowBoxes[this.selected]
     if (currentBox) {
       currentBox.backgroundColor = this.options.selectedBackgroundColor ?? TUI_THEME.defaultSelection
-      this.indicators[this.selected]!.content = "▶ "
+      this.indicators[this.selected]!.content = this.options.selectedIndicator ?? "▶ "
     }
   }
 }

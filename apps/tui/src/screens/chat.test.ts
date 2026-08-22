@@ -17,10 +17,12 @@ import { TradingWorkspaceScreen } from "./trading-workspace.ts"
 /** A server-side chat, near enough for a screen to be driven against. */
 function fakeChats(): ChatSessions & {
   sessions: ChatSession[]
+  messages: Map<string, ChatMessage[]>
   sent: string[]
   cancelled: string[]
   aborted: string[]
   compacted: string[]
+  undone: Array<{ sessionId: string; messageId: string }>
   answered: Array<{ requestId: string; answers: ChatQuestionAnswer[] }>
   rejected: string[]
   agentNotifications: ChatNotification[]
@@ -33,6 +35,7 @@ function fakeChats(): ChatSessions & {
   const cancelled: string[] = []
   const aborted: string[] = []
   const compacted: string[] = []
+  const undone: Array<{ sessionId: string; messageId: string }> = []
   const answered: Array<{ requestId: string; answers: ChatQuestionAnswer[] }> = []
   const rejected: string[] = []
   const agentNotifications: ChatNotification[] = []
@@ -42,10 +45,12 @@ function fakeChats(): ChatSessions & {
 
   return {
     sessions,
+    messages,
     sent,
     cancelled,
     aborted,
     compacted,
+    undone,
     answered,
     rejected,
     agentNotifications,
@@ -104,6 +109,26 @@ function fakeChats(): ChatSessions & {
     },
     async cancel(_sessionId, messageId) {
       cancelled.push(messageId)
+    },
+    async previewUndo(sessionId, messageId) {
+      const message = (messages.get(sessionId) ?? []).find((entry) => entry.id === messageId)
+      if (!message) throw new Error("no such message")
+      return { prompt: message.text, effects: [] }
+    },
+    async undo(sessionId, messageId) {
+      undone.push({ sessionId, messageId })
+      const transcript = messages.get(sessionId) ?? []
+      const index = transcript.findIndex((message) => message.id === messageId)
+      if (index < 0) throw new Error("no such message")
+      const removed = transcript.splice(index)
+      const session = sessions.find((entry) => entry.id === sessionId)
+      if (session) session.messageCount = transcript.length
+      return {
+        prompt: removed[0]!.text,
+        removedMessageIds: removed.map((message) => message.id),
+        revertedEffects: [],
+        preservedEffects: [],
+      }
     },
     async abort(sessionId) {
       aborted.push(sessionId)
@@ -662,6 +687,9 @@ test("opens a filtered slash-command menu below the composer", async () => {
   await mockInput.typeText("/")
   const menu = await waitForFrame((frame) => frame.includes("/model") && frame.includes("/sessions"))
   expect(menu).toContain("/clear")
+  expect(menu).toContain("/undo")
+  expect(menu).not.toContain("/rewind")
+  expect(menu).not.toContain("/checkpoint")
   expect(menu).not.toContain("/chats")
   const lines = menu.split("\n")
   const composerRow = lines.findIndex((line) => line.includes("› /"))
@@ -733,6 +761,54 @@ test("/clear and /new wait for a prompt before creating the next session", async
   const shortcut = await waitForFrame((frame) => frame.includes("New chat") && !frame.includes("draft to discard"))
   expect(shortcut).toContain("Ask about a market")
   expect(chats.sessions).toHaveLength(sessionCount)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("opens undo with Esc Esc or /undo and restores the chosen prompt", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const first = userMessage("first question", "SENT")
+  const second = { ...userMessage("second question", "SENT"), id: "message-second" }
+  chats.messages.set(session.id, [first, replyMessage("first answer"), second, replyMessage("second answer")])
+  session.messageCount = 4
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("second answer"))
+
+  mockInput.pressEscape()
+  mockInput.pressEscape()
+  const shortcut = await waitForFrame((frame) => frame.includes("Restore the conversation to the point before"))
+  expect(shortcut).toContain("second question")
+  expect(shortcut).toContain("first question")
+  expect(shortcut).not.toContain("╭")
+  const shortcutLines = shortcut.split("\n")
+  const hintLine = shortcutLines.findIndex((line) => line.includes("Enter to continue"))
+  const statusLine = shortcutLines.findLastIndex((line) => line.includes("test-model"))
+  expect(statusLine - hintLine).toBe(2)
+  expect(screen.hasOpenModal()).toBe(false)
+  mockInput.pressEscape()
+  await waitForFrame((frame) => !frame.includes("Restore the conversation to the point before"))
+
+  await mockInput.typeText("/undo")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Restore the conversation to the point before"))
+  mockInput.pressArrow("up")
+  mockInput.pressEnter()
+  const confirmation = await waitForFrame((frame) => frame.includes("Choose what to restore"))
+  expect(confirmation).toContain("Conversation only")
+  expect(confirmation).toContain("Conversation + reversible actions")
+  mockInput.pressEnter()
+
+  const restored = await waitForFrame((frame) => frame.includes("Conversation undone"))
+  expect(restored).toContain("second question")
+  expect(restored).toContain("first answer")
+  expect(restored).not.toContain("second answer")
+  expect(chats.undone).toEqual([{ sessionId: session.id, messageId: second.id }])
 
   screen.destroy()
   renderer.destroy()

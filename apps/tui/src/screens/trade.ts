@@ -98,6 +98,7 @@ const NEWS_HEADLINE_COLOR = TUI_THEME.newsHeadline
 const NEWS_POLL_INTERVAL_MS = 60_000
 const INSTRUMENT_POLL_INTERVAL_MS = 60_000
 const DESTRUCTIVE_CONFIRMATION_TIMEOUT_MS = 3_000
+const DOUBLE_ESCAPE_MS = 600
 const COMPACT_LAYOUT_WIDTH = 104
 const DEPTH_PANEL_WIDTH = 48
 // The sidebar's own padding takes two columns, so the panels inside get two
@@ -313,6 +314,7 @@ export interface TradeChatPanel {
   deactivate(): void
   capturesInput(): boolean
   canReleaseFocus(): boolean
+  openUndo?(): void
   handleKey(key: KeyEvent): void
   openQuestion(sessionId: string): void
   openPermission(sessionId: string): void
@@ -430,6 +432,8 @@ export class TradeScreen {
   private positionsKnown = false
   private hintTimer: ReturnType<typeof setTimeout> | null = null
   private destructiveConfirmationTimer: ReturnType<typeof setTimeout> | null = null
+  /** First Escape released an idle embedded chat; a nearby second one reopens undo. */
+  private releasedChatEscapeAt = 0
   private connected = false
   private hasConnected = false
   private equityConnected = false
@@ -443,6 +447,8 @@ export class TradeScreen {
   }
 
   private readonly handleKeypress = (key: KeyEvent): void => {
+    const escape = key.name === "escape" || key.name === "esc"
+    if (!escape) this.releasedChatEscapeAt = 0
     // Deleting a stop rule is only offered where one is selected, so its key is
     // read against the focused panel rather than globally.
     const destructiveAction = destructiveActionForKey(key)
@@ -487,7 +493,21 @@ export class TradeScreen {
       return
     }
     if (this.rightView === "chat" && this.options.chat?.hasOpenModal?.()) {
+      this.releasedChatEscapeAt = 0
       this.options.chat.handleKey(key)
+      return
+    }
+    if (
+      escape
+      && this.rightView === "chat"
+      && this.focus !== "news"
+      && this.options.chat?.openUndo
+      && this.releasedChatEscapeAt > 0
+      && Date.now() - this.releasedChatEscapeAt <= DOUBLE_ESCAPE_MS
+    ) {
+      this.releasedChatEscapeAt = 0
+      this.setFocus("news")
+      this.options.chat.openUndo()
       return
     }
     if (isAltShortcut(key, "n")) {
@@ -499,7 +519,8 @@ export class TradeScreen {
       return
     }
     if (this.rightView === "chat" && this.focus === "news" && this.options.chat) {
-      if ((key.name === "escape" || key.name === "esc") && this.options.chat.canReleaseFocus()) {
+      if (escape && this.options.chat.canReleaseFocus()) {
+        this.releasedChatEscapeAt = Date.now()
         this.setFocus("instruments")
         return
       }

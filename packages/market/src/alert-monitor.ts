@@ -274,6 +274,21 @@ export class AlertMonitor<
     this.options.onChange?.()
   }
 
+  /** Restores an exact journal snapshot after a conversation rewind. */
+  async restoreAlert(id: string, alert: TAlert | null): Promise<void> {
+    if (alert) await this.options.store.put(alert)
+    else await this.options.store.remove(id)
+    if (alert) {
+      this.alerts.set(id, alert)
+      this.approaching.delete(id)
+      this.seedApproachFromQuote(alert, this.now())
+    } else {
+      this.alerts.delete(id)
+      this.approaching.delete(id)
+    }
+    this.options.onChange?.()
+  }
+
   async setStatus(id: string, status: PriceAlertStatus): Promise<void> {
     const alert = this.alerts.get(id)
     if (!alert || alert.status === status) return

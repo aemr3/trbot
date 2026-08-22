@@ -68,6 +68,7 @@ class FakeTradeChatPanel implements TradeChatPanel {
   openedQuestions: string[] = []
   openedPermissions: string[] = []
   openedSessions: string[] = []
+  undoOpenCount = 0
   selectedSessionId = "side-session"
 
   constructor(renderer: RenderContext) {
@@ -102,6 +103,9 @@ class FakeTradeChatPanel implements TradeChatPanel {
   }
   canReleaseFocus(): boolean {
     return true
+  }
+  openUndo(): void {
+    this.undoOpenCount += 1
   }
   handleKey(key: KeyEvent): void {
     this.keys.push(key)
@@ -462,6 +466,10 @@ test("switches the news panel to its embedded chat and releases input for ticker
   expect(screen.capturesInput()).toBe(true)
   const focusedChat = await waitForFrame((frame) => frame.includes("SIDE CHAT"))
   expect(focusedChat).not.toContain("type a ticker")
+
+  mockInput.pressEscape()
+  mockInput.pressEscape()
+  expect(chat.undoOpenCount).toBe(1)
 
   const activationsBeforeNotification = chat.activations
   screen.openSession("another-session")

@@ -4,12 +4,16 @@ import {
   ChatMessageSchema,
   ChatSessionDetailSchema,
   ChatSessionSchema,
+  ChatUndoPreviewSchema,
+  ChatUndoResultSchema,
   type ChatMessage,
   type ChatCompactionReport,
   type ChatModelChoice,
   type ChatRunStatus,
   type ChatSession,
   type ChatSessionDetail,
+  type ChatUndoPreview,
+  type ChatUndoResult,
 } from "@trbot/chat/session.ts"
 import { ChatQuestionRequestSchema, type ChatQuestionAnswer, type ChatQuestionRequest } from "@trbot/chat/question.ts"
 import { ChatNotificationSchema, type ChatNotification } from "@trbot/chat/notification.ts"
@@ -70,6 +74,16 @@ export class HttpChatSessions implements ChatSessions {
 
   async cancel(sessionId: string, messageId: string): Promise<void> {
     await this.http.delete(ROUTES.chatMessage(sessionId, messageId), OkResponseSchema)
+  }
+
+  undo(sessionId: string, messageId: string, revertEffects = false): Promise<ChatUndoResult> {
+    return this.http.post(ROUTES.chatUndo(sessionId), ChatUndoResultSchema, {
+      body: { messageId, revertEffects },
+    })
+  }
+
+  previewUndo(sessionId: string, messageId: string): Promise<ChatUndoPreview> {
+    return this.http.post(ROUTES.chatUndoPreview(sessionId), ChatUndoPreviewSchema, { body: { messageId } })
   }
 
   async abort(sessionId: string): Promise<void> {

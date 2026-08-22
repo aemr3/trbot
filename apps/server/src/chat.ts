@@ -15,6 +15,10 @@ import {
   type ChatSession,
   type ChatSessionDetail,
   type ChatSessionStore,
+  type ChatToolEffect,
+  type ChatUndoEffect,
+  type ChatUndoPreview,
+  type ChatUndoResult,
 } from "@trbot/chat/session.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import type { ChatFrame } from "@trbot/protocol/stream.ts"
@@ -26,6 +30,14 @@ import type { ChatFrame } from "@trbot/protocol/stream.ts"
  */
 export interface ChatTurnRunner {
   run(turn: ChatTurnOptions): Promise<ChatTurnResult>
+}
+
+export interface ChatRewindEffectManager {
+  preview(effects: ChatToolEffect[]): Promise<ChatUndoEffect[]>
+  revert(sessionId: string, effects: ChatToolEffect[]): Promise<{
+    reverted: string[]
+    preserved: string[]
+  }>
 }
 
 export interface ChatControllerOptions {
@@ -55,6 +67,7 @@ export interface ChatControllerOptions {
     sessionId: string,
     event: { label: string | null; referenceId: string | null } | null,
   ) => Promise<void>
+  rewindEffects?: ChatRewindEffectManager
   broadcast: (frame: ChatFrame) => void
   onError: (cause: unknown) => void
   now?: () => number
@@ -94,6 +107,8 @@ export class ChatController {
   private readonly draining = new Set<string>()
   /** Prevents a just-aborted parent or child from writing after its rows were removed. */
   private readonly removedSessionIds = new Set<string>()
+  /** Serializes destructive transcript changes for one conversation. */
+  private readonly undoing = new Set<string>()
   private readonly now: () => number
   private destroyed = false
 
@@ -288,6 +303,69 @@ export class ChatController {
     await this.options.store.remove(messageId)
     this.options.broadcast({ type: "chatMessageRemoved", sessionId, messageId })
     await this.announceSessions()
+  }
+
+  /** Describes tool mutations that would be affected without changing the chat. */
+  async previewUndo(sessionId: string, messageId: string): Promise<ChatUndoPreview> {
+    const { target } = await this.rewindTarget(sessionId, messageId)
+    const effects = await this.options.store.effectsFrom(sessionId, messageId)
+    const preview = this.options.rewindEffects
+      ? await this.options.rewindEffects.preview(effects)
+      : effects.map((effect) => ({ description: effect.description, reversible: false }))
+    return { prompt: target.text, effects: preview }
+  }
+
+  /** Returns to just before a completed trader prompt, optionally restoring safe app effects. */
+  async undo(sessionId: string, messageId: string, revertEffects = false): Promise<ChatUndoResult> {
+    if (this.undoing.has(sessionId)) {
+      throw new ProtocolError("invalid_request", "This chat is already being undone")
+    }
+    this.undoing.add(sessionId)
+    try {
+      const { target } = await this.rewindTarget(sessionId, messageId)
+      const effects = await this.options.store.effectsFrom(sessionId, messageId)
+      const effectResult = revertEffects && this.options.rewindEffects
+        ? await this.options.rewindEffects.revert(sessionId, effects)
+        : { reverted: [], preserved: effects.map((effect) => effect.description) }
+
+      this.titleRuns.get(sessionId)?.abort()
+      this.titleRuns.delete(sessionId)
+      const removedMessageIds = await this.options.store.rewindFrom(sessionId, messageId)
+      if (!removedMessageIds.includes(messageId)) {
+        throw new ProtocolError("not_found", "No such message")
+      }
+      for (const removedMessageId of removedMessageIds) {
+        this.options.broadcast({ type: "chatMessageRemoved", sessionId, messageId: removedMessageId })
+      }
+      await this.announceSessions()
+      return {
+        prompt: target.text,
+        removedMessageIds,
+        revertedEffects: effectResult.reverted,
+        preservedEffects: effectResult.preserved,
+      }
+    } finally {
+      this.undoing.delete(sessionId)
+    }
+  }
+
+  private async rewindTarget(
+    sessionId: string,
+    messageId: string,
+  ): Promise<{ target: ChatMessage }> {
+    const detail = await this.detail(sessionId)
+    if (detail.session.parentSessionId) {
+      throw new ProtocolError("invalid_request", "Subagent sessions are read-only")
+    }
+    if (detail.session.running || detail.session.queued > 0) {
+      throw new ProtocolError("invalid_request", "Wait for this chat to finish before undoing it")
+    }
+    const target = detail.messages.find((message) => message.id === messageId)
+    if (!target) throw new ProtocolError("not_found", "No such message")
+    if (target.role !== "USER" || target.status === "QUEUED") {
+      throw new ProtocolError("invalid_request", "Choose a completed user prompt to undo")
+    }
+    return { target }
   }
 
   /**

@@ -1,8 +1,9 @@
-import { and, asc, eq, inArray, isNull, max, or, sql } from "drizzle-orm"
+import { and, asc, eq, gte, inArray, isNull, max, or, sql } from "drizzle-orm"
 import {
   ChatBlockKindSchema,
   ChatMessageStatusSchema,
   ChatRoleSchema,
+  ChatToolEffectSchema,
   recentChatTimeline,
   type ChatBlock,
   type ChatCompaction,
@@ -14,6 +15,7 @@ import {
   type ChatSession,
   type ChatSessionDetail,
   type ChatSessionStore,
+  type ChatToolEffect,
 } from "@trbot/chat/session.ts"
 import type { AppDatabase } from "./client.ts"
 import { chatCompactions, chatMessageBlocks, chatMessages, chatSessions } from "./schema.ts"
@@ -430,6 +432,56 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
     })
   }
 
+  async effectsFrom(sessionId: string, messageId: string): Promise<ChatToolEffect[]> {
+    const target = this.db
+      .select({ seq: chatMessages.seq })
+      .from(chatMessages)
+      .where(and(eq(chatMessages.sessionId, sessionId), eq(chatMessages.id, messageId)))
+      .limit(1)
+      .get()
+    if (!target) return []
+
+    const rows = await this.db
+      .select({ effects: chatMessages.effects })
+      .from(chatMessages)
+      .where(and(eq(chatMessages.sessionId, sessionId), gte(chatMessages.seq, target.seq)))
+      .orderBy(asc(chatMessages.seq))
+    return rows.flatMap((row) => (
+      row.effects === null ? [] : ChatToolEffectSchema.array().parse(parseJson(row.effects))
+    ))
+  }
+
+  async rewindFrom(sessionId: string, messageId: string): Promise<string[]> {
+    return this.db.transaction((tx) => {
+      const target = tx
+        .select({ seq: chatMessages.seq })
+        .from(chatMessages)
+        .where(and(eq(chatMessages.sessionId, sessionId), eq(chatMessages.id, messageId)))
+        .limit(1)
+        .get()
+      if (!target) return []
+
+      const removed = tx
+        .select({ id: chatMessages.id })
+        .from(chatMessages)
+        .where(and(eq(chatMessages.sessionId, sessionId), gte(chatMessages.seq, target.seq)))
+        .all()
+      if (removed.length > 0) {
+        const messageIds = removed.map((row) => row.id)
+        tx.delete(chatMessageBlocks).where(inArray(chatMessageBlocks.messageId, messageIds)).run()
+        tx.delete(chatMessages).where(inArray(chatMessages.id, messageIds)).run()
+      }
+      // A rolling summary may describe rows that were just removed. Rebuilding from
+      // the remaining complete transcript is the only safe next model context.
+      tx.delete(chatCompactions).where(eq(chatCompactions.sessionId, sessionId)).run()
+      tx.update(chatSessions)
+        .set({ updatedAt: Date.now() })
+        .where(eq(chatSessions.id, sessionId))
+        .run()
+      return removed.map((row) => row.id)
+    })
+  }
+
   async queuedSessionIds(): Promise<string[]> {
     const rows = await this.db
       .selectDistinct({ sessionId: chatMessages.sessionId })
@@ -534,12 +586,20 @@ function toRows(
       toolName: stringOrNull(record?.toolName) ?? message.toolName,
       isError: record?.isError === undefined ? null : record.isError === true ? 1 : 0,
       details: record?.details === undefined ? null : JSON.stringify(record.details),
+      effects: serializedEffects(draft.effects),
       harnessVersion,
       extra: messageExtraJson(record, usage, cost),
       createdAt: message.createdAt,
     },
     blocks: content.map((block, idx) => toBlockRow(message.id, idx, block)),
   }
+}
+
+function serializedEffects(effects: ChatMessageDraft["effects"]): string | null {
+  if (!effects || effects.length === 0) return null
+  const serialized = JSON.stringify(effects)
+  if (serialized === undefined) throw new Error("Cannot persist chat tool effects")
+  return JSON.stringify(ChatToolEffectSchema.array().parse(JSON.parse(serialized)))
 }
 
 function toBlockRow(messageId: string, idx: number, value: JsonEntry): BlockInsert {

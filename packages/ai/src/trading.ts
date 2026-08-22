@@ -9,7 +9,7 @@ import {
   type ViopPositionExitSource,
 } from "@trbot/trading/order.ts"
 import { requireToolPermission, type ChatPermissionAuthorizer } from "./permission.ts"
-import { toolText, type ChatTool, type ChatToolOutcome } from "./tool.ts"
+import { externalToolEffect, toolText, type ChatTool, type ChatToolOutcome } from "./tool.ts"
 
 const SymbolParameter = Type.String({
   description: "Active VIOP contract or unambiguous underlying symbol, such as F_ASELS0826 or ASELS",
@@ -120,7 +120,11 @@ function placeOrderTool(clients: TradingToolClients): ChatTool<typeof PlaceOrder
         limitPrice: price,
         signal: options.signal,
       })
-      return success(`Placed ${action}. Order ${order.uid} is ${order.status}.`, { instrument, order, price, orderKind })
+      return success(
+        `Placed ${action}. Order ${order.uid} is ${order.status}.`,
+        { instrument, order, price, orderKind },
+        `VIOP order ${order.uid} was placed`,
+      )
     },
   }
 }
@@ -150,6 +154,7 @@ function cancelOrdersTool(clients: TradingToolClients): ChatTool<typeof CancelOr
       return success(
         `Cancelled ${result.cancelledOrderUids.length} pending order${result.cancelledOrderUids.length === 1 ? "" : "s"}; ${result.failures.length} failed.`,
         result,
+        `${result.cancelledOrderUids.length} pending VIOP order${result.cancelledOrderUids.length === 1 ? " was" : "s were"} cancelled`,
       )
     },
   }
@@ -184,7 +189,11 @@ function exitPositionTool(clients: TradingToolClients): ChatTool<typeof ExitPosi
         quantity: exitQuantity,
         signal: options.signal,
       })
-      return success(`Submitted exit for ${submitted.quantity} ${submitted.symbol}. Order ${submitted.orderUid}.`, submitted)
+      return success(
+        `Submitted exit for ${submitted.quantity} ${submitted.symbol}. Order ${submitted.orderUid}.`,
+        submitted,
+        `Position exit order ${submitted.orderUid} was submitted`,
+      )
     },
   }
 }
@@ -213,11 +222,12 @@ function exitAllPositionsTool(clients: TradingToolClients): ChatTool<typeof Exit
       return success(
         `Submitted ${result.submitted.length} position exit${result.submitted.length === 1 ? "" : "s"}; ${result.failures.length} failed.`,
         result,
+        `${result.submitted.length} position exit${result.submitted.length === 1 ? " was" : "s were"} submitted`,
       )
     },
   }
 }
 
-function success<TDetails>(text: string, details: TDetails): ChatToolOutcome {
-  return { blocks: [toolText(text)], details, isError: false }
+function success<TDetails>(text: string, details: TDetails, effect: string): ChatToolOutcome {
+  return { blocks: [toolText(text)], details, isError: false, effects: [externalToolEffect(effect)] }
 }

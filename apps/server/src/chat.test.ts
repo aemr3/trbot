@@ -6,7 +6,7 @@ import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { openDatabase, type DatabaseConnection } from "@trbot/db/client.ts"
 import type { ChatFrame } from "@trbot/protocol/stream.ts"
 import { isProtocolError } from "@trbot/protocol/error.ts"
-import { ChatController, type ChatTurnRunner } from "./chat.ts"
+import { ChatController, type ChatRewindEffectManager, type ChatTurnRunner } from "./chat.ts"
 import { modelRecord } from "@trbot/ai/compaction.ts"
 import { testModel } from "@trbot/ai/model.test-fixture.ts"
 
@@ -42,6 +42,7 @@ async function harness(options: {
   compaction?: ChatCompactionRunner
   generateTitle?: (message: string, signal: AbortSignal) => Promise<string | null>
   run?: (turn: ChatTurnOptions, call: number) => Promise<ChatTurnResult>
+  rewindEffects?: ChatRewindEffectManager
 } = {}): Promise<Harness> {
   connection = await openDatabase(":memory:")
   const store = new DrizzleChatSessionStore(connection.db, { harnessVersion: "pi-ai/test" })
@@ -79,6 +80,7 @@ async function harness(options: {
     requireModel: async () => {
       if (options.connected === false) throw new Error("test-provider is not connected")
     },
+    rewindEffects: options.rewindEffects,
     broadcast: (frame) => frames.push(frame),
     onError: (error) => errors.push(error),
   })
@@ -386,6 +388,114 @@ test("a message already sent cannot be taken back", async () => {
   // It has been said. Reporting otherwise would tell the trader a question was
   // withdrawn when the model already answered it.
   expect(isProtocolError(failure) && failure.code).toBe("invalid_request")
+})
+
+test("undo removes the chosen exchange and restores its prompt", async () => {
+  const { chat, frames, turns } = await harness()
+  const session = await chat.create()
+  await chat.send(session.id, "first")
+  await settle()
+  await chat.send(session.id, "second")
+  await settle()
+  const target = (await chat.detail(session.id)).messages.find((message) => message.text === "second")
+
+  const result = await chat.undo(session.id, target?.id ?? "")
+
+  expect(result.prompt).toBe("second")
+  expect(result.removedMessageIds).toHaveLength(2)
+  expect(frames.filter((frame) => frame.type === "chatMessageRemoved").map((frame) => frame.messageId))
+    .toEqual(expect.arrayContaining(result.removedMessageIds))
+  expect((await chat.detail(session.id)).messages.map((message) => message.text)).toEqual([
+    "first",
+    "answer to first",
+  ])
+
+  await chat.send(session.id, "replacement")
+  await settle()
+  expect(turns[2]?.history.map((record) => record.role)).toEqual(["user", "assistant"])
+})
+
+test("previews recorded tool effects and optionally restores them before truncation", async () => {
+  const reverted: string[][] = []
+  const manager: ChatRewindEffectManager = {
+    preview: async (effects) => effects.map((effect) => ({
+      description: effect.description,
+      reversible: effect.reversible,
+    })),
+    revert: async (_sessionId, effects) => {
+      reverted.push(effects.map((effect) => effect.description))
+      return { reverted: effects.map((effect) => effect.description), preserved: [] }
+    },
+  }
+  const { chat } = await harness({
+    rewindEffects: manager,
+    run: async (turn) => {
+      await turn.events.onMessage({
+        message: {
+          id: crypto.randomUUID(),
+          role: "TOOL_RESULT",
+          status: "COMPLETE",
+          text: "monitor created",
+          blocks: [chatBlockText("monitor created")],
+          toolName: "create_market_monitor",
+          toolCallId: "call-1",
+          isError: false,
+          errorMessage: null,
+          usage: null,
+          model: null,
+          reasoning: null,
+          elapsedMs: null,
+          thinkingMs: null,
+          createdAt: Date.now(),
+        },
+        record: {
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "create_market_monitor",
+          content: [{ type: "text", text: "monitor created" }],
+          isError: false,
+          timestamp: Date.now(),
+        },
+        effects: [{
+          kind: "MARKET_MONITOR",
+          resourceId: "monitor-1",
+          description: "Market monitor was created",
+          reversible: true,
+          before: null,
+          after: { id: "monitor-1" },
+        }],
+      })
+      return { completed: true, aborted: false, errorMessage: null }
+    },
+  })
+  const session = await chat.create()
+  const prompt = await chat.send(session.id, "watch this")
+  await settle()
+
+  expect(await chat.previewUndo(session.id, prompt.id)).toEqual({
+    prompt: "watch this",
+    effects: [{ description: "Market monitor was created", reversible: true }],
+  })
+  const result = await chat.undo(session.id, prompt.id, true)
+
+  expect(reverted).toEqual([["Market monitor was created"]])
+  expect(result.revertedEffects).toEqual(["Market monitor was created"])
+  expect(result.preservedEffects).toEqual([])
+  expect((await chat.detail(session.id)).messages).toEqual([])
+})
+
+test("undo waits until running and queued work has settled", async () => {
+  const { chat, finish } = await harness({ auto: false })
+  const session = await chat.create()
+  const first = await chat.send(session.id, "first")
+  await chat.send(session.id, "second")
+  await settle()
+
+  const error = await chat.undo(session.id, first.id).catch((cause: unknown) => cause)
+
+  expect(isProtocolError(error) && error.message).toContain("finish before undoing")
+  finish()
+  await settle()
 })
 
 test("stopping the reply in flight leaves the rest of the queue alone", async () => {

@@ -22,7 +22,7 @@ import {
 } from "@trbot/trading/stop.ts"
 import { rangeForInterval } from "@trbot/trading/stop-monitor.ts"
 import { requireToolPermission, type ChatPermissionAuthorizer } from "./permission.ts"
-import { toolText, type ChatTool, type ChatToolOutcome } from "./tool.ts"
+import { reversibleToolEffect, toolText, type ChatTool, type ChatToolOutcome } from "./tool.ts"
 
 const ATR_PERIOD = 14
 
@@ -177,7 +177,7 @@ function createStopRuleTool(service: StopRuleToolClients): ChatTool<typeof Creat
       )
       requireUnchangedDraft(proposed.draft, refreshed.draft)
       const rule = await service.rules.save(refreshed.draft)
-      return ruleOutcome(`Created stop rule ${rule.id}: ${ruleSummary(rule)}.`, rule)
+      return ruleOutcome(`Created stop rule ${rule.id}: ${ruleSummary(rule)}.`, rule, null, rule)
     },
   }
 }
@@ -227,7 +227,7 @@ function updateStopRuleTool(service: StopRuleToolClients): ChatTool<typeof Updat
       )
       requireUnchangedDraft(proposed.draft, refreshed.draft)
       const rule = await service.rules.save(refreshed.draft)
-      return ruleOutcome(`Updated stop rule ${rule.id}: ${ruleSummary(rule)}.`, rule)
+      return ruleOutcome(`Updated stop rule ${rule.id}: ${ruleSummary(rule)}.`, rule, existing, rule)
     },
   }
 }
@@ -259,7 +259,7 @@ function setStopRuleStatusTool(service: StopRuleToolClients): ChatTool<typeof Se
       requireUnchangedRule(rule, current)
       await service.rules.setStatus(id, status)
       const updated = requireRule(await service.rules.list(), id)
-      return ruleOutcome(`${status === "ARMED" ? "Armed" : "Paused"} stop rule ${id}.`, updated)
+      return ruleOutcome(`${status === "ARMED" ? "Armed" : "Paused"} stop rule ${id}.`, updated, rule, updated)
     },
   }
 }
@@ -287,7 +287,7 @@ function deleteStopRuleTool(service: StopRuleToolClients): ChatTool<typeof Delet
       const current = requireRule(await service.rules.list(), id)
       requireUnchangedRule(rule, current)
       await service.rules.remove(id)
-      return ruleOutcome(`Deleted stop rule ${id}.`, current)
+      return ruleOutcome(`Deleted stop rule ${id}.`, current, current, null)
     },
   }
 }
@@ -395,11 +395,24 @@ function ruleSummary(rule: StopRule): string {
   return `${rule.role} ${rule.symbol} at ${level ?? "unresolved"} (${basis}, ${quantity})`
 }
 
-function ruleOutcome<T>(text: string, details: T): ChatToolOutcome {
+function ruleOutcome(
+  text: string,
+  details: StopRule,
+  before: StopRule | null,
+  after: StopRule | null,
+): ChatToolOutcome {
+  const action = before === null ? "created" : after === null ? "deleted" : "changed"
   return {
     blocks: [toolText(text)],
     modelBlocks: [toolText(JSON.stringify(details))],
     details,
     isError: false,
+    effects: [reversibleToolEffect(
+      "STOP_RULE",
+      details.id,
+      `Stop rule ${details.id} for ${details.displayName} was ${action}`,
+      before,
+      after,
+    )],
   }
 }

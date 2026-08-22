@@ -66,7 +66,17 @@ async function harness(options: {
       evaluate: async () => evaluations.shift() ?? { verdict: "COMPLETE", reason: "Done." },
     },
     defaultLoopPrompt: options.defaultLoopPrompt,
-    notify: async ({ message }) => { notices.push(message) },
+    notify: async ({ sessionId, title, message }) => {
+      notices.push(message)
+      return {
+        id: crypto.randomUUID(),
+        sessionId,
+        title,
+        message,
+        urgency: "IMPORTANT",
+        createdAt: options.now?.() ?? Date.now(),
+      }
+    },
     onError: (error) => { throw error },
     now: options.now,
     pollMs: 3_600_000,

@@ -574,6 +574,71 @@ describe("chat session store", () => {
     expect(await chats.records("chat-1")).toEqual([])
   })
 
+  test("rewinds from a prompt and clears compacted context", async () => {
+    const chats = await store()
+    await chats.create(session())
+    for (const [role, content, timestamp] of [
+      ["user", "first question", 1_000],
+      ["assistant", "first answer", 2_000],
+      ["user", "second question", 3_000],
+      ["assistant", "second answer", 4_000],
+    ] as const) {
+      await chats.append("chat-1", draftFor(role === "user"
+        ? { role, content, timestamp }
+        : { role, content, model: "test", timestamp }))
+    }
+    const before = await chats.context("chat-1")
+    await chats.saveCompaction({
+      sessionId: "chat-1",
+      summary: "Both exchanges, including the one about to be removed.",
+      compactedThroughSeq: before.records[2]!.seq,
+      firstKeptSeq: before.records[3]!.seq,
+      tokensBefore: 80_000,
+      createdAt: 5_000,
+    })
+    const target = (await chats.get("chat-1"))?.messages.find((message) => message.text === "second question")
+    if (!target) throw new Error("missing rewind target")
+
+    const removed = await chats.rewindFrom("chat-1", target.id)
+
+    expect(removed).toHaveLength(2)
+    expect(removed).toContain(target.id)
+    expect((await chats.get("chat-1"))?.messages.map((message) => message.text)).toEqual([
+      "first question",
+      "first answer",
+    ])
+    const context = await chats.context("chat-1")
+    expect(context.compaction).toBeNull()
+    expect(context.records).toHaveLength(2)
+  })
+
+  test("journals tool effects outside model context and finds them from a rewind point", async () => {
+    const chats = await store()
+    await chats.create(session())
+    const prompt = draftFor({ role: "user", content: "watch ASELS", timestamp: 1_000 })
+    await chats.append("chat-1", prompt)
+    const result = draftFor({
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "create_market_monitor",
+      content: [{ type: "text", text: "created" }],
+      isError: false,
+      timestamp: 2_000,
+    })
+    result.effects = [{
+      kind: "MARKET_MONITOR",
+      resourceId: "monitor-1",
+      description: "Market monitor was created",
+      reversible: true,
+      before: null,
+      after: { id: "monitor-1" },
+    }]
+    await chats.append("chat-1", result)
+
+    expect(await chats.effectsFrom("chat-1", prompt.message.id)).toEqual(result.effects)
+    expect(await chats.records("chat-1")).toEqual([prompt.record, result.record])
+  })
+
   test("deleting a session takes its messages with it", async () => {
     const chats = await store()
     await chats.create(session())

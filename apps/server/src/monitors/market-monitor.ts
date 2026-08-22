@@ -50,6 +50,10 @@ export class MarketMonitorController {
     return this.engine.views().map((view) => view.alert).filter(isOpenPriceAlert)
   }
 
+  get(id: string): MarketMonitor | null {
+    return this.engine.alert(id) ?? null
+  }
+
   async save(draft: MarketMonitorDraft): Promise<MarketMonitor> {
     const monitor = await this.engine.saveAlert(draft)
     void this.engine.refreshCandleAlerts().catch((cause: unknown) => this.options.onError?.(cause))
@@ -62,6 +66,10 @@ export class MarketMonitorController {
 
   remove(id: string): Promise<void> {
     return this.engine.removeAlert(id)
+  }
+
+  restore(id: string, monitor: MarketMonitor | null): Promise<void> {
+    return this.engine.restoreAlert(id, monitor)
   }
 
   symbols(): string[] {

@@ -27,6 +27,7 @@ import { ChatQuestionController } from "./chat-question.ts"
 import { ChatNotificationController } from "./chat-notification.ts"
 import { ChatAutomationController } from "./chat-automation.ts"
 import { ChatPermissionController } from "./chat-permission.ts"
+import { ChatRewindEffects } from "./chat-rewind.ts"
 import { loadDefaultLoopPrompt } from "./chat-loop-prompt.ts"
 import { marketMonitorApplicationEvent } from "./chat-market-monitor-event.ts"
 import { certificateExpiry } from "./tls.ts"
@@ -244,6 +245,7 @@ async function startTrbotServer(): Promise<void> {
   // Chat runs belong to the server for the same reason the monitors do: a reply
   // has to survive the terminal that asked for it closing its tab or quitting.
   let automations!: ChatAutomationController
+  let rewindEffects!: ChatRewindEffects
   const chatTools = createAgentTools({
     models,
     marketData: {
@@ -281,7 +283,7 @@ async function startTrbotServer(): Promise<void> {
     automations: {
       state: (sessionId) => automations.state(sessionId),
       createGoal: (sessionId, input) => automations.createGoal(sessionId, input),
-      finishGoal: (sessionId, status, reason) => automations.finishGoal(sessionId, status, reason),
+      finishGoal: (sessionId, status, reason) => automations.finishGoalWithNotice(sessionId, status, reason),
       createLoop: (sessionId, input) => automations.createLoop(sessionId, input),
       rescheduleLoop: (sessionId, loopId, intervalMs) => automations.rescheduleLoop(sessionId, loopId, intervalMs),
       cancelLoop: (sessionId, loopId) => automations.cancelLoop(sessionId, loopId),
@@ -308,6 +310,10 @@ async function startTrbotServer(): Promise<void> {
     }),
     requireModel: (choice) => ai.requireModel(choice?.providerId, choice?.modelId),
     onTurnSettled: (sessionId, event) => automations.onTurnSettled(sessionId, event),
+    rewindEffects: {
+      preview: (effects) => rewindEffects.preview(effects),
+      revert: (sessionId, effects) => rewindEffects.revert(sessionId, effects),
+    },
     broadcast: (frame) => hub?.broadcast(frame),
     onError: (error) => log("Chat", error),
   })
@@ -345,10 +351,11 @@ async function startTrbotServer(): Promise<void> {
     evaluator: goalEvaluator,
     defaultLoopPrompt: loadDefaultLoopPrompt,
     notify: async (input) => {
-      await notifications.notify({ ...input, urgency: "IMPORTANT" })
+      return await notifications.notify({ ...input, urgency: "IMPORTANT" })
     },
     onError: (error) => log("Chat automation", error),
   })
+  rewindEffects = new ChatRewindEffects({ marketMonitors, stops, automations, notifications })
 
   hub = new StreamHub(session, {
     onClientAttach: (clientId) => permissions.attachClient(clientId),

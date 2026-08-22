@@ -1,6 +1,6 @@
 import { Type } from "@earendil-works/pi-ai"
 import type { ChatNotification, ChatNotificationUrgency } from "@trbot/chat/notification.ts"
-import { toolText, type ChatTool } from "./tool.ts"
+import { reversibleToolEffect, toolText, type ChatTool } from "./tool.ts"
 
 const MAX_NOTIFICATIONS_PER_TURN = 3
 
@@ -66,6 +66,13 @@ export function notifyUserTool(notifications: ChatNotifier): ChatTool<typeof Not
         blocks: [toolText(`Notified the user: ${notification.title}`)],
         details: { notification },
         isError: false,
+        effects: [reversibleToolEffect(
+          "CHAT_NOTIFICATION",
+          notification.id,
+          `Notification “${notification.title}” was sent`,
+          null,
+          notification,
+        )],
       }
     },
   }

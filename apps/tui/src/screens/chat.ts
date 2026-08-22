@@ -32,6 +32,7 @@ import { ChatQuestionPanel } from "../components/chat-question-panel.ts"
 import { ChatPermissionPanel } from "../components/chat-permission-panel.ts"
 import { ChatSessionModal } from "../components/chat-session-modal.ts"
 import { ChatTranscript, type ChatTranscriptBlock } from "../components/chat-transcript.ts"
+import { ChatUndoPanel } from "../components/chat-undo-panel.ts"
 import { MarketMonitorModal } from "../components/market-monitor-modal.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
 import type { SoundPlayer } from "../components/sound.ts"
@@ -99,6 +100,7 @@ const CHAT_INSET = 1
  * from growing into it. Past this the conversation above needs the rest of the screen.
  */
 const COMPOSER_MAX_ROWS = 8
+const DOUBLE_ESCAPE_MS = 600
 
 const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/model", description: "choose which model answers this chat" },
@@ -111,6 +113,7 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/subagents", description: "open this chat's worker sessions" },
   { name: "/parent", description: "return from a worker transcript" },
   { name: "/sessions", description: "open another session" },
+  { name: "/undo", description: "return to an earlier prompt" },
   { name: "/clear", description: "start fresh; keep this session saved" },
   { name: "/new", description: "start fresh; keep this session saved" },
   { name: "/connect", description: "manage model providers" },
@@ -191,6 +194,7 @@ export class ChatScreen {
   private readonly composerRow: BoxRenderable
   private readonly composerMarker: TextRenderable
   private readonly composer: TextareaRenderable
+  private readonly undoSlot: BoxRenderable
   private readonly questionSlot: BoxRenderable
   private readonly composerMeta: TextRenderable
   private readonly hint: TextRenderable
@@ -215,6 +219,7 @@ export class ChatScreen {
   private focus: Focus = "composer"
   private connected: boolean | null = null
   private modal: Modal | null = null
+  private undoPanel: ChatUndoPanel | null = null
   /** Whether replies show the reasoning that led to them, or only that there was some. */
   private showThoughts: boolean
   private commandNotice: string | null = null
@@ -226,6 +231,7 @@ export class ChatScreen {
   private modalHost: BoxRenderable
   /** Prevents session-list refreshes from reopening the chat the user just left. */
   private awaitingFirstPrompt = false
+  private lastEscapeAt = 0
   private destroyed = false
 
   constructor(
@@ -334,6 +340,11 @@ export class ChatScreen {
     })
     if (!options.embedded) this.composerRow.add(this.composerMarker)
     this.composerRow.add(this.composer)
+    this.undoSlot = new BoxRenderable(renderer, {
+      width: "100%",
+      flexShrink: 0,
+      flexDirection: "column",
+    })
     this.questionSlot = new BoxRenderable(renderer, {
       width: "100%",
       flexShrink: 0,
@@ -376,6 +387,7 @@ export class ChatScreen {
 
     this.root.add(body)
     this.root.add(this.composerRow)
+    this.root.add(this.undoSlot)
     this.root.add(this.questionSlot)
     // As in Codex, slash commands unfold below the prompt instead of covering the
     // conversation or floating over the field being edited.
@@ -423,13 +435,19 @@ export class ChatScreen {
    * not: typing "Tomorrow" would otherwise leave the tab.
    */
   capturesInput(): boolean {
-    return this.typing() || this.focus === "question" || this.focus === "permission" || this.modal !== null
+    return this.typing()
+      || this.undoPanel !== null
+      || this.focus === "question"
+      || this.focus === "permission"
+      || this.modal !== null
   }
 
   /** Whether an embedded composer can hand Escape back to its host panel. */
   canReleaseFocus(): boolean {
     const session = this.selectedSession()
-    return this.focus === "composer" && (!session || !this.streamingBySession.has(session.id))
+    return this.undoPanel === null
+      && this.focus === "composer"
+      && (!session || !this.streamingBySession.has(session.id))
   }
 
   /** Lets an embedded chat center its popups over the screen that contains it. */
@@ -458,17 +476,26 @@ export class ChatScreen {
     // into the modal would otherwise be typed into the chat as well.
     key.preventDefault()
     if (this.modal) {
+      this.lastEscapeAt = 0
       this.modal.handleKey(key)
       return
     }
+    if (this.undoPanel) {
+      this.lastEscapeAt = 0
+      this.undoPanel.handleKey(key)
+      return
+    }
     if (this.focus === "question" && this.questionPanel) {
+      this.lastEscapeAt = 0
       this.questionPanel.handleKey(key)
       return
     }
     if (this.focus === "permission" && this.permissionPanel) {
+      this.lastEscapeAt = 0
       this.permissionPanel.handleKey(key)
       return
     }
+    if (key.name !== "escape" && key.name !== "esc") this.lastEscapeAt = 0
     if (this.typing() && this.handleCommandMenuKey(key)) return
     if (isAltArrow(key, "right")) {
       void this.cycleSubagent(1)
@@ -508,8 +535,16 @@ export class ChatScreen {
       void this.cancelQueued()
       return
     }
-    // Esc means stop, and only stop: nothing here needs a key for changing focus.
+    // One Escape still interrupts. A second, while idle, opens the same undo picker
+    // as /undo; keeping the presses close prevents an old Escape from firing later.
     if (key.name === "escape" || key.name === "esc") {
+      const now = Date.now()
+      const doubleEscape = this.lastEscapeAt > 0 && now - this.lastEscapeAt <= DOUBLE_ESCAPE_MS
+      this.lastEscapeAt = doubleEscape ? 0 : now
+      if (doubleEscape && !this.selectedSession()?.running && !this.streamingBySession.has(this.selectedSessionId ?? "")) {
+        this.openUndo()
+        return
+      }
       void this.stopReply()
       return
     }
@@ -543,6 +578,7 @@ export class ChatScreen {
     this.render.cancel()
     this.stopSpinner()
     this.closeModal()
+    this.closeUndo()
     this.removeQuestionPanel()
     this.removePermissionPanel()
     if (!this.root.isDestroyed) this.root.destroyRecursively()
@@ -1037,6 +1073,10 @@ export class ChatScreen {
       case "/sessions":
         this.openSessions()
         break
+      case "/undo":
+        if (words.length > 0) this.commandNotice = "Usage: /undo"
+        else this.openUndo()
+        break
       case "/clear":
       case "/new":
         this.startNewChat()
@@ -1222,7 +1262,90 @@ export class ChatScreen {
     }
   }
 
-  // --- modals -------------------------------------------------------------------
+  // --- transient controls -------------------------------------------------------
+
+  /** Opens the undo picker directly; the embedded trade view uses this for Esc Esc. */
+  openUndo(): void {
+    if (this.modal || this.undoPanel || this.destroyed) return
+    const session = this.selectedSession()
+    if (!session) {
+      this.commandNotice = "Nothing to undo in a new chat."
+      this.render.schedule()
+      return
+    }
+    if (session.parentSessionId) {
+      this.commandNotice = "Subagent transcripts are read-only."
+      this.render.schedule()
+      return
+    }
+    const messages = this.messagesBySession.get(session.id) ?? []
+    if (session.running || session.queued > 0 || messages.some((message) => message.status === "QUEUED")) {
+      this.commandNotice = "Wait for this chat to finish before undoing it."
+      this.render.schedule()
+      return
+    }
+    if (!messages.some((message) => message.role === "USER" && message.status !== "QUEUED")) {
+      this.commandNotice = "No completed prompt to undo."
+      this.render.schedule()
+      return
+    }
+
+    this.commandMenu.close()
+    this.composer.blur()
+    this.undoPanel = new ChatUndoPanel(this.renderer, {
+      messages,
+      loadPreview: (message) => this.options.chats.previewUndo(session.id, message.id),
+      onUndo: (message, revertEffects) => {
+        this.closeUndo()
+        void this.undoTo(session.id, message.id, revertEffects)
+      },
+      onError: (error) => {
+        this.options.logs.error("Chat undo preview", error)
+        this.commandNotice = "Could not inspect this rewind point."
+        this.render.schedule()
+      },
+      onClose: () => this.closeUndo(),
+    })
+    this.undoSlot.add(this.undoPanel.root)
+    this.render.schedule()
+  }
+
+  private closeUndo(): void {
+    const panel = this.undoPanel
+    if (!panel) return
+    this.undoPanel = null
+    if (!this.undoSlot.isDestroyed && !panel.root.isDestroyed) this.undoSlot.remove(panel.root)
+    panel.destroy()
+    if (!this.destroyed && this.focus === "composer" && this.composerUsable()) this.composer.focus()
+    this.render.schedule()
+  }
+
+  private async undoTo(sessionId: string, messageId: string, revertEffects: boolean): Promise<void> {
+    try {
+      const result = await this.options.chats.undo(sessionId, messageId, revertEffects)
+      const removed = new Set(result.removedMessageIds)
+      const messages = this.messagesBySession.get(sessionId) ?? []
+      this.messagesBySession.set(sessionId, messages.filter((message) => !removed.has(message.id)))
+      await this.loadSession(sessionId)
+      if (this.destroyed || this.selectedSessionId !== sessionId) return
+      this.composer.setText(result.prompt)
+      this.commandMenu.setQuery(result.prompt)
+      const reverted = result.revertedEffects.length
+      const preserved = result.preservedEffects.length
+      this.commandNotice = reverted > 0
+        ? `Conversation undone; restored ${reverted} action${reverted === 1 ? "" : "s"}`
+          + (preserved > 0 ? `; kept ${preserved}.` : ".")
+        : preserved > 0
+          ? `Conversation undone; kept ${preserved} action${preserved === 1 ? "" : "s"}.`
+          : "Conversation undone."
+      this.setFocus("composer")
+      this.render.schedule()
+    } catch (error) {
+      this.options.logs.error("Chat undo", error)
+      this.commandNotice = "Could not undo this conversation."
+      this.render.schedule()
+    }
+  }
 
   /** The sessions, on ^S: pick one, start one, or delete one. */
   private openSessions(): void {
@@ -1495,6 +1618,7 @@ export class ChatScreen {
   private setSelectedSession(sessionId: string | null): void {
     if (sessionId) this.awaitingFirstPrompt = false
     if (sessionId === this.selectedSessionId) return
+    this.closeUndo()
     this.selectedSessionId = sessionId
     this.commandNotice = null
     this.automationNotice = null
@@ -1532,7 +1656,7 @@ export class ChatScreen {
     if (focus === "composer") focus = this.blockingFocus() ?? focus
     if (this.focus === focus) return
     this.focus = focus
-    if (focus === "composer") this.composer.focus()
+    if (focus === "composer" && !this.undoPanel) this.composer.focus()
     else this.composer.blur()
     this.questionPanel?.setActive(focus === "question")
     this.permissionPanel?.setActive(focus === "permission")
@@ -1541,7 +1665,7 @@ export class ChatScreen {
 
   /** Whether the field is taking letters, which decides whether they are shortcuts. */
   private typing(): boolean {
-    return this.focus === "composer" && this.composerUsable()
+    return this.undoPanel === null && this.focus === "composer" && this.composerUsable()
   }
 
   /** No provider or no model means there is nothing to type into yet. */

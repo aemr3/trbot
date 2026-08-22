@@ -276,7 +276,19 @@ test("does not retry an overflow after a tool has produced a durable side effect
     },
     run: async () => {
       calls += 1
-      return { blocks: [toolText("Recorded.")], details: null, isError: false }
+      return {
+        blocks: [toolText("Recorded.")],
+        details: null,
+        isError: false,
+        effects: [{
+          kind: "EXTERNAL",
+          resourceId: null,
+          description: "Durable action was recorded",
+          reversible: false,
+          before: null,
+          after: null,
+        }],
+      }
     },
   }
   const { faux, models } = scripted()
@@ -304,6 +316,7 @@ test("does not retry an overflow after a tool has produced a durable side effect
   expect(result.overflowed).toBeUndefined()
   expect(result.errorMessage).toContain("context window")
   expect(drafts.map((draft) => draft.message.role)).toEqual(["ASSISTANT", "TOOL_RESULT", "ASSISTANT"])
+  expect(drafts[1]?.effects?.[0]?.description).toBe("Durable action was recorded")
 })
 
 test("stamps a reply with what answered it and the effort it was asked for", async () => {

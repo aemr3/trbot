@@ -308,6 +308,20 @@ export class StopMonitor {
     this.options.onChange?.()
   }
 
+  /** Restores an exact journal snapshot after a conversation rewind. */
+  async restoreRule(id: string, rule: StopRule | null): Promise<void> {
+    if (rule) await this.options.store.put(rule)
+    else await this.options.store.remove(id)
+    if (rule) {
+      this.rules.set(id, rule)
+      this.safe.delete(id)
+    } else {
+      this.rules.delete(id)
+      this.safe.delete(id)
+    }
+    this.options.onChange?.()
+  }
+
   async setStatus(id: string, status: StopRuleStatus): Promise<void> {
     const rule = this.rules.get(id)
     if (!rule || rule.status === status) return

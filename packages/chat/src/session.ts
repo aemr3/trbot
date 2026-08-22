@@ -127,6 +127,51 @@ export interface ChatSessionDetail {
   partial: ChatPartial | null
 }
 
+export const CHAT_TOOL_EFFECT_KINDS = [
+  "MARKET_MONITOR",
+  "STOP_RULE",
+  "CHAT_GOAL",
+  "CHAT_LOOP",
+  "CHAT_NOTIFICATION",
+  "EXTERNAL",
+] as const
+
+export type ChatToolEffectKind = (typeof CHAT_TOOL_EFFECT_KINDS)[number]
+
+/**
+ * A successful tool mutation recorded beside its result.
+ *
+ * Application-owned resources keep before/after snapshots so rewind can restore
+ * them safely. External effects deliberately carry no rollback payload.
+ */
+export interface ChatToolEffect {
+  kind: ChatToolEffectKind
+  resourceId: string | null
+  description: string
+  reversible: boolean
+  before: unknown | null
+  after: unknown | null
+}
+
+/** The safe, client-facing part of one tool effect in a rewind preview. */
+export interface ChatUndoEffect {
+  description: string
+  reversible: boolean
+}
+
+export interface ChatUndoPreview {
+  prompt: string
+  effects: ChatUndoEffect[]
+}
+
+/** What a conversation undo removed, restored, and preserved. */
+export interface ChatUndoResult {
+  prompt: string
+  removedMessageIds: string[]
+  revertedEffects: string[]
+  preservedEffects: string[]
+}
+
 export const ChatRoleSchema = z.enum(["USER", "APP_EVENT", "ASSISTANT", "TOOL_RESULT"])
 export const ChatMessageStatusSchema = z.enum(["QUEUED", "SENT", "COMPLETE", "PARTIAL", "FAILED"])
 export const ChatBlockKindSchema = z.enum(["TEXT", "THINKING", "TOOL_CALL", "IMAGE"])
@@ -192,6 +237,41 @@ export const ChatSessionDetailSchema: z.ZodType<ChatSessionDetail> = z.object({
   partial: ChatPartialSchema.nullable(),
 })
 
+export const ChatToolEffectSchema: z.ZodType<ChatToolEffect> = z.object({
+  kind: z.enum(CHAT_TOOL_EFFECT_KINDS),
+  resourceId: z.string().nullable(),
+  description: z.string().min(1),
+  reversible: z.boolean(),
+  before: z.unknown().nullable(),
+  after: z.unknown().nullable(),
+})
+
+export const ChatUndoEffectSchema: z.ZodType<ChatUndoEffect> = z.object({
+  description: z.string(),
+  reversible: z.boolean(),
+})
+
+export const ChatUndoPreviewSchema: z.ZodType<ChatUndoPreview> = z.object({
+  prompt: z.string(),
+  effects: z.array(ChatUndoEffectSchema),
+})
+
+export const ChatUndoResultSchema: z.ZodType<ChatUndoResult> = z.object({
+  prompt: z.string(),
+  removedMessageIds: z.array(z.string()),
+  revertedEffects: z.array(z.string()),
+  preservedEffects: z.array(z.string()),
+})
+
+export const ChatUndoInputSchema = z.object({
+  messageId: z.string().min(1),
+  revertEffects: z.boolean().optional().default(false),
+})
+
+export const ChatUndoPreviewInputSchema = z.object({
+  messageId: z.string().min(1),
+})
+
 export const ChatTimelineQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(CHAT_TIMELINE_LIMIT).optional(),
 })
@@ -210,6 +290,8 @@ export type ChatRunStatus = "running" | "done" | "failed" | "aborted"
 export interface ChatMessageDraft {
   message: ChatMessage
   record: unknown
+  /** Successful tool mutations caused by this result, never shown to the model. */
+  effects?: ChatToolEffect[]
 }
 
 /** An application event that wakes a conversation exactly once. */
@@ -313,6 +395,10 @@ export interface ChatSessionStore {
    */
   markSent(messageId: string): Promise<void>
   remove(messageId: string): Promise<void>
+  /** Tool mutations recorded at or after a prospective rewind point. */
+  effectsFrom(sessionId: string, messageId: string): Promise<ChatToolEffect[]>
+  /** Removes one prompt and everything after it, including hidden compacted context. */
+  rewindFrom(sessionId: string, messageId: string): Promise<string[]>
   /** Sessions holding queued messages, so a restarted server resumes them. */
   queuedSessionIds(): Promise<string[]>
 }

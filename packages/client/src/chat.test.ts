@@ -101,3 +101,53 @@ test("requests only the bounded timeline used by the TUI", async () => {
 
   expect(new URL(requestedUrl).searchParams.get("limit")).toBe("100")
 })
+
+test("posts the selected prompt when undoing a chat", async () => {
+  let requestedPath = ""
+  let requestedBody = ""
+  const http = new HttpClient({
+    url: "http://localhost:3000",
+    token: "test",
+    fetch: async (input, init) => {
+      const request = new Request(input, init)
+      requestedPath = new URL(request.url).pathname
+      requestedBody = await request.text()
+      return Response.json({
+        prompt: "second question",
+        removedMessageIds: ["message-2", "reply-2"],
+        revertedEffects: [],
+        preservedEffects: [],
+      })
+    },
+  })
+
+  const result = await new HttpChatSessions(http).undo("chat-1", "message-2")
+
+  expect(requestedPath).toBe("/v1/ai/chat/sessions/chat-1/undo")
+  expect(requestedBody).toBe('{"messageId":"message-2","revertEffects":false}')
+  expect(result.prompt).toBe("second question")
+})
+
+test("previews rewind tool effects without changing the chat", async () => {
+  let requestedPath = ""
+  let requestedBody = ""
+  const http = new HttpClient({
+    url: "http://localhost:3000",
+    token: "test",
+    fetch: async (input, init) => {
+      const request = new Request(input, init)
+      requestedPath = new URL(request.url).pathname
+      requestedBody = await request.text()
+      return Response.json({
+        prompt: "second question",
+        effects: [{ description: "Market monitor was created", reversible: true }],
+      })
+    },
+  })
+
+  const result = await new HttpChatSessions(http).previewUndo("chat-1", "message-2")
+
+  expect(requestedPath).toBe("/v1/ai/chat/sessions/chat-1/undo/preview")
+  expect(requestedBody).toBe('{"messageId":"message-2"}')
+  expect(result.effects).toEqual([{ description: "Market monitor was created", reversible: true }])
+})

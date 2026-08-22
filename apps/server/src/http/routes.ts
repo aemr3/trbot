@@ -1,7 +1,12 @@
 import { BrokerageDistributionRequestSchema } from "@trbot/market/brokerage.ts"
 import { SettlementRequestSchema } from "@trbot/market/settlement.ts"
 import { PriceAlertStatusRequestSchema } from "@trbot/market/alert.ts"
-import { ChatMessageInputSchema, ChatTimelineQuerySchema } from "@trbot/chat/session.ts"
+import {
+  ChatMessageInputSchema,
+  ChatTimelineQuerySchema,
+  ChatUndoInputSchema,
+  ChatUndoPreviewInputSchema,
+} from "@trbot/chat/session.ts"
 import { ChatQuestionReplySchema } from "@trbot/chat/question.ts"
 import { ChatPermissionReplySchema } from "@trbot/chat/permission.ts"
 import { CreateChatGoalSchema, CreateChatLoopSchema, UpdateChatGoalSchema } from "@trbot/chat/automation.ts"
@@ -302,6 +307,26 @@ export const PARAMETERIZED: {
   method: string
   handle: (match: RegExpMatchArray, request: Request, context: RouteContext) => Promise<Response>
 }[] = [
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/undo\/preview$/,
+    method: "POST",
+    handle: async (match, request, { chat }) => {
+      const body = check.payload(await readJsonObject(request), ChatUndoPreviewInputSchema, "chat undo preview")
+      return json(await chat.previewUndo(decodeURIComponent(match[1] ?? ""), body.messageId))
+    },
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/undo$/,
+    method: "POST",
+    handle: async (match, request, { chat }) => {
+      const body = check.payload(await readJsonObject(request), ChatUndoInputSchema, "chat undo")
+      return json(await chat.undo(
+        decodeURIComponent(match[1] ?? ""),
+        body.messageId,
+        body.revertEffects,
+      ))
+    },
+  },
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/compact$/,
     method: "POST",

@@ -104,6 +104,10 @@ export class StopController {
     return this.monitor.views().map((view) => view.rule).filter(isOpenStopRule)
   }
 
+  get(id: string): StopRule | null {
+    return this.monitor.rule(id) ?? null
+  }
+
   async save(draft: StopRuleDraft): Promise<StopRule> {
     const rule = await this.monitor.saveRule(draft)
     // A close-based rule has no ticks to fall back on, so until its candles are
@@ -119,6 +123,11 @@ export class StopController {
     // running dies with it.
     this.abandon(id)
     await this.monitor.removeRule(id)
+  }
+
+  async restore(id: string, rule: StopRule | null): Promise<void> {
+    this.abandon(id)
+    await this.monitor.restoreRule(id, rule)
   }
 
   async setStatus(id: string, status: StopRuleStatus): Promise<void> {
