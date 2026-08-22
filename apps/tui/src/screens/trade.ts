@@ -2536,17 +2536,17 @@ function changeColor(changePercent: number | null): string {
   return changePercent >= 0 ? UP_COLOR : DOWN_COLOR
 }
 
-// The row fills the sidebar's list column: the ticker on the left, the change
+// The row fills the sidebar's list column: the contract symbol on the left, the change
 // hard against the right edge, and the price right-aligned in what is left. The
 // two numbers therefore stay in one column each however wide the sidebar is set.
 const INSTRUMENT_ROW_WIDTH = SIDEBAR_WIDTH - SIDEBAR_LIST_CHROME
-const INSTRUMENT_NAME_WIDTH = 6
+const INSTRUMENT_NAME_WIDTH = 12
 const INSTRUMENT_CHANGE_WIDTH = 7
 const INSTRUMENT_PRICE_WIDTH =
   INSTRUMENT_ROW_WIDTH - INSTRUMENT_NAME_WIDTH - INSTRUMENT_CHANGE_WIDTH - 4
 
 function formatInstrumentRow(instrument: ViopInstrument): string {
-  const name = instrument.displayName.padEnd(INSTRUMENT_NAME_WIDTH)
+  const name = instrument.symbol.padEnd(INSTRUMENT_NAME_WIDTH)
   const price =
     instrument.lastPrice !== null
       ? instrument.lastPrice.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -2563,7 +2563,7 @@ function instrumentComparator(sort: InstrumentSort, direction: SortDirection): (
     // Ticker order is the one sort with no figure behind it, and it is also
     // what breaks every other sort's ties below.
     if (sort === "name") {
-      const order = left.displayName.localeCompare(right.displayName, "tr")
+      const order = left.symbol.localeCompare(right.symbol, "tr")
       return direction === "desc" ? -order : order
     }
     const leftValue = sort === "change" ? left.changePercent : left.volume
@@ -2573,7 +2573,7 @@ function instrumentComparator(sort: InstrumentSort, direction: SortDirection): (
     if (leftValue !== null && rightValue !== null && leftValue !== rightValue) {
       return direction === "desc" ? rightValue - leftValue : leftValue - rightValue
     }
-    return left.displayName.localeCompare(right.displayName)
+    return left.symbol.localeCompare(right.symbol)
   }
 }
 

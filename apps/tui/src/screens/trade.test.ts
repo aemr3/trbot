@@ -438,8 +438,8 @@ test("switches the news panel to its embedded chat and releases input for ticker
   expect(screen.hasEmbeddedChat()).toBe(true)
   expect(preferenceChanges.at(-1)?.selectedTradeRightView).toBe("chat")
 
-  const tickerLine = chatFrame.split("\n").findIndex((line) => line.includes("▶ XU030"))
-  const tickerColumn = chatFrame.split("\n")[tickerLine]?.indexOf("XU030") ?? -1
+  const tickerLine = chatFrame.split("\n").findIndex((line) => line.includes("▶ F_XU0300826"))
+  const tickerColumn = chatFrame.split("\n")[tickerLine]?.indexOf("F_XU0300826") ?? -1
   expect(tickerLine).toBeGreaterThanOrEqual(0)
   expect(tickerColumn).toBeGreaterThanOrEqual(0)
   await mockMouse.click(tickerColumn, tickerLine)
@@ -626,7 +626,7 @@ test("shows the account's figures beside the contract, and the rest in tabs", as
   const positionX = lines[positionY]?.indexOf("THYAO") ?? -1
   expect(positionX).toBeGreaterThanOrEqual(0)
   await mockMouse.click(positionX, positionY)
-  await waitForFrame((frame) => frame.includes("Chart  THYAO stock") && frame.includes("▶ THYAO"))
+  await waitForFrame((frame) => frame.includes("Chart  THYAO stock") && frame.includes("▶ F_THYAO0826"))
 
   mockInput.pressArrow("right")
   const ordersFrame = await waitForFrame((frame) => frame.includes("THYAO alış"))
@@ -860,7 +860,7 @@ test("keeps the chrome dim during the evening when stock futures are closed", as
   renderer.destroy()
 })
 
-test("sorts VIOP stocks by change or volume and preserves the selected stock", async () => {
+test("shows contract symbols and sorts them while preserving the selected contract", async () => {
   const { renderer, mockInput, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({ width: 120, height: 24 })
   const sortable: ViopInstrumentSource = {
     async listInstruments() {
@@ -876,7 +876,7 @@ test("sorts VIOP stocks by change or volume and preserves the selected stock", a
   screen.mount()
 
   const volumeFrame = await waitForFrame((frame) => frame.includes("Volume ↓") && frame.includes("AAA stock"))
-  expect(viopRowSymbols(volumeFrame)).toEqual(["AAA", "BBB", "CCC"])
+  expect(viopRowSymbols(volumeFrame)).toEqual(["F_AAA0826", "F_BBB0826", "F_CCC0826"])
   expect(volumeFrame).toContain("AAA stock")
 
   await mockInput.typeText("c")
@@ -888,7 +888,7 @@ test("sorts VIOP stocks by change or volume and preserves the selected stock", a
   expect(changeDescFrame.indexOf("+3.00%")).toBeLessThan(changeDescFrame.indexOf("+1.00%"))
   expect(changeDescFrame.indexOf("+1.00%")).toBeLessThan(changeDescFrame.indexOf("-2.00%"))
   expect(changeDescFrame).toContain("AAA stock")
-  expect(changeDescFrame).toMatch(/▶ AAA/)
+  expect(changeDescFrame).toMatch(/▶ F_AAA0826/)
 
   await mockInput.typeText("%")
   const changeAscFrame = await waitForFrame((frame) => frame.includes("Change ↑"))
@@ -897,16 +897,16 @@ test("sorts VIOP stocks by change or volume and preserves the selected stock", a
 
   mockInput.pressKey("v", { shift: true })
   const volumeAgainFrame = await waitForFrame((frame) => frame.includes("Volume ↓"))
-  expect(viopRowSymbols(volumeAgainFrame)).toEqual(["AAA", "BBB", "CCC"])
+  expect(viopRowSymbols(volumeAgainFrame)).toEqual(["F_AAA0826", "F_BBB0826", "F_CCC0826"])
 
   // A list by ticker reads A to Z first, unlike the two figure sorts.
   mockInput.pressKey("n", { shift: true })
   const nameFrame = await waitForFrame((frame) => frame.includes("Name ↑"))
-  expect(viopRowSymbols(nameFrame)).toEqual(["AAA", "BBB", "CCC"])
+  expect(viopRowSymbols(nameFrame)).toEqual(["F_AAA0826", "F_BBB0826", "F_CCC0826"])
 
   mockInput.pressKey("n", { shift: true })
   const nameDescFrame = await waitForFrame((frame) => frame.includes("Name ↓"))
-  expect(viopRowSymbols(nameDescFrame)).toEqual(["CCC", "BBB", "AAA"])
+  expect(viopRowSymbols(nameDescFrame)).toEqual(["F_CCC0826", "F_BBB0826", "F_AAA0826"])
 
   screen.destroy()
   renderer.destroy()
@@ -942,9 +942,11 @@ test("refreshes snapshot volumes and re-sorts without replacing live prices", as
   screen.mount()
 
   const initialFrame = await waitForFrame((frame) => frame.includes("AAA stock"))
-  expect(viopRowSymbols(initialFrame)).toEqual(["AAA", "BBB", "CCC"])
+  expect(viopRowSymbols(initialFrame)).toEqual(["F_AAA0826", "F_BBB0826", "F_CCC0826"])
   await waitFor(() => calls >= 2)
-  const refreshedFrame = await waitForFrame((frame) => viopRowSymbols(frame).join(",") === "CCC,BBB,AAA")
+  const refreshedFrame = await waitForFrame(
+    (frame) => viopRowSymbols(frame).join(",") === "F_CCC0826,F_BBB0826,F_AAA0826",
+  )
   expect(refreshedFrame).toContain("103,00")
   expect(refreshedFrame).toContain("+3.00%")
 
@@ -1397,7 +1399,7 @@ test("falls back to an available contract when the saved contract no longer exis
 function viopRowSymbols(frame: string): string[] {
   return frame
     .split("\n")
-    .map((line) => line.slice(0, 36).match(/^[ ▶]{3}(AAA|BBB|CCC)\s+\d/)?.[1])
+    .map((line) => line.slice(0, 36).match(/^[ ▶]{3}(F_(?:AAA|BBB|CCC)0826)\s+\d/)?.[1])
     .filter((symbol): symbol is string => Boolean(symbol))
 }
 
