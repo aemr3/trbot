@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@opentui/core": "^0.5.1",
+    "@opentui/core": "^0.5.3",
     "@trbot/chat": "workspace:*",
     "@trbot/client": "workspace:*",
     "@trbot/config": "workspace:*",
