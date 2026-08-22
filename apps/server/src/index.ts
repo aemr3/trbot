@@ -381,7 +381,7 @@ async function startTrbotServer(): Promise<void> {
 
   const resumed = await session.resume()
   await automations.start()
-  console.log(resumed ? "Provider session resumed" : "No provider session; waiting for a client to sign in")
+  if (!resumed) console.log("No provider session; waiting for a client to sign in")
 
   // The stop monitor needs to know what is held. The timer is the floor, so an
   // unattended server still sees positions opened elsewhere; the account stream
