@@ -661,6 +661,7 @@ test("opens a filtered slash-command menu below the composer", async () => {
 
   await mockInput.typeText("/")
   const menu = await waitForFrame((frame) => frame.includes("/model") && frame.includes("/sessions"))
+  expect(menu).toContain("/clear")
   expect(menu).not.toContain("/chats")
   const lines = menu.split("\n")
   const composerRow = lines.findIndex((line) => line.includes("› /"))
@@ -675,6 +676,112 @@ test("opens a filtered slash-command menu below the composer", async () => {
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("No subagents have run in this session."))
   expect(chats.sent).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("/clear and /new wait for a prompt before creating the next session", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const saved = await chats.create()
+  await chats.send(saved.id, "saved conversation")
+  const selections: Array<string | null> = []
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    onSessionChange: (sessionId) => selections.push(sessionId),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("saved conversation"))
+
+  for (const [command, prompt] of [["/clear", "fresh after clear"], ["/new", "fresh after new"]] as const) {
+    const sessionCount = chats.sessions.length
+    await mockInput.typeText(command)
+    mockInput.pressEnter()
+    const empty = await waitForFrame((frame) => (
+      frame.includes("New chat")
+      && frame.includes("Ask about a market")
+      && !frame.includes(prompt)
+    ))
+    expect(empty).not.toContain("No chat yet")
+    expect(empty).toContain("commands")
+    expect(empty).toContain("sessions")
+    expect(chats.sessions).toHaveLength(sessionCount)
+    expect(selections.at(-1)).toBeNull()
+
+    // A server refresh must not reopen the saved chat while the blank state is active.
+    screen.acceptSessions([...chats.sessions])
+    await waitForFrame((frame) => frame.includes("New chat") && !frame.includes("saved conversation"))
+    expect(selections.at(-1)).toBeNull()
+
+    await mockInput.typeText(prompt)
+    mockInput.pressEnter()
+    await waitForFrame((frame) => frame.includes(prompt))
+    expect(chats.sessions).toHaveLength(sessionCount + 1)
+  }
+
+  expect(chats.sessions.map((session) => session.id)).toEqual(["chat-1", "chat-2", "chat-3"])
+  expect(chats.sent).toEqual(["saved conversation", "fresh after clear", "fresh after new"])
+
+  const sessionCount = chats.sessions.length
+  await mockInput.typeText("draft to discard")
+  mockInput.pressKey("n", { ctrl: true })
+  const shortcut = await waitForFrame((frame) => frame.includes("New chat") && !frame.includes("draft to discard"))
+  expect(shortcut).toContain("Ask about a market")
+  expect(chats.sessions).toHaveLength(sessionCount)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("restores a saved new-chat state and shows the model its first prompt will use", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const saved = await chats.create()
+  await chats.send(saved.id, "older saved chat")
+  const selections: Array<string | null> = []
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account({
+      connected: true,
+      preferences: {
+        chat: { providerId: "test-provider", modelId: "test-model", reasoning: "high" },
+      },
+    }),
+    logs: new ApplicationLog(),
+    initialSessionId: null,
+    onSessionChange: (sessionId) => selections.push(sessionId),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+
+  const restored = await waitForFrame((frame) => (
+    frame.includes("New chat")
+    && frame.includes("test-model")
+    && frame.includes("high")
+  ))
+  expect(restored).not.toContain("older saved chat")
+  expect(selections).toBeEmpty()
+
+  screen.acceptSessions([...chats.sessions])
+  await waitForFrame((frame) => frame.includes("New chat") && !frame.includes("older saved chat"))
+  expect(selections).toBeEmpty()
+
+  await mockInput.typeText("first prompt after restart")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("first prompt after restart"))
+  expect(chats.sessions).toHaveLength(2)
+  expect(chats.sessions[1]).toMatchObject({
+    model: "test-model",
+    provider: "test-provider",
+    reasoning: "high",
+  })
+  expect(selections).toEqual(["chat-2"])
 
   screen.destroy()
   renderer.destroy()

@@ -21,7 +21,7 @@ import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type { ChatPermissionRequest } from "@trbot/chat/permission.ts"
 import { parseLoopInterval, type ChatAutomationState } from "@trbot/chat/automation.ts"
 import type { MarketMonitor } from "@trbot/market/market-monitor.ts"
-import type { AiAccount } from "@trbot/protocol/ai.ts"
+import type { AiAccount, AiModelChoice } from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import type { MarketMonitorClient } from "@trbot/client/monitors.ts"
 import { AiConnectionModal } from "../components/ai-connection-modal.ts"
@@ -111,7 +111,8 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/subagents", description: "open this chat's worker sessions" },
   { name: "/parent", description: "return from a worker transcript" },
   { name: "/sessions", description: "open another session" },
-  { name: "/new", description: "start a new session" },
+  { name: "/clear", description: "start fresh; keep this session saved" },
+  { name: "/new", description: "start fresh; keep this session saved" },
   { name: "/connect", description: "manage model providers" },
   { name: "/help", description: "show every chat key" },
 ]
@@ -127,6 +128,10 @@ export interface ChatScreenOptions {
   account?: AiAccount
   sound?: SoundPlayer
   logs: ApplicationLog
+  /**
+   * A session id restores that chat, null restores a blank chat, and undefined falls
+   * back to the newest available chat.
+   */
   initialSessionId?: string | null
   initialShowThoughts?: boolean
   onSessionChange?: (sessionId: string | null) => void
@@ -181,6 +186,7 @@ export class ChatScreen {
   readonly root: BoxRenderable
 
   private readonly transcript: ChatTranscript
+  private readonly emptyState: BoxRenderable
   private readonly commandMenu: ChatCommandMenu
   private readonly composerRow: BoxRenderable
   private readonly composerMarker: TextRenderable
@@ -203,6 +209,8 @@ export class ChatScreen {
   private activeLoopCountBySession = new Map<string, number>()
   /** Context window per `provider/model`, for reading a conversation's usage as a share of it. */
   private contextWindows = new Map<string, number>()
+  /** The model a blank chat will receive when its first prompt creates the session. */
+  private defaultChoice: AiModelChoice | null = null
   private selectedSessionId: string | null = null
   private focus: Focus = "composer"
   private connected: boolean | null = null
@@ -216,6 +224,8 @@ export class ChatScreen {
   private spinnerTimer: ReturnType<typeof setInterval> | null = null
   private marketOpen: boolean | null = null
   private modalHost: BoxRenderable
+  /** Prevents session-list refreshes from reopening the chat the user just left. */
+  private awaitingFirstPrompt = false
   private destroyed = false
 
   constructor(
@@ -227,6 +237,9 @@ export class ChatScreen {
       (error) => options.logs.error("Chat renderer", error),
     )
     this.selectedSessionId = options.initialSessionId ?? null
+    // An explicit null is the saved blank-chat state. Undefined means preferences
+    // were unavailable, in which case load() may safely fall back to a real session.
+    this.awaitingFirstPrompt = options.initialSessionId === null
     this.showThoughts = options.initialShowThoughts ?? true
     this.root = new BoxRenderable(renderer, {
       width: "100%",
@@ -246,7 +259,32 @@ export class ChatScreen {
       backgroundColor: PANEL_BG,
     })
     this.transcript = new ChatTranscript(renderer, { backgroundColor: PANEL_BG })
+    this.emptyState = new BoxRenderable(renderer, {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      width: "100%",
+      height: "100%",
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: PANEL_BG,
+      visible: false,
+    })
+    this.emptyState.add(new TextRenderable(renderer, {
+      content: new StyledText([
+        fg(TEXT_COLOR)("New chat"),
+        fg(MUTED_COLOR)("\n\nAsk about a market, investigate a move, or work through a trade."),
+        fg(COMPOSER_COLOR)("\n\n/"),
+        fg(FAINT_COLOR)("  commands     "),
+        fg(COMPOSER_COLOR)("^S"),
+        fg(FAINT_COLOR)("  sessions"),
+      ]),
+      width: "80%",
+      maxWidth: 58,
+      wrapMode: "word",
+    }))
     body.add(this.transcript.root)
+    body.add(this.emptyState)
     this.commandMenu = new ChatCommandMenu(renderer, CHAT_COMMANDS)
 
     const composerBackground = options.embedded ? PANEL_BG : COMPOSER_BG
@@ -353,6 +391,7 @@ export class ChatScreen {
   /** Restores the place the trader left focused when CHAT becomes visible again. */
   activate(): void {
     if (this.typing()) this.composer.focus()
+    if (!this.selectedSessionId) void this.loadDefaultChoice()
   }
 
   /** A hidden textarea must neither draw a cursor nor receive another panel's keys. */
@@ -450,7 +489,7 @@ export class ChatScreen {
       return
     }
     if (isControl(key, "n")) {
-      void this.createSession()
+      this.startNewChat()
       return
     }
     if (isControl(key, "o")) {
@@ -518,7 +557,10 @@ export class ChatScreen {
       ...sessions,
       ...knownChildren.filter((child) => !sessions.some((session) => session.id === child.id)),
     ]
-    if (!this.selectedSessionId || !this.sessions.some((session) => session.id === this.selectedSessionId)) {
+    if (
+      !this.awaitingFirstPrompt
+      && (!this.selectedSessionId || !this.sessions.some((session) => session.id === this.selectedSessionId))
+    ) {
       this.setSelectedSession(this.initialSession(sessions))
       if (this.selectedSessionId) {
         void this.loadSession(this.selectedSessionId)
@@ -696,7 +738,7 @@ export class ChatScreen {
           // The saved child may have been deleted with its parent; the root fallback below is valid.
         }
       }
-      this.setSelectedSession(this.initialSession(this.sessions))
+      if (!this.awaitingFirstPrompt) this.setSelectedSession(this.initialSession(this.sessions))
       const blocking = this.blockingFocus()
       if (blocking) this.setFocus(blocking)
       if (this.selectedSessionId) {
@@ -834,7 +876,12 @@ export class ChatScreen {
     try {
       const providers = await this.options.account.providers()
       this.connected = providers.some((provider) => provider.connected)
-      if (this.connected) await this.loadContextWindows()
+      if (this.connected) {
+        await Promise.all([
+          this.loadContextWindows(),
+          this.loadDefaultChoice(),
+        ])
+      }
     } catch (error) {
       this.connected = false
       this.options.logs.error("Model providers", error)
@@ -860,6 +907,18 @@ export class ChatScreen {
       )
     } catch (error) {
       this.options.logs.error("Model list", error)
+    }
+  }
+
+  /** Refreshes what a not-yet-persisted chat will use without creating the chat. */
+  private async loadDefaultChoice(): Promise<void> {
+    const account = this.options.account
+    if (!account) return
+    try {
+      this.defaultChoice = (await account.preferences()).chat
+      this.render.schedule()
+    } catch (error) {
+      this.options.logs.error("Model preference", error)
     }
   }
 
@@ -978,8 +1037,9 @@ export class ChatScreen {
       case "/sessions":
         this.openSessions()
         break
+      case "/clear":
       case "/new":
-        await this.createSession()
+        this.startNewChat()
         break
       case "/connect":
         this.openConnection()
@@ -1092,18 +1152,22 @@ export class ChatScreen {
     }
   }
 
-  private async createSession(): Promise<void> {
+  /** Leaves the current chat saved and waits to persist another until its first prompt. */
+  private startNewChat(): void {
     if (this.modal) this.closeModal()
-    const session = await this.startSession()
-    if (!session) return
+    this.awaitingFirstPrompt = true
+    this.composer.setText("")
+    this.commandMenu.close()
+    this.setSelectedSession(null)
     this.setFocus("composer")
+    void this.loadDefaultChoice()
     this.render.schedule()
   }
 
   /** Opens a chat to hold what comes next, and selects it. */
   private async startSession(): Promise<ChatSession | null> {
     try {
-      const session = await this.options.chats.create()
+      const session = await this.options.chats.create(this.defaultChoice ?? undefined)
       if (this.destroyed) return null
       this.rememberSession(session)
       this.setSelectedSession(session.id)
@@ -1172,7 +1236,7 @@ export class ChatScreen {
         this.selectSession(sessionId)
         this.closeModal()
       },
-      onCreate: () => void this.createSession(),
+      onCreate: () => this.startNewChat(),
       // The modal stays up after a delete, so several can go in one visit; the list
       // behind it is repainted from what the server confirmed.
       onDelete: (sessionId) => void this.deleteSession(sessionId),
@@ -1297,25 +1361,27 @@ export class ChatScreen {
    *
    * The current chat changes immediately, while the same choice becomes the default
    * for chats created later. Other open chats keep their own model, so comparisons do
-   * not move underneath the trader. Opening the picker with no chat yet starts one, so
-   * choosing a model is never blocked on having something to say.
+   * not move underneath the trader. A blank chat changes only that default and remains
+   * unpersisted until its first prompt.
    */
   private async openModelPicker(initial: "model" | "reasoning"): Promise<void> {
     const account = this.options.account
     if (!account || this.modal || this.destroyed) return
-    const session = this.selectedSession() ?? await this.startSession()
-    if (!session || this.modal || this.destroyed) return
-    const current = session.provider && session.model
+    const session = this.selectedSession()
+    const current = session?.provider && session.model
       ? { providerId: session.provider, modelId: session.model, reasoning: session.reasoning }
-      : null
+      : this.defaultChoice
     this.showModal(new AiModelModal(this.renderer, {
       load: () => account.models(),
       current,
       initial,
-      title: "Model for this chat",
+      title: session ? "Model for this chat" : "Model for new chats",
       onChoose: async (choice) => {
-        const updated = await this.options.chats.configure(session.id, choice)
-        this.rememberSession(updated)
+        if (session) {
+          const updated = await this.options.chats.configure(session.id, choice)
+          this.rememberSession(updated)
+        }
+        this.defaultChoice = choice
         this.render.schedule()
         const preferences = await account.preferences()
         await account.setPreferences({ ...preferences, chat: choice })
@@ -1427,6 +1493,7 @@ export class ChatScreen {
   }
 
   private setSelectedSession(sessionId: string | null): void {
+    if (sessionId) this.awaitingFirstPrompt = false
     if (sessionId === this.selectedSessionId) return
     this.selectedSessionId = sessionId
     this.commandNotice = null
@@ -1489,6 +1556,8 @@ export class ChatScreen {
     const session = this.selectedSession()
     this.syncSpinner(session)
     this.transcript.setBlocks(this.transcriptBlocks(session))
+    const showEmptyState = this.connected !== false && session === null
+    this.emptyState.visible = showEmptyState
     this.syncQuestionPanel()
     this.syncPermissionPanel()
     this.composerRow.visible = this.composerUsable()
@@ -1609,14 +1678,17 @@ export class ChatScreen {
 
   /** What will answer what is being typed. */
   private composerMetaText(session: ChatSession | null): StyledText {
-    if (!session?.model) return new StyledText([fg(QUEUED_COLOR)("no model · ^O chooses one")])
-    const label = session.parentSessionId
+    const model = session?.model || this.defaultChoice?.modelId
+    const reasoning = session?.model ? session.reasoning : this.defaultChoice?.reasoning
+    if (!model) return new StyledText([fg(QUEUED_COLOR)("no model · ^O chooses one")])
+    const label = session?.parentSessionId
       ? new StyledText([
         fg(MODEL_COLOR)(session.agent ?? "worker"),
         fg(FAINT_COLOR)(" · "),
-        ...modelLabel(session.model, session.reasoning).chunks,
+        ...modelLabel(model, reasoning ?? null).chunks,
       ])
-      : modelLabel(session.model, session.reasoning)
+      : modelLabel(model, reasoning ?? null)
+    if (!session) return label
     const monitorCount = this.armedMonitorCountBySession.get(session.id)
     if (monitorCount !== undefined && monitorCount > 0) {
       label.chunks.push(
@@ -1721,9 +1793,7 @@ export class ChatScreen {
     if (this.connected === false) {
       return [note("No model provider connected.\n\nPress ^P to connect one — a subscription sign-in or an API key.")]
     }
-    if (!session) {
-      return [note("No chat yet.\n\nType below to start one, or ^S to open an older chat.")]
-    }
+    if (!session) return []
     if (!this.selectedHasModel()) {
       return [note("No model chosen for this chat.\n\nPress ^O to choose which model answers it.")]
     }

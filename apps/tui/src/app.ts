@@ -403,9 +403,13 @@ export class App {
         const next = {
           ...preferences,
           selectedMainChatSessionId:
-            this.preferences?.selectedMainChatSessionId ?? preferences.selectedMainChatSessionId,
+            this.preferences === undefined
+              ? preferences.selectedMainChatSessionId
+              : this.preferences.selectedMainChatSessionId,
           selectedTradePanelChatSessionId:
-            this.preferences?.selectedTradePanelChatSessionId ?? preferences.selectedTradePanelChatSessionId,
+            this.preferences === undefined
+              ? preferences.selectedTradePanelChatSessionId
+              : this.preferences.selectedTradePanelChatSessionId,
           showChatThoughts: this.preferences?.showChatThoughts ?? preferences.showChatThoughts,
         }
         this.preferences = next
