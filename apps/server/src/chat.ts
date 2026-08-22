@@ -375,8 +375,16 @@ export class ChatController {
    * clearing what is waiting, and a trader who meant the second has `cancel`.
    */
   async abort(sessionId: string): Promise<void> {
-    await this.detail(sessionId)
-    this.abortRun(sessionId)
+    let session = (await this.detail(sessionId)).session
+    for (;;) {
+      const run = this.runs.get(session.id)
+      if (run?.controller) {
+        run.controller.abort()
+        return
+      }
+      if (!session.parentSessionId) return
+      session = (await this.detail(session.parentSessionId)).session
+    }
   }
 
   /** Forces a fresh rolling summary without adding anything to the conversation. */

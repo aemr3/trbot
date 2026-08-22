@@ -26,15 +26,23 @@ test("tells the agent to check live app data before claiming it has none", () =>
   expect(CHAT_SYSTEM_PROMPT).toContain("Read it from a tool")
 })
 
+test("keeps the agent inside the listed front-month contract universe", () => {
+  expect(CHAT_SYSTEM_PROMPT).toContain("only the nearest-expiry contract")
+  expect(CHAT_SYSTEM_PROMPT).toContain("Never construct or probe a contract code")
+  expect(CHAT_SYSTEM_PROMPT).toContain("outside the available universe")
+})
+
 test("teaches the agent VIOP exposure and the difference between limits and circuit breakers", () => {
   expect(CHAT_SYSTEM_PROMPT).toContain("Collateral is margin, not the purchase price")
   expect(CHAT_SYSTEM_PROMPT).toContain("live lowerLimit and upperLimit")
   expect(CHAT_SYSTEM_PROMPT).toContain("daily price margin from a circuit breaker")
   expect(CHAT_SYSTEM_PROMPT).toContain("BIST 100 fall of 6%")
   expect(CHAT_SYSTEM_PROMPT).toContain("current official Borsa Istanbul source")
-  expect(CHAT_SYSTEM_PROMPT).toContain("underlying cash equity, not its VIOP contract")
-  expect(CHAT_SYSTEM_PROMPT).toContain("never describe an underlying equity order book as a VIOP contract order book")
-  expect(CHAT_SYSTEM_PROMPT).toContain("the tool does not translate a VIOP contract symbol")
+  expect(CHAT_SYSTEM_PROMPT).toContain("get_order_book can read either the VIOP contract book")
+  expect(CHAT_SYSTEM_PROMPT).toContain("target INSTRUMENT")
+  expect(CHAT_SYSTEM_PROMPT).toContain("target UNDERLYING")
+  expect(CHAT_SYSTEM_PROMPT).toContain("never describe an underlying order book as a futures order book")
+  expect(CHAT_SYSTEM_PROMPT).toContain("equity quotes still belong to an available cash-equity underlying")
   expect(CHAT_SYSTEM_PROMPT).toContain("what happened at trigger time, not current market data")
   expect(CHAT_SYSTEM_PROMPT).not.toContain("permission")
 })
@@ -246,7 +254,10 @@ test("reports accepted enum values once when a tool argument is invalid", async 
 test("keeps a reply that failed part way and reports why", async () => {
   const { faux, models } = scripted()
   faux.setResponses([
-    fauxAssistantMessage([fauxText("Partial")], { stopReason: "error", errorMessage: "stream lost" }),
+    fauxAssistantMessage([fauxText("Partial")], {
+      stopReason: "error",
+      errorMessage: "WebSocket closed 1006 Connection ended",
+    }),
   ])
   const agent = new ChatAgent({ models })
 
@@ -265,11 +276,66 @@ test("keeps a reply that failed part way and reports why", async () => {
     },
   })
 
-  expect(result.errorMessage).toBe("stream lost")
+  expect(result.errorMessage).toBe("WebSocket closed 1006 Connection ended")
   // The words it managed are still stored: an answer cut off is worth more to the
   // trader than an empty transcript with an error beside it.
   expect(drafts[0]?.message.text).toBe("Partial")
   expect(drafts[0]?.message.status).toBe("FAILED")
+})
+
+test("retries an abnormal provider disconnect without running completed tools again", async () => {
+  let toolCalls = 0
+  const tool: ChatTool = {
+    definition: {
+      name: "read_market",
+      description: "Read current market data",
+      parameters: Type.Object({}),
+    },
+    run: async () => {
+      toolCalls += 1
+      return { blocks: [toolText("Market read.")], details: null, isError: false }
+    },
+  }
+  const { faux, models } = scripted({ reasoning: true })
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("read_market", {})], { stopReason: "toolUse" }),
+    (_context, options) => {
+      expect(options?.sessionId).toBe("chat-1")
+      return fauxAssistantMessage([fauxThinking("checking")], {
+        stopReason: "error",
+        errorMessage: "WebSocket closed 1006 Connection ended",
+      })
+    },
+    (context, options) => {
+      expect(options?.sessionId).toBe("chat-1")
+      expect(context.messages.map((message) => message.role)).toEqual([
+        "user",
+        "assistant",
+        "toolResult",
+      ])
+      return fauxAssistantMessage("Recovered answer.")
+    },
+  ])
+  const drafts: ChatMessageDraft[] = []
+
+  const result = await new ChatAgent({ models, tools: new ChatTools([tool]) }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Read the market",
+    chatSessionId: "chat-1",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onMessage: async (draft) => { drafts.push(draft) },
+    },
+  })
+
+  expect(result).toEqual({ completed: true, aborted: false, errorMessage: null })
+  expect(faux.state.callCount).toBe(3)
+  expect(toolCalls).toBe(1)
+  expect(drafts.map((draft) => draft.message.role)).toEqual(["ASSISTANT", "TOOL_RESULT", "ASSISTANT"])
+  expect(drafts.at(-1)?.message.text).toBe("Recovered answer.")
 })
 
 test("reports a clean context overflow without persisting a disposable error reply", async () => {

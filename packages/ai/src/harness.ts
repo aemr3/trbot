@@ -51,9 +51,8 @@ export function createHarness(credentials: AiCredentialStore): AiHarness {
  * Releases whatever the harness is holding open between requests.
  *
  * Its ChatGPT transport keeps a connection per session so a follow-up turn need not
- * resend the whole conversation. Nothing here names a session yet, so there is
- * usually nothing to release — but a shutdown that says so is what keeps that true
- * the day one is named.
+ * resend the whole conversation. Chat turns pass their application session id into
+ * the harness, so shutdown releases those cached provider connections explicitly.
  */
 export function closeHarness(): void {
   cleanupSessionResources()

@@ -12,10 +12,12 @@ import type { ChatMessage, ChatUndoPreview } from "@trbot/chat/session.ts"
 import { SelectableList } from "./selectable-list.ts"
 
 const PANEL_BG = TUI_THEME.appBackground
+const BORDER_COLOR = TUI_THEME.textFaint
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
 const ACCENT_COLOR = TUI_THEME.accent
 const WARNING_COLOR = TUI_THEME.warning
+const SELECTED_BG = TUI_THEME.overlaySelection
 const CURRENT_ID = "__current__"
 const CONVERSATION_ONLY_ID = "__conversation_only__"
 const REVERSIBLE_ACTIONS_ID = "__reversible_actions__"
@@ -25,10 +27,12 @@ const INDICATOR_WIDTH = 2
 const PANEL_PADDING = 4
 const PANEL_HORIZONTAL_CHROME = 10
 const PANEL_BORDER_HEIGHT = 1
+const MODAL_VERTICAL_CHROME = 4
 const HEADER_HEIGHT = 4
 const ROW_GAP = 1
 const FOOTER_GAP = 1
 const MAX_PANEL_HEIGHT = 16
+const MODAL_WIDTH = 72
 
 interface UndoRow {
   id: string
@@ -37,6 +41,7 @@ interface UndoRow {
 
 export interface ChatUndoPanelOptions {
   messages: ChatMessage[]
+  presentation?: "inline" | "modal"
   loadPreview: (message: ChatMessage) => Promise<ChatUndoPreview>
   onUndo: (message: ChatMessage, revertEffects: boolean) => void
   onError: (cause: unknown) => void
@@ -45,10 +50,11 @@ export interface ChatUndoPanelOptions {
 
 type UndoStage = "PROMPTS" | "LOADING" | "CHOICE"
 
-/** Inline prompt picker followed by an explicit conversation/action choice. */
+/** Prompt rewind picker, optionally presented as a modal for a clicked message. */
 export class ChatUndoPanel {
   readonly root: BoxRenderable
 
+  private readonly surface: BoxRenderable
   private readonly header: TextRenderable
   private readonly list: SelectableList
   private readonly footer: TextRenderable
@@ -59,9 +65,11 @@ export class ChatUndoPanel {
   private preview: ChatUndoPreview | null = null
   private previewRequest = 0
   private committing = false
+  private returnToPrompts = true
   private rendered = false
   private destroyed = false
   private promptWidth = 0
+  private desiredHeight = 10
 
   constructor(
     private readonly renderer: RenderContext,
@@ -75,24 +83,53 @@ export class ChatUndoPanel {
     ]
     this.highlighted = CURRENT_ID
 
-    this.root = new BoxRenderable(renderer, {
-      width: "auto",
-      height: Math.min(16, Math.max(10, this.rows.length + 7)),
-      flexShrink: 0,
-      flexDirection: "column",
-      marginTop: 1,
-      marginBottom: 1,
-      marginLeft: 1,
-      marginRight: 1,
-      paddingTop: 0,
-      paddingLeft: 2,
-      paddingRight: 2,
-      backgroundColor: PANEL_BG,
-      border: ["top"],
-      borderStyle: "single",
-      borderColor: ACCENT_COLOR,
-      onSizeChange: () => this.syncPromptWidth(),
-    })
+    if (options.presentation === "modal") {
+      this.root = new BoxRenderable(renderer, {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100%",
+        height: "100%",
+        alignItems: "center",
+        justifyContent: "center",
+        onSizeChange: () => this.resizeModal(),
+      })
+      this.surface = new BoxRenderable(renderer, {
+        width: MODAL_WIDTH,
+        height: 10,
+        flexDirection: "column",
+        paddingTop: 1,
+        paddingBottom: 1,
+        paddingLeft: 2,
+        paddingRight: 2,
+        backgroundColor: PANEL_BG,
+        border: true,
+        borderStyle: "rounded",
+        borderColor: BORDER_COLOR,
+        onSizeChange: () => this.syncPromptWidth(),
+      })
+      this.root.add(this.surface)
+    } else {
+      this.surface = new BoxRenderable(renderer, {
+        width: "auto",
+        height: Math.min(16, Math.max(10, this.rows.length + 7)),
+        flexShrink: 0,
+        flexDirection: "column",
+        marginTop: 1,
+        marginBottom: 1,
+        marginLeft: 1,
+        marginRight: 1,
+        paddingTop: 0,
+        paddingLeft: 2,
+        paddingRight: 2,
+        backgroundColor: PANEL_BG,
+        border: ["top"],
+        borderStyle: "single",
+        borderColor: ACCENT_COLOR,
+        onSizeChange: () => this.syncPromptWidth(),
+      })
+      this.root = this.surface
+    }
     this.header = new TextRenderable(renderer, {
       content: "",
       width: "100%",
@@ -102,7 +139,7 @@ export class ChatUndoPanel {
     })
     this.list = new SelectableList(renderer, {
       backgroundColor: PANEL_BG,
-      selectedBackgroundColor: PANEL_BG,
+      selectedBackgroundColor: options.presentation === "modal" ? SELECTED_BG : PANEL_BG,
       indicatorColor: ACCENT_COLOR,
       selectedIndicator: "› ",
       wrapContent: true,
@@ -126,15 +163,15 @@ export class ChatUndoPanel {
       marginTop: FOOTER_GAP,
       wrapMode: "word",
     })
-    this.root.add(this.header)
-    this.root.add(this.list.root)
-    this.root.add(this.footer)
+    this.surface.add(this.header)
+    this.surface.add(this.list.root)
+    this.surface.add(this.footer)
     this.render()
   }
 
   handleKey(key: KeyEvent): boolean {
     if (key.name === "escape" || key.name === "esc") {
-      if (this.stage !== "PROMPTS") this.showPrompts()
+      if (this.stage !== "PROMPTS" && this.returnToPrompts) this.showPrompts()
       else this.options.onClose()
       return true
     }
@@ -143,6 +180,17 @@ export class ChatUndoPanel {
       return true
     }
     if (!this.committing && this.stage !== "LOADING") this.list.handleKey(key)
+    return true
+  }
+
+  /** Opens the confirmation choices for a prompt selected in the transcript. */
+  openMessage(message: ChatMessage): boolean {
+    if (this.destroyed || this.committing || this.stage === "LOADING") return false
+    const row = this.rows.find((candidate) => candidate.message?.id === message.id)
+    if (!row?.message) return false
+    this.returnToPrompts = false
+    this.highlighted = row.id
+    this.loadMessage(row.message)
     return true
   }
 
@@ -172,11 +220,16 @@ export class ChatUndoPanel {
       this.options.onClose()
       return
     }
-    this.selectedMessage = row.message
+    this.returnToPrompts = true
+    this.loadMessage(row.message)
+  }
+
+  private loadMessage(message: ChatMessage): void {
+    this.selectedMessage = message
     this.stage = "LOADING"
     const request = ++this.previewRequest
     this.render()
-    void this.options.loadPreview(row.message).then((preview) => {
+    void this.options.loadPreview(message).then((preview) => {
       if (this.destroyed || request !== this.previewRequest) return
       this.preview = preview
       this.stage = "CHOICE"
@@ -186,38 +239,53 @@ export class ChatUndoPanel {
     }).catch((cause: unknown) => {
       if (this.destroyed || request !== this.previewRequest) return
       this.options.onError(cause)
-      this.showPrompts()
+      if (this.returnToPrompts) this.showPrompts()
+      else this.options.onClose()
     })
   }
 
   private render(): void {
     if (this.destroyed) return
+    const modal = this.options.presentation === "modal"
+    const directLoading = modal && this.stage === "LOADING" && !this.returnToPrompts
     this.header.content = new StyledText([
-      fg(ACCENT_COLOR)("Rewind\n\n"),
-      fg(VALUE_COLOR)(this.stage === "CHOICE"
-        ? "Choose what to restore…"
+      fg(ACCENT_COLOR)(`${modal ? "Message actions" : "Rewind"}\n\n`),
+      fg(VALUE_COLOR)(this.stage === "CHOICE" || directLoading
+        ? "Undo this message?"
         : "Restore the conversation to the point before…"),
     ])
-    const displayRows = this.stage === "CHOICE" ? this.choiceDisplayRows() : this.promptDisplayRows()
+    const displayRows = this.stage === "CHOICE"
+      ? this.choiceDisplayRows()
+      : directLoading
+        ? []
+        : this.promptDisplayRows()
     const listHeight = displayRows.reduce((total, row) => total + row.lineCount, 0)
       + Math.max(0, displayRows.length - 1) * ROW_GAP
     const footerHeight = 1
-    this.root.height = Math.min(
+    this.desiredHeight = Math.min(
       MAX_PANEL_HEIGHT,
       Math.max(
         10,
-        PANEL_BORDER_HEIGHT + HEADER_HEIGHT + listHeight + FOOTER_GAP + footerHeight,
+        (modal ? MODAL_VERTICAL_CHROME : PANEL_BORDER_HEIGHT)
+          + HEADER_HEIGHT
+          + listHeight
+          + FOOTER_GAP
+          + footerHeight,
       ),
     )
+    this.surface.height = this.desiredHeight
+    if (modal) this.resizeModal()
     this.list.setRows(displayRows, this.highlighted ?? undefined, { preserveScroll: this.rendered })
     this.rendered = true
 
     this.footer.content = new StyledText([
       this.stage === "LOADING"
-        ? italic(fg(MUTED_COLOR)("Checking tool actions…"))
+        ? italic(fg(MUTED_COLOR)(`Checking tool actions…${directLoading ? " · Esc to cancel" : ""}`))
         : this.stage === "CHOICE"
           ? italic(fg(this.committing ? MUTED_COLOR : WARNING_COLOR)(
-              this.committing ? "Rewinding…" : "Enter to confirm · Esc to go back",
+              this.committing
+                ? "Rewinding…"
+                : `Enter to confirm · Esc to ${this.returnToPrompts ? "go back" : "cancel"}`,
             ))
           : italic(fg(MUTED_COLOR)("Enter to continue · Esc to cancel")),
     ])
@@ -283,6 +351,7 @@ export class ChatUndoPanel {
     this.preview = null
     this.highlighted = CURRENT_ID
     this.committing = false
+    this.returnToPrompts = true
     this.rendered = false
     this.render()
   }
@@ -293,13 +362,19 @@ export class ChatUndoPanel {
   }
 
   private syncPromptWidth(): void {
-    const listWidth = this.root.width - PANEL_PADDING
+    const listWidth = this.surface.width - PANEL_PADDING
     if (listWidth <= LIST_RIGHT_PADDING + INDICATOR_WIDTH) return
     const width = listWidth - LIST_RIGHT_PADDING - INDICATOR_WIDTH
     if (width === this.promptWidth) return
     this.promptWidth = width
     this.rendered = false
     this.render()
+  }
+
+  private resizeModal(): void {
+    if (this.options.presentation !== "modal") return
+    if (this.root.width > 4) this.surface.width = Math.min(MODAL_WIDTH, this.root.width - 4)
+    if (this.root.height > 2) this.surface.height = Math.min(this.desiredHeight, this.root.height - 2)
   }
 }
 

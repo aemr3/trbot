@@ -799,7 +799,7 @@ test("opens undo with Esc Esc or /undo and restores the chosen prompt", async ()
   await waitForFrame((frame) => frame.includes("Restore the conversation to the point before"))
   mockInput.pressArrow("up")
   mockInput.pressEnter()
-  const confirmation = await waitForFrame((frame) => frame.includes("Choose what to restore"))
+  const confirmation = await waitForFrame((frame) => frame.includes("Undo this message?"))
   expect(confirmation).toContain("Conversation only")
   expect(confirmation).toContain("Conversation + reversible actions")
   mockInput.pressEnter()
@@ -809,6 +809,52 @@ test("opens undo with Esc Esc or /undo and restores the chosen prompt", async ()
   expect(restored).toContain("first answer")
   expect(restored).not.toContain("second answer")
   expect(chats.undone).toEqual([{ sessionId: session.id, messageId: second.id }])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("clicking a completed prompt opens its undo confirmation before rewinding", async () => {
+  const { renderer, mockInput, mockMouse, waitForFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const prompt = userMessage("what should we trade on monday", "SENT")
+  chats.messages.set(session.id, [prompt, replyMessage("Reviewing the setup.")])
+  session.messageCount = 2
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+
+  const initial = await waitForFrame((frame) => frame.includes(prompt.text))
+  const promptLine = initial.split("\n").findIndex((line) => line.includes(prompt.text))
+  const promptColumn = initial.split("\n")[promptLine]?.indexOf(prompt.text) ?? -1
+  await mockMouse.click(promptColumn + 2, promptLine)
+
+  const confirmation = await waitForFrame((frame) => frame.includes("Undo this message?"))
+  expect(confirmation).toContain("Message actions")
+  expect(confirmation).toContain("Conversation only")
+  expect(confirmation).toContain("Conversation + reversible actions")
+  expect(confirmation).toContain("Esc to cancel")
+  expect(confirmation).toContain("╭")
+  expect(confirmation).not.toContain("Restore the conversation to the point before")
+  expect(screen.hasOpenModal()).toBe(true)
+  expect(chats.undone).toEqual([])
+
+  mockInput.pressEscape()
+  await waitForFrame((frame) => !frame.includes("Undo this message?") && frame.includes(prompt.text))
+  expect(screen.hasOpenModal()).toBe(false)
+  expect(chats.undone).toEqual([])
+
+  await mockMouse.click(promptColumn + 2, promptLine)
+  await waitForFrame((frame) => frame.includes("Undo this message?"))
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Conversation undone"))
+  expect(chats.undone).toEqual([{ sessionId: session.id, messageId: prompt.id }])
 
   screen.destroy()
   renderer.destroy()
@@ -1153,6 +1199,43 @@ test("opens durable worker transcripts with /subagents and returns with /parent"
   renderer.destroy()
 })
 
+test("keeps the subagent model label intact beside a narrow running hint", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 60, height: 18, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-narrow",
+    title: "Inspect the market",
+    parentSessionId: parent.id,
+    agent: "worker",
+    reasoning: "high",
+    running: false,
+  }
+  chats.sessions.push(child)
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    initialSessionId: child.id,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const idle = await waitForFrame((frame) => frame.includes("⌥←/→ workers") && frame.includes("⌥↑ parent"))
+  const idleStatus = idle.split("\n").find((line) => line.includes("worker · test-model")) ?? ""
+  expect(idleStatus).toMatch(/worker · test-model · high\s{2,}⌥←\/→ workers · ⌥↑ parent/)
+
+  screen.acceptRun(child.id, "run-narrow", "running")
+  const running = await waitForFrame((frame) => frame.includes("Esc interrupt"))
+  const runningStatus = running.split("\n").find((line) => line.includes("Esc interrupt")) ?? ""
+  expect(runningStatus).toMatch(/worker · test-model · high\s{2,}Esc interrupt · ⌥↑ parent/)
+  expect(runningStatus).not.toContain("Subagent running")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("⌥ arrows cycle worker transcripts directly and return to their parent", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
@@ -1386,6 +1469,51 @@ test("takes back the message still waiting, and stops the reply that is running"
   // Two separate decisions: taking a question back is not the same as stopping the
   // answer already being written.
   expect(chats.aborted).toEqual([session.id])
+  await waitForFrame((frame) => !frame.includes("Esc interrupt") && !frame.includes("answering"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("settles a selected subagent stream after the server restarts", async () => {
+  const { renderer, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-stale",
+    title: "Inspect the market",
+    parentSessionId: parent.id,
+    agent: "worker",
+    running: false,
+  }
+  chats.sessions.push(child)
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    initialSessionId: child.id,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Subagent transcript"))
+
+  screen.acceptRun(child.id, "orphaned-run", "running")
+  await waitForFrame((frame) => frame.includes("Esc interrupt") && frame.includes("thinking…"))
+
+  // A reconnect snapshot contains roots only. The selected child is reconciled
+  // separately and must not wait for a terminal frame from the dead server.
+  screen.acceptSessions([{ ...parent, running: false }])
+  await Bun.sleep(1)
+  await renderOnce()
+  const settled = captureCharFrame()
+  expect(settled).toContain("Subagent transcript")
+  expect(settled).not.toContain("Esc interrupt")
+  expect(settled).not.toContain("thinking…")
 
   screen.destroy()
   renderer.destroy()

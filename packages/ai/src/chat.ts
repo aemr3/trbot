@@ -23,12 +23,16 @@ export const CHAT_SYSTEM_PROMPT = [
   "The user trades Borsa Istanbul equities and their VIOP futures contracts.",
   "Use the available market tools for current prices, instruments, portfolio, broker data, and news;",
   "do not claim live data is unavailable before checking the relevant tool.",
+  "The VIOP universe intentionally exposes only the nearest-expiry contract for each underlying.",
+  "Never construct or probe a contract code or expiry month. Use an exact symbol returned by list_instruments,",
+  "or pass the underlying ticker so the tools resolve its current front month. If an out-month or rollover",
+  "comparison is needed, say it is outside the available universe instead of calling a guessed symbol.",
   "Never infer or assume prices, quotes, positions, news, or other current market data from training",
   "data. Read it from a tool, clearly identify user-provided figures, or say it could not be verified.",
-  "Order books, brokerage distribution, settlement analysis, and equity quotes belong to the underlying",
-  "cash equity, not its VIOP contract. VIOP contract quotes come from get_viop_quote; never describe an",
-  "underlying equity order book as a VIOP contract order book. When calling get_order_book, choose and pass",
-  "the underlying equity symbol yourself; the tool does not translate a VIOP contract symbol.",
+  "get_order_book can read either the VIOP contract book or its available underlying market book. Use target",
+  "INSTRUMENT for the contract and target UNDERLYING for cash/spot, report which one you read, and never",
+  "describe an underlying order book as a futures order book. Brokerage distribution, settlement analysis,",
+  "and equity quotes still belong to an available cash-equity underlying. VIOP quotes use get_viop_quote.",
   "VIOP single-stock futures are leveraged contracts: long P/L moves with the futures price, short P/L",
   "moves inversely, and exposure and P/L scale by contract size and quantity. A standard single-stock",
   "contract normally represents 100 underlying shares, but corporate actions can change its multiplier;",
@@ -128,6 +132,19 @@ export interface ChatTurnResult {
   overflowed?: boolean
 }
 
+const MAX_TRANSIENT_STREAM_RETRIES = 1
+
+function isTransientStreamFailure(reply: AssistantMessage): boolean {
+  if (reply.stopReason !== "error") return false
+  const message = reply.errorMessage ?? ""
+  return /WebSocket closed (?:1001|1005|1006|1011|1012|1013|1015)\b/i.test(message)
+    || /WebSocket (?:idle timeout|stream closed before response\.completed)/i.test(message)
+}
+
+function hasUserVisibleReply(reply: AssistantMessage): boolean {
+  return reply.content.some((block) => block.type !== "thinking")
+}
+
 /**
  * Runs one exchange with the model, tools included.
  *
@@ -156,9 +173,20 @@ export class ChatAgent {
     const asked: Message = { role: "user", content: turn.prompt, timestamp: this.now() }
     context.messages.push(asked)
     let toolExecuted = false
+    let transientRetries = 0
 
     for (;;) {
       const { reply, timing } = await this.streamReply(context, turn)
+      if (
+        transientRetries < MAX_TRANSIENT_STREAM_RETRIES
+        && !turn.signal?.aborted
+        && !hasUserVisibleReply(reply)
+        && isTransientStreamFailure(reply)
+      ) {
+        transientRetries += 1
+        continue
+      }
+      transientRetries = 0
       const retryableOverflow = !toolExecuted && reply.content.length === 0 && (
         isContextOverflow(reply, turn.model.contextWindow) || isRecoverableLength(reply, turn.model.maxTokens)
       )
@@ -238,8 +266,8 @@ export class ChatAgent {
     let thought = false
     let thinkingMs: number | null = null
     const streamOptions = turn.reasoningEffort
-      ? { signal: turn.signal, reasoningEffort: turn.reasoningEffort }
-      : { signal: turn.signal }
+      ? { signal: turn.signal, reasoningEffort: turn.reasoningEffort, sessionId: turn.chatSessionId }
+      : { signal: turn.signal, sessionId: turn.chatSessionId }
     const events = this.options.models.stream(turn.model, context, streamOptions)
     for await (const event of events) {
       if (event.type === "text_delta") {

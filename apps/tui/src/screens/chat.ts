@@ -122,7 +122,14 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
 ]
 
 type Focus = "transcript" | "composer" | "question" | "permission"
-type Modal = AiConnectionModal | AiModelModal | ChatSessionModal | ChatHelpModal | MarketMonitorModal | SubagentSessionModal
+type Modal =
+  | AiConnectionModal
+  | AiModelModal
+  | ChatSessionModal
+  | ChatHelpModal
+  | ChatUndoPanel
+  | MarketMonitorModal
+  | SubagentSessionModal
 
 export interface ChatScreenOptions {
   chats: ChatSessions
@@ -271,6 +278,7 @@ export class ChatScreen {
       backgroundColor: PANEL_BG,
       resolveContractSymbol: (mention) => this.contractByMention.get(mention) ?? null,
       onContractSelect: options.onContractSelect,
+      onBlockSelect: (messageId) => this.openUndo(messageId),
     })
     this.emptyState = new BoxRenderable(renderer, {
       position: "absolute",
@@ -373,6 +381,7 @@ export class ChatScreen {
     this.composerMeta = new TextRenderable(renderer, {
       content: "",
       flexGrow: 1,
+      flexShrink: 0,
       wrapMode: "none",
     })
     this.hint = new TextRenderable(renderer, {
@@ -618,6 +627,15 @@ export class ChatScreen {
       ...sessions,
       ...knownChildren.filter((child) => !sessions.some((session) => session.id === child.id)),
     ]
+    // A fresh socket starts with this authoritative snapshot. If the server was
+    // restarted mid-turn, there is no terminal run frame to retire the old local
+    // stream, so settle root sessions the snapshot says are idle.
+    for (const session of sessions) {
+      if (session.running) continue
+      const stale = this.streamingBySession.get(session.id)
+      if (stale) this.runningRunIds.delete(stale.runId)
+      this.streamingBySession.delete(session.id)
+    }
     if (
       !this.awaitingFirstPrompt
       && (!this.selectedSessionId || !this.sessions.some((session) => session.id === this.selectedSessionId))
@@ -627,6 +645,10 @@ export class ChatScreen {
         void this.loadSession(this.selectedSessionId)
       }
     }
+    // Child sessions are intentionally absent from the root snapshot. Re-read a
+    // selected child so a server restart also settles its orphaned spinner.
+    const selected = this.selectedSession()
+    if (selected?.parentSessionId) void this.loadSession(selected.id)
     this.render.schedule()
   }
 
@@ -837,6 +859,8 @@ export class ChatScreen {
           tools: [],
         })
       } else {
+        const stale = this.streamingBySession.get(sessionId)
+        if (stale) this.runningRunIds.delete(stale.runId)
         this.streamingBySession.delete(sessionId)
       }
       this.render.schedule()
@@ -1284,13 +1308,18 @@ export class ChatScreen {
       await this.options.chats.abort(sessionId)
     } catch (error) {
       this.options.logs.error("Chat", error)
+    } finally {
+      // Abort is deliberately idempotent. A restarted server may have no matching
+      // in-memory run, so reconcile with its durable transcript instead of waiting
+      // forever for a completion frame that cannot arrive.
+      await this.loadSession(sessionId)
     }
   }
 
   // --- transient controls -------------------------------------------------------
 
-  /** Opens the undo picker directly; the embedded trade view uses this for Esc Esc. */
-  openUndo(): void {
+  /** Opens the undo picker, or a clicked prompt's confirmation choices directly. */
+  openUndo(messageId?: string): void {
     if (this.modal || this.undoPanel || this.destroyed) return
     const session = this.selectedSession()
     if (!session) {
@@ -1314,14 +1343,22 @@ export class ChatScreen {
       this.render.schedule()
       return
     }
+    const selectedMessage = messageId === undefined
+      ? null
+      : messages.find((message) => (
+          message.id === messageId && message.role === "USER" && message.status !== "QUEUED"
+        )) ?? null
+    if (messageId !== undefined && !selectedMessage) return
 
     this.commandMenu.close()
     this.composer.blur()
-    this.undoPanel = new ChatUndoPanel(this.renderer, {
+    const closeUndo = selectedMessage ? () => this.closeModal() : () => this.closeUndo()
+    const panel = new ChatUndoPanel(this.renderer, {
       messages,
+      presentation: selectedMessage ? "modal" : "inline",
       loadPreview: (message) => this.options.chats.previewUndo(session.id, message.id),
       onUndo: (message, revertEffects) => {
-        this.closeUndo()
+        closeUndo()
         void this.undoTo(session.id, message.id, revertEffects)
       },
       onError: (error) => {
@@ -1329,9 +1366,15 @@ export class ChatScreen {
         this.commandNotice = "Could not inspect this rewind point."
         this.render.schedule()
       },
-      onClose: () => this.closeUndo(),
+      onClose: closeUndo,
     })
-    this.undoSlot.add(this.undoPanel.root)
+    if (selectedMessage) {
+      panel.openMessage(selectedMessage)
+      this.showModal(panel)
+      return
+    }
+    this.undoPanel = panel
+    this.undoSlot.add(panel.root)
     this.render.schedule()
   }
 
@@ -1717,7 +1760,9 @@ export class ChatScreen {
     const composerMeta = this.composerMetaText(session)
     this.composerMeta.content = composerMeta
     this.composerMeta.visible = this.composerUsable()
-    const hint = this.hintText(session)
+    const statusWidth = Math.max(0, this.root.width - (CHAT_INSET * 2 + 2))
+    const hintWidth = Math.max(0, statusWidth - styledTextWidth(composerMeta) - 2)
+    const hint = this.hintText(session, hintWidth)
     this.hint.content = hint
     this.hint.visible = hint.length > 0
     this.hint.marginRight = 0
@@ -1895,16 +1940,26 @@ export class ChatScreen {
   /**
    * The keys, or what stands in the way of using them.
    *
-   * While a root reply is running the list leads with the key that stops it. A child
-   * transcript instead keeps its navigation commands visible because its lifetime is
-   * owned by the parent's tool call.
+   * While a reply is running the list leads with the key that stops it. Interrupting
+   * from a child transcript reaches the parent turn that owns that worker.
    */
-  private hintText(session: ChatSession | null): string {
+  private hintText(session: ChatSession | null, availableWidth: number): string {
     if (this.connected === false) return CONNECT_HINT
     if (!this.selectedHasModel()) return NO_MODEL_HINT
     if (session?.parentSessionId) {
-      const state = this.streamingBySession.has(session.id) ? "Subagent running" : "Subagent transcript"
-      return `${state} · ⌥←/→ workers · ⌥↑ parent`
+      const candidates = this.streamingBySession.has(session.id)
+        ? [
+            "Esc interrupt · Subagent running · ⌥←/→ workers · ⌥↑ parent",
+            "Esc interrupt · ⌥←/→ workers · ⌥↑ parent",
+            "Esc interrupt · ⌥↑ parent",
+            "Esc interrupt",
+          ]
+        : [
+            "Subagent transcript · ⌥←/→ workers · ⌥↑ parent",
+            "⌥←/→ workers · ⌥↑ parent",
+            "⌥↑ parent",
+          ]
+      return candidates.find((candidate) => candidate.length <= availableWidth) ?? ""
     }
     if (session && this.streamingBySession.has(session.id)) {
       return this.options.embedded ? "Esc interrupt" : RUNNING_HINT
@@ -2109,6 +2164,7 @@ function messageBlock(
     const block: ChatTranscriptBlock = {
       id: message.id,
       padded: true,
+      selectable: !queued,
       content: new StyledText([fg(queued ? QUEUED_COLOR : TEXT_COLOR)(message.text)]),
       ...(queued
         ? { footer: new StyledText([fg(QUEUED_COLOR)("queued · ^X cancels it")]) }

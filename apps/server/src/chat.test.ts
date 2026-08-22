@@ -516,6 +516,28 @@ test("stopping the reply in flight leaves the rest of the queue alone", async ()
   expect(turns[0]?.signal?.aborted).toBe(true)
 })
 
+test("stopping from a subagent transcript aborts its owning turn", async () => {
+  const { chat, turns, finish } = await harness({ auto: false })
+  const parent = await chat.create()
+  await chat.send(parent.id, "delegate this")
+  await settle()
+  const worker = await chat.subagentSessions.start({
+    parentSessionId: parent.id,
+    agent: "worker",
+    task: "inspect the market",
+    providerId: "test-provider",
+    modelId: "test-model",
+    reasoning: "high",
+  })
+
+  await chat.abort(worker.sessionId)
+
+  expect(turns[0]?.signal?.aborted).toBe(true)
+  await worker.finish(null)
+  finish({ completed: false, aborted: true })
+  await settle()
+})
+
 test("a turn that fails leaves its question visible to send again", async () => {
   const { chat, frames, finish } = await harness({ auto: false })
   const session = await chat.create()

@@ -232,3 +232,32 @@ test("opens active contracts from full symbols and underlying tickers in wrapped
   transcript.destroy()
   renderer.destroy()
 })
+
+test("selects a clickable prompt while preserving contract-link priority", async () => {
+  const { renderer, mockMouse, renderOnce, captureCharFrame } = await createTestRenderer({ width: 50, height: 8 })
+  const contracts: string[] = []
+  const blocks: string[] = []
+  const transcript = new ChatTranscript(renderer, {
+    backgroundColor: "#101010",
+    resolveContractSymbol: (mention) => mention === "ASELS" ? "F_ASELS0826" : null,
+    onContractSelect: (symbol) => contracts.push(symbol),
+    onBlockSelect: (id) => blocks.push(id),
+  })
+  renderer.root.add(transcript.root)
+  transcript.setBlocks([{ ...asked("revisit ASELS after earnings"), selectable: true }])
+  await renderOnce()
+
+  const lines = captureCharFrame().split("\n")
+  const promptY = lines.findIndex((line) => line.includes("revisit ASELS"))
+  const contractX = lines[promptY]?.indexOf("ASELS") ?? -1
+  await mockMouse.click(contractX + 2, promptY)
+  expect(contracts).toEqual(["F_ASELS0826"])
+  expect(blocks).toEqual([])
+
+  const promptX = lines[promptY]?.indexOf("revisit") ?? -1
+  await mockMouse.click(promptX + 2, promptY)
+  expect(blocks).toEqual(["asked-revisit ASELS after earnings"])
+
+  transcript.destroy()
+  renderer.destroy()
+})

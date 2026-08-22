@@ -33,6 +33,8 @@ export interface ChatTranscriptBlock {
   header?: StyledText
   /** False for a tool-call turn that has reasoning and provenance but no spoken text. */
   bodyVisible?: boolean
+  /** Whether clicking this turn's body may open a screen-owned action. */
+  selectable?: boolean
   content: StyledText
   /** Below the content: which model wrote it, how long it took, what it cost. */
   footer?: StyledText
@@ -42,6 +44,7 @@ export interface ChatTranscriptOptions {
   backgroundColor: string
   resolveContractSymbol?: (mention: string) => string | null
   onContractSelect?: (symbol: string) => void
+  onBlockSelect?: (id: string) => void
 }
 
 const LEFT_RAIL: ["left"] = ["left"]
@@ -75,6 +78,8 @@ export class ChatTranscript {
     body: TextRenderable
     footer: TextRenderable
     contracts: ContractLink[]
+    selectable: boolean
+    blockId: string
   }[] = []
 
   constructor(
@@ -138,6 +143,8 @@ export class ChatTranscript {
       const linked = contractLinks(block.content, this.options.resolveContractSymbol)
       row.body.content = linked.content
       row.contracts = linked.contracts
+      row.selectable = block.selectable ?? false
+      row.blockId = block.id
       row.footer.visible = block.footer !== undefined
       if (block.footer !== undefined) row.footer.content = block.footer
       row.footer.marginTop = block.footer !== undefined && bodyVisible ? 1 : 0
@@ -194,18 +201,25 @@ export class ChatTranscript {
         wrapMode: "word",
         onMouseDown: (event) => {
           if (event.button !== 0) return
-          const symbol = contractAtPoint(body, this.rows[index]?.contracts ?? [], event.x, event.y)
-          if (!symbol) return
+          const row = this.rows[index]
+          const symbol = contractAtPoint(body, row?.contracts ?? [], event.x, event.y)
+          if (symbol) {
+            event.preventDefault()
+            event.stopPropagation()
+            this.options.onContractSelect?.(symbol)
+            return
+          }
+          if (!row?.selectable) return
           event.preventDefault()
           event.stopPropagation()
-          this.options.onContractSelect?.(symbol)
+          this.options.onBlockSelect?.(row.blockId)
         },
       })
       box.add(body)
       const footer = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "none" })
       box.add(footer)
       this.root.add(box)
-      return { box, marker, header, body, footer, contracts: [] }
+      return { box, marker, header, body, footer, contracts: [], selectable: false, blockId: "" }
     } catch (error) {
       if (!box.isDestroyed) box.destroyRecursively()
       throw error

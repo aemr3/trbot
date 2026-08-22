@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { type KeyEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { chatBlockText, type ChatMessage } from "@trbot/chat/session.ts"
+import { chatBlockText, type ChatMessage, type ChatUndoPreview } from "@trbot/chat/session.ts"
 import { ChatUndoPanel } from "./chat-undo-panel.ts"
 
 function message(id: string, text: string, role: ChatMessage["role"] = "USER"): ChatMessage {
@@ -66,6 +66,7 @@ test("lists prompts chronologically with current selected, then confirms a rewin
   panel.handleKey(key("enter"))
   await Promise.resolve()
   await renderOnce()
+  expect(captureCharFrame()).toContain("Undo this message?")
   expect(captureCharFrame()).toContain("Conversation only")
   expect(captureCharFrame()).toContain("Undo: Market monitor was created")
   expect(captureCharFrame()).toContain("Keep: VIOP order was placed")
@@ -104,6 +105,44 @@ test("continuing from the initially selected current point closes without undoin
 
   expect(closed).toBe(true)
   expect(undone).toEqual([])
+  panel.destroy()
+  renderer.destroy()
+})
+
+test("shows every undo choice in one centered modal for a clicked prompt", async () => {
+  const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 100, height: 20 })
+  const selected = message("first", "what should we trade on monday")
+  let resolvePreview: (preview: ChatUndoPreview) => void = () => {}
+  const panel = new ChatUndoPanel(renderer, {
+    messages: [selected],
+    presentation: "modal",
+    loadPreview: () => new Promise((resolve) => { resolvePreview = resolve }),
+    onUndo: () => {},
+    onError: () => {},
+    onClose: () => {},
+  })
+  renderer.root.add(panel.root)
+  expect(panel.openMessage(selected)).toBe(true)
+
+  await renderOnce()
+  const loading = captureCharFrame()
+  expect(loading).toContain("Message actions")
+  expect(loading).toContain("Undo this message?")
+  expect(loading).toContain("Checking tool actions… · Esc to cancel")
+  expect(loading).not.toContain("(current)")
+
+  resolvePreview({
+    prompt: selected.text,
+    effects: [{ description: "Market monitor was created", reversible: true }],
+  })
+  await Promise.resolve()
+  await renderOnce()
+  const confirmation = captureCharFrame()
+  expect(confirmation).toContain("╭")
+  expect(confirmation).toContain("Conversation only")
+  expect(confirmation).toContain("Conversation + reversible actions")
+  expect(confirmation).toContain("Undo: Market monitor was created")
+
   panel.destroy()
   renderer.destroy()
 })
