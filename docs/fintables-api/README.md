@@ -12,6 +12,7 @@ checked outside BIST hours, that is stated.
 
 | Host | Purpose |
 | --- | --- |
+| `fintables.com/endeksler` | Public index constituent weights embedded in server-rendered pages. |
 | `api.fintables.com` | Account API. Login, session check, notifications, feeds. |
 | `markets.fintables.com/barbar/udf` | TradingView UDF datafeed: candles and symbol metadata. |
 | `markets.fintables.com/barbar/server` | Auxiliary market data: `/yield`, `/akd` (broker distribution). |
@@ -395,6 +396,46 @@ ob-10  OB_10         best BEST            worst WORST
 `DAY_CLOSE` (`P`) is the previous close used as the change-percent baseline, not
 today's close; `CLOSE` (`C`) is the last trade. Change percent is derived
 client-side from `P` and `C` rather than pushed.
+
+## Index attribution
+
+The BIST 30, BIST 100, and BIST TUM-100 attribution pages publish their complete
+constituent-weight maps in the Next.js server-rendered payload:
+
+```text
+https://fintables.com/endeksler/XU030
+https://fintables.com/endeksler/XU100
+https://fintables.com/endeksler/XTUMY
+```
+
+No separate JSON request is made when opening one of these pages. The embedded
+payload contains the selected `index` and the broad-market `xutum` map, each with
+`title`, `code`, `weights`, and `updated_at`. These public pages answer a plain
+Bun `fetch` without authentication or browser headers. On 2026-08-23 they held
+30, 100, and 482 constituents respectively; `XUTUM` held 582, and all four maps
+reported `updated_at: "2026-08-21"`.
+
+Current prices still come from the authenticated `vessel` socket. Subscribe to
+`C`, `P`, and optionally `V` for every constituent, plus `C` and `P` for the
+selected index and `XUTUM`. The site's own calculation is:
+
+```text
+change ratio = constituent C / constituent P - 1
+selected-index impact = selected-index P * weight / 100 * change ratio
+broad-market impact = XUTUM P * XUTUM weight / 100 * change ratio
+```
+
+The sum of these constituent estimates can differ from the selected index's
+headline point change because of corporate actions, index adjustments, and
+published-weight precision. Preserve both values rather than forcing a
+reconciliation.
+
+`FeedIndexImpactSource` caches the relatively static page weights for 15 minutes
+and takes each quote snapshot through the process-wide `MarketSocket`. Reusing
+that socket is essential: opening a second connection would contend for the
+account's one-device realtime license. The agent tool returns breadth plus a
+filtered, sorted, paginated constituent list so even the full BIST TUM-100 map
+stays bounded.
 
 ## Symbol universe
 

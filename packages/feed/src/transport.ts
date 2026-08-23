@@ -127,16 +127,27 @@ export async function readJson<T>(
   request: FeedRequest,
   schema: z.ZodType<T>,
 ): Promise<T> {
+  const body = await readText(transport, request)
+  const parsed = parseBody(body, schema)
+  if (parsed === null) throw new FeedResponseError(request.url, body.slice(0, 200))
+  return parsed
+}
+
+/** Reads a successful non-JSON response with the same challenge and auth handling. */
+export async function readText(
+  transport: FeedTransport,
+  request: FeedRequest,
+): Promise<string> {
   for (const delay of CHALLENGE_RETRY_DELAYS_MS) {
     const attempt = await transport.request(request)
-    if (!isChallengeBody(attempt.body)) return finish(attempt, request, schema)
+    if (!isChallengeBody(attempt.body)) return finishText(attempt, request)
     if (request.signal?.aborted) throw new FeedChallengeError(request.url)
     await Bun.sleep(delay)
   }
-  return finish(await transport.request(request), request, schema)
+  return finishText(await transport.request(request), request)
 }
 
-function finish<T>(response: FeedResponse, request: FeedRequest, schema: z.ZodType<T>): T {
+function finishText(response: FeedResponse, request: FeedRequest): string {
   if (isChallengeBody(response.body)) throw new FeedChallengeError(request.url)
   if (response.status === 401 || response.status === 403) {
     throw new FeedUnauthorizedError(request.url, errorMessage(response.body))
@@ -144,10 +155,7 @@ function finish<T>(response: FeedResponse, request: FeedRequest, schema: z.ZodTy
   if (response.status < 200 || response.status >= 300) {
     throw new FeedRequestError(request.url, response.status, response.body.slice(0, 400))
   }
-
-  const parsed = parseBody(response.body, schema)
-  if (parsed === null) throw new FeedResponseError(request.url, response.body.slice(0, 200))
-  return parsed
+  return response.body
 }
 
 /**

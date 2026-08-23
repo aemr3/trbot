@@ -271,6 +271,7 @@ async function startTrbotServer(): Promise<void> {
         instruments: feed.instruments,
         candles: feed.candles,
       },
+      indexData: feed.indexImpact,
       stops: { list: async () => stops.list() },
     },
     marketMonitors: {

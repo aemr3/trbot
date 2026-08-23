@@ -4,6 +4,7 @@ import { FeedDepthStream } from "./depth-stream.ts"
 import { FeedEquityQuoteStream } from "./equity-quote-stream.ts"
 import { FeedRecentFinancialSource } from "./financials.ts"
 import { FeedInstrumentSource } from "./instruments.ts"
+import { FeedIndexImpactSource } from "./index-impact.ts"
 import { FeedQuoteStream } from "./quote-stream.ts"
 import { FeedSession, type FeedCredentials, type FeedEntitlements } from "./session.ts"
 import { FeedTradeSource } from "./trades.ts"
@@ -24,6 +25,7 @@ export * from "./instrument-candles.ts"
 export * from "./instrument-availability.ts"
 export * from "./instrument-symbols.ts"
 export * from "./instruments.ts"
+export * from "./index-impact.ts"
 export * from "./quote-stream.ts"
 export * from "./session-hours.ts"
 export * from "./session.ts"
@@ -63,6 +65,7 @@ export class MarketFeed {
   readonly candles: FeedCandleSource
   readonly financials: FeedRecentFinancialSource
   readonly instruments: FeedInstrumentSource
+  readonly indexImpact: FeedIndexImpactSource
   readonly trades: FeedTradeSource
   /** Shared by every broker feed, so the house names are read once per run. */
   readonly brokerages: FeedBrokerageDirectory
@@ -80,6 +83,9 @@ export class MarketFeed {
     })
     this.socket = new MarketSocket(this.session, {
       onError: (cause) => options.onError?.("market-socket", cause),
+    })
+    this.indexImpact = new FeedIndexImpactSource(this.socket, {
+      onLicenseTaken: options.onLicenseTaken,
     })
     this.candles = new FeedCandleSource(this.session)
     this.instruments = new FeedInstrumentSource(this.session)

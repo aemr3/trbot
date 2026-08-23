@@ -17,6 +17,11 @@ import {
   type ViopInstrument,
   type ViopInstrumentSource,
 } from "@trbot/market/instrument.ts"
+import type {
+  IndexContribution,
+  IndexImpactCode,
+  IndexImpactSource,
+} from "@trbot/market/index-impact.ts"
 import type { NewsSource } from "@trbot/market/news.ts"
 import type { SettlementSource } from "@trbot/market/settlement.ts"
 import type { MemberFeatureSource } from "@trbot/member/features.ts"
@@ -79,6 +84,25 @@ const CandleTarget = Type.Union([
   Type.Literal("BIST_100"),
   Type.Literal("BIST_30"),
 ])
+const IndexImpactIndex = Type.Union([
+  Type.Literal("BIST_30"),
+  Type.Literal("BIST_100"),
+  Type.Literal("BIST_TUM_100"),
+])
+const IndexImpactSort = Type.Union([
+  Type.Literal("ABS_POINT_IMPACT"),
+  Type.Literal("POINT_IMPACT"),
+  Type.Literal("CHANGE_PERCENT"),
+  Type.Literal("WEIGHT_PERCENT"),
+  Type.Literal("ABS_BROAD_MARKET_IMPACT"),
+])
+const IndexImpactDirection = Type.Union([
+  Type.Literal("ALL"),
+  Type.Literal("POSITIVE"),
+  Type.Literal("NEGATIVE"),
+  Type.Literal("UNCHANGED"),
+  Type.Literal("UNAVAILABLE"),
+])
 const PortfolioRange = Type.Union([
   Type.Literal("WEEK"),
   Type.Literal("MONTH"),
@@ -129,6 +153,14 @@ const CandleParameters = Type.Object({
   interval: CandleInterval,
   target: Type.Optional(CandleTarget),
   limit: Type.Optional(Type.Integer({ description: "Return only this many newest candles; omit for the complete series", minimum: 1 })),
+})
+const IndexImpactParameters = Type.Object({
+  index: IndexImpactIndex,
+  direction: Type.Optional(IndexImpactDirection),
+  sortBy: Type.Optional(IndexImpactSort),
+  sortDirection: Type.Optional(SortDirection),
+  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 500, default: 0 })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 20 })),
 })
 const AccountParameters = Type.Object({ range: Type.Optional(PortfolioRange) })
 const DepthParameters = Type.Object({
@@ -195,6 +227,8 @@ export interface MarketDataToolClients {
     instruments: CandleInstrumentResolver
     candles: CandleSource
   }
+  /** Feed-native index attribution; it does not require a brokerage session. */
+  indexData: IndexImpactSource
   stops: { list(): Promise<StopRule[]> }
 }
 
@@ -206,6 +240,7 @@ export function marketDataTools(clients: MarketDataToolClients): ChatTool[] {
     viopQuoteTool(clients),
     contractDetailsTool(clients),
     candlesTool(clients),
+    indexImpactTool(clients),
     accountTool(clients),
     orderBookTool(clients),
     equityQuoteTool(clients),
@@ -217,6 +252,107 @@ export function marketDataTools(clients: MarketDataToolClients): ChatTool[] {
     subscriptionFeaturesTool(clients),
     stopRulesTool(clients),
   ]
+}
+
+const INDEX_CODE_BY_TARGET = {
+  BIST_30: "XU030",
+  BIST_100: "XU100",
+  BIST_TUM_100: "XTUMY",
+} as const satisfies Record<string, IndexImpactCode>
+
+function indexImpactTool(clients: MarketDataToolClients): ChatTool<typeof IndexImpactParameters> {
+  return {
+    definition: {
+      name: "get_index_impact",
+      description: [
+        "Read current BIST 30, BIST 100, or BIST TUM-100 breadth and constituent point contributions.",
+        "Returns each stock's price change, index weight, estimated index-point impact, and impact on BIST TUM.",
+        "The source retains every constituent; use offset and limit to page the bounded result.",
+        "Published constituent estimates can differ from the headline index move after corporate actions and index adjustments, so do not force them to reconcile.",
+      ].join(" "),
+      parameters: IndexImpactParameters,
+    },
+    run: async ({ index, direction, sortBy, sortDirection, offset, limit }, options) => {
+      const snapshot = await clients.indexData.loadIndexImpact(INDEX_CODE_BY_TARGET[index], {
+        signal: options.signal,
+      })
+      const filtered = snapshot.contributions.filter((contribution) =>
+        matchesIndexDirection(contribution, direction ?? "ALL"),
+      )
+      const sorted = sortIndexContributions(
+        filtered,
+        sortBy ?? "ABS_POINT_IMPACT",
+        sortDirection ?? "DESC",
+      )
+      const start = offset ?? 0
+      const returned = sorted.slice(start, start + (limit ?? 20))
+      return dataOutcome(
+        `Read ${snapshot.index.title} impact; returned ${returned.length} of ${filtered.length} matching constituents.`,
+        {
+          ...snapshot,
+          contributions: returned,
+          totalConstituents: snapshot.contributions.length,
+          matchedConstituents: filtered.length,
+          offset: start,
+          returnedConstituents: returned.length,
+        },
+      )
+    },
+  }
+}
+
+type IndexImpactSortField =
+  | "ABS_POINT_IMPACT"
+  | "POINT_IMPACT"
+  | "CHANGE_PERCENT"
+  | "WEIGHT_PERCENT"
+  | "ABS_BROAD_MARKET_IMPACT"
+
+function sortIndexContributions(
+  contributions: IndexContribution[],
+  sortBy: IndexImpactSortField,
+  direction: "ASC" | "DESC",
+): IndexContribution[] {
+  return [...contributions].sort((left, right) => {
+    const leftValue = indexContributionSortValue(left, sortBy)
+    const rightValue = indexContributionSortValue(right, sortBy)
+    if (leftValue === null) return rightValue === null ? left.symbol.localeCompare(right.symbol) : 1
+    if (rightValue === null) return -1
+    const comparison = direction === "ASC" ? leftValue - rightValue : rightValue - leftValue
+    return comparison || left.symbol.localeCompare(right.symbol)
+  })
+}
+
+function indexContributionSortValue(
+  contribution: IndexContribution,
+  sortBy: IndexImpactSortField,
+): number | null {
+  switch (sortBy) {
+    case "ABS_POINT_IMPACT":
+      return contribution.impactPoints === null ? null : Math.abs(contribution.impactPoints)
+    case "POINT_IMPACT":
+      return contribution.impactPoints
+    case "CHANGE_PERCENT":
+      return contribution.changePercent
+    case "WEIGHT_PERCENT":
+      return contribution.weightPercent
+    case "ABS_BROAD_MARKET_IMPACT":
+      return contribution.broadMarketImpactPoints === null
+        ? null
+        : Math.abs(contribution.broadMarketImpactPoints)
+  }
+}
+
+function matchesIndexDirection(
+  contribution: IndexContribution,
+  direction: "ALL" | "POSITIVE" | "NEGATIVE" | "UNCHANGED" | "UNAVAILABLE",
+): boolean {
+  if (direction === "ALL") return true
+  if (direction === "UNAVAILABLE") return contribution.impactPoints === null
+  if (contribution.impactPoints === null) return false
+  if (direction === "POSITIVE") return contribution.impactPoints > 0
+  if (direction === "NEGATIVE") return contribution.impactPoints < 0
+  return contribution.impactPoints === 0
 }
 
 type FinancialSortField = "PUBLISHED_AT" | FinancialMetric

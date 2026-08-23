@@ -10,6 +10,7 @@ import {
   type RecentFinancialRequest,
 } from "@trbot/market/financials.ts"
 import { ViopInstrumentSchema, type ViopInstrument } from "@trbot/market/instrument.ts"
+import type { IndexImpactCode, IndexImpactSnapshot } from "@trbot/market/index-impact.ts"
 import { memberFeatureSet } from "@trbot/member/features.ts"
 import { marketDataTools, type MarketDataSources, type MarketDataToolClients } from "./market-data.ts"
 import { ChatTools } from "./tool.ts"
@@ -78,6 +79,77 @@ const FINANCIALS: RecentFinancial[] = [
     },
   },
 ]
+const INDEX_IMPACT: IndexImpactSnapshot = {
+  readAt: NOW,
+  marketTimestamp: NOW - 1_000,
+  weightsUpdatedAt: "2026-08-21",
+  index: {
+    code: "XU030",
+    title: "BİST 30",
+    lastPrice: 101,
+    previousClose: 100,
+    changePercent: 1,
+    pointChange: 1,
+  },
+  breadth: { advancing: 1, unchanged: 1, declining: 1, unavailable: 1 },
+  estimatedConstituentImpactPoints: -3,
+  broadMarket: {
+    code: "XUTUM",
+    title: "BIST TUM",
+    weightsUpdatedAt: "2026-08-21",
+    lastPrice: 202,
+    previousClose: 200,
+    changePercent: 1,
+    pointChange: 2,
+    impactPoints: 1,
+  },
+  contributions: [
+    {
+      symbol: "POS",
+      lastPrice: 105,
+      previousClose: 100,
+      changePercent: 5,
+      volume: 1_000,
+      weightPercent: 40,
+      impactPoints: 5,
+      broadMarketWeightPercent: 20,
+      broadMarketImpactPoints: 3,
+    },
+    {
+      symbol: "NEG",
+      lastPrice: 96,
+      previousClose: 100,
+      changePercent: -4,
+      volume: 2_000,
+      weightPercent: 30,
+      impactPoints: -8,
+      broadMarketWeightPercent: 15,
+      broadMarketImpactPoints: -2,
+    },
+    {
+      symbol: "FLAT",
+      lastPrice: 100,
+      previousClose: 100,
+      changePercent: 0,
+      volume: 500,
+      weightPercent: 20,
+      impactPoints: 0,
+      broadMarketWeightPercent: 10,
+      broadMarketImpactPoints: 0,
+    },
+    {
+      symbol: "MISS",
+      lastPrice: null,
+      previousClose: null,
+      changePercent: null,
+      volume: null,
+      weightPercent: 10,
+      impactPoints: null,
+      broadMarketWeightPercent: 5,
+      broadMarketImpactPoints: null,
+    },
+  ],
+}
 
 class FakeDepthStream implements DepthStream {
   listener: DepthBookListener | null = null
@@ -129,8 +201,16 @@ function harness(
     candles: Array<{ instrumentUid: string; target: string | undefined }>
     feedCandles: Array<{ symbol: string; target: string | undefined }>
     financials: RecentFinancialRequest[]
+    indexImpact: IndexImpactCode[]
   }
-  const calls: MarketCalls = { brokerage: [], settlement: [], candles: [], feedCandles: [], financials: [] }
+  const calls: MarketCalls = {
+    brokerage: [],
+    settlement: [],
+    candles: [],
+    feedCandles: [],
+    financials: [],
+    indexImpact: [],
+  }
   const sources: MarketDataSources = {
     instruments: {
       listInstruments: async () => [ASELS, THYAO],
@@ -320,6 +400,12 @@ function harness(
         },
       },
     },
+    indexData: {
+      loadIndexImpact: async (index) => {
+        calls.indexImpact.push(index)
+        return INDEX_IMPACT
+      },
+    },
     stops: { list: async () => [] },
   }
   return { clients, calls, depth, equity }
@@ -333,6 +419,7 @@ test("offers the complete read-only market toolset", () => {
     "get_viop_quote",
     "get_contract_details",
     "get_candles",
+    "get_index_impact",
     "get_account",
     "get_order_book",
     "get_equity_quote",
@@ -344,6 +431,44 @@ test("offers the complete read-only market toolset", () => {
     "get_data_entitlements",
     "list_stop_rules",
   ])
+})
+
+test("reads, filters, sorts, and pages complete index-impact snapshots", async () => {
+  const testHarness = harness()
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const ranked = await call(tools, "get_index_impact", {
+    index: "BIST_30",
+    limit: 2,
+  })
+  const negative = await call(tools, "get_index_impact", {
+    index: "BIST_30",
+    direction: "NEGATIVE",
+    sortBy: "POINT_IMPACT",
+    sortDirection: "ASC",
+    offset: 0,
+    limit: 1,
+  })
+  const unavailable = await call(tools, "get_index_impact", {
+    index: "BIST_30",
+    direction: "UNAVAILABLE",
+  })
+
+  expect(modelData(ranked)).toMatchObject({
+    totalConstituents: 4,
+    matchedConstituents: 4,
+    returnedConstituents: 2,
+    contributions: [{ symbol: "NEG" }, { symbol: "POS" }],
+  })
+  expect(modelData(negative)).toMatchObject({
+    matchedConstituents: 1,
+    contributions: [{ symbol: "NEG", impactPoints: -8 }],
+  })
+  expect(modelData(unavailable)).toMatchObject({
+    matchedConstituents: 1,
+    contributions: [{ symbol: "MISS", impactPoints: null }],
+  })
+  expect(testHarness.calls.indexImpact).toEqual(["XU030", "XU030", "XU030"])
 })
 
 test("searches instruments and reads current quote and contract details", async () => {

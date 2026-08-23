@@ -133,6 +133,9 @@ test("adds every read-only market tool when the server provides its clients", ()
           loadCandles: async () => { throw new Error("not called") },
         },
       },
+      indexData: {
+        loadIndexImpact: async () => { throw new Error("not called") },
+      },
       stops: { list: async () => [] },
     },
   })
@@ -145,6 +148,7 @@ test("adds every read-only market tool when the server provides its clients", ()
     "get_viop_quote",
     "get_contract_details",
     "get_candles",
+    "get_index_impact",
     "get_account",
     "get_order_book",
     "get_equity_quote",
