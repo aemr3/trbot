@@ -5,8 +5,8 @@ established, how the realtime entitlement is carried, and which endpoints serve
 candles, quotes, and depth.
 
 Written while building `@trbot/feed`, and checked against a live account from a
-plain Bun process (no browser) on 2026-08-21 and 2026-08-22. Where a claim was
-checked outside BIST hours, that is stated.
+Bun process on 2026-08-21 and 2026-08-22. Where a claim was checked outside BIST
+hours, that is stated.
 
 ## Hosts
 
@@ -19,24 +19,23 @@ checked outside BIST hours, that is stated.
 | `markets.fintables.com/vessel` | WebSocket: realtime quotes, depth, trades. |
 | `gate.fintables.com/search` | Typesense symbol search. |
 
-## Cloudflare: do not impersonate a browser
+## Client transport consistency
 
-Every `markets.fintables.com` and `api.fintables.com` path sits behind a
-Cloudflare **managed challenge**. The behaviour is the opposite of the usual
-scraping instinct, and getting it wrong is the single easiest way to break this
-integration:
+Every `markets.fintables.com` and `api.fintables.com` path is served through
+Cloudflare. Its client checks consider the HTTP headers together with the TLS
+and HTTP2 connection profile, so those layers need to identify the same client:
 
 | Request | Result |
 | --- | --- |
-| Bun `fetch` with no added headers | **200** |
+| Bun `fetch` with no added headers (2026-08-21/22) | **200**, but later challenged |
 | Bun `fetch` with a Chrome `User-Agent`, `Origin`, `Referer` | **403** challenge page |
 | `curl` with a Chrome `User-Agent` | **403** challenge page |
+| Chrome headers with a matching Chrome TLS/HTTP2 profile | Selected transport |
 
-A spoofed Chrome `User-Agent` over Bun's TLS/HTTP2 fingerprint reads as a bot;
-Bun's own client identity passes. **Send only `Content-Type` and
-`Authorization`.** Never add `User-Agent`, `Origin`, `Referer`, or
-`Accept-Language`, and never "fix" a 403 by making the client look more like a
-browser — that is what causes it.
+Chrome HTTP headers and Bun's native TLS/HTTP2 profile describe different
+clients, so that combination is rejected. `FetchFeedTransport` uses Impit's
+aligned Chrome TLS, HTTP2, and header profile from inside the Bun process. Keep
+the header and connection profiles together when changing this transport.
 
 A challenge response is HTML with `Just a moment...` and HTTP 403. Treat it as a
 distinct, retryable-but-not-auth failure so it is never confused with a 401.
@@ -759,9 +758,9 @@ Four constraints from this document shaped it:
 - **One socket per process.** `MarketSocket` is shared by every quote, equity
   quote, and depth consumer, with topics reference counted, because a second
   connection would evict the first.
-- **No browser-shaped headers.** `FetchFeedTransport` sends only `Authorization`
-  and `Content-Type`, and a challenge response raises `FeedChallengeError` so it
-  is never mistaken for an authentication failure.
+- **One coherent browser identity.** `FetchFeedTransport` uses a matching Chrome
+  TLS, HTTP2, and header profile. A challenge response raises
+  `FeedChallengeError` so it is never mistaken for an authentication failure.
 - **Only five resolutions are real.** `candles.ts` requests one the feed serves
   and folds the rest through `aggregate.ts`. Weekly and monthly bars are cut on
   the exchange's calendar in `Europe/Istanbul`, not by dividing the timeline.

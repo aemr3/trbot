@@ -1,13 +1,14 @@
+import { Impit } from "impit"
 import { z } from "zod"
 
 /**
  * HTTP access to the market data feed.
  *
- * The feed sits behind a bot-protection edge, and the usual scraping instinct is
- * exactly wrong here: a request carrying a browser `User-Agent`, `Origin`, or
- * `Referer` is challenged, while the same request sent with the runtime's own
- * identity passes. So this transport sends only what the API needs — a content
- * type and an authorization header — and nothing that describes a client.
+ * The feed sits behind a bot-protection edge which checks both the TLS/HTTP2
+ * handshake and the request headers. Native Bun requests are distinguishable
+ * from a browser, but adding browser headers to that handshake is challenged as
+ * an inconsistent identity. This transport therefore uses a coherent Chrome
+ * handshake and header profile for every feed request.
  *
  * See docs/fintables-api/README.md for the measurements behind that.
  */
@@ -74,6 +75,14 @@ export function isChallengeBody(body: string): boolean {
   return body.includes("Just a moment") || body.includes("__cf_chl") || body.includes("cf_chl_opt")
 }
 
+// One client shares its connection pool across every feed source. Impit's
+// patched TLS and HTTP2 stacks reproduce the selected browser handshake and
+// matching headers; Bun's native fetch cannot control the complete fingerprint.
+const feedHttpClient = new Impit({
+  browser: "chrome",
+  vanillaFallback: false,
+})
+
 // The feed reports failures in-band as well as by status code.
 const ErrorBodySchema = z.object({ errmsg: z.string() })
 
@@ -97,7 +106,7 @@ export class FetchFeedTransport implements FeedTransport {
     if (request.token) headers.Authorization = `Bearer ${request.token}`
     if (request.body !== undefined) headers["Content-Type"] = "application/json"
 
-    const response = await fetch(request.url, {
+    const response = await feedHttpClient.fetch(request.url, {
       method: request.method ?? "GET",
       headers,
       body: request.body === undefined ? undefined : JSON.stringify(request.body),

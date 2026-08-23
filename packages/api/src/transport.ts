@@ -1,3 +1,5 @@
+import { Impit } from "impit"
+
 export interface HttpRequest {
   url: string
   headers: Record<string, string>
@@ -51,9 +53,17 @@ export function isTransientStreamError(cause: unknown): boolean {
   return false
 }
 
+// Midas identifies its client as an iOS application. Keep the TLS and HTTP2
+// profile consistent with the app headers assembled by ApiClient, and share one
+// connection pool between GraphQL calls and the event stream.
+const apiHttpClient = new Impit({
+  browser: "ios18",
+  vanillaFallback: false,
+})
+
 export class FetchTransport implements Transport {
   async request(request: HttpRequest): Promise<HttpResponse> {
-    const response = await fetch(request.url, {
+    const response = await apiHttpClient.fetch(request.url, {
       method: "POST",
       headers: request.headers,
       body: request.body,
@@ -68,7 +78,7 @@ export class FetchTransport implements Transport {
   }
 
   async *stream(request: StreamRequest): AsyncGenerator<SseFrame> {
-    const response = await fetch(request.url, {
+    const response = await apiHttpClient.fetch(request.url, {
       method: "GET",
       headers: request.headers,
       signal: request.signal,
