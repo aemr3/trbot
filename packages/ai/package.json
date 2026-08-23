@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.2",
+    "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@mozilla/readability": "^0.6.0",
     "@trbot/chat": "workspace:*",
@@ -15,6 +16,7 @@
     "@trbot/protocol": "workspace:*",
     "@trbot/trading": "workspace:*",
     "linkedom": "^0.18.13",
+    "ogg-opus-decoder": "^1.7.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

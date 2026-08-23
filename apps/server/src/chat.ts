@@ -68,7 +68,7 @@ export interface ChatControllerOptions {
     event: { label: string | null; referenceId: string | null } | null,
   ) => Promise<void>
   rewindEffects?: ChatRewindEffectManager
-  broadcast: (frame: ChatFrame) => void
+  broadcast: (frame: ChatFrame) => Promise<void> | void
   onError: (cause: unknown) => void
   now?: () => number
 }
@@ -591,8 +591,6 @@ export class ChatController {
       controller: new AbortController(),
     }
     this.runs.set(sessionId, run)
-    this.options.broadcast({ type: "chatRun", sessionId, runId: run.runId, status: "running" })
-    await this.announceSessions()
 
     let result: ChatTurnResult
     try {
@@ -604,6 +602,14 @@ export class ChatController {
       let history = this.options.compaction
         ? this.options.compaction.history(modelContext)
         : modelContext.records.map((entry) => modelRecord(entry.record))
+
+      // Claim the queued input before announcing the run. A client resyncs when
+      // it sees that announcement, so the durable status must already say this
+      // prompt is being handled rather than still being cancellable.
+      await this.options.store.markSent(asked.id)
+      await this.options.broadcast({ type: "chatRun", sessionId, runId: run.runId, status: "running" })
+      await this.announceSessions()
+
       if (this.options.compaction) {
         try {
           const compacted = await this.options.compaction.compact({
@@ -615,7 +621,11 @@ export class ChatController {
           })
           if (compacted) {
             await this.options.store.saveCompaction(compacted.checkpoint)
-            modelContext = await this.options.store.context(sessionId)
+            const refreshed = await this.options.store.context(sessionId)
+            modelContext = {
+              ...refreshed,
+              records: refreshed.records.filter((entry) => entry.id !== asked.id),
+            }
             history = compacted.history
           }
         } catch (error) {
@@ -624,11 +634,6 @@ export class ChatController {
           this.options.onError(error)
         }
       }
-
-      // Marked sent before the turn runs: a server that dies mid-turn must not
-      // replay the question on restart, which would answer it twice. This also moves
-      // it to the end of the conversation, which is where it was actually asked.
-      await this.options.store.markSent(asked.id)
 
       if (asked.role === "USER") {
         this.maybeStartTitleGeneration(sessionId, sessionTitle, asked.text, turnModel)
@@ -669,9 +674,9 @@ export class ChatController {
                 reasoning: delta,
               })
             },
-            onToolCall: (name) => {
+            onToolCall: async (name) => {
               run.seq += 1
-              this.options.broadcast({
+              await this.options.broadcast({
                 type: "chatDelta",
                 sessionId,
                 runId: run.runId,
@@ -779,7 +784,7 @@ export class ChatController {
   private async persist(sessionId: string, draft: ChatMessageDraft): Promise<void> {
     if (this.removedSessionIds.has(sessionId)) return
     await this.options.store.append(sessionId, draft)
-    this.options.broadcast({ type: "chatMessage", sessionId, message: draft.message })
+    await this.options.broadcast({ type: "chatMessage", sessionId, message: draft.message })
   }
 
   private async sessionTreeIds(sessionId: string): Promise<string[]> {

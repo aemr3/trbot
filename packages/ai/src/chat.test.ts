@@ -160,7 +160,7 @@ test("runs the tools a reply asks for and answers with their results", async () 
     events: {
       onText: () => {},
       onReasoning: () => {},
-      onToolCall: (name) => called.push(name),
+      onToolCall: (name) => { called.push(name) },
       onMessage: async (draft) => {
         drafts.push(draft)
       },
@@ -175,6 +175,50 @@ test("runs the tools a reply asks for and answers with their results", async () 
   expect(drafts[1]?.message.text).toBe("Fetched ASELS quote.")
   expect(drafts[1]?.message.usage).toEqual({ inputTokens: 10, outputTokens: 5, totalTokens: 15, costTotal: 0.01 })
   expect(drafts[2]?.message.text).toBe("ASELS last traded at 390.00.")
+})
+
+test("waits for tool-start delivery before running the tool", async () => {
+  const startObserved = Promise.withResolvers<void>()
+  const startDelivered = Promise.withResolvers<void>()
+  let toolRan = false
+  const quote: ChatTool = {
+    definition: {
+      name: "quote",
+      description: "The last price of a symbol",
+      parameters: Type.Object({}),
+    },
+    run: async () => {
+      toolRan = true
+      return { blocks: [toolText("Fetched quote.")], details: null, isError: false }
+    },
+  }
+  const { faux, models } = scripted()
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("quote", {})], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Done."),
+  ])
+  const agent = new ChatAgent({ models, tools: new ChatTools([quote]) })
+
+  const running = agent.run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Fetch it",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: async () => {
+        startObserved.resolve()
+        await startDelivered.promise
+      },
+      onMessage: async () => {},
+    },
+  })
+
+  await startObserved.promise
+  expect(toolRan).toBe(false)
+  startDelivered.resolve()
+  await running
+  expect(toolRan).toBe(true)
 })
 
 test("a tool called with arguments it cannot use fails without running", async () => {

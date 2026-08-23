@@ -21,6 +21,7 @@ import type {
   CreateChatLoop,
   UpdateChatGoal,
 } from "@trbot/chat/automation.ts"
+import type { ChatMobilePairing, ChatMobileState } from "@trbot/chat/mobile.ts"
 
 /**
  * The chat as a client drives it.
@@ -52,6 +53,11 @@ export interface ChatSessions {
   abort(sessionId: string): Promise<void>
   /** Replaces the current model-facing history with a fresh rolling summary. */
   compact(sessionId: string): Promise<ChatCompactionReport>
+  /** Current mobile attachment and whether the server has a channel configured. */
+  mobile(sessionId: string): Promise<ChatMobileState>
+  /** Creates a short-lived, single-use link for attaching this chat to a phone. */
+  connectMobile(sessionId: string): Promise<ChatMobilePairing>
+  disconnectMobile(sessionId: string): Promise<void>
   automations(sessionId: string): Promise<ChatAutomationState>
   createGoal(sessionId: string, input: CreateChatGoal): Promise<ChatGoal>
   updateGoal(sessionId: string, input: UpdateChatGoal): Promise<ChatGoal | null>

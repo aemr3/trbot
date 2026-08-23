@@ -12,6 +12,8 @@ export interface AppConfig {
   databaseUrl: string
   credentials: AppCredentials | null
   feedCredentials: AppCredentials | null
+  /** Server-only token issued by BotFather; null leaves mobile chat disabled. */
+  telegramBotToken: string | null
 }
 
 const DEFAULT_DATABASE_URL = "./data/db.sqlite"
@@ -51,6 +53,7 @@ export function loadConfig(env: Record<string, string | undefined> = environment
     databaseUrl: loadDatabaseUrl(env),
     credentials: loadCredentials(env),
     feedCredentials: loadFeedCredentials(env),
+    telegramBotToken: env.TRBOT_TELEGRAM_BOT_TOKEN?.trim() || null,
   }
 }
 

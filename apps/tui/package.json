@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@opentui/core": "^0.5.1",
+    "@opentui/core": "0.5.6",
+    "@opentui/qrcode": "0.5.6",
     "@trbot/chat": "workspace:*",
     "@trbot/client": "workspace:*",
     "@trbot/config": "workspace:*",

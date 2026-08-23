@@ -151,3 +151,34 @@ test("previews rewind tool effects without changing the chat", async () => {
   expect(requestedBody).toBe('{"messageId":"message-2"}')
   expect(result.effects).toEqual([{ description: "Market monitor was created", reversible: true }])
 })
+
+test("connects, inspects, and disconnects a mobile chat through one route", async () => {
+  const requests: Array<{ method: string; path: string }> = []
+  const http = new HttpClient({
+    url: "http://localhost:3000",
+    token: "test",
+    fetch: async (input, init) => {
+      const request = new Request(input, init)
+      requests.push({ method: request.method, path: new URL(request.url).pathname })
+      if (request.method === "POST") {
+        return Response.json({
+          channel: "telegram",
+          url: "https://t.me/trbot_test_bot?start=pairing-token",
+          expiresAt: 10_000,
+        })
+      }
+      if (request.method === "GET") return Response.json({ available: true, connection: null })
+      return Response.json({ ok: true })
+    },
+  })
+  const chats = new HttpChatSessions(http)
+
+  expect(await chats.mobile("chat/one")).toEqual({ available: true, connection: null })
+  expect((await chats.connectMobile("chat/one")).channel).toBe("telegram")
+  await chats.disconnectMobile("chat/one")
+  expect(requests).toEqual([
+    { method: "GET", path: "/v1/ai/chat/sessions/chat%2Fone/mobile" },
+    { method: "POST", path: "/v1/ai/chat/sessions/chat%2Fone/mobile" },
+    { method: "DELETE", path: "/v1/ai/chat/sessions/chat%2Fone/mobile" },
+  ])
+})

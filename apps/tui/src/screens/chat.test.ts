@@ -28,6 +28,8 @@ function fakeChats(): ChatSessions & {
   agentNotifications: ChatNotification[]
   dismissedNotifications: string[]
   permissionDecisions: Array<{ requestId: string; reply: ChatPermissionReply }>
+  mobilePairings: string[]
+  disconnectedMobile: string[]
 } {
   const sessions: ChatSession[] = []
   const messages = new Map<string, ChatMessage[]>()
@@ -41,6 +43,8 @@ function fakeChats(): ChatSessions & {
   const agentNotifications: ChatNotification[] = []
   const dismissedNotifications: string[] = []
   const permissionDecisions: Array<{ requestId: string; reply: ChatPermissionReply }> = []
+  const mobilePairings: string[] = []
+  const disconnectedMobile: string[] = []
   const automations = new Map<string, ChatAutomationState>()
 
   return {
@@ -56,6 +60,8 @@ function fakeChats(): ChatSessions & {
     agentNotifications,
     dismissedNotifications,
     permissionDecisions,
+    mobilePairings,
+    disconnectedMobile,
     async list() {
       // A copy, as a real client's answer would be: handing out the live array
       // would let the screen and the fake share state no server ever shares.
@@ -139,6 +145,20 @@ function fakeChats(): ChatSessions & {
         compacted: true,
         tokensBefore: 24_000,
       }
+    },
+    async mobile(_sessionId) {
+      return { available: true, connection: null }
+    },
+    async connectMobile(sessionId) {
+      mobilePairings.push(sessionId)
+      return {
+        channel: "telegram" as const,
+        url: "https://t.me/trbot_test_bot?start=pairing-token",
+        expiresAt: Date.now() + 300_000,
+      }
+    },
+    async disconnectMobile(sessionId) {
+      disconnectedMobile.push(sessionId)
     },
     async automations(sessionId) {
       return automations.get(sessionId) ?? { goal: null, loops: [] }
@@ -709,6 +729,99 @@ test("opens a filtered slash-command menu below the composer", async () => {
   renderer.destroy()
 })
 
+test("offers disconnect instead of connect for a Telegram-linked session", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+    width: 100,
+    height: 36,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  const session = await chats.create()
+  let mobileConnected = true
+  chats.mobile = async (sessionId) => ({
+    available: true,
+    connection: mobileConnected
+      ? { sessionId, channel: "telegram", displayName: "@ada", connectedAt: 1_000 }
+      : null,
+  })
+  chats.disconnectMobile = async (sessionId) => {
+    chats.disconnectedMobile.push(sessionId)
+    mobileConnected = false
+  }
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("/")
+  const connectedMenu = await waitForFrame((frame) => frame.includes("/disconnect"))
+  expect(connectedMenu).not.toContain("/connect ")
+
+  await mockInput.typeText("disconnect")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Disconnected from Telegram."))
+  expect(chats.disconnectedMobile).toEqual([session.id])
+
+  await mockInput.typeText("/")
+  const disconnectedMenu = await waitForFrame((frame) => frame.includes("/connect"))
+  expect(disconnectedMenu).not.toContain("/disconnect")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("saves an empty chat before connecting it to Telegram", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+    width: 100,
+    height: 36,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  let pairingStarted = false
+  chats.mobile = async (sessionId) => ({
+    available: true,
+    connection: pairingStarted
+      ? { sessionId, channel: "telegram", displayName: "@ada", connectedAt: 1_000 }
+      : null,
+  })
+  chats.connectMobile = async (sessionId) => {
+    chats.mobilePairings.push(sessionId)
+    pairingStarted = true
+    return {
+      channel: "telegram",
+      url: "https://t.me/trbot_test_bot?start=pairing-token",
+      expiresAt: Date.now() + 300_000,
+    }
+  }
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    initialSessionId: null,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("New chat"))
+
+  await mockInput.typeText("/")
+  const emptyMenu = await waitForFrame((frame) => frame.includes("/model") && frame.includes("/providers"))
+  expect(emptyMenu).toContain("/connect")
+  expect(emptyMenu).not.toContain("/disconnect")
+
+  await mockInput.typeText("connect")
+  mockInput.pressEnter()
+  const connectedFrame = await waitForFrame((frame) => frame.includes("Connected to Telegram · @ada"))
+  expect(chats.sessions).toHaveLength(1)
+  expect(chats.mobilePairings).toEqual(["chat-1"])
+  expect(screen.hasOpenModal()).toBe(false)
+  expect(connectedFrame).not.toContain("Scan with your phone")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("/clear and /new wait for a prompt before creating the next session", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
@@ -853,6 +966,7 @@ test("clicking a completed prompt opens its undo confirmation before rewinding",
   await mockMouse.click(promptColumn + 2, promptLine)
   await waitForFrame((frame) => frame.includes("Undo this message?"))
   mockInput.pressEnter()
+  await Bun.sleep(0)
   await waitForFrame((frame) => frame.includes("Conversation undone"))
   expect(chats.undone).toEqual([{ sessionId: session.id, messageId: prompt.id }])
 

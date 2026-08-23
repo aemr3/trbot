@@ -81,7 +81,12 @@ describe("loadConfig", () => {
       databaseUrl: resolve(workspaceRoot(), "data/db.sqlite"),
       credentials: null,
       feedCredentials: null,
+      telegramBotToken: null,
     })
+  })
+
+  test("reads and trims the optional Telegram bot token", () => {
+    expect(loadConfig({ TRBOT_TELEGRAM_BOT_TOKEN: " 123:token " }).telegramBotToken).toBe("123:token")
   })
 })
 

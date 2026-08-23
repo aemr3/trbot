@@ -64,6 +64,7 @@ export const ROUTES = {
   chatUndoPreview: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/undo/preview`,
   chatAbort: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/abort`,
   chatCompact: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/compact`,
+  chatMobile: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/mobile`,
   chatAutomations: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/automations`,
   chatGoal: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/goal`,
   chatLoops: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/loops`,

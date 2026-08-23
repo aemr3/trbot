@@ -35,6 +35,7 @@ import type { ChatQuestionController } from "../chat-question.ts"
 import type { ChatNotificationController } from "../chat-notification.ts"
 import type { ChatAutomationController } from "../chat-automation.ts"
 import type { ChatPermissionController } from "../chat-permission.ts"
+import type { ChatMobileController } from "../chat-mobile.ts"
 import type { AlertController } from "../monitors/alert.ts"
 import type { MarketMonitorController } from "../monitors/market-monitor.ts"
 import type { StopController } from "../monitors/stop.ts"
@@ -60,6 +61,7 @@ export interface RouteContext {
   chat: ChatController
   questions: ChatQuestionController
   permissions: ChatPermissionController
+  mobile: ChatMobileController
   notifications: ChatNotificationController
   automations: ChatAutomationController
 }
@@ -307,6 +309,26 @@ export const PARAMETERIZED: {
   method: string
   handle: (match: RegExpMatchArray, request: Request, context: RouteContext) => Promise<Response>
 }[] = [
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/mobile$/,
+    method: "GET",
+    handle: async (match, _request, { mobile }) =>
+      json(await mobile.state(decodeURIComponent(match[1] ?? ""))),
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/mobile$/,
+    method: "POST",
+    handle: async (match, _request, { mobile }) =>
+      json(await mobile.pair(decodeURIComponent(match[1] ?? ""))),
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/mobile$/,
+    method: "DELETE",
+    handle: async (match, _request, { mobile }) => {
+      await mobile.disconnect(decodeURIComponent(match[1] ?? ""))
+      return json({ ok: true })
+    },
+  },
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/undo\/preview$/,
     method: "POST",
@@ -564,9 +586,9 @@ export const PARAMETERIZED: {
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,
     method: "DELETE",
-    handle: async (match, _request, { chat, questions, permissions, notifications }) => {
+    handle: async (match, _request, { chat, questions, permissions, notifications, mobile }) => {
       await chat.remove(decodeURIComponent(match[1] ?? ""))
-      await Promise.all([questions.sync(), permissions.sync(), notifications.sync()])
+      await Promise.all([questions.sync(), permissions.sync(), notifications.sync(), mobile.sync()])
       return json({ ok: true })
     },
   },

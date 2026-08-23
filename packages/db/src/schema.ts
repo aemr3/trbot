@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
 import { TRADE_RIGHT_VIEWS } from "@trbot/preferences/app.ts"
 
 export const authState = sqliteTable("auth_state", {
@@ -209,6 +209,23 @@ export const chatPermissionRequests = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [index("chat_permission_requests_created_at").on(table.createdAt)],
+)
+
+// A private mobile account points at one active conversation. Pairing another chat
+// moves that account instead of making an incoming message ambiguous.
+export const chatMobileConnections = sqliteTable(
+  "chat_mobile_connections",
+  {
+    sessionId: text("session_id").primaryKey().references(() => chatSessions.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),
+    externalUserId: text("external_user_id").notNull(),
+    externalChatId: text("external_chat_id").notNull(),
+    displayName: text("display_name").notNull(),
+    connectedAt: integer("connected_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("chat_mobile_connections_external_user").on(table.channel, table.externalUserId),
+  ],
 )
 
 // One current objective per root chat. Replacing a goal replaces this row.

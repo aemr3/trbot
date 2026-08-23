@@ -43,6 +43,7 @@ async function harness(options: {
   generateTitle?: (message: string, signal: AbortSignal) => Promise<string | null>
   run?: (turn: ChatTurnOptions, call: number) => Promise<ChatTurnResult>
   rewindEffects?: ChatRewindEffectManager
+  broadcast?: (frame: ChatFrame) => Promise<void> | void
 } = {}): Promise<Harness> {
   connection = await openDatabase(":memory:")
   const store = new DrizzleChatSessionStore(connection.db, { harnessVersion: "pi-ai/test" })
@@ -81,7 +82,10 @@ async function harness(options: {
       if (options.connected === false) throw new Error("test-provider is not connected")
     },
     rewindEffects: options.rewindEffects,
-    broadcast: (frame) => frames.push(frame),
+    broadcast: (frame) => {
+      frames.push(frame)
+      return options.broadcast?.(frame)
+    },
     onError: (error) => errors.push(error),
   })
   await chat.start()
@@ -162,6 +166,28 @@ test("two messages in a row queue and run in the order they were sent", async ()
     "ASSISTANT:answer to second",
   ])
   expect(detail.messages.every((message) => message.status !== "QUEUED")).toBe(true)
+})
+
+test("claims the prompt before delivering the running state and starting the model", async () => {
+  const running = Promise.withResolvers<void>()
+  const delivered = Promise.withResolvers<void>()
+  const { chat, turns } = await harness({
+    broadcast: (frame) => {
+      if (frame.type !== "chatRun" || frame.status !== "running") return
+      running.resolve()
+      return delivered.promise
+    },
+  })
+  const session = await chat.create()
+
+  await chat.send(session.id, "wait for mobile")
+  await running.promise
+  expect(turns).toHaveLength(0)
+  expect((await chat.detail(session.id)).messages.find((message) => message.role === "USER")?.status).toBe("SENT")
+
+  delivered.resolve()
+  await settle()
+  expect(turns).toHaveLength(1)
 })
 
 test("the second question sees the first exchange as history", async () => {

@@ -32,7 +32,7 @@ export class ChatCommandMenu {
 
   constructor(
     private readonly renderer: RenderContext,
-    private readonly commands: readonly ChatCommand[],
+    private commands: readonly ChatCommand[],
     options: ChatCommandMenuOptions = {},
   ) {
     this.backgroundColor = options.backgroundColor ?? PANEL_BG
@@ -50,6 +50,11 @@ export class ChatCommandMenu {
 
   get visible(): boolean {
     return this.root.visible
+  }
+
+  setCommands(commands: readonly ChatCommand[], query: string): void {
+    this.commands = commands
+    this.setQuery(query)
   }
 
   /** Refilters from the exact composer text and returns selection to the first row. */

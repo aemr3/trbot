@@ -29,6 +29,7 @@ import { AiConnectionModal } from "../components/ai-connection-modal.ts"
 import { AiModelModal } from "../components/ai-model-modal.ts"
 import { ChatCommandMenu, type ChatCommand } from "../components/chat-command-menu.ts"
 import { ChatHelpModal } from "../components/chat-help-modal.ts"
+import { ChatMobileModal } from "../components/chat-mobile-modal.ts"
 import { ChatQuestionPanel } from "../components/chat-question-panel.ts"
 import { ChatPermissionPanel } from "../components/chat-permission-panel.ts"
 import { ChatSessionModal } from "../components/chat-session-modal.ts"
@@ -117,9 +118,20 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/undo", description: "return to an earlier prompt" },
   { name: "/clear", description: "start fresh; keep this session saved" },
   { name: "/new", description: "start fresh; keep this session saved" },
-  { name: "/connect", description: "manage model providers" },
+  { name: "/connect", description: "continue this chat on Telegram" },
+  { name: "/disconnect", description: "stop continuing this chat on Telegram" },
+  { name: "/providers", description: "manage model providers" },
   { name: "/help", description: "show every chat key" },
 ]
+
+type MobileCommandName = "/connect" | "/disconnect"
+
+function visibleChatCommands(mobileCommand: MobileCommandName | null): readonly ChatCommand[] {
+  return CHAT_COMMANDS.filter((command) => {
+    if (command.name !== "/connect" && command.name !== "/disconnect") return true
+    return command.name === mobileCommand
+  })
+}
 
 type Focus = "transcript" | "composer" | "question" | "permission"
 type Modal =
@@ -127,6 +139,7 @@ type Modal =
   | AiModelModal
   | ChatSessionModal
   | ChatHelpModal
+  | ChatMobileModal
   | ChatUndoPanel
   | MarketMonitorModal
   | SubagentSessionModal
@@ -221,6 +234,7 @@ export class ChatScreen {
   private permissionPanel: ChatPermissionPanel | null = null
   private armedMonitorCountBySession = new Map<string, number>()
   private activeLoopCountBySession = new Map<string, number>()
+  private mobileConnectedBySession = new Map<string, boolean>()
   private contractByMention = new Map<string, string>()
   /** Context window per `provider/model`, for reading a conversation's usage as a share of it. */
   private contextWindows = new Map<string, number>()
@@ -308,7 +322,7 @@ export class ChatScreen {
     }))
     body.add(this.transcript.root)
     body.add(this.emptyState)
-    this.commandMenu = new ChatCommandMenu(renderer, CHAT_COMMANDS, {
+    this.commandMenu = new ChatCommandMenu(renderer, visibleChatCommands("/connect"), {
       backgroundColor: this.surfaceBackground,
     })
 
@@ -424,6 +438,7 @@ export class ChatScreen {
   activate(): void {
     if (this.typing()) this.composer.focus()
     if (!this.selectedSessionId) void this.loadDefaultChoice()
+    else void this.refreshMobileConnection(this.selectedSessionId)
   }
 
   /** A hidden textarea must neither draw a cursor nor receive another panel's keys. */
@@ -833,6 +848,7 @@ export class ChatScreen {
           this.loadSession(this.selectedSessionId),
           this.refreshMarketMonitorCount(this.selectedSessionId),
           this.refreshActiveLoopCount(this.selectedSessionId),
+          this.refreshMobileConnection(this.selectedSessionId),
         ])
       }
     } catch (error) {
@@ -1022,6 +1038,9 @@ export class ChatScreen {
     }
     this.composer.handleKeyPress(key)
     this.commandMenu.setQuery(this.composer.plainText)
+    if (this.composer.plainText === "/" && this.selectedSessionId) {
+      void this.refreshMobileConnection(this.selectedSessionId)
+    }
     this.render.schedule()
   }
 
@@ -1135,6 +1154,12 @@ export class ChatScreen {
         this.startNewChat()
         break
       case "/connect":
+        await this.openMobileConnection()
+        break
+      case "/disconnect":
+        await this.disconnectMobileConnection()
+        break
+      case "/providers":
         this.openConnection()
         break
       case "/help":
@@ -1278,6 +1303,7 @@ export class ChatScreen {
       await this.options.chats.delete(sessionId)
       this.messagesBySession.delete(sessionId)
       this.streamingBySession.delete(sessionId)
+      this.mobileConnectedBySession.delete(sessionId)
       this.sessions = this.sessions.filter((session) => session.id !== sessionId)
       if (this.selectedSessionId === sessionId) {
         this.setSelectedSession(this.sessions[0]?.id ?? null)
@@ -1552,6 +1578,49 @@ export class ChatScreen {
     }))
   }
 
+  private async openMobileConnection(): Promise<void> {
+    if (this.modal || this.destroyed) return
+    const session = this.selectedSession() ?? await this.startSession()
+    if (!session || this.modal || this.destroyed) return
+    if (session.parentSessionId) {
+      this.commandNotice = "Worker transcripts cannot be connected to a phone."
+      return
+    }
+    this.showModal(new ChatMobileModal(this.renderer, {
+      chats: this.options.chats,
+      sessionId: session.id,
+      onConnected: (connection) => {
+        this.mobileConnectedBySession.set(session.id, true)
+        this.commandNotice = `Connected to Telegram · ${connection.displayName}`
+        this.refreshCommandMenu()
+        this.closeModal()
+        this.render.schedule()
+      },
+      onClose: () => this.closeModal(),
+    }))
+  }
+
+  private async disconnectMobileConnection(): Promise<void> {
+    const session = this.selectedSession()
+    if (!session) {
+      this.commandNotice = "This chat is not connected to Telegram."
+      return
+    }
+    if (session.parentSessionId) {
+      this.commandNotice = "Worker transcripts cannot be connected to a phone."
+      return
+    }
+    try {
+      await this.options.chats.disconnectMobile(session.id)
+      this.mobileConnectedBySession.set(session.id, false)
+      this.refreshCommandMenu()
+      this.commandNotice = "Disconnected from Telegram."
+    } catch (error) {
+      this.options.logs.error("Mobile chat", error)
+      this.commandNotice = error instanceof Error ? error.message : String(error)
+    }
+  }
+
   /**
    * Points this chat at a model, or at a different reasoning level.
    *
@@ -1599,9 +1668,9 @@ export class ChatScreen {
     this.modal = null
     if (!this.modalHost.isDestroyed && !modal.root.isDestroyed) this.modalHost.remove(modal.root)
     modal.destroy()
-    // A connection may have been made or dropped in there, and whether the composer is
-    // offered at all depends on it.
+    // Provider and mobile connection state may both have changed in a modal.
     void this.refreshConnection()
+    if (this.selectedSessionId) void this.refreshMobileConnection(this.selectedSessionId)
     this.renderer.requestRender()
   }
 
@@ -1644,6 +1713,7 @@ export class ChatScreen {
     if (sessionId === this.selectedSessionId) return
     this.setSelectedSession(sessionId)
     if (!this.messagesBySession.has(sessionId)) void this.loadSession(sessionId)
+    void this.refreshMobileConnection(sessionId)
     const blocking = this.blockingFocus()
     if (blocking) this.setFocus(blocking)
     else if (this.focus === "question" || this.focus === "permission") this.setFocus("composer")
@@ -1696,6 +1766,7 @@ export class ChatScreen {
     this.commandNotice = null
     this.automationNotice = null
     this.options.onSessionChange?.(sessionId)
+    this.refreshCommandMenu()
     if (sessionId) {
       void this.refreshMarketMonitorCount(sessionId)
       void this.refreshActiveLoopCount(sessionId)
@@ -1710,6 +1781,27 @@ export class ChatScreen {
 
   private selectedSession(): ChatSession | null {
     return this.sessions.find((session) => session.id === this.selectedSessionId) ?? null
+  }
+
+  private async refreshMobileConnection(sessionId: string): Promise<void> {
+    try {
+      const state = await this.options.chats.mobile(sessionId)
+      if (this.destroyed) return
+      this.mobileConnectedBySession.set(sessionId, state.connection !== null)
+      if (this.selectedSessionId === sessionId) this.refreshCommandMenu()
+    } catch (error) {
+      this.options.logs.error("Mobile chat", error)
+    }
+  }
+
+  private refreshCommandMenu(): void {
+    const session = this.selectedSession()
+    const mobileCommand: MobileCommandName | null = !session
+      ? "/connect"
+      : session.parentSessionId
+        ? null
+        : this.mobileConnectedBySession.get(session.id) ? "/disconnect" : "/connect"
+    this.commandMenu.setCommands(visibleChatCommands(mobileCommand), this.composer.plainText)
   }
 
   /**

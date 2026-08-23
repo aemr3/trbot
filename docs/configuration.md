@@ -14,6 +14,7 @@ The application reads configuration through `@trbot/config`, which overlays the 
 | `TRBOT_SERVER_TLS_KEY` | no | none | Private key path; required for a non-loopback host |
 | `TRBOT_SERVER_URL` | no | `http://127.0.0.1:7717` | Server address clients use |
 | `TRBOT_SERVER_CA` | no | none | Certificate authority a client trusts |
+| `TRBOT_TELEGRAM_BOT_TOKEN` | no | none | BotFather token enabling Telegram chat pairing |
 
 ## `DATABASE_URL`
 
@@ -66,7 +67,7 @@ naming a provider, a model, or a reasoning effort: those are chosen in the
 terminal and recorded by the server, so what answered a question is always the
 thing that was picked rather than whatever a file said at startup.
 
-Connect providers with `p` in the `CHAT` tab. Every provider the model harness
+Connect providers with `Ctrl+P` or `/providers` in the `CHAT` tab. Every provider the model harness
 offers is listed — a few behind a subscription sign-in, most behind an API key —
 and the same screen runs whichever flow the chosen one uses: it opens a browser and
 catches the redirect, shows a device code, or takes a key you type. The server
@@ -76,3 +77,34 @@ Then pick what answers: `m` in the `CHAT` tab sets the model for that chat
 session, and `r` its reasoning effort. Each session records its own, so two
 sessions can run on two providers at once. Until something is picked, the
 composer says so and names the key that fixes it.
+
+## Telegram mobile chat
+
+Create a private bot with Telegram's `@BotFather`, then put its token in
+`TRBOT_TELEGRAM_BOT_TOKEN` and restart the server. The token is server-only and
+must be protected like the other credentials in `.env`.
+
+Run `/connect` in a saved root chat to display a five-minute QR code. Scanning it
+and pressing **Start** attaches that Telegram account to the selected chat. A
+Telegram account points at one active chat at a time; pairing it again moves the
+connection. Send `/disconnect` to the bot, or press `d` in the `/connect` modal,
+to revoke it. Once disconnected, the bot silently ignores messages from that
+Telegram account until it opens a new pairing link.
+
+The server uses outbound long polling, so it does not need a public webhook or a
+non-loopback HTTP listener. Assistant messages and tool approval prompts are sent
+to the paired private chat. While an assistant is answering, the server uses
+Telegram's native live drafts at a throttled rate and persists the completed reply
+as a normal message. It falls back to editing a single message when live drafts are
+unavailable. Telegram's native typing indicator is shown before model work starts,
+while tools run, and while the model resumes after each tool. Tool starts are separate
+messages so their exact function names appear immediately rather than through
+Telegram's animated draft rendering; successful tools are removed and failed tools
+remain visible. Arguments, results, and model reasoning are never included. Approval
+buttons offer one-time approval, connection-scoped approval when the tool permits it,
+and denial. Connection-scoped grants are revoked when the phone disconnects, is paired
+elsewhere, or the server stops.
+
+Telegram bot chats are cloud chats rather than end-to-end encrypted Secret Chats.
+Pair only a Telegram account and phone you trust; brokerage and model credentials
+are never sent through Telegram.

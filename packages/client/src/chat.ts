@@ -34,6 +34,12 @@ import {
   type CreateChatLoop,
   type UpdateChatGoal,
 } from "@trbot/chat/automation.ts"
+import {
+  ChatMobilePairingSchema,
+  ChatMobileStateSchema,
+  type ChatMobilePairing,
+  type ChatMobileState,
+} from "@trbot/chat/mobile.ts"
 import { OkResponseSchema, ROUTES } from "@trbot/protocol/routes.ts"
 import type { HttpClient } from "./http.ts"
 import type { StreamConnection } from "./stream.ts"
@@ -92,6 +98,18 @@ export class HttpChatSessions implements ChatSessions {
 
   compact(sessionId: string): Promise<ChatCompactionReport> {
     return this.http.post(ROUTES.chatCompact(sessionId), ChatCompactionReportSchema)
+  }
+
+  mobile(sessionId: string): Promise<ChatMobileState> {
+    return this.http.get(ROUTES.chatMobile(sessionId), ChatMobileStateSchema)
+  }
+
+  connectMobile(sessionId: string): Promise<ChatMobilePairing> {
+    return this.http.post(ROUTES.chatMobile(sessionId), ChatMobilePairingSchema)
+  }
+
+  async disconnectMobile(sessionId: string): Promise<void> {
+    await this.http.delete(ROUTES.chatMobile(sessionId), OkResponseSchema)
   }
 
   automations(sessionId: string): Promise<ChatAutomationState> {

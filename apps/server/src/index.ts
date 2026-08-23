@@ -1,4 +1,5 @@
-import { loadConfig, loadServerConfig } from "@trbot/config"
+import { resolve } from "node:path"
+import { loadConfig, loadServerConfig, workspaceRoot } from "@trbot/config"
 import { MarketFeed, type FeedEntitlements } from "@trbot/feed"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import { requiresAuthentication } from "@trbot/protocol/error.ts"
@@ -16,17 +17,26 @@ import { ChatCompactor } from "@trbot/ai/compaction.ts"
 import { ChatTitleGenerator } from "@trbot/ai/title.ts"
 import { ChatGoalEvaluator } from "@trbot/ai/goal-evaluator.ts"
 import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trbot/ai/harness.ts"
+import {
+  ApiVoiceTranscriber,
+  PreferredVoiceTranscriber,
+  WhisperVoiceTranscriber,
+} from "@trbot/ai/voice-transcription.ts"
 import { DrizzleChatSessionStore } from "@trbot/db/chat-store.ts"
 import { DrizzleChatNotificationStore } from "@trbot/db/chat-notification-store.ts"
 import { DrizzleChatAutomationStore } from "@trbot/db/chat-automation-store.ts"
 import { DrizzleChatQuestionStore } from "@trbot/db/chat-question-store.ts"
 import { DrizzleChatPermissionStore } from "@trbot/db/chat-permission-store.ts"
+import { DrizzleChatMobileStore } from "@trbot/db/chat-mobile-store.ts"
+import { TelegramBotApi } from "@trbot/api/telegram.ts"
+import type { ChatFrame } from "@trbot/protocol/stream.ts"
 import { AiService } from "./ai.ts"
 import { ChatController } from "./chat.ts"
 import { ChatQuestionController } from "./chat-question.ts"
 import { ChatNotificationController } from "./chat-notification.ts"
 import { ChatAutomationController } from "./chat-automation.ts"
 import { ChatPermissionController } from "./chat-permission.ts"
+import { ChatMobileController } from "./chat-mobile.ts"
 import { ChatRewindEffects } from "./chat-rewind.ts"
 import { loadDefaultLoopPrompt } from "./chat-loop-prompt.ts"
 import { marketMonitorApplicationEvent } from "./chat-market-monitor-event.ts"
@@ -132,6 +142,7 @@ async function startTrbotServer(): Promise<void> {
   const chatAutomationStore = new DrizzleChatAutomationStore(connection.db)
   const chatQuestionStore = new DrizzleChatQuestionStore(connection.db)
   const chatPermissionStore = new DrizzleChatPermissionStore(connection.db)
+  const chatMobileStore = new DrizzleChatMobileStore(connection.db)
   const stopStore = new DrizzleStopRuleStore(connection.db)
   const idempotency = new IdempotencyStore(connection.db)
   await idempotency.sweep()
@@ -149,9 +160,14 @@ async function startTrbotServer(): Promise<void> {
   const ai = new AiService({ models, credentials, preferences: aiPreferences })
   let hub: StreamHub | null = null
   let chat!: ChatController
+  let mobile: ChatMobileController | null = null
+  const broadcastChat = (frame: ChatFrame): Promise<void> | void => {
+    hub?.broadcast(frame)
+    return mobile?.accept(frame)
+  }
   const questions = new ChatQuestionController({
     store: chatQuestionStore,
-    broadcast: (frame) => hub?.broadcast(frame),
+    broadcast: broadcastChat,
     onDetachedAnswer: async (request, answers) => {
       const formatted = request.questions.map((question, index) => (
         `"${question.question}"="${answers[index]?.join(", ") || "Unanswered"}"`
@@ -176,7 +192,7 @@ async function startTrbotServer(): Promise<void> {
   })
   const permissions = new ChatPermissionController({
     store: chatPermissionStore,
-    broadcast: (frame) => hub?.broadcast(frame),
+    broadcast: broadcastChat,
     onDetachedDecision: async (request, resolution) => {
       const allowed = resolution.decision === "ALLOW"
       const denialReason = resolution.reason ? ` Reason: ${resolution.reason}` : ""
@@ -196,7 +212,7 @@ async function startTrbotServer(): Promise<void> {
   })
   const notifications = new ChatNotificationController({
     store: chatNotificationStore,
-    broadcast: (frame) => hub?.broadcast(frame),
+    broadcast: broadcastChat,
   })
 
   const stops = new StopController({
@@ -318,7 +334,7 @@ async function startTrbotServer(): Promise<void> {
       preview: (effects) => rewindEffects.preview(effects),
       revert: (sessionId, effects) => rewindEffects.revert(sessionId, effects),
     },
-    broadcast: (frame) => hub?.broadcast(frame),
+    broadcast: broadcastChat,
     onError: (error) => log("Chat", error),
   })
   automations = new ChatAutomationController({
@@ -360,7 +376,38 @@ async function startTrbotServer(): Promise<void> {
     onError: (error) => log("Chat automation", error),
   })
   rewindEffects = new ChatRewindEffects({ marketMonitors, stops, automations, notifications })
-
+  const apiVoiceTranscriber = new ApiVoiceTranscriber({
+    accessToken: async () => {
+      const resolved = await models.getAuth("openai-codex")
+      const token = resolved?.auth.apiKey
+      if (!token) throw new Error("Connect OpenAI Codex before using voice transcription")
+      return token
+    },
+  })
+  const localVoiceTranscriber = new WhisperVoiceTranscriber({
+    cacheDir: resolve(workspaceRoot(), "data/models/whisper"),
+  })
+  const voiceTranscriber = new PreferredVoiceTranscriber({
+    preferred: async () => {
+      const connected = await models.checkAuth("openai-codex")
+      return connected ? apiVoiceTranscriber : null
+    },
+    fallback: localVoiceTranscriber,
+  })
+  const telegram = config.telegramBotToken ? new TelegramBotApi(config.telegramBotToken) : null
+  mobile = new ChatMobileController({
+    store: chatMobileStore,
+    chat,
+    permissions,
+    telegram,
+    voiceTranscriber,
+    onError: (error) => log("Mobile chat", error),
+  })
+  void models.checkAuth("openai-codex")
+    .then(async (connected) => {
+      if (!connected) await localVoiceTranscriber.prepare()
+    })
+    .catch((error) => log("Voice transcription model", error))
   hub = new StreamHub(session, {
     onClientAttach: (clientId) => permissions.attachClient(clientId),
     onClientDetach: (clientId) => permissions.detachClient(clientId),
@@ -387,6 +434,7 @@ async function startTrbotServer(): Promise<void> {
   await questions.load()
   await permissions.load()
   await chat.start()
+  await mobile.start()
   await alerts.load()
   await marketMonitors.load()
 
@@ -445,6 +493,7 @@ async function startTrbotServer(): Promise<void> {
     chat,
     questions,
     permissions,
+    mobile,
     notifications,
     automations,
     hub,
@@ -476,6 +525,7 @@ async function startTrbotServer(): Promise<void> {
     clearInterval(positionTimer)
     clearInterval(candleTimer)
     if (positionRefreshTimer) clearTimeout(positionRefreshTimer)
+    mobile.destroy()
     questions.destroy()
     permissions.destroy()
     chat.destroy()

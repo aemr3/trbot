@@ -78,7 +78,8 @@ export interface ChatAgentOptions {
 export interface ChatTurnEvents {
   onText(delta: string): void
   onReasoning(delta: string): void
-  onToolCall(name: string): void
+  /** Completes after attached clients have received the tool-start event. */
+  onToolCall(name: string): Promise<void> | void
   /**
    * A message the turn produced, as soon as it is complete.
    *
@@ -218,7 +219,7 @@ export class ChatAgent {
       }
 
       for (const call of calls) {
-        turn.events.onToolCall(call.name)
+        await turn.events.onToolCall(call.name)
         toolExecuted = true
         const outcome = await tools.call(call, {
           signal: turn.signal,
