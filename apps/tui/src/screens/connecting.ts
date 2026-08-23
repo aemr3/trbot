@@ -44,15 +44,30 @@ export class ConnectingScreen {
       gap: 1,
       padding: 1,
       title: "trbot",
-      width: 52,
-      height: 7,
+      width: "90%",
+      maxWidth: 52,
     })
-    this.heading = new TextRenderable(renderer, { content: this.headingText() })
-    this.detail = new TextRenderable(renderer, { content: options.url, fg: TUI_THEME.textSubdued })
+    this.heading = new TextRenderable(renderer, {
+      content: this.headingText(),
+      width: "100%",
+      flexShrink: 0,
+      wrapMode: "word",
+    })
+    this.detail = new TextRenderable(renderer, {
+      content: options.url,
+      fg: TUI_THEME.textSubdued,
+      width: "100%",
+      flexShrink: 0,
+      wrapMode: "word",
+    })
 
     this.panel.add(this.heading)
     this.panel.add(this.detail)
-    this.panel.add(new TextRenderable(renderer, { content: "Ctrl+C to exit", fg: TUI_THEME.textSubdued }))
+    this.panel.add(new TextRenderable(renderer, {
+      content: "Ctrl+C to exit",
+      fg: TUI_THEME.textSubdued,
+      flexShrink: 0,
+    }))
     this.root.add(this.panel)
   }
 
@@ -70,7 +85,11 @@ export class ConnectingScreen {
    * same as a server that is merely slow to come up.
    */
   reportFailure(message: string): void {
-    this.detail.content = `${this.options.url} · ${message}`
+    const repeatedUrl = ` at ${this.options.url}`
+    const conciseMessage = message.endsWith(repeatedUrl)
+      ? message.slice(0, -repeatedUrl.length)
+      : message
+    this.detail.content = `${this.options.url} · ${conciseMessage}`
     this.detail.fg = TUI_THEME.warning
     this.renderer.requestRender()
   }
