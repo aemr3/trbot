@@ -17,6 +17,7 @@ import type {
   ChatMobileTurnMessage,
 } from "@trbot/chat/mobile.ts"
 import type { ChatPermissionReply, ChatPermissionRequest } from "@trbot/chat/permission.ts"
+import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import {
   chatBlockText,
   type ChatMessage,
@@ -27,6 +28,7 @@ import { ChatMobileController } from "./chat-mobile.ts"
 
 const USER: TelegramUser = { id: 42, is_bot: false, first_name: "Ada", username: "ada" }
 const PERMISSION_ID = "11111111-1111-4111-8111-111111111111"
+const QUESTION_ID = "22222222-2222-4222-8222-222222222222"
 const PROMPT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 interface SentTelegramMessage {
@@ -343,11 +345,32 @@ class FakePermissions {
   }
 }
 
+class FakeQuestions {
+  pending: ChatQuestionRequest[] = []
+  readonly replies: Array<{ requestId: string; answers: ChatQuestionAnswer[] }> = []
+  readonly rejected: string[] = []
+
+  list(): ChatQuestionRequest[] {
+    return [...this.pending]
+  }
+
+  async reply(requestId: string, answers: ChatQuestionAnswer[]): Promise<void> {
+    this.replies.push({ requestId, answers })
+    this.pending = this.pending.filter((request) => request.id !== requestId)
+  }
+
+  async reject(requestId: string): Promise<void> {
+    this.rejected.push(requestId)
+    this.pending = this.pending.filter((request) => request.id !== requestId)
+  }
+}
+
 function harness(now = 2_000) {
   const store = new MemoryMobileStore()
   const telegram = new FakeTelegram()
   const chat = new FakeChat()
   const permissions = new FakePermissions()
+  const questions = new FakeQuestions()
   const voiceTranscriber = new FakeVoiceTranscriber()
   const errors: unknown[] = []
   const mobile = new ChatMobileController({
@@ -360,13 +383,14 @@ function harness(now = 2_000) {
       undo: (sessionId, messageId, revertEffects) => chat.undo(sessionId, messageId, revertEffects),
     },
     permissions,
+    questions,
     voiceTranscriber,
     onError: (cause) => errors.push(cause),
     now: () => now,
     draftIntervalMs: 5,
   })
   chat.onMessage = (queued) => mobile.accept({ type: "chatMessage", sessionId: "chat-1", message: queued })
-  return { mobile, store, telegram, chat, permissions, voiceTranscriber, errors }
+  return { mobile, store, telegram, chat, permissions, questions, voiceTranscriber, errors }
 }
 
 test("publishes Telegram chat commands in the native commands menu", async () => {
@@ -549,12 +573,184 @@ test("resolves a session tool approval only for the paired Telegram user", async
   mobile.destroy()
 })
 
+test("shows an agent question in Telegram and submits a single choice", async () => {
+  const { mobile, telegram, questions } = harness()
+  await mobile.start()
+  await pair(mobile, telegram)
+  const request = questionRequest([{
+    header: "Strategy",
+    question: "Which setup should I watch?",
+    options: [
+      { label: "Breakout", description: "Wait for resistance to break" },
+      { label: "Pullback", description: "Wait for a retracement" },
+    ],
+  }])
+  questions.pending.push(request)
+
+  mobile.accept({ type: "chatQuestionAsked", request })
+  await until(() => telegram.sent.some((sent) => sent.text.startsWith("Agent asks")))
+  const messageId = telegram.sent.findIndex((sent) => sent.text.startsWith("Agent asks")) + 1
+  const sent = telegram.sent[messageId - 1]!
+  expect(sent.text).toContain("Which setup should I watch?")
+  expect(sent.text).toContain("Breakout — Wait for resistance to break")
+  expect(sent.replyMarkup?.inline_keyboard.flat().map((button) => button.text)).toEqual([
+    "Breakout",
+    "Pullback",
+    "Other…",
+    "Dismiss",
+  ])
+
+  telegram.push(update(3, undefined, {
+    id: "question-callback-1",
+    from: USER,
+    message: telegramMessage(sent.text, messageId),
+    data: "question:o:1",
+  }))
+  await until(() => questions.replies.length === 1)
+
+  expect(questions.replies).toEqual([{
+    requestId: QUESTION_ID,
+    answers: [["Pullback"]],
+  }])
+  expect(telegram.edits.at(-1)?.text).toContain("Answered: Pullback")
+  expect(telegram.callbacks.at(-1)?.text).toBe("Pullback")
+  expect(telegram.cleared).toContainEqual({ chatId: USER.id.toString(), messageId })
+  mobile.destroy()
+})
+
+test("dismisses a pending question from Telegram", async () => {
+  const { mobile, telegram, questions } = harness()
+  await mobile.start()
+  await pair(mobile, telegram)
+  const request = questionRequest([{
+    header: "Choice",
+    question: "Should I continue?",
+    options: [{ label: "Continue", description: "Keep working" }],
+  }])
+  questions.pending.push(request)
+  mobile.accept({ type: "chatQuestionAsked", request })
+  await until(() => telegram.sent.some((sent) => sent.text.includes("Should I continue?")))
+  const messageId = telegram.sent.findIndex((sent) => sent.text.includes("Should I continue?")) + 1
+
+  telegram.push(update(3, undefined, {
+    id: "dismiss-question-callback",
+    from: USER,
+    message: telegramMessage("Should I continue?", messageId),
+    data: "question:x",
+  }))
+  await until(() => questions.rejected.length === 1)
+
+  expect(questions.rejected).toEqual([QUESTION_ID])
+  expect(telegram.edits.at(-1)?.text).toContain("Dismissed")
+  expect(telegram.callbacks.at(-1)?.text).toBe("Dismissed")
+  mobile.destroy()
+})
+
+test("collects multiple choices and a custom answer across Telegram questions", async () => {
+  const { mobile, telegram, chat, questions } = harness()
+  await mobile.start()
+  await pair(mobile, telegram)
+  const request = questionRequest([
+    {
+      header: "Delivery",
+      question: "Where should I notify you?",
+      options: [
+        { label: "Terminal", description: "Show it in trbot" },
+        { label: "Sound", description: "Play an alert sound" },
+      ],
+      multiple: true,
+    },
+    {
+      header: "Timing",
+      question: "When should I send it?",
+      options: [],
+    },
+  ])
+  questions.pending.push(request)
+  mobile.accept({ type: "chatQuestionAsked", request })
+  await until(() => telegram.sent.some((sent) => sent.text.includes("1/2")))
+  const firstMessageId = telegram.sent.findIndex((sent) => sent.text.includes("1/2")) + 1
+  const firstMessage = telegram.sent[firstMessageId - 1]!
+
+  telegram.push(update(3, undefined, {
+    id: "question-callback-1",
+    from: USER,
+    message: telegramMessage(firstMessage.text, firstMessageId),
+    data: "question:o:0",
+  }))
+  await until(() => telegram.markups.some((markup) => (
+    markup.messageId === firstMessageId
+    && markup.replyMarkup.inline_keyboard.flat().some((button) => button.text === "✓ Terminal")
+  )))
+
+  telegram.push(update(4, undefined, {
+    id: "question-callback-2",
+    from: USER,
+    message: telegramMessage(firstMessage.text, firstMessageId),
+    data: "question:d",
+  }))
+  await until(() => telegram.sent.some((sent) => sent.text.includes("2/2")))
+  const secondMessageId = telegram.sent.findLastIndex((sent) => sent.text.includes("2/2")) + 1
+  const secondMessage = telegram.sent[secondMessageId - 1]!
+
+  telegram.push(update(5, undefined, {
+    id: "question-callback-3",
+    from: USER,
+    message: telegramMessage(secondMessage.text, secondMessageId),
+    data: "question:c",
+  }))
+  await until(() => telegram.callbacks.some((callback) => callback.id === "question-callback-3"))
+  telegram.push(update(6, telegramMessage("At the close", 6)))
+  await until(() => questions.replies.length === 1)
+
+  expect(questions.replies).toEqual([{
+    requestId: QUESTION_ID,
+    answers: [["Terminal"], ["At the close"]],
+  }])
+  expect(chat.sent).toEqual([])
+  expect(telegram.edits.at(-1)?.text).toContain("Answered: At the close")
+  mobile.destroy()
+})
+
+test("replays pending questions when Telegram connects and clears resolved prompts", async () => {
+  const { mobile, telegram, questions } = harness()
+  const request = questionRequest([{
+    header: "Choice",
+    question: "Continue?",
+    options: [{ label: "Continue", description: "Resume the task" }],
+  }])
+  questions.pending.push(request)
+  await mobile.start()
+  await pair(mobile, telegram)
+  await until(() => telegram.sent.some((sent) => sent.text.includes("Continue?")))
+  const messageId = telegram.sent.findIndex((sent) => sent.text.includes("Continue?")) + 1
+
+  mobile.accept({ type: "chatQuestionResolved", requestId: request.id, sessionId: request.sessionId })
+  await until(() => telegram.cleared.some((entry) => entry.messageId === messageId))
+
+  telegram.push(update(3, undefined, {
+    id: "stale-question-callback",
+    from: USER,
+    message: telegramMessage("Continue?", messageId),
+    data: "question:o:0",
+  }))
+  await until(() => telegram.callbacks.some((callback) => callback.id === "stale-question-callback"))
+
+  expect(telegram.sent.filter((sent) => sent.text.includes("Continue?"))).toHaveLength(1)
+  expect(telegram.callbacks.at(-1)).toMatchObject({
+    text: "This question is no longer pending.",
+    showAlert: true,
+  })
+  mobile.destroy()
+})
+
 test("rejects an expired pairing token without creating a connection", async () => {
   let now = 2_000
   const store = new MemoryMobileStore()
   const telegram = new FakeTelegram()
   const chat = new FakeChat()
   const permissions = new FakePermissions()
+  const questions = new FakeQuestions()
   const mobile = new ChatMobileController({
     store,
     telegram,
@@ -565,6 +761,7 @@ test("rejects an expired pairing token without creating a connection", async () 
       undo: (sessionId, messageId, revertEffects) => chat.undo(sessionId, messageId, revertEffects),
     },
     permissions,
+    questions,
     onError: () => {},
     now: () => now,
   })
@@ -1032,6 +1229,10 @@ function update(
 
 function approvalMessageId(telegram: FakeTelegram): number {
   return telegram.sent.findIndex((sent) => sent.replyMarkup) + 1
+}
+
+function questionRequest(questions: ChatQuestionRequest["questions"]): ChatQuestionRequest {
+  return { id: QUESTION_ID, sessionId: "chat-1", questions }
 }
 
 function message(text: string, role: ChatMessage["role"]): ChatMessage {

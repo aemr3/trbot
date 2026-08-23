@@ -396,6 +396,7 @@ async function startTrbotServer(): Promise<void> {
     store: chatMobileStore,
     chat,
     permissions,
+    questions,
     telegram,
     voiceTranscriber,
     onError: (error) => log("Mobile chat", error),

@@ -9,6 +9,7 @@ import type {
 } from "@trbot/api/telegram.ts"
 import type { VoiceTranscriber } from "@trbot/ai/voice-transcription.ts"
 import type { ChatPermissionReply, ChatPermissionRequest } from "@trbot/chat/permission.ts"
+import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type {
   ChatMobileBinding,
   ChatMobileConnection,
@@ -99,6 +100,12 @@ interface MobilePermissionAccess {
   detachClient(clientId: string | null): void
 }
 
+interface MobileQuestionAccess {
+  list(): ChatQuestionRequest[]
+  reply(requestId: string, answers: ChatQuestionAnswer[]): Promise<void>
+  reject(requestId: string): Promise<void>
+}
+
 interface PairingRecord {
   sessionId: string
   expiresAt: number
@@ -108,6 +115,16 @@ interface ApprovalMessage {
   sessionId: string
   chatId: string
   messageId: number
+}
+
+/** Telegram rendering state only; the question controller owns the durable request. */
+interface QuestionConversation {
+  request: ChatQuestionRequest
+  chatId: string
+  messageId: number | null
+  questionIndex: number
+  answers: ChatQuestionAnswer[]
+  awaitingCustom: boolean
 }
 
 interface StreamingMessage {
@@ -132,6 +149,7 @@ export interface ChatMobileControllerOptions {
   store: ChatMobileStore
   chat: MobileChatAccess
   permissions: MobilePermissionAccess
+  questions: MobileQuestionAccess
   telegram: TelegramBotApiAccess | null
   voiceTranscriber?: VoiceTranscriber | null
   onError: (cause: unknown) => void
@@ -144,6 +162,7 @@ export class ChatMobileController {
   private readonly pairings = new Map<string, PairingRecord>()
   private readonly attachedClients = new Set<string>()
   private readonly approvalMessages = new Map<string, ApprovalMessage>()
+  private readonly questionConversations = new Map<string, QuestionConversation>()
   private readonly suppressedUserMessages = new Map<string, string[]>()
   private readonly streamingMessages = new Map<string, StreamingMessage>()
   private readonly undoingTurns = new Set<string>()
@@ -177,6 +196,7 @@ export class ChatMobileController {
       }
       await this.reconcileClients()
       for (const request of this.options.permissions.list()) this.runInBackground(this.sendPermission(request))
+      for (const request of this.options.questions.list()) this.runInBackground(this.sendQuestion(request))
 
       const controller = new AbortController()
       this.pollController = controller
@@ -231,6 +251,7 @@ export class ChatMobileController {
       if (pairing.sessionId === sessionId) this.pairings.delete(token)
     }
     this.forgetApprovals(sessionId)
+    this.forgetQuestions(sessionId)
     await this.reconcileClients()
   }
 
@@ -282,6 +303,12 @@ export class ChatMobileController {
       case "chatPermissionResolved":
         this.runInBackground(this.clearPermission(frame.requestId))
         return
+      case "chatQuestionAsked":
+        this.runInBackground(this.sendQuestion(frame.request))
+        return
+      case "chatQuestionResolved":
+        this.runInBackground(this.clearQuestion(frame.requestId))
+        return
       case "chatRun":
         if (frame.status === "running") {
           return this.beginStream(frame.sessionId, frame.runId, frame.promptMessageId ?? null)
@@ -308,6 +335,7 @@ export class ChatMobileController {
     this.attachedClients.clear()
     this.pairings.clear()
     this.approvalMessages.clear()
+    this.questionConversations.clear()
     this.suppressedUserMessages.clear()
     this.undoingTurns.clear()
     for (const stream of this.streamingMessages.values()) this.stopStream(stream)
@@ -388,6 +416,15 @@ export class ChatMobileController {
       return
     }
     if (!text) return
+    if (!command) {
+      try {
+        if (await this.handleCustomQuestionAnswer(binding.sessionId, text)) return
+      } catch (cause) {
+        if (!(cause instanceof ProtocolError)) this.options.onError(cause)
+        await this.sendLong(binding.externalChatId, "Could not apply that answer. Please try again.")
+        return
+      }
+    }
     const commandPrompt = command && !command.argument
       ? TELEGRAM_COMMAND_PROMPTS.get(command.name)
       : undefined
@@ -424,6 +461,13 @@ export class ChatMobileController {
 
     const current = await this.options.store.findBySession(binding.sessionId)
     if (!current || current.externalUserId !== binding.externalUserId || current.externalChatId !== binding.externalChatId) {
+      return
+    }
+    try {
+      if (await this.handleCustomQuestionAnswer(current.sessionId, text)) return
+    } catch (cause) {
+      if (!(cause instanceof ProtocolError)) this.options.onError(cause)
+      await this.sendLong(current.externalChatId, "Could not apply that answer. Please try again.")
       return
     }
     await this.sendChatText(current, text, message.message_id)
@@ -474,6 +518,9 @@ export class ChatMobileController {
     for (const request of this.options.permissions.list()) {
       if (request.sessionId === binding.sessionId) await this.sendPermission(request)
     }
+    for (const request of this.options.questions.list()) {
+      if (request.sessionId === binding.sessionId) await this.sendQuestion(request)
+    }
   }
 
   private async sendWelcome(binding: ChatMobileBinding, detail: ChatSessionDetail): Promise<void> {
@@ -502,6 +549,12 @@ export class ChatMobileController {
     const undo = parseUndoCallback(callback.data)
     if (undo) {
       await this.handleUndoCallback(callback, binding, undo)
+      return
+    }
+
+    const question = parseQuestionCallback(callback.data)
+    if (question) {
+      await this.handleQuestionCallback(callback, binding, question)
       return
     }
 
@@ -600,6 +653,216 @@ export class ChatMobileController {
       await this.answerCallback(callback.id, messageText, true)
     } finally {
       this.undoingTurns.delete(undo.promptMessageId)
+    }
+  }
+
+  private async handleQuestionCallback(
+    callback: TelegramCallbackQuery,
+    binding: ChatMobileBinding,
+    action: QuestionCallback,
+  ): Promise<void> {
+    const message = callback.message
+    if (!message) return
+    const conversation = this.questionConversationFor(binding, message.message_id)
+    const pending = conversation
+      ? this.options.questions.list().some((request) => request.id === conversation.request.id)
+      : false
+    if (!conversation || !pending) {
+      await this.answerCallback(callback.id, "This question is no longer pending.", true)
+      await this.removeKeyboard(binding.externalChatId, message.message_id)
+      return
+    }
+
+    const prompt = conversation.request.questions[conversation.questionIndex]
+    if (!prompt) {
+      await this.answerCallback(callback.id, "This question is no longer pending.", true)
+      await this.clearQuestion(conversation.request.id)
+      return
+    }
+
+    try {
+      if (action.action === "option") {
+        const option = prompt.options[action.optionIndex]
+        if (!option) {
+          await this.answerCallback(callback.id, "That option is no longer available.", true)
+          return
+        }
+        if (prompt.multiple) {
+          const selected = conversation.answers[conversation.questionIndex] ?? []
+          const removing = selected.includes(option.label)
+          conversation.answers[conversation.questionIndex] = removing
+            ? selected.filter((answer) => answer !== option.label)
+            : [...selected, option.label]
+          await this.renderQuestion(conversation)
+          await this.answerCallback(callback.id, removing ? "Removed" : "Selected")
+          return
+        }
+        conversation.answers[conversation.questionIndex] = [option.label]
+        await this.finishQuestionPrompt(conversation)
+        await this.answerCallback(callback.id, option.label)
+        return
+      }
+
+      if (action.action === "custom") {
+        conversation.awaitingCustom = true
+        await this.renderQuestion(conversation)
+        await this.answerCallback(callback.id, "Send your answer as the next message.")
+        return
+      }
+
+      if (action.action === "back") {
+        conversation.awaitingCustom = false
+        await this.renderQuestion(conversation)
+        await this.answerCallback(callback.id, "Choose an answer below.")
+        return
+      }
+
+      if (action.action === "done") {
+        const selected = conversation.answers[conversation.questionIndex] ?? []
+        if (!prompt.multiple || selected.length === 0) {
+          await this.answerCallback(callback.id, "Choose at least one answer.", true)
+          return
+        }
+        await this.finishQuestionPrompt(conversation)
+        await this.answerCallback(callback.id, "Answer submitted.")
+        return
+      }
+
+      await this.markQuestion(conversation, "Dismissed")
+      await this.options.questions.reject(conversation.request.id)
+      await this.answerCallback(callback.id, "Dismissed")
+    } catch (cause) {
+      if (!(cause instanceof ProtocolError)) this.options.onError(cause)
+      await this.answerCallback(callback.id, "Could not apply this answer.", true)
+    }
+  }
+
+  private async handleCustomQuestionAnswer(sessionId: string, text: string): Promise<boolean> {
+    const conversation = [...this.questionConversations.values()].find((candidate) => (
+      candidate.request.sessionId === sessionId && candidate.awaitingCustom
+    ))
+    if (!conversation) return false
+    if (!this.options.questions.list().some((request) => request.id === conversation.request.id)) {
+      await this.clearQuestion(conversation.request.id)
+      return false
+    }
+
+    const prompt = conversation.request.questions[conversation.questionIndex]
+    const answer = text.trim()
+    if (!prompt || !answer) return false
+    const selected = conversation.answers[conversation.questionIndex] ?? []
+    conversation.answers[conversation.questionIndex] = prompt.multiple
+      ? [...selected.filter((value) => value !== answer), answer]
+      : [answer]
+    conversation.awaitingCustom = false
+    if (prompt.multiple && prompt.options.length > 0) await this.renderQuestion(conversation)
+    else await this.finishQuestionPrompt(conversation)
+    return true
+  }
+
+  private async sendQuestion(request: ChatQuestionRequest): Promise<void> {
+    const telegram = this.options.telegram
+    if (!telegram || this.questionConversations.has(request.id)) return
+    const binding = await this.options.store.findBySession(request.sessionId)
+    if (!binding) return
+
+    const conversation: QuestionConversation = {
+      request,
+      chatId: binding.externalChatId,
+      messageId: null,
+      questionIndex: 0,
+      answers: request.questions.map(() => []),
+      awaitingCustom: false,
+    }
+    this.questionConversations.set(request.id, conversation)
+    try {
+      await this.sendQuestionPrompt(conversation)
+    } catch (cause) {
+      if (this.questionConversations.get(request.id) === conversation) {
+        this.questionConversations.delete(request.id)
+      }
+      throw cause
+    }
+  }
+
+  private async sendQuestionPrompt(conversation: QuestionConversation): Promise<void> {
+    const telegram = this.options.telegram
+    const prompt = conversation.request.questions[conversation.questionIndex]
+    if (!telegram || !prompt) return
+    const sent = await telegram.sendMessage(
+      conversation.chatId,
+      questionText(conversation),
+      { replyMarkup: questionKeyboard(conversation), protectContent: true },
+    )
+    if (this.questionConversations.get(conversation.request.id) !== conversation) {
+      await this.removeKeyboard(conversation.chatId, sent.message_id)
+      return
+    }
+    conversation.messageId = sent.message_id
+    const promptMessageId = this.streamingMessages.get(conversation.request.sessionId)?.promptMessageId
+    if (promptMessageId) {
+      await this.recordTurnMessages(
+        conversation.request.sessionId,
+        promptMessageId,
+        conversation.chatId,
+        [sent.message_id],
+      )
+    }
+  }
+
+  private async renderQuestion(conversation: QuestionConversation): Promise<void> {
+    const telegram = this.options.telegram
+    const messageId = conversation.messageId
+    if (!telegram || messageId === null) return
+    try {
+      await telegram.editMessageText(conversation.chatId, messageId, questionText(conversation))
+      await telegram.editMessageReplyMarkup(conversation.chatId, messageId, questionKeyboard(conversation))
+    } catch (cause) {
+      this.options.onError(cause)
+    }
+  }
+
+  private async finishQuestionPrompt(conversation: QuestionConversation): Promise<void> {
+    const answer = conversation.answers[conversation.questionIndex] ?? []
+    await this.markQuestion(conversation, `Answered: ${answer.join(", ")}`)
+    if (conversation.questionIndex + 1 < conversation.request.questions.length) {
+      conversation.questionIndex += 1
+      conversation.messageId = null
+      conversation.awaitingCustom = false
+      await this.sendQuestionPrompt(conversation)
+      return
+    }
+    await this.options.questions.reply(conversation.request.id, conversation.answers)
+  }
+
+  private async markQuestion(conversation: QuestionConversation, result: string): Promise<void> {
+    const telegram = this.options.telegram
+    const messageId = conversation.messageId
+    if (!telegram || messageId === null) return
+    try {
+      await telegram.editMessageText(conversation.chatId, messageId, questionText(conversation, result))
+    } catch (cause) {
+      this.options.onError(cause)
+    }
+    await this.removeKeyboard(conversation.chatId, messageId)
+  }
+
+  private questionConversationFor(
+    binding: ChatMobileBinding,
+    messageId: number,
+  ): QuestionConversation | null {
+    return [...this.questionConversations.values()].find((conversation) => (
+      conversation.request.sessionId === binding.sessionId
+      && conversation.chatId === binding.externalChatId
+      && conversation.messageId === messageId
+    )) ?? null
+  }
+
+  private async clearQuestion(requestId: string): Promise<void> {
+    const conversation = this.questionConversations.get(requestId)
+    this.questionConversations.delete(requestId)
+    if (conversation?.messageId != null) {
+      await this.removeKeyboard(conversation.chatId, conversation.messageId)
     }
   }
 
@@ -1030,11 +1293,22 @@ export class ChatMobileController {
     }
   }
 
+  private forgetQuestions(sessionId: string): void {
+    for (const [requestId, conversation] of this.questionConversations) {
+      if (conversation.request.sessionId !== sessionId) continue
+      this.questionConversations.delete(requestId)
+      if (conversation.messageId !== null) {
+        this.runInBackground(this.removeKeyboard(conversation.chatId, conversation.messageId))
+      }
+    }
+  }
+
   private revokeBinding(binding: ChatMobileBinding): void {
     this.cancelStream(binding.sessionId)
     const clientId = mobileClientId(binding)
     if (this.attachedClients.delete(clientId)) this.options.permissions.detachClient(clientId)
     this.forgetApprovals(binding.sessionId)
+    this.forgetQuestions(binding.sessionId)
   }
 
   private runInBackground(task: Promise<void>): void {
@@ -1169,6 +1443,62 @@ function permissionKeyboard(request: ChatPermissionRequest): TelegramInlineKeybo
   }
 }
 
+function questionText(conversation: QuestionConversation, result?: string): string {
+  const prompt = conversation.request.questions[conversation.questionIndex]
+  if (!prompt) return "This question is no longer available."
+  const total = conversation.request.questions.length
+  const progress = total > 1 ? ` · ${conversation.questionIndex + 1}/${total}` : ""
+  const options = prompt.options.map((option, index) => (
+    `${index + 1}. ${option.label} — ${option.description}`
+  ))
+  const selected = conversation.answers[conversation.questionIndex] ?? []
+  const status = result
+    ? result
+    : conversation.awaitingCustom
+      ? "Send your custom answer as the next message."
+      : prompt.multiple
+        ? "Select one or more answers, then tap Done."
+        : "Choose an answer, or tap Other to write your own."
+  return shorten([
+    `Agent asks · ${prompt.header}${progress}`,
+    prompt.question,
+    options.length > 0 ? options.join("\n") : "",
+    !result && selected.length > 0 ? `Selected: ${selected.join(", ")}` : "",
+    status,
+  ].filter(Boolean).join("\n\n"), TELEGRAM_CHUNK_SIZE)
+}
+
+function questionKeyboard(conversation: QuestionConversation): TelegramInlineKeyboard {
+  if (conversation.awaitingCustom) {
+    return {
+      inline_keyboard: [
+        [{ text: "Back to choices", callback_data: "question:b" }],
+        [{ text: "Dismiss", callback_data: "question:x" }],
+      ],
+    }
+  }
+
+  const prompt = conversation.request.questions[conversation.questionIndex]
+  const selected = conversation.answers[conversation.questionIndex] ?? []
+  const choices = (prompt?.options ?? []).map((option, index) => [{
+    text: shorten(`${prompt?.multiple && selected.includes(option.label) ? "✓ " : ""}${option.label}`, 48),
+    callback_data: `question:o:${index}`,
+  }])
+  const actions = prompt?.multiple
+    ? [
+        { text: `Done${selected.length > 0 ? ` (${selected.length})` : ""}`, callback_data: "question:d" },
+        { text: "Other…", callback_data: "question:c" },
+      ]
+    : [{ text: "Other…", callback_data: "question:c" }]
+  return {
+    inline_keyboard: [
+      ...choices,
+      actions,
+      [{ text: "Dismiss", callback_data: "question:x" }],
+    ],
+  }
+}
+
 function undoKeyboard(promptMessageId: string): TelegramInlineKeyboard {
   return {
     inline_keyboard: [[{
@@ -1191,6 +1521,20 @@ function undoChoiceKeyboard(promptMessageId: string): TelegramInlineKeyboard {
 interface UndoCallback {
   action: "preview" | "conversation" | "effects" | "cancel"
   promptMessageId: string
+}
+
+type QuestionCallback =
+  | { action: "option"; optionIndex: number }
+  | { action: "custom" | "back" | "done" | "dismiss" }
+
+function parseQuestionCallback(data: string): QuestionCallback | null {
+  const option = data.match(/^question:o:(\d+)$/u)
+  if (option?.[1]) return { action: "option", optionIndex: Number(option[1]) }
+  if (data === "question:c") return { action: "custom" }
+  if (data === "question:b") return { action: "back" }
+  if (data === "question:d") return { action: "done" }
+  if (data === "question:x") return { action: "dismiss" }
+  return null
 }
 
 function parseUndoCallback(data: string): UndoCallback | null {
