@@ -140,7 +140,7 @@ describe("API authentication", () => {
     const transport = new FakeTransport((request) => {
       switch (operationName(request)) {
         case "refreshMemberTokenV2":
-          return graphqlError(9008)
+          return graphqlError(9005)
         case "retrieveLoginNonce":
           return data({ retrieveLoginNonce: { serverTimestamp: NOW } })
         case "deviceBindingLoginCompleteWithPasswordV2": {

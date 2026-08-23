@@ -155,8 +155,9 @@ export class ProviderSession implements ProviderSessionAccess {
       await handle.authenticate()
       this.adopt(handle)
       return true
-    } catch {
+    } catch (error) {
       handle.close()
+      this.options.onError?.("Session recovery", error)
       return false
     }
   }

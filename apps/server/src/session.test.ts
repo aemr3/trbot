@@ -184,6 +184,20 @@ describe("provider session recovery", () => {
     expect(connector.resumeCalls).toBe(2)
   })
 
+  test("reports why a stored session could not be resumed", async () => {
+    const failure = new Error("provider unavailable")
+    const reports: [string, unknown][] = []
+    const session = new ProviderSession({
+      openAuthSession: noAuthSession,
+      credentials: null,
+      connector: new TestConnector([], [new TestHandle(undefined, async () => { throw failure })]),
+      onError: (label, cause) => reports.push([label, cause]),
+    })
+
+    expect(await session.resume()).toBe(false)
+    expect(reports).toEqual([["Session recovery", failure]])
+  })
+
   test("adopting a session tells listeners, so streams can be subscribed again", async () => {
     const connector = new TestConnector([new TestHandle(), new TestHandle()])
     const session = testSession(connector)

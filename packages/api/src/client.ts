@@ -5,7 +5,7 @@ import { authOperations, type GraphqlOperation } from "./graphql.ts"
 import { z } from "zod"
 import type { HttpResponse, SseFrame, Transport } from "./transport.ts"
 
-const AUTH_ERROR_CODES = new Set([9002, 9008, 9010])
+const AUTH_ERROR_CODES = new Set([9002, 9005, 9008, 9010])
 const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 120_000
 const DEFAULT_AUTH_RATE_LIMIT_MS = 30_000
 const API_URL = "https://api.getmidas.com"
