@@ -9,6 +9,7 @@
   "dependencies": {
     "@trbot/market": "workspace:*",
     "@trbot/member": "workspace:*",
+    "impit": "0.14.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
