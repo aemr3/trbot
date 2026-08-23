@@ -33,7 +33,7 @@ and HTTP2 connection profile, so those layers need to identify the same client:
 | Chrome headers with a matching Chrome TLS/HTTP2 profile | Selected transport |
 
 Chrome HTTP headers and Bun's native TLS/HTTP2 profile describe different
-clients, so that combination is rejected. `FetchFeedTransport` uses Impit's
+clients, so that combination is rejected. `FetchFeedTransport` uses Wreq's
 aligned Chrome TLS, HTTP2, and header profile from inside the Bun process. Keep
 the header and connection profiles together when changing this transport.
 

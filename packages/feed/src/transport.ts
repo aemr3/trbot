@@ -1,5 +1,9 @@
-import { Impit } from "impit"
 import { z } from "zod"
+import {
+  createTransport,
+  fetch as fingerprintFetch,
+  type Transport as FingerprintTransport,
+} from "wreq-js"
 
 /**
  * HTTP access to the market data feed.
@@ -75,13 +79,24 @@ export function isChallengeBody(body: string): boolean {
   return body.includes("Just a moment") || body.includes("__cf_chl") || body.includes("cf_chl_opt")
 }
 
-// One client shares its connection pool across every feed source. Impit's
-// patched TLS and HTTP2 stacks reproduce the selected browser handshake and
-// matching headers; Bun's native fetch cannot control the complete fingerprint.
-const feedHttpClient = new Impit({
-  browser: "chrome",
-  vanillaFallback: false,
-})
+// One transport shares its connection pool across every feed source. The pinned
+// profile reproduces the Chrome handshake and headers used to verify the feed.
+let sharedHttpTransport: Promise<FingerprintTransport> | null = null
+
+function feedHttpTransport(): Promise<FingerprintTransport> {
+  sharedHttpTransport ??= createTransport({
+    browser: "chrome_142",
+    os: "macos",
+  })
+  return sharedHttpTransport
+}
+
+/** Releases the process-wide feed connection pool and allows a later feed to recreate it. */
+export function closeFeedHttpTransport(): void {
+  const transport = sharedHttpTransport
+  sharedHttpTransport = null
+  if (transport) void transport.then((client) => client.close()).catch(() => {})
+}
 
 // The feed reports failures in-band as well as by status code.
 const ErrorBodySchema = z.object({ errmsg: z.string() })
@@ -106,11 +121,12 @@ export class FetchFeedTransport implements FeedTransport {
     if (request.token) headers.Authorization = `Bearer ${request.token}`
     if (request.body !== undefined) headers["Content-Type"] = "application/json"
 
-    const response = await feedHttpClient.fetch(request.url, {
+    const response = await fingerprintFetch(request.url, {
       method: request.method ?? "GET",
       headers,
       body: request.body === undefined ? undefined : JSON.stringify(request.body),
       signal: request.signal,
+      transport: await feedHttpTransport(),
     })
 
     return { status: response.status, body: await response.text() }

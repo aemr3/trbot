@@ -1,4 +1,9 @@
-import { Impit } from "impit"
+import {
+  createTransport,
+  fetch as fingerprintFetch,
+  type RequestInit as FingerprintRequestInit,
+  type Transport as FingerprintTransport,
+} from "wreq-js"
 
 export interface HttpRequest {
   url: string
@@ -22,6 +27,17 @@ export interface StreamRequest {
 export interface SseFrame {
   event: string | null
   data: string
+}
+
+interface SseBodyReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>
+  cancel(): Promise<void>
+  releaseLock(): void
+}
+
+interface SseBody {
+  getReader(): SseBodyReader
+  cancel(): Promise<void>
 }
 
 export interface Transport {
@@ -53,17 +69,12 @@ export function isTransientStreamError(cause: unknown): boolean {
   return false
 }
 
-// Midas identifies its client as an iOS application. Keep the TLS and HTTP2
-// profile consistent with the app headers assembled by ApiClient, and share one
-// connection pool between GraphQL calls and the event stream.
-const apiHttpClient = new Impit({
-  browser: "ios18",
-  vanillaFallback: false,
-})
-
 export class FetchTransport implements Transport {
+  private fingerprintTransport: Promise<FingerprintTransport> | null = null
+  private closed = false
+
   async request(request: HttpRequest): Promise<HttpResponse> {
-    const response = await apiHttpClient.fetch(request.url, {
+    const response = await this.fetch(request.url, {
       method: "POST",
       headers: request.headers,
       body: request.body,
@@ -78,7 +89,7 @@ export class FetchTransport implements Transport {
   }
 
   async *stream(request: StreamRequest): AsyncGenerator<SseFrame> {
-    const response = await apiHttpClient.fetch(request.url, {
+    const response = await this.fetch(request.url, {
       method: "GET",
       headers: request.headers,
       signal: request.signal,
@@ -87,6 +98,27 @@ export class FetchTransport implements Transport {
       throw new StreamHttpError(response.status)
     }
     yield* readSse(response.body, request.signal)
+  }
+
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    if (this.fingerprintTransport) {
+      void this.fingerprintTransport.then((transport) => transport.close()).catch(() => {})
+    }
+  }
+
+  /** Uses the iOS version named by the Midas application user agent. */
+  private async fetch(url: string, init: FingerprintRequestInit) {
+    if (this.closed) throw new Error("API HTTP transport is closed")
+    this.fingerprintTransport ??= createTransport({
+      browser: "safari_ios_18.1.1",
+      os: "ios",
+    })
+    return fingerprintFetch(url, {
+      ...init,
+      transport: await this.fingerprintTransport,
+    })
   }
 }
 
@@ -101,13 +133,18 @@ function parseRetryAfter(value: string | null, now: number = Date.now()): number
 // Parses a text/event-stream body into discrete frames. Frames are separated by
 // a blank line; within a frame, `event:` names it and one or more `data:` lines
 // form the payload. Comment lines (`:` prefix) and other fields are ignored.
-export async function* readSse(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<SseFrame> {
+export async function* readSse(body: SseBody, signal?: AbortSignal): AsyncGenerator<SseFrame> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ""
+  const cancel = () => void reader.cancel().catch(() => {})
+  if (signal?.aborted) cancel()
+  else signal?.addEventListener("abort", cancel, { once: true })
   try {
     while (true) {
+      if (signal?.aborted) throw signal.reason
       const { done, value } = await reader.read()
+      if (signal?.aborted) throw signal.reason
       if (done) break
       buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n")
       let boundary = buffer.indexOf("\n\n")
@@ -121,6 +158,7 @@ export async function* readSse(body: ReadableStream<Uint8Array>, signal?: AbortS
     const trailing = parseFrame(buffer)
     if (trailing) yield trailing
   } finally {
+    signal?.removeEventListener("abort", cancel)
     reader.releaseLock()
     if (!signal?.aborted) void body.cancel().catch(() => {})
   }

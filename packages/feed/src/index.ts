@@ -9,6 +9,7 @@ import { FeedQuoteStream } from "./quote-stream.ts"
 import { FeedSession, type FeedCredentials, type FeedEntitlements } from "./session.ts"
 import { FeedTradeSource } from "./trades.ts"
 import { FeedTradingDays } from "./trading-days.ts"
+import { closeFeedHttpTransport } from "./transport.ts"
 import { MarketSocket } from "./socket.ts"
 
 export * from "./broker-headline.ts"
@@ -151,5 +152,6 @@ export class MarketFeed {
 
   close(): void {
     this.socket.stop()
+    closeFeedHttpTransport()
   }
 }

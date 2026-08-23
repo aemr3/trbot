@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { z } from "zod"
-import { FetchFeedTransport } from "./transport.ts"
+import { closeFeedHttpTransport, FetchFeedTransport } from "./transport.ts"
 
 let server: ReturnType<typeof Bun.serve> | null = null
 
@@ -10,6 +10,7 @@ const ReceivedRequestSchema = z.object({
 })
 
 afterEach(async () => {
+  closeFeedHttpTransport()
   await server?.stop()
   server = null
 })

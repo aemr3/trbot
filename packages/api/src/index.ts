@@ -17,15 +17,19 @@ export async function createApiClient(
   credentials: ApiCredentials,
 ): Promise<ApiClientHandle> {
   const session = await openAuthSession()
+  const transport = new FetchTransport()
   const client = new ApiClient({
     ...credentials,
     store: session.store,
-    transport: new FetchTransport(),
+    transport,
   })
 
   return {
     client,
-    close: session.close,
+    close: () => {
+      transport.close()
+      session.close()
+    },
   }
 }
 
@@ -43,15 +47,19 @@ export async function resumeApiClient(
       return null
     }
 
+    const transport = new FetchTransport()
     return {
       client: new ApiClient({
         accountKey: state.accountKey,
         username: credentials?.username,
         password: credentials?.password,
         store: session.store,
-        transport: new FetchTransport(),
+        transport,
       }),
-      close: session.close,
+      close: () => {
+        transport.close()
+        session.close()
+      },
     }
   } catch (error) {
     session.close()
