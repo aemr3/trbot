@@ -105,6 +105,10 @@ buttons offer one-time approval, connection-scoped approval when the tool permit
 and denial. Connection-scoped grants are revoked when the phone disconnects, is paired
 elsewhere, or the server stops.
 
+Voice notes use OpenAI's transcription API when either the **OpenAI** API-key provider
+or **OpenAI Codex** is connected, preferring the dedicated API key when both are
+available. With neither connected, the server uses its local Whisper model.
+
 Completed Telegram replies include an **Undo** button. It rewinds the conversation
 to before that prompt and removes the Telegram messages associated with every
 discarded turn. The same cleanup runs when the conversation is undone from the TUI.

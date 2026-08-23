@@ -3,6 +3,8 @@ import {
   ApiVoiceTranscriber,
   downmixAndResampleOpus,
   encodePcmWav,
+  OpenAiVoiceCredentialResolver,
+  type OpenAiVoiceProviderId,
   PreferredVoiceTranscriber,
   WhisperVoiceTranscriber,
 } from "./voice-transcription.ts"
@@ -30,6 +32,46 @@ test("encodes mono samples as a valid 16-bit 16 kHz PCM WAV", () => {
   expect(view.getInt16(44, true)).toBe(-32_768)
   expect(view.getInt16(46, true)).toBe(0)
   expect(view.getInt16(48, true)).toBe(32_767)
+})
+
+test("prefers an OpenAI API key over OpenAI Codex auth for voice transcription", async () => {
+  const checked: OpenAiVoiceProviderId[] = []
+  const resolved: OpenAiVoiceProviderId[] = []
+  const credential = new OpenAiVoiceCredentialResolver({
+    isConnected: async (providerId) => {
+      checked.push(providerId)
+      return true
+    },
+    accessToken: async (providerId) => {
+      resolved.push(providerId)
+      return providerId === "openai" ? "api-key" : "codex-oauth"
+    },
+  })
+
+  expect(await credential.available()).toBe(true)
+  expect(await credential.accessToken()).toBe("api-key")
+  expect(checked).toEqual(["openai"])
+  expect(resolved).toEqual(["openai"])
+})
+
+test("uses OpenAI Codex auth for voice when the API-key provider is not connected", async () => {
+  const credential = new OpenAiVoiceCredentialResolver({
+    isConnected: async (providerId) => providerId === "openai-codex",
+    accessToken: async (providerId) => providerId === "openai-codex" ? "codex-oauth" : null,
+  })
+
+  expect(await credential.available()).toBe(true)
+  expect(await credential.accessToken()).toBe("codex-oauth")
+})
+
+test("reports OpenAI voice auth unavailable when neither provider has a credential", async () => {
+  const credential = new OpenAiVoiceCredentialResolver({
+    isConnected: async () => false,
+    accessToken: async () => null,
+  })
+
+  expect(await credential.available()).toBe(false)
+  await expect(credential.accessToken()).rejects.toThrow("Connect OpenAI with an API key or connect OpenAI Codex")
 })
 
 test("uses local Whisper when OpenAI is not connected", async () => {

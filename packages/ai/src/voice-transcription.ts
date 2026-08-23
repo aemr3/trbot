@@ -10,6 +10,7 @@ const TRANSCRIPTION_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 const DEFAULT_MODEL = "gpt-transcribe"
 const DEFAULT_LOCAL_MODEL = "onnx-community/whisper-small"
 const REQUEST_TIMEOUT_MS = 2 * 60_000
+const OPENAI_VOICE_PROVIDER_IDS = ["openai", "openai-codex"] as const
 
 const TranscriptionResponseSchema = z.object({ text: z.string() }).loose()
 const ErrorResponseSchema = z.object({
@@ -21,6 +22,33 @@ type Recognizer = (audio: Float32Array) => Promise<string>
 
 export interface VoiceTranscriber {
   transcribeOggOpus(audio: Uint8Array): Promise<string>
+}
+
+export type OpenAiVoiceProviderId = typeof OPENAI_VOICE_PROVIDER_IDS[number]
+
+export interface OpenAiVoiceAuthSource {
+  isConnected(providerId: OpenAiVoiceProviderId): Promise<boolean>
+  accessToken(providerId: OpenAiVoiceProviderId): Promise<string | null>
+}
+
+/** Resolves only credentials that may authenticate requests to OpenAI's audio API. */
+export class OpenAiVoiceCredentialResolver {
+  constructor(private readonly source: OpenAiVoiceAuthSource) {}
+
+  async available(): Promise<boolean> {
+    for (const providerId of OPENAI_VOICE_PROVIDER_IDS) {
+      if (await this.source.isConnected(providerId)) return true
+    }
+    return false
+  }
+
+  async accessToken(): Promise<string> {
+    for (const providerId of OPENAI_VOICE_PROVIDER_IDS) {
+      const token = await this.source.accessToken(providerId)
+      if (token) return token
+    }
+    throw new Error("Connect OpenAI with an API key or connect OpenAI Codex before using voice transcription")
+  }
 }
 
 export interface PreferredVoiceTranscriberOptions {

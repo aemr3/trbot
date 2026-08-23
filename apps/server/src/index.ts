@@ -19,6 +19,7 @@ import { ChatGoalEvaluator } from "@trbot/ai/goal-evaluator.ts"
 import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trbot/ai/harness.ts"
 import {
   ApiVoiceTranscriber,
+  OpenAiVoiceCredentialResolver,
   PreferredVoiceTranscriber,
   WhisperVoiceTranscriber,
 } from "@trbot/ai/voice-transcription.ts"
@@ -376,22 +377,18 @@ async function startTrbotServer(): Promise<void> {
     onError: (error) => log("Chat automation", error),
   })
   rewindEffects = new ChatRewindEffects({ marketMonitors, stops, automations, notifications })
+  const voiceCredential = new OpenAiVoiceCredentialResolver({
+    isConnected: async (providerId) => await models.checkAuth(providerId) !== undefined,
+    accessToken: async (providerId) => (await models.getAuth(providerId))?.auth.apiKey ?? null,
+  })
   const apiVoiceTranscriber = new ApiVoiceTranscriber({
-    accessToken: async () => {
-      const resolved = await models.getAuth("openai-codex")
-      const token = resolved?.auth.apiKey
-      if (!token) throw new Error("Connect OpenAI Codex before using voice transcription")
-      return token
-    },
+    accessToken: () => voiceCredential.accessToken(),
   })
   const localVoiceTranscriber = new WhisperVoiceTranscriber({
     cacheDir: resolve(workspaceRoot(), "data/models/whisper"),
   })
   const voiceTranscriber = new PreferredVoiceTranscriber({
-    preferred: async () => {
-      const connected = await models.checkAuth("openai-codex")
-      return connected ? apiVoiceTranscriber : null
-    },
+    preferred: async () => await voiceCredential.available() ? apiVoiceTranscriber : null,
     fallback: localVoiceTranscriber,
   })
   const telegram = config.telegramBotToken ? new TelegramBotApi(config.telegramBotToken) : null
@@ -403,7 +400,7 @@ async function startTrbotServer(): Promise<void> {
     voiceTranscriber,
     onError: (error) => log("Mobile chat", error),
   })
-  void models.checkAuth("openai-codex")
+  void voiceCredential.available()
     .then(async (connected) => {
       if (!connected) await localVoiceTranscriber.prepare()
     })
