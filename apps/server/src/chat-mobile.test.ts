@@ -547,7 +547,7 @@ test("resolves a session tool approval only for the paired Telegram user", async
   permissions.pending.push(request)
 
   mobile.accept({ type: "chatPermissionRequested", request })
-  await until(() => telegram.sent.some((sent) => sent.text.startsWith("Tool approval required")))
+  await until(() => telegram.sent.some((sent) => sent.text.startsWith("⚠️ Tool approval required")))
   const approval = telegram.sent.find((sent) => sent.replyMarkup)!
   expect(approval.replyMarkup?.inline_keyboard.flat().map((button) => button.text)).toEqual([
     "Allow once",
@@ -558,7 +558,7 @@ test("resolves a session tool approval only for the paired Telegram user", async
   telegram.push(update(3, undefined, {
     id: "callback-1",
     from: USER,
-    message: telegramMessage("Tool approval required", approvalMessageId(telegram)),
+    message: telegramMessage("⚠️ Tool approval required", approvalMessageId(telegram)),
     data: `permission:s:${PERMISSION_ID}`,
   }))
   await until(() => permissions.replies.length === 1)
@@ -588,8 +588,8 @@ test("shows an agent question in Telegram and submits a single choice", async ()
   questions.pending.push(request)
 
   mobile.accept({ type: "chatQuestionAsked", request })
-  await until(() => telegram.sent.some((sent) => sent.text.startsWith("Agent asks")))
-  const messageId = telegram.sent.findIndex((sent) => sent.text.startsWith("Agent asks")) + 1
+  await until(() => telegram.sent.some((sent) => sent.text.startsWith("❓ Agent asks")))
+  const messageId = telegram.sent.findIndex((sent) => sent.text.startsWith("❓ Agent asks")) + 1
   const sent = telegram.sent[messageId - 1]!
   expect(sent.text).toContain("Which setup should I watch?")
   expect(sent.text).toContain("Breakout — Wait for resistance to break")

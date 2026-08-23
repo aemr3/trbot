@@ -875,7 +875,7 @@ export class ChatMobileController {
     const reason = request.reason ? `\nReason: ${request.reason}` : ""
     const sent = await telegram.sendMessage(
       binding.externalChatId,
-      `Tool approval required\n\n${request.action}\nTool: ${request.toolName}${reason}`,
+      `⚠️ Tool approval required\n\n${request.action}\nTool: ${request.toolName}${reason}`,
       { replyMarkup: permissionKeyboard(request), protectContent: true },
     )
     const promptMessageId = this.streamingMessages.get(request.sessionId)?.promptMessageId
@@ -1460,7 +1460,7 @@ function questionText(conversation: QuestionConversation, result?: string): stri
         ? "Select one or more answers, then tap Done."
         : "Choose an answer, or tap Other to write your own."
   return shorten([
-    `Agent asks · ${prompt.header}${progress}`,
+    `❓ Agent asks · ${prompt.header}${progress}`,
     prompt.question,
     options.length > 0 ? options.join("\n") : "",
     !result && selected.length > 0 ? `Selected: ${selected.join(", ")}` : "",
