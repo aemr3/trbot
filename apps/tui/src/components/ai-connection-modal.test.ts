@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
-import type { KeyEvent } from "@opentui/core"
+import { PasteEvent, type KeyEvent } from "@opentui/core"
 import { keyEvent } from "../key-event.test-fixture.ts"
 import type { AiAccount, AiAuthType, AiLoginOptions, AiProviderSummary } from "@trbot/protocol/ai.ts"
 import { AiConnectionModal } from "./ai-connection-modal.ts"
@@ -78,10 +78,18 @@ async function mountModal(options: Parameters<typeof account>[0]) {
   return { ...harness, modal, closed: () => closed }
 }
 
-test("lists providers with what each needs, marking the connected ones", async () => {
+test("lists providers with wrapped connection details", async () => {
   const { modal, renderOnce, captureCharFrame, renderer } = await mountModal({
     providers: [
-      provider({ providerId: "openai-codex", name: "OpenAI Codex", authTypes: ["oauth"], isSubscription: true, connected: true, source: "stored credential" }),
+      provider({
+        providerId: "openai-codex",
+        name: "OpenAI Codex",
+        authTypes: ["oauth"],
+        isSubscription: true,
+        connected: true,
+        source: "stored credential",
+        accountId: "18056cf1-53f7-42db-a8c-54fb3",
+      }),
       provider(),
     ],
   })
@@ -89,10 +97,14 @@ test("lists providers with what each needs, marking the connected ones", async (
   await renderOnce()
 
   const frame = captureCharFrame()
+  const searchRow = frame.split("\n").find((line) => line.includes("Search")) ?? ""
   expect(frame).toContain("Model providers")
   expect(frame).toContain("1 connected of 2")
+  expect(searchRow.trimEnd()).toEndWith("│")
   expect(frame).toContain("OpenAI Codex")
   expect(frame).toContain("subscription")
+  // The account suffix would be beyond the row's right edge without wrapping.
+  expect(frame).toContain("a8c-54fb3")
   // An unconnected provider says how it would be connected, so a trader knows
   // whether to reach for a browser or an API key.
   expect(frame).toContain("Groq")
@@ -102,7 +114,38 @@ test("lists providers with what each needs, marking the connected ones", async (
   renderer.destroy()
 })
 
-test("asks for an API key without echoing it", async () => {
+test("filters providers as text is typed and connects the visible match", async () => {
+  const attempted: string[] = []
+  const { modal, renderOnce, captureCharFrame, renderer } = await mountModal({
+    providers: [
+      provider({ providerId: "openai-codex", name: "OpenAI Codex", authTypes: ["oauth"] }),
+      provider({ providerId: "amazon-bedrock", name: "Amazon Bedrock" }),
+      provider(),
+    ],
+    onConnect: async (providerId) => {
+      attempted.push(providerId)
+    },
+  })
+  await Bun.sleep(5)
+  await renderOnce()
+
+  typeText(modal, "gro")
+  await renderOnce()
+  const filtered = captureCharFrame()
+  expect(filtered).toContain("1 matching · 0 connected of 3")
+  expect(filtered).toContain("Groq")
+  expect(filtered).not.toContain("OpenAI Codex")
+  expect(filtered).not.toContain("Amazon Bedrock")
+
+  modal.handleKey(key("return"))
+  await Bun.sleep(5)
+  expect(attempted).toEqual(["groq"])
+
+  modal.destroy()
+  renderer.destroy()
+})
+
+test("accepts a pasted API key without echoing it", async () => {
   // The key is a credential on screen in a shared terminal, so it is masked — unlike
   // an authorization code, which a trader needs to see to check the paste landed.
   const answered: string[] = []
@@ -120,7 +163,7 @@ test("asks for an API key without echoing it", async () => {
   await renderOnce()
   expect(captureCharFrame()).toContain("Enter Groq API key")
 
-  typeText(modal, "gsk-secret")
+  renderer.keyInput.emit("paste", new PasteEvent(new TextEncoder().encode("gsk-secret\n")))
   await renderOnce()
   const typing = captureCharFrame()
   expect(typing).not.toContain("gsk-secret")
@@ -220,7 +263,7 @@ test("asks which way to connect a provider offering both", async () => {
   renderer.destroy()
 })
 
-test("disconnects the highlighted provider on d", async () => {
+test("disconnects the highlighted provider on Ctrl+D", async () => {
   const disconnected: string[] = []
   const { modal, renderOnce, renderer } = await mountModal({
     providers: [provider({ connected: true })],
@@ -229,7 +272,7 @@ test("disconnects the highlighted provider on d", async () => {
   await Bun.sleep(5)
   await renderOnce()
 
-  modal.handleKey(key("d"))
+  modal.handleKey(keyEvent("d", { sequence: "d", ctrl: true }))
   await Bun.sleep(5)
 
   expect(disconnected).toEqual(["groq"])

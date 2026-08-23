@@ -525,8 +525,8 @@ export class ChatScreen {
     // The composer is a focused renderable, so the terminal would deliver the same key
     // to the field a second time and every character would land twice — marking it
     // handled here is what keeps the field's own delivery from doubling ours. The same
-    // holds while a modal is up: the composer keeps focus behind it, so an API key typed
-    // into the modal would otherwise be typed into the chat as well.
+    // holds while a modal is up: a modal may focus its own field and route the key
+    // itself, so renderer delivery would otherwise type every character twice.
     key.preventDefault()
     if (this.modal) {
       this.lastEscapeAt = 0

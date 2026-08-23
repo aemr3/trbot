@@ -1,12 +1,16 @@
 import { TUI_THEME } from "../theme.ts"
 import {
   BoxRenderable,
+  InputRenderable,
+  InputRenderableEvents,
   StyledText,
   TextRenderable,
   fg,
   link,
   type KeyEvent,
+  type PasteEvent,
   type RenderContext,
+  type Renderable,
   type TextChunk,
 } from "@opentui/core"
 import type { AiAccount, AiAuthType, AiProviderSummary, AiSelectOption } from "@trbot/protocol/ai.ts"
@@ -52,10 +56,12 @@ export class AiConnectionModal {
 
   private readonly modal: BoxRenderable
   private readonly header: TextRenderable
+  private readonly search: InputRenderable
   private readonly list: SelectableList
   private readonly footer: TextRenderable
 
   private providers: AiProviderSummary[] = []
+  private selectedProviderId: string | null = null
   private message: string | null = null
   private failed = false
   private authorizationUrl: string | null = null
@@ -63,7 +69,19 @@ export class AiConnectionModal {
   private busy = false
   private pending: Pending | null = null
   private request: AbortController | null = null
+  private previousFocus: Renderable | null = null
   private destroyed = false
+
+  private readonly handlePaste = (event: PasteEvent): void => {
+    const pending = this.pending
+    if (!pending || pending.kind === "select") return
+
+    event.preventDefault()
+    const pasted = new TextDecoder().decode(event.bytes).replace(/[\r\n]/g, "")
+    if (!pasted) return
+    pending.typed += pasted
+    this.render()
+  }
 
   constructor(
     private readonly renderer: RenderContext,
@@ -93,14 +111,32 @@ export class AiConnectionModal {
       flexDirection: "column",
     })
     this.header = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
+    this.search = new InputRenderable(renderer, {
+      width: "100%",
+      flexShrink: 0,
+      marginBottom: 1,
+      maxLength: 100,
+      placeholder: "Search providers…",
+      backgroundColor: TUI_THEME.fieldBackground,
+      focusedBackgroundColor: TUI_THEME.fieldBackground,
+      textColor: VALUE_COLOR,
+      focusedTextColor: VALUE_COLOR,
+      cursorColor: EMPHASIS_COLOR,
+    })
+    this.search.on(InputRenderableEvents.INPUT, () => this.render(false))
     this.list = new SelectableList(renderer, {
       backgroundColor: PANEL_BG,
       selectedBackgroundColor: SELECTED_BG,
-      onSelect: () => this.render(),
+      wrapContent: true,
+      onSelect: (index) => {
+        this.selectedProviderId = this.visibleProviders()[index]?.providerId ?? null
+        this.render()
+      },
       onActivate: () => void this.connectSelected(),
     })
     this.footer = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
     this.modal.add(this.header)
+    this.modal.add(this.search)
     this.modal.add(this.list.root)
     this.modal.add(this.footer)
     this.root.add(this.modal)
@@ -108,6 +144,9 @@ export class AiConnectionModal {
   }
 
   mount(): void {
+    this.previousFocus = this.renderer.currentFocusedRenderable
+    this.renderer.keyInput.on("paste", this.handlePaste)
+    this.search.focus()
     void this.load()
   }
 
@@ -122,10 +161,15 @@ export class AiConnectionModal {
       void this.connectSelected()
       return true
     }
-    if (!key.ctrl && !key.meta && !key.option && key.name === "d") {
+    if (key.ctrl && key.name === "d") {
       void this.disconnectSelected()
       return true
     }
+    if (key.name === "up" || key.name === "down") {
+      this.list.handleKey(key)
+      return true
+    }
+    if (this.search.handleKeyPress(key)) return true
     this.list.handleKey(key)
     return true
   }
@@ -136,8 +180,12 @@ export class AiConnectionModal {
     this.settlePending("")
     this.request?.abort()
     this.request = null
+    this.renderer.keyInput.off("paste", this.handlePaste)
     this.list.destroy()
     if (!this.root.isDestroyed) this.root.destroyRecursively()
+    const previousFocus = this.previousFocus
+    this.previousFocus = null
+    if (previousFocus && !previousFocus.isDestroyed) previousFocus.focus()
   }
 
   private async load(): Promise<void> {
@@ -152,7 +200,10 @@ export class AiConnectionModal {
   }
 
   private selectedProvider(): AiProviderSummary | null {
-    return this.providers[this.list.selectedIndex] ?? null
+    const visible = this.visibleProviders()
+    return visible.find((provider) => provider.providerId === this.selectedProviderId)
+      ?? visible[this.list.selectedIndex]
+      ?? null
   }
 
   /**
@@ -175,6 +226,7 @@ export class AiConnectionModal {
     const request = new AbortController()
     this.request = request
     this.busy = true
+    this.search.blur()
     this.failed = false
     this.message = `Connecting ${provider.name}…`
     this.authorizationUrl = null
@@ -221,6 +273,7 @@ export class AiConnectionModal {
     } finally {
       if (this.request === request) this.request = null
       this.busy = false
+      if (!this.destroyed) this.search.focus()
       this.render()
     }
   }
@@ -240,6 +293,7 @@ export class AiConnectionModal {
     const provider = this.selectedProvider()
     if (!provider || !provider.connected || this.busy || this.destroyed) return
     this.busy = true
+    this.search.blur()
     this.message = `Disconnecting ${provider.name}…`
     this.render()
     try {
@@ -254,6 +308,7 @@ export class AiConnectionModal {
       this.fail(error)
     } finally {
       this.busy = false
+      if (!this.destroyed) this.search.focus()
     }
   }
 
@@ -347,14 +402,19 @@ export class AiConnectionModal {
     this.render()
   }
 
-  private render(): void {
+  private render(preserveScroll = true): void {
+    const visible = this.visibleProviders()
+    const connected = this.providers.filter((provider) => provider.connected).length
+    const matching = this.search.value
+      ? `${visible.length} matching · `
+      : ""
     this.header.content = new StyledText([
       fg(VALUE_COLOR)("Model providers\n"),
-      fg(MUTED_COLOR)(`${this.providers.filter((provider) => provider.connected).length} connected of ${this.providers.length}\n`),
+      fg(MUTED_COLOR)(`${matching}${connected} connected of ${this.providers.length}\n`),
     ])
 
     this.list.setRows(
-      this.providers.map((provider) => ({
+      visible.map((provider) => ({
         id: provider.providerId,
         content: new StyledText([
           fg(provider.connected ? SUCCESS_COLOR : MUTED_COLOR)(provider.connected ? "● " : "○ "),
@@ -362,9 +422,10 @@ export class AiConnectionModal {
           fg(MUTED_COLOR)(providerDetail(provider)),
         ]),
       })),
-      undefined,
-      { preserveScroll: true },
+      this.selectedProviderId ?? undefined,
+      { preserveScroll },
     )
+    this.selectedProviderId = visible[this.list.selectedIndex]?.providerId ?? null
 
     this.footer.content = new StyledText(this.footerChunks())
     this.renderer.requestRender()
@@ -421,11 +482,29 @@ export class AiConnectionModal {
     chunks.push(
       fg(MUTED_COLOR)(
         selected?.connected
-          ? "\nEnter reconnect · d disconnect · ↑↓ provider · Esc close"
-          : "\nEnter connect · ↑↓ provider · Esc close",
+          ? "\nType to search · Enter reconnect · ^D disconnect · ↑↓ provider · Esc close"
+          : "\nType to search · Enter connect · ↑↓ provider · Esc close",
       ),
     )
     return chunks
+  }
+
+  private visibleProviders(): AiProviderSummary[] {
+    const terms = this.search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+    if (terms.length === 0) return this.providers
+    return this.providers.filter((provider) => {
+      const auth = provider.authTypes.flatMap((type) =>
+        type === "api_key" ? [type, "API key"] : [type, "sign-in"])
+      const searchable = [
+        provider.name,
+        provider.providerId,
+        provider.isSubscription ? "subscription" : "",
+        ...auth,
+        provider.source ?? "",
+        provider.accountId ?? "",
+      ].join(" ").toLocaleLowerCase()
+      return terms.every((term) => searchable.includes(term))
+    })
   }
 
   private resizeModal(): void {
