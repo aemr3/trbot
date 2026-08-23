@@ -17,7 +17,7 @@ const COLLECTIONS = [
   { title: "XU100", data: ["GARAN", "AKBNK"] },
   { title: "XU030", data: ["GARAN"] },
   {
-    title: "VİOP Aktif Vade",
+    title: "V\u0130OP Aktif Vade",
     data: ["F_XU0300826", "F_GARAN0826", "F_USDTRY0926", "F_XAUTRYM0826", "BROKEN"],
   },
 ]

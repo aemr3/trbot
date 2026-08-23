@@ -33,6 +33,8 @@ export const CHAT_SYSTEM_PROMPT = [
   "INSTRUMENT for the contract and target UNDERLYING for cash/spot, report which one you read, and never",
   "describe an underlying order book as a futures order book. Brokerage distribution, settlement analysis,",
   "and equity quotes still belong to an available cash-equity underlying. VIOP quotes use get_viop_quote.",
+  "Market-wide short sales, margin calls, collateral scans, and broker market share are context for",
+  "positioning, leverage, stress, and participation; none proves trade direction by itself.",
   "VIOP single-stock futures are leveraged contracts: long P/L moves with the futures price, short P/L",
   "moves inversely, and exposure and P/L scale by contract size and quantity. A standard single-stock",
   "contract normally represents 100 underlying shares, but corporate actions can change its multiplier;",

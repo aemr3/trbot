@@ -136,6 +136,16 @@ test("adds every read-only market tool when the server provides its clients", ()
       indexData: {
         loadIndexImpact: async () => { throw new Error("not called") },
       },
+      shortSales: {
+        listShortSales: async () => { throw new Error("not called") },
+      },
+      viopMargins: {
+        listMarginCalls: async () => { throw new Error("not called") },
+        listMarginRequirements: async () => { throw new Error("not called") },
+      },
+      brokerVolumes: {
+        listBrokerVolumes: async () => { throw new Error("not called") },
+      },
       stops: { list: async () => [] },
     },
   })
@@ -149,6 +159,10 @@ test("adds every read-only market tool when the server provides its clients", ()
     "get_contract_details",
     "get_candles",
     "get_index_impact",
+    "list_short_sales",
+    "get_viop_margin_calls",
+    "list_viop_margin_requirements",
+    "list_broker_market_share",
     "get_account",
     "get_order_book",
     "get_equity_quote",

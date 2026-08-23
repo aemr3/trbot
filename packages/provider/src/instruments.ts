@@ -35,7 +35,7 @@ interface InstrumentRateLimit {
 }
 
 /**
- * The tradable VİOP universe shared by every caller in one provider session.
+ * The tradable VIOP universe shared by every caller in one provider session.
  *
  * Contract identity changes slowly; live prices arrive on a separate stream. A
  * short cache therefore keeps charts, tools, and the watchlist from independently

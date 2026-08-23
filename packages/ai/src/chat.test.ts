@@ -43,6 +43,7 @@ test("teaches the agent VIOP exposure and the difference between limits and circ
   expect(CHAT_SYSTEM_PROMPT).toContain("target UNDERLYING")
   expect(CHAT_SYSTEM_PROMPT).toContain("never describe an underlying order book as a futures order book")
   expect(CHAT_SYSTEM_PROMPT).toContain("equity quotes still belong to an available cash-equity underlying")
+  expect(CHAT_SYSTEM_PROMPT).toContain("none proves trade direction by itself")
   expect(CHAT_SYSTEM_PROMPT).toContain("what happened at trigger time, not current market data")
   expect(CHAT_SYSTEM_PROMPT).not.toContain("permission")
 })

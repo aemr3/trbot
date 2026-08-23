@@ -68,7 +68,8 @@ const CollectionsSchema = z.array(
 )
 
 /** The collection holding the tradable futures contracts. */
-const ACTIVE_FUTURES_COLLECTION = "VİOP Aktif Vade"
+// Fintables uses U+0130 in this exact collection title; application copy uses VIOP.
+const ACTIVE_FUTURES_COLLECTION = "V\u0130OP Aktif Vade"
 
 const FUTURE_CODE = /^F_([A-Z0-9]+?)(\d{2})(\d{2})$/
 
@@ -115,9 +116,9 @@ export interface FeedInstrumentSourceOptions {
  * `type` filter on the universe endpoint is accepted and then ignored, so
  * filtering happens here.
  *
- * Contract size and collateral are deliberately absent: no endpoint exposes
- * them, and they are read from the brokerage, which is what orders are sized
- * against anyway.
+ * Contract size and collateral are deliberately absent from this identity
+ * source. The cross-sectional margin source reads current feed values, while
+ * brokerage contract details remain authoritative for sizing an actual order.
  */
 export class FeedInstrumentSource implements CandleInstrumentResolver {
   private readonly transport: FeedTransport

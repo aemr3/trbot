@@ -1,4 +1,5 @@
 import { Type } from "@earendil-works/pi-ai"
+import type { BrokerMarket, BrokerVolume, BrokerVolumeSource } from "@trbot/market/broker-volume.ts"
 import type { BrokerageDistributionSource } from "@trbot/market/brokerage.ts"
 import type { BrokerageDateRange } from "@trbot/market/broker-calendar.ts"
 import type { CandleInstrumentResolver, CandleSource } from "@trbot/market/candle.ts"
@@ -24,6 +25,12 @@ import type {
 } from "@trbot/market/index-impact.ts"
 import type { NewsSource } from "@trbot/market/news.ts"
 import type { SettlementSource } from "@trbot/market/settlement.ts"
+import type { ShortSaleActivity, ShortSaleSource } from "@trbot/market/short-sales.ts"
+import type {
+  ViopMarginCall,
+  ViopMarginRequirement,
+  ViopMarginSource,
+} from "@trbot/market/viop-margin.ts"
 import type { MemberFeatureSource } from "@trbot/member/features.ts"
 import type { AccountSource } from "@trbot/trading/account.ts"
 import type { ViopOrderCancellationSource, ViopOrderSource } from "@trbot/trading/order.ts"
@@ -112,6 +119,69 @@ const PortfolioRange = Type.Union([
   Type.Literal("ALL_TIME"),
 ])
 const IsoDate = Type.String({ description: "Exchange-local date in YYYY-MM-DD format", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })
+const MarketScanLimit = Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 20 }))
+
+const ShortSaleSort = Type.Union([
+  Type.Literal("SHORT_SALE_LOTS"),
+  Type.Literal("SHORT_SALE_VOLUME"),
+  Type.Literal("LOT_SHARE_PERCENT"),
+  Type.Literal("VOLUME_SHARE_PERCENT"),
+])
+const ShortSalesParameters = Type.Object({
+  start: Type.Optional(IsoDate),
+  end: Type.Optional(IsoDate),
+  symbol: Type.Optional(Type.String({ description: "Exact BIST equity ticker", minLength: 1, maxLength: 30 })),
+  sortBy: Type.Optional(ShortSaleSort),
+  sortDirection: Type.Optional(SortDirection),
+  limit: MarketScanLimit,
+})
+const MarginCallSort = Type.Union([
+  Type.Literal("DATE"),
+  Type.Literal("AMOUNT_TRY"),
+  Type.Literal("DAILY_CHANGE_PERCENT"),
+  Type.Literal("ABS_DAILY_CHANGE_PERCENT"),
+])
+const MarginCallParameters = Type.Object({
+  start: Type.Optional(IsoDate),
+  end: Type.Optional(IsoDate),
+  sortBy: Type.Optional(MarginCallSort),
+  sortDirection: Type.Optional(SortDirection),
+  limit: MarketScanLimit,
+})
+const MarginRequirementSort = Type.Union([
+  Type.Literal("UNDERLYING"),
+  Type.Literal("FUTURES_PRICE"),
+  Type.Literal("PSR_PERCENT"),
+  Type.Literal("INITIAL_COLLATERAL"),
+  Type.Literal("LEVERAGE"),
+  Type.Literal("OPEN_INTEREST"),
+])
+const MarginRequirementParameters = Type.Object({
+  query: Type.Optional(Type.String({ description: "Underlying or exact front-month contract", maxLength: 80 })),
+  sortBy: Type.Optional(MarginRequirementSort),
+  sortDirection: Type.Optional(SortDirection),
+  limit: MarketScanLimit,
+})
+const BrokerMarketParameter = Type.Union([
+  Type.Literal("EQUITY"),
+  Type.Literal("VIOP"),
+  Type.Literal("TOTAL"),
+])
+const BrokerVolumeSort = Type.Union([
+  Type.Literal("MARKET_SHARE"),
+  Type.Literal("LATEST_VOLUME"),
+  Type.Literal("CURRENT_QUARTER_AVERAGE"),
+  Type.Literal("PREVIOUS_QUARTER_AVERAGE"),
+  Type.Literal("LATEST_VS_QUARTER_AVERAGE"),
+  Type.Literal("CURRENT_VS_PREVIOUS_QUARTER"),
+])
+const BrokerVolumeParameters = Type.Object({
+  market: Type.Optional(BrokerMarketParameter),
+  query: Type.Optional(Type.String({ description: "Broker code or name fragment", maxLength: 80 })),
+  sortBy: Type.Optional(BrokerVolumeSort),
+  sortDirection: Type.Optional(SortDirection),
+  limit: MarketScanLimit,
+})
 
 const ListInstrumentsParameters = Type.Object({
   query: Type.Optional(Type.String({ description: "Symbol or name fragment to search for", maxLength: 80 })),
@@ -125,7 +195,7 @@ const RecentFinancialsParameters = Type.Object({
     pattern: FINANCIAL_PERIOD_PATTERN,
   })),
   symbols: Type.Optional(Type.Array(Type.String({
-    description: "Front-month VİOP contract or its cash-equity underlying, such as F_THYAO0826 or THYAO",
+    description: "Front-month VIOP contract or its cash-equity underlying, such as F_THYAO0826 or THYAO",
     minLength: 1,
     maxLength: 80,
   }), { minItems: 1, maxItems: 100, uniqueItems: true })),
@@ -229,6 +299,10 @@ export interface MarketDataToolClients {
   }
   /** Feed-native index attribution; it does not require a brokerage session. */
   indexData: IndexImpactSource
+  /** Feed-native exchange activity; none of these reads require a brokerage session. */
+  shortSales: ShortSaleSource
+  viopMargins: ViopMarginSource
+  brokerVolumes: BrokerVolumeSource
   stops: { list(): Promise<StopRule[]> }
 }
 
@@ -241,6 +315,10 @@ export function marketDataTools(clients: MarketDataToolClients): ChatTool[] {
     contractDetailsTool(clients),
     candlesTool(clients),
     indexImpactTool(clients),
+    shortSalesTool(clients),
+    marginCallsTool(clients),
+    marginRequirementsTool(clients),
+    brokerMarketShareTool(clients),
     accountTool(clients),
     orderBookTool(clients),
     equityQuoteTool(clients),
@@ -355,6 +433,296 @@ function matchesIndexDirection(
   return contribution.impactPoints === 0
 }
 
+type ShortSaleSortField =
+  | "SHORT_SALE_LOTS"
+  | "SHORT_SALE_VOLUME"
+  | "LOT_SHARE_PERCENT"
+  | "VOLUME_SHARE_PERCENT"
+
+function shortSalesTool(clients: MarketDataToolClients): ChatTool<typeof ShortSalesParameters> {
+  return {
+    definition: {
+      name: "list_short_sales",
+      description: [
+        "Rank official BIST short-sale activity over a date range, optionally for one exact equity ticker.",
+        "Returns short-sale lots and value alongside total turnover, average prices, and short-sale shares of both lots and value.",
+        "Short-sale activity is context for positioning and pressure; it does not by itself establish a bearish view.",
+      ].join(" "),
+      parameters: ShortSalesParameters,
+    },
+    run: async ({ start, end, symbol, sortBy, sortDirection, limit }, options) => {
+      assertDateOrder(start, end, "short-sale")
+      const snapshot = await clients.shortSales.listShortSales({ start, end, signal: options.signal })
+      const wanted = symbol?.trim().toUpperCase()
+      const matching = snapshot.activities.filter((activity) => !wanted || activity.symbol === wanted)
+      const returned = sortShortSales(
+        matching,
+        sortBy ?? "SHORT_SALE_VOLUME",
+        sortDirection ?? "DESC",
+      ).slice(0, limit ?? 20)
+      return dataOutcome(
+        `Read short sales from ${snapshot.startDate} through ${snapshot.endDate}; returned ${returned.length} of ${matching.length} matching equities.`,
+        {
+          ...snapshot,
+          activities: returned,
+          matchedEquities: matching.length,
+          returnedEquities: returned.length,
+        },
+      )
+    },
+  }
+}
+
+function sortShortSales(
+  activities: ShortSaleActivity[],
+  sortBy: ShortSaleSortField,
+  direction: "ASC" | "DESC",
+): ShortSaleActivity[] {
+  return [...activities].sort((left, right) =>
+    compareNullable(
+      shortSaleSortValue(left, sortBy),
+      shortSaleSortValue(right, sortBy),
+      direction,
+      left.symbol.localeCompare(right.symbol),
+    ))
+}
+
+function shortSaleSortValue(activity: ShortSaleActivity, sortBy: ShortSaleSortField): number | null {
+  switch (sortBy) {
+    case "SHORT_SALE_LOTS": return activity.shortSaleLots
+    case "SHORT_SALE_VOLUME": return activity.shortSaleVolume
+    case "LOT_SHARE_PERCENT": return activity.shortSaleLotSharePercent
+    case "VOLUME_SHARE_PERCENT": return activity.shortSaleVolumeSharePercent
+  }
+}
+
+type MarginCallSortField = "DATE" | "AMOUNT_TRY" | "DAILY_CHANGE_PERCENT" | "ABS_DAILY_CHANGE_PERCENT"
+
+function marginCallsTool(clients: MarketDataToolClients): ChatTool<typeof MarginCallParameters> {
+  return {
+    definition: {
+      name: "get_viop_margin_calls",
+      description: [
+        "Read the market-wide VIOP margin-call time series as TRY and USD amounts with daily changes.",
+        "Use it as a leveraged-market stress indicator, not as the collateral requirement for one contract.",
+      ].join(" "),
+      parameters: MarginCallParameters,
+    },
+    run: async ({ start, end, sortBy, sortDirection, limit }, options) => {
+      assertDateOrder(start, end, "VIOP margin-call")
+      const snapshot = await clients.viopMargins.listMarginCalls({ signal: options.signal })
+      const matching = snapshot.calls.filter((call) =>
+        (!start || call.date >= start) && (!end || call.date <= end),
+      )
+      const returned = sortMarginCalls(
+        matching,
+        sortBy ?? "DATE",
+        sortDirection ?? "DESC",
+      ).slice(0, limit ?? 20)
+      return dataOutcome(
+        `Read ${matching.length} VIOP margin-call observations; returned ${returned.length}.`,
+        {
+          calls: returned,
+          matchedObservations: matching.length,
+          returnedObservations: returned.length,
+        },
+      )
+    },
+  }
+}
+
+function sortMarginCalls(
+  calls: ViopMarginCall[],
+  sortBy: MarginCallSortField,
+  direction: "ASC" | "DESC",
+): ViopMarginCall[] {
+  return [...calls].sort((left, right) =>
+    compareNullable(
+      marginCallSortValue(left, sortBy),
+      marginCallSortValue(right, sortBy),
+      direction,
+      left.date.localeCompare(right.date),
+    ))
+}
+
+function marginCallSortValue(call: ViopMarginCall, sortBy: MarginCallSortField): number {
+  switch (sortBy) {
+    case "DATE": return Date.parse(call.date)
+    case "AMOUNT_TRY": return call.amountTry
+    case "DAILY_CHANGE_PERCENT": return call.dailyChangePercent
+    case "ABS_DAILY_CHANGE_PERCENT": return Math.abs(call.dailyChangePercent)
+  }
+}
+
+type MarginRequirementSortField =
+  | "UNDERLYING"
+  | "FUTURES_PRICE"
+  | "PSR_PERCENT"
+  | "INITIAL_COLLATERAL"
+  | "LEVERAGE"
+  | "OPEN_INTEREST"
+
+function marginRequirementsTool(
+  clients: MarketDataToolClients,
+): ChatTool<typeof MarginRequirementParameters> {
+  return {
+    definition: {
+      name: "list_viop_margin_requirements",
+      description: [
+        "Compare current front-month VIOP futures prices, spot prices, price-scan risk, initial collateral, leverage, and open interest.",
+        "Use this cross-sectional scan for ranking; use get_contract_details when one brokerage contract needs order-sizing details.",
+      ].join(" "),
+      parameters: MarginRequirementParameters,
+    },
+    run: async ({ query, sortBy, sortDirection, limit }, options) => {
+      const snapshot = await clients.viopMargins.listMarginRequirements({ signal: options.signal })
+      const wanted = query?.trim().toUpperCase()
+      const matching = snapshot.requirements.filter((requirement) => !wanted || [
+        requirement.contractSymbol,
+        requirement.underlyingSymbol,
+      ].some((value) => value.toUpperCase().includes(wanted)))
+      const field = sortBy ?? "UNDERLYING"
+      const returned = sortMarginRequirements(
+        matching,
+        field,
+        sortDirection ?? (field === "UNDERLYING" ? "ASC" : "DESC"),
+      ).slice(0, limit ?? 20)
+      return dataOutcome(
+        `Read VIOP margin requirements; returned ${returned.length} of ${matching.length} matching contracts.`,
+        {
+          ...snapshot,
+          requirements: returned,
+          matchedContracts: matching.length,
+          returnedContracts: returned.length,
+        },
+      )
+    },
+  }
+}
+
+function sortMarginRequirements(
+  requirements: ViopMarginRequirement[],
+  sortBy: MarginRequirementSortField,
+  direction: "ASC" | "DESC",
+): ViopMarginRequirement[] {
+  if (sortBy === "UNDERLYING") {
+    return [...requirements].sort((left, right) => {
+      const comparison = left.underlyingSymbol.localeCompare(right.underlyingSymbol)
+      return direction === "ASC" ? comparison : -comparison
+    })
+  }
+  return [...requirements].sort((left, right) =>
+    compareNullable(
+      marginRequirementSortValue(left, sortBy),
+      marginRequirementSortValue(right, sortBy),
+      direction,
+      left.underlyingSymbol.localeCompare(right.underlyingSymbol),
+    ))
+}
+
+function marginRequirementSortValue(
+  requirement: ViopMarginRequirement,
+  sortBy: Exclude<MarginRequirementSortField, "UNDERLYING">,
+): number | null {
+  switch (sortBy) {
+    case "FUTURES_PRICE": return requirement.futuresPrice
+    case "PSR_PERCENT": return requirement.priceScanRiskPercent
+    case "INITIAL_COLLATERAL": return requirement.initialCollateral
+    case "LEVERAGE": return requirement.leverage
+    case "OPEN_INTEREST": return requirement.openInterest
+  }
+}
+
+type BrokerVolumeSortField =
+  | "MARKET_SHARE"
+  | "LATEST_VOLUME"
+  | "CURRENT_QUARTER_AVERAGE"
+  | "PREVIOUS_QUARTER_AVERAGE"
+  | "LATEST_VS_QUARTER_AVERAGE"
+  | "CURRENT_VS_PREVIOUS_QUARTER"
+
+function brokerMarketShareTool(clients: MarketDataToolClients): ChatTool<typeof BrokerVolumeParameters> {
+  return {
+    definition: {
+      name: "list_broker_market_share",
+      description: [
+        "Rank market-wide brokerage volume and market share for equities, VIOP, or both combined.",
+        "Returns the latest session alongside current- and previous-quarter daily averages and their changes.",
+        "This measures participation and concentration, not whether a broker was a net buyer or seller; use get_brokerage_distribution for directional flow in one equity.",
+      ].join(" "),
+      parameters: BrokerVolumeParameters,
+    },
+    run: async ({ market, query, sortBy, sortDirection, limit }, options) => {
+      const selectedMarket: BrokerMarket = market ?? "VIOP"
+      const snapshot = await clients.brokerVolumes.listBrokerVolumes(selectedMarket, {
+        signal: options.signal,
+      })
+      const wanted = query?.trim().toLocaleUpperCase("tr-TR")
+      const matching = snapshot.brokers.filter((broker) =>
+        (broker.currentQuarterAverageVolume !== null || broker.previousQuarterAverageVolume !== null)
+        && (!wanted || [broker.code, broker.name].some((value) =>
+          value.toLocaleUpperCase("tr-TR").includes(wanted)
+        )),
+      )
+      const returned = sortBrokerVolumes(
+        matching,
+        sortBy ?? "MARKET_SHARE",
+        sortDirection ?? "DESC",
+      ).slice(0, limit ?? 20)
+      return dataOutcome(
+        `Read ${selectedMarket} broker market share for ${snapshot.latestDate}; returned ${returned.length} of ${matching.length} active brokers.`,
+        {
+          ...snapshot,
+          brokers: returned,
+          matchedBrokers: matching.length,
+          returnedBrokers: returned.length,
+        },
+      )
+    },
+  }
+}
+
+function sortBrokerVolumes(
+  brokers: BrokerVolume[],
+  sortBy: BrokerVolumeSortField,
+  direction: "ASC" | "DESC",
+): BrokerVolume[] {
+  return [...brokers].sort((left, right) =>
+    compareNullable(
+      brokerVolumeSortValue(left, sortBy),
+      brokerVolumeSortValue(right, sortBy),
+      direction,
+      left.name.localeCompare(right.name),
+    ))
+}
+
+function brokerVolumeSortValue(broker: BrokerVolume, sortBy: BrokerVolumeSortField): number | null {
+  switch (sortBy) {
+    case "MARKET_SHARE": return broker.marketSharePercent
+    case "LATEST_VOLUME": return broker.latestVolume
+    case "CURRENT_QUARTER_AVERAGE": return broker.currentQuarterAverageVolume
+    case "PREVIOUS_QUARTER_AVERAGE": return broker.previousQuarterAverageVolume
+    case "LATEST_VS_QUARTER_AVERAGE": return broker.latestVsQuarterAveragePercent
+    case "CURRENT_VS_PREVIOUS_QUARTER": return broker.currentVsPreviousQuarterPercent
+  }
+}
+
+function compareNullable(
+  left: number | null,
+  right: number | null,
+  direction: "ASC" | "DESC",
+  tieBreaker: number,
+): number {
+  if (left === null) return right === null ? tieBreaker : 1
+  if (right === null) return -1
+  const comparison = direction === "ASC" ? left - right : right - left
+  return comparison || tieBreaker
+}
+
+function assertDateOrder(start: string | undefined, end: string | undefined, label: string): void {
+  if (start && end && end < start) throw new Error(`The ${label} end date cannot precede its start date`)
+}
+
 type FinancialSortField = "PUBLISHED_AT" | FinancialMetric
 
 function recentFinancialsTool(clients: MarketDataToolClients): ChatTool<typeof RecentFinancialsParameters> {
@@ -362,9 +730,9 @@ function recentFinancialsTool(clients: MarketDataToolClients): ChatTool<typeof R
     definition: {
       name: "list_viop_equity_financials",
       description: [
-        "List recent financial results and valuation ratios only for cash equities with a current front-month VİOP contract.",
+        "List recent financial results and valuation ratios only for cash equities with a current front-month VIOP contract.",
         "Accepts either exact contract codes or their underlying stock tickers.",
-        "Index, currency, metal, and non-VİOP equity financials are outside this tool's scope.",
+        "Index, currency, metal, and non-VIOP equity financials are outside this tool's scope.",
       ].join(" "),
       parameters: RecentFinancialsParameters,
     },
@@ -395,7 +763,7 @@ function recentFinancialsTool(clients: MarketDataToolClients): ChatTool<typeof R
       )
       const returned = sorted.slice(0, limit ?? (includeAllMetrics ? 10 : 20))
       return dataOutcome(
-        `Found ${result.financials.length} matching VİOP equity financial${result.financials.length === 1 ? "" : "s"}; returned ${returned.length}.`,
+        `Found ${result.financials.length} matching VIOP equity financial${result.financials.length === 1 ? "" : "s"}; returned ${returned.length}.`,
         {
           universe: result.universe,
           eligibleSymbols: result.eligibleSymbols,

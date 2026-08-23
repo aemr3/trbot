@@ -5,8 +5,8 @@ established, how the realtime entitlement is carried, and which endpoints serve
 candles, quotes, and depth.
 
 Written while building `@trbot/feed`, and checked against a live account from a
-Bun process on 2026-08-21 and 2026-08-22. Where a claim was checked outside BIST
-hours, that is stated.
+Bun process on 2026-08-21 through 2026-08-24. Where a claim was checked outside
+BIST hours, that is stated.
 
 ## Hosts
 
@@ -15,7 +15,7 @@ hours, that is stated.
 | `fintables.com/endeksler` | Public index constituent weights embedded in server-rendered pages. |
 | `api.fintables.com` | Account API. Login, session check, notifications, feeds. |
 | `markets.fintables.com/barbar/udf` | TradingView UDF datafeed: candles and symbol metadata. |
-| `markets.fintables.com/barbar/server` | Auxiliary market data: `/yield`, `/akd` (broker distribution). |
+| `markets.fintables.com/barbar/server` | Auxiliary market data: futures margin map, `/yield`, `/akd` (broker distribution). |
 | `markets.fintables.com/vessel` | WebSocket: realtime quotes, depth, trades. |
 | `gate.fintables.com/search` | Typesense symbol search. |
 
@@ -469,11 +469,11 @@ client-side.
 ### Futures — `GET /mobile/symbols/collections/`
 
 ```jsonc
-[ { "title": "VİOP Aktif Vade", "data": ["F_XU0300826", "F_AEFES0826", ...] } ]
+[ { "title": "V\u0130OP Aktif Vade", "data": ["F_XU0300826", "F_AEFES0826", ...] } ]
 ```
 
 Six collections: `XU100` (100), `XU030` (30), `XUTUM` (582), `Döviz` (8),
-`Emtia` (11), and `VİOP Aktif Vade` (63). The last is the active-contract list
+`Emtia` (11), and `V\u0130OP Aktif Vade` (63). The last is the active-contract list
 and the only JSON source of VIOP codes; the others double as index constituents.
 
 Codes are `F_<UNDERLYING><MMYY>`, e.g. `F_XU0300826` for the August 2026 BIST 30
@@ -485,7 +485,7 @@ futures are `0920-1810`, while index futures add an evening session,
 `0920-1810,1900-2300`. Read it from UDF `/symbols?symbol=<code>`.
 
 Treat contract and underlying availability separately. For example,
-`F_XAUTRYM0826` is in `VİOP Aktif Vade` and its candle history answers, but
+`F_XAUTRYM0826` is in `V\u0130OP Aktif Vade` and its candle history answers, but
 neither `XAUTRY` nor `XAUTRYM` exists in `/symbols/`; both underlying-history
 requests return HTTP 400. The server therefore annotates each brokerage
 contract by intersecting it with both feed universes. The TUI offers only the
@@ -534,22 +534,105 @@ BIST-100-only custody fields when they are specifically useful.
 
 The endpoint returns the whole equity universe. `FeedRecentFinancialSource`
 therefore applies the product boundary itself: it intersects the cash-equity
-universe from `/symbols/` with `VİOP Aktif Vade`, and returns only those company
+universe from `/symbols/` with `V\u0130OP Aktif Vade`, and returns only those company
 underlyings. Index, currency, and metal futures remain available to the trading
 desk but cannot leak through the company-financials tool.
 
-### What no JSON endpoint provides
+## Market-wide activity
 
-Contract **multiplier, expiry date, underlying, and collateral** are not exposed
-by any endpoint found. Every plausible path (`/viop/`, `/future/contracts/`,
-`/mobile/viop/`, `/barbar/server/contracts`, and a dozen more) returns 404,
-despite `future.contracts` and `future.collateral-table` appearing in
-`permissions`. Only the `symbols.js` script carries them.
+These readings are separate from a single symbol's quote, distribution, or
+custody register. They describe participation, leverage, and stress across the
+market and are exposed to the agent as bounded, provider-neutral scans.
 
-Expiry is derivable from the code's `MMYY` plus the exchange calendar. For
-multiplier and collateral, prefer the brokerage — `@trbot/provider` already
-returns `contractSize` and `initialCollateral`, and those are the numbers orders
-are actually sized against.
+### Short sales
+
+```http
+GET https://api.fintables.com/short-sell-stats/?start=2026-08-20&end=2026-08-21
+Authorization: Bearer <access>
+```
+
+Both dates are optional; omitting them returns the newest published exchange
+day. The response echoes the covered range and reports each stock's short-sale
+and total activity:
+
+```jsonc
+{
+  "start": "2026-08-20 00:00:00",
+  "end": "2026-08-21 00:00:00",
+  "results": [{
+    "code": "AKBNK",
+    "volume": 4185545320.9,
+    "total_volume": 11720590790.65,
+    "lot": 59579840,
+    "total_lot": 166762304,
+    "avg_price": 70.251,
+    "total_avg_price": 70.283
+  }]
+}
+```
+
+The feed derives the short-sale shares of lots and value; no rendered-page
+values are parsed.
+
+### VIOP margin calls
+
+```http
+GET https://api.fintables.com/viop-margin-call-stats/
+Authorization: Bearer <access>
+```
+
+The endpoint returns the complete daily series, newest first:
+
+```jsonc
+[{
+  "date": "2026-08-21",
+  "amount": 321458053.83,
+  "change": 76582002.23,
+  "change_percent": 31.2738,
+  "usdtry": 48.0398,
+  "amount_usd": 6691494.42
+}]
+```
+
+Filtering and result bounds belong to the tool because the upstream response is
+small and has no query parameters.
+
+### VIOP margin requirements
+
+```http
+GET https://markets.fintables.com/barbar/server/?type=future
+Authorization: Bearer <stream_token>
+```
+
+The response is a columnar map: `columns` names each position in every
+`results[contract]` array. It includes `underlying_close`,
+`collateral_underlying_close`, `psr`, `psr_close`, `leverage`, and
+`open_interest`. `psr_close` is the current initial collateral amount. Never pin
+numeric offsets: resolve each field through `columns`, because the response may
+add or reorder fields.
+
+The map contains several expiries. `FeedViopMarginSource` intersects it with
+the `V\u0130OP Aktif Vade` collection so the agent receives only the same
+front-month universe used elsewhere. The brokerage contract detail remains the
+authority for sizing an order; this reading is for cross-sectional comparison.
+
+`GET /viop-contracts/` on the account API also publishes contract metadata such
+as underlying, expiry, and multiplier, but includes out-month contracts and is
+therefore not used to decide the active universe.
+
+### Brokerage market share
+
+```http
+GET https://api.fintables.com/brokerages/volumes/
+Authorization: Bearer <access>
+```
+
+The response returns `latest_date` and one row per brokerage. Each row carries
+`latest_volume`, `current_quarter_volume_avg`,
+`prev_quarter_volume_avg`, and `latest_volume_percentage`, with nested `pay`,
+`viop`, and `total` values. Percentages are fractions and are multiplied by 100
+at the feed boundary. Null volumes mean that a house did not participate in that
+market or period; they are not rewritten as zero.
 
 ## Broker readings
 

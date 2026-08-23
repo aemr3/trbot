@@ -16,7 +16,9 @@ import { marketDataTools, type MarketDataSources, type MarketDataToolClients } f
 import { ChatTools } from "./tool.ts"
 import { z } from "zod"
 import type { BrokerageDistributionRequest } from "@trbot/market/brokerage.ts"
+import type { BrokerMarket } from "@trbot/market/broker-volume.ts"
 import type { SettlementRequest } from "@trbot/market/settlement.ts"
+import type { ShortSaleRequest } from "@trbot/market/short-sales.ts"
 import { StopRuleSchema, createStopRule } from "@trbot/trading/stop.ts"
 
 const ModelDataSchema = z.json()
@@ -202,6 +204,10 @@ function harness(
     feedCandles: Array<{ symbol: string; target: string | undefined }>
     financials: RecentFinancialRequest[]
     indexImpact: IndexImpactCode[]
+    shortSales: ShortSaleRequest[]
+    marginCalls: number
+    marginRequirements: number
+    brokerMarkets: BrokerMarket[]
   }
   const calls: MarketCalls = {
     brokerage: [],
@@ -210,6 +216,10 @@ function harness(
     feedCandles: [],
     financials: [],
     indexImpact: [],
+    shortSales: [],
+    marginCalls: 0,
+    marginRequirements: 0,
+    brokerMarkets: [],
   }
   const sources: MarketDataSources = {
     instruments: {
@@ -406,6 +416,143 @@ function harness(
         return INDEX_IMPACT
       },
     },
+    shortSales: {
+      listShortSales: async (request = {}) => {
+        calls.shortSales.push(request)
+        return {
+          startDate: request.start ?? "2026-08-21",
+          endDate: request.end ?? "2026-08-21",
+          activities: [
+            {
+              symbol: "ASELS",
+              shortSaleLots: 100,
+              totalLots: 1_000,
+              shortSaleVolume: 40_000,
+              totalVolume: 400_000,
+              shortSaleAveragePrice: 400,
+              marketAveragePrice: 399,
+              shortSaleLotSharePercent: 10,
+              shortSaleVolumeSharePercent: 10,
+            },
+            {
+              symbol: "THYAO",
+              shortSaleLots: 200,
+              totalLots: 500,
+              shortSaleVolume: 60_000,
+              totalVolume: 150_000,
+              shortSaleAveragePrice: 300,
+              marketAveragePrice: 301,
+              shortSaleLotSharePercent: 40,
+              shortSaleVolumeSharePercent: 40,
+            },
+          ],
+        }
+      },
+    },
+    viopMargins: {
+      listMarginCalls: async () => {
+        calls.marginCalls += 1
+        return {
+          calls: [
+            {
+              date: "2026-08-21",
+              amountTry: 300,
+              amountUsd: 6,
+              dailyChangeTry: 100,
+              dailyChangePercent: 50,
+              usdTryRate: 50,
+            },
+            {
+              date: "2026-08-20",
+              amountTry: 200,
+              amountUsd: 4,
+              dailyChangeTry: -50,
+              dailyChangePercent: -20,
+              usdTryRate: 50,
+            },
+            {
+              date: "2026-08-19",
+              amountTry: 250,
+              amountUsd: 5,
+              dailyChangeTry: 25,
+              dailyChangePercent: 11,
+              usdTryRate: 50,
+            },
+          ],
+        }
+      },
+      listMarginRequirements: async () => {
+        calls.marginRequirements += 1
+        return {
+          updatedAt: "2026-08-21T18:00:00Z",
+          requirements: [
+            {
+              contractSymbol: "F_ASELS0826",
+              underlyingSymbol: "ASELS",
+              marketTimestamp: NOW,
+              futuresPrice: 400,
+              spotPrice: 398,
+              priceScanRiskPercent: 15,
+              initialCollateral: 6_000,
+              leverage: 6.67,
+              openInterest: 20_000,
+            },
+            {
+              contractSymbol: "F_THYAO0826",
+              underlyingSymbol: "THYAO",
+              marketTimestamp: NOW,
+              futuresPrice: 300,
+              spotPrice: 299,
+              priceScanRiskPercent: 12,
+              initialCollateral: 3_600,
+              leverage: 8.33,
+              openInterest: 10_000,
+            },
+          ],
+        }
+      },
+    },
+    brokerVolumes: {
+      listBrokerVolumes: async (market) => {
+        calls.brokerMarkets.push(market)
+        return {
+          market,
+          latestDate: "2026-08-21",
+          brokers: [
+            {
+              code: "YKR",
+              name: "Yapı Kredi Yatırım",
+              marketSharePercent: 21.21,
+              latestVolume: 57_000,
+              currentQuarterAverageVolume: 59_000,
+              previousQuarterAverageVolume: 70_000,
+              latestVsQuarterAveragePercent: -3.39,
+              currentVsPreviousQuarterPercent: -15.71,
+            },
+            {
+              code: "IYM",
+              name: "İş Yatırım",
+              marketSharePercent: 10.18,
+              latestVolume: 27_000,
+              currentQuarterAverageVolume: 30_000,
+              previousQuarterAverageVolume: 38_000,
+              latestVsQuarterAveragePercent: -10,
+              currentVsPreviousQuarterPercent: -21.05,
+            },
+            {
+              code: "OLD",
+              name: "Inactive Broker",
+              marketSharePercent: 0,
+              latestVolume: null,
+              currentQuarterAverageVolume: null,
+              previousQuarterAverageVolume: null,
+              latestVsQuarterAveragePercent: null,
+              currentVsPreviousQuarterPercent: null,
+            },
+          ],
+        }
+      },
+    },
     stops: { list: async () => [] },
   }
   return { clients, calls, depth, equity }
@@ -420,6 +567,10 @@ test("offers the complete read-only market toolset", () => {
     "get_contract_details",
     "get_candles",
     "get_index_impact",
+    "list_short_sales",
+    "get_viop_margin_calls",
+    "list_viop_margin_requirements",
+    "list_broker_market_share",
     "get_account",
     "get_order_book",
     "get_equity_quote",
@@ -431,6 +582,96 @@ test("offers the complete read-only market toolset", () => {
     "get_data_entitlements",
     "list_stop_rules",
   ])
+})
+
+test("ranks and filters short-sale activity", async () => {
+  const testHarness = harness()
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const ranked = await call(tools, "list_short_sales", {
+    start: "2026-08-20",
+    end: "2026-08-21",
+    sortBy: "LOT_SHARE_PERCENT",
+    limit: 1,
+  })
+  const selected = await call(tools, "list_short_sales", { symbol: "asels" })
+
+  expect(modelData(ranked)).toMatchObject({
+    matchedEquities: 2,
+    returnedEquities: 1,
+    activities: [{ symbol: "THYAO", shortSaleLotSharePercent: 40 }],
+  })
+  expect(modelData(selected)).toMatchObject({
+    matchedEquities: 1,
+    activities: [{ symbol: "ASELS" }],
+  })
+  expect(testHarness.calls.shortSales[0]).toMatchObject({
+    start: "2026-08-20",
+    end: "2026-08-21",
+  })
+})
+
+test("filters and ranks VIOP margin-call history", async () => {
+  const testHarness = harness()
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const result = await call(tools, "get_viop_margin_calls", {
+    start: "2026-08-20",
+    end: "2026-08-21",
+    sortBy: "AMOUNT_TRY",
+    sortDirection: "ASC",
+    limit: 1,
+  })
+
+  expect(modelData(result)).toMatchObject({
+    matchedObservations: 2,
+    returnedObservations: 1,
+    calls: [{ date: "2026-08-20", amountTry: 200 }],
+  })
+  expect(testHarness.calls.marginCalls).toBe(1)
+})
+
+test("scans front-month margin requirements without using the brokerage session", async () => {
+  const testHarness = harness()
+  const tools = new ChatTools(marketDataTools({
+    ...testHarness.clients,
+    sources: () => { throw new Error("brokerage session is unavailable") },
+  }))
+
+  const result = await call(tools, "list_viop_margin_requirements", {
+    sortBy: "LEVERAGE",
+    limit: 1,
+  })
+
+  expect(modelData(result)).toMatchObject({
+    matchedContracts: 2,
+    returnedContracts: 1,
+    requirements: [{ underlyingSymbol: "THYAO", leverage: 8.33 }],
+  })
+  expect(testHarness.calls.marginRequirements).toBe(1)
+})
+
+test("ranks active brokers by VIOP market share", async () => {
+  const testHarness = harness()
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const ranked = await call(tools, "list_broker_market_share", { limit: 1 })
+  const selected = await call(tools, "list_broker_market_share", {
+    market: "VIOP",
+    query: "iş",
+  })
+
+  expect(modelData(ranked)).toMatchObject({
+    market: "VIOP",
+    matchedBrokers: 2,
+    returnedBrokers: 1,
+    brokers: [{ code: "YKR", marketSharePercent: 21.21 }],
+  })
+  expect(modelData(selected)).toMatchObject({
+    matchedBrokers: 1,
+    brokers: [{ code: "IYM" }],
+  })
+  expect(testHarness.calls.brokerMarkets).toEqual(["VIOP", "VIOP"])
 })
 
 test("reads, filters, sorts, and pages complete index-impact snapshots", async () => {
@@ -533,7 +774,7 @@ test("optionally sorts instruments before limiting them and keeps missing values
   expect(instrumentSymbols(volume)).toEqual(["F_ASELS0826", "F_KCHOL0826", "F_THYAO0826"])
 })
 
-test("lists scoped VİOP equity financials from either a contract or underlying symbol", async () => {
+test("lists scoped VIOP equity financials from either a contract or underlying symbol", async () => {
   const testHarness = harness()
   const tools = new ChatTools(marketDataTools(testHarness.clients))
 

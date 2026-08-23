@@ -113,7 +113,7 @@ function build(body: { data: ScreenerRowFixture[] } = RESPONSE) {
 }
 
 describe("FeedRecentFinancialSource", () => {
-  test("returns only cash equities with a current front-month VİOP contract", async () => {
+  test("returns only cash equities with a current front-month VIOP contract", async () => {
     const { source, requests } = build()
 
     const result = await source.listRecentFinancials()
@@ -172,7 +172,7 @@ describe("FeedRecentFinancialSource", () => {
     expect(new Set(Object.values(FINANCIAL_METRIC_FIELDS)).size).toBe(FINANCIAL_METRICS.length)
   })
 
-  test("rejects non-VİOP equities before reading the screener", async () => {
+  test("rejects non-VIOP equities before reading the screener", async () => {
     const { source, requests } = build()
 
     const error = await source.listRecentFinancials({ symbols: ["BOSSA"] }).catch((cause: unknown) => cause)

@@ -1,4 +1,5 @@
 import { FeedBrokerageDirectory } from "./brokerages.ts"
+import { FeedBrokerVolumeSource } from "./broker-volume.ts"
 import { FeedCandleSource } from "./candles.ts"
 import { FeedDepthStream } from "./depth-stream.ts"
 import { FeedEquityQuoteStream } from "./equity-quote-stream.ts"
@@ -7,14 +8,17 @@ import { FeedInstrumentSource } from "./instruments.ts"
 import { FeedIndexImpactSource } from "./index-impact.ts"
 import { FeedQuoteStream } from "./quote-stream.ts"
 import { FeedSession, type FeedCredentials, type FeedEntitlements } from "./session.ts"
+import { FeedShortSaleSource } from "./short-sales.ts"
 import { FeedTradeSource } from "./trades.ts"
 import { FeedTradingDays } from "./trading-days.ts"
 import { closeFeedHttpTransport } from "./transport.ts"
+import { FeedViopMarginSource } from "./viop-margin.ts"
 import { MarketSocket } from "./socket.ts"
 
 export * from "./broker-headline.ts"
 export * from "./brokerage.ts"
 export * from "./brokerages.ts"
+export * from "./broker-volume.ts"
 export * from "./candles.ts"
 export * from "./depth-stream.ts"
 export * from "./equity-quote-stream.ts"
@@ -30,12 +34,14 @@ export * from "./index-impact.ts"
 export * from "./quote-stream.ts"
 export * from "./session-hours.ts"
 export * from "./session.ts"
+export * from "./short-sales.ts"
 export * from "./settlement.ts"
 export * from "./socket.ts"
 export * from "./trades.ts"
 export * from "./trading-days.ts"
 export * from "./transport.ts"
 export * from "./value.ts"
+export * from "./viop-margin.ts"
 
 export interface MarketFeedOptions {
   credentials: FeedCredentials
@@ -67,6 +73,9 @@ export class MarketFeed {
   readonly financials: FeedRecentFinancialSource
   readonly instruments: FeedInstrumentSource
   readonly indexImpact: FeedIndexImpactSource
+  readonly shortSales: FeedShortSaleSource
+  readonly viopMargins: FeedViopMarginSource
+  readonly brokerVolumes: FeedBrokerVolumeSource
   readonly trades: FeedTradeSource
   /** Shared by every broker feed, so the house names are read once per run. */
   readonly brokerages: FeedBrokerageDirectory
@@ -91,6 +100,9 @@ export class MarketFeed {
     this.candles = new FeedCandleSource(this.session)
     this.instruments = new FeedInstrumentSource(this.session)
     this.financials = new FeedRecentFinancialSource(this.session, this.instruments)
+    this.shortSales = new FeedShortSaleSource(this.session)
+    this.viopMargins = new FeedViopMarginSource(this.session, this.instruments)
+    this.brokerVolumes = new FeedBrokerVolumeSource(this.session)
     this.brokerages = new FeedBrokerageDirectory(this.session)
     this.trades = new FeedTradeSource(this.session, { brokerages: this.brokerages })
     this.tradingDays = new FeedTradingDays(this.candles)

@@ -16,7 +16,7 @@ import { buildUrl, FetchFeedTransport, readJson, type FeedTransport } from "./tr
 
 const ScreenerRowSchema = z.object({
   code: z.string().min(1),
-  // The endpoint returns the whole equity universe before our VİOP filter and
+  // The endpoint returns the whole equity universe before our VIOP filter and
   // uses null for companies that do not have a published filing yet.
   published_at: z.string().min(1).nullable(),
   period: z.string().regex(new RegExp(FINANCIAL_PERIOD_PATTERN)),
@@ -31,7 +31,7 @@ export interface FeedRecentFinancialSourceOptions {
   baseUrl?: string
 }
 
-/** Reads the recent-financials screener without letting non-VİOP equities escape the source. */
+/** Reads the recent-financials screener without letting non-VIOP equities escape the source. */
 export class FeedRecentFinancialSource implements RecentFinancialSource {
   private readonly transport: FeedTransport
   private readonly baseUrl: string
@@ -53,14 +53,14 @@ export class FeedRecentFinancialSource implements RecentFinancialSource {
     if (metrics.length === 0) throw new Error("At least one financial metric is required")
 
     const eligibleSymbols = await this.listEligibleSymbols(request.signal)
-    if (eligibleSymbols.length === 0) throw new Error("The current VİOP universe has no equity underlyings")
+    if (eligibleSymbols.length === 0) throw new Error("The current VIOP universe has no equity underlyings")
 
     const eligible = new Set(eligibleSymbols)
     const requested = request.symbols?.map((symbol) => symbol.trim().toUpperCase())
     const outside = [...new Set(requested?.filter((symbol) => !eligible.has(symbol)) ?? [])]
     if (outside.length > 0) {
       throw new Error(
-        `Financials are restricted to current VİOP equity underlyings; outside scope: ${outside.join(", ")}`,
+        `Financials are restricted to current VIOP equity underlyings; outside scope: ${outside.join(", ")}`,
       )
     }
     const wanted = requested ? new Set(requested) : eligible
