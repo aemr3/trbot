@@ -105,6 +105,14 @@ buttons offer one-time approval, connection-scoped approval when the tool permit
 and denial. Connection-scoped grants are revoked when the phone disconnects, is paired
 elsewhere, or the server stops.
 
+Completed Telegram replies include an **Undo** button. It rewinds the conversation
+to before that prompt and removes the Telegram messages associated with every
+discarded turn. The same cleanup runs when the conversation is undone from the TUI.
+Before rewinding, Telegram offers the same conversation-only and conversation-plus-
+reversible-actions choices as the TUI. Only recorded, safely reversible actions are
+restored; other actions are identified and preserved. Telegram does not notify regular
+bots when someone manually deletes a message.
+
 Telegram bot chats are cloud chats rather than end-to-end encrypted Secret Chats.
 Pair only a Telegram account and phone you trust; brokerage and model credentials
 are never sent through Telegram.

@@ -228,6 +228,24 @@ export const chatMobileConnections = sqliteTable(
   ],
 )
 
+// Unlike the connection, a turn outlives disconnect/reconnect so an old inline
+// Undo button can still identify and remove the Telegram messages it represents.
+export const chatMobileTurns = sqliteTable(
+  "chat_mobile_turns",
+  {
+    promptMessageId: text("prompt_message_id").notNull(),
+    sessionId: text("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),
+    externalChatId: text("external_chat_id").notNull(),
+    externalMessageIds: text("external_message_ids").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.promptMessageId, table.channel, table.externalChatId] }),
+    index("chat_mobile_turns_session").on(table.sessionId),
+  ],
+)
+
 // One current objective per root chat. Replacing a goal replaces this row.
 export const chatGoals = sqliteTable("chat_goals", {
   sessionId: text("session_id").primaryKey().references(() => chatSessions.id, { onDelete: "cascade" }),

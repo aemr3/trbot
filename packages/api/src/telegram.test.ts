@@ -159,6 +159,23 @@ test("deletes a transient tool activity message", async () => {
   expect(JSON.parse(requestBody)).toEqual({ chat_id: "9", message_id: 11 })
 })
 
+test("deletes a complete Telegram turn in one batch", async () => {
+  let requestedMethod = ""
+  let requestBody = ""
+  const api = new TelegramBotApi("123:secret", {
+    fetch: async (input, init) => {
+      requestedMethod = new URL(String(input)).pathname.split("/").at(-1) ?? ""
+      requestBody = String(init?.body)
+      return Response.json({ ok: true, result: true })
+    },
+  })
+
+  await api.deleteMessages("9", [10, 11])
+
+  expect(requestedMethod).toBe("deleteMessages")
+  expect(JSON.parse(requestBody)).toEqual({ chat_id: "9", message_ids: [10, 11] })
+})
+
 test("surfaces Telegram rate limits without leaking the bot token", async () => {
   const api = new TelegramBotApi("123:top-secret", {
     fetch: async () => Response.json({

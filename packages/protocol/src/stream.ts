@@ -95,7 +95,16 @@ export type ChatFrame =
   | { type: "chatMessage"; sessionId: string; message: ChatMessage }
   | { type: "chatMessageRemoved"; sessionId: string; messageId: string }
   | { type: "chatDelta"; sessionId: string; runId: string; seq: number; text?: string; reasoning?: string; toolName?: string }
-  | { type: "chatRun"; sessionId: string; runId: string; status: ChatRunStatus; message?: ChatMessage; error?: string }
+  | {
+      type: "chatRun"
+      sessionId: string
+      runId: string
+      status: ChatRunStatus
+      /** The input that owns this run; absent only on frames from older servers. */
+      promptMessageId?: string
+      message?: ChatMessage
+      error?: string
+    }
   | { type: "chatQuestionAsked"; request: ChatQuestionRequest }
   | { type: "chatQuestionResolved"; requestId: string; sessionId: string }
   | { type: "chatPermissionRequested"; request: ChatPermissionRequest }
@@ -157,6 +166,7 @@ export const ServerFrameSchema: z.ZodType<ServerFrame> = z.discriminatedUnion("t
     sessionId: z.string(),
     runId: z.string(),
     status: z.enum(["running", "done", "failed", "aborted"]),
+    promptMessageId: z.string().optional(),
     message: ChatMessageSchema.optional(),
     error: z.string().optional(),
   }),

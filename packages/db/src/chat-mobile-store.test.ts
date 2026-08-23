@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import type { ChatMobileBinding } from "@trbot/chat/mobile.ts"
+import type { ChatMobileBinding, ChatMobileTurnMessage } from "@trbot/chat/mobile.ts"
 import { openDatabase, type DatabaseConnection } from "./client.ts"
 import { DrizzleChatMobileStore } from "./chat-mobile-store.ts"
 import { chatSessions } from "./schema.ts"
@@ -28,6 +28,20 @@ function binding(sessionId: string, externalUserId = "user-1"): ChatMobileBindin
     externalChatId: externalUserId,
     displayName: "@trader",
     connectedAt: 3_000,
+  }
+}
+
+function turnMessage(
+  externalMessageId: number,
+  externalChatId = "user-1",
+): ChatMobileTurnMessage {
+  return {
+    sessionId: "chat-1",
+    promptMessageId: "prompt-1",
+    channel: "telegram",
+    externalChatId,
+    externalMessageId,
+    createdAt: 4_000,
   }
 }
 
@@ -63,8 +77,53 @@ test("replaces the account previously attached to a chat", async () => {
 test("deleting a chat cascades its mobile connection", async () => {
   const store = await setup()
   await store.connect(binding("chat-1"))
+  await store.recordTurnMessage(turnMessage(10))
 
   await connection!.db.delete(chatSessions)
 
   expect(await store.list()).toEqual([])
+  expect(await store.findTurn("prompt-1", "telegram", "user-1")).toBeNull()
+})
+
+test("records each Telegram message in a durable turn without duplicates", async () => {
+  const store = await setup()
+
+  await store.recordTurnMessage(turnMessage(10))
+  await store.recordTurnMessage(turnMessage(11))
+  await store.recordTurnMessage(turnMessage(11))
+
+  expect(await store.findTurn("prompt-1", "telegram", "user-1")).toEqual({
+    sessionId: "chat-1",
+    promptMessageId: "prompt-1",
+    channel: "telegram",
+    externalChatId: "user-1",
+    externalMessageIds: [10, 11],
+    createdAt: 4_000,
+  })
+})
+
+test("atomically takes every external copy of an undone turn", async () => {
+  const store = await setup()
+  await store.recordTurnMessage(turnMessage(10))
+  await store.recordTurnMessage(turnMessage(20, "user-2"))
+
+  expect(await store.takeTurns("prompt-1")).toEqual([
+    {
+      sessionId: "chat-1",
+      promptMessageId: "prompt-1",
+      channel: "telegram",
+      externalChatId: "user-1",
+      externalMessageIds: [10],
+      createdAt: 4_000,
+    },
+    {
+      sessionId: "chat-1",
+      promptMessageId: "prompt-1",
+      channel: "telegram",
+      externalChatId: "user-2",
+      externalMessageIds: [20],
+      createdAt: 4_000,
+    },
+  ])
+  expect(await store.takeTurns("prompt-1")).toEqual([])
 })

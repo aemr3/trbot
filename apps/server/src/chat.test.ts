@@ -171,18 +171,21 @@ test("two messages in a row queue and run in the order they were sent", async ()
 test("claims the prompt before delivering the running state and starting the model", async () => {
   const running = Promise.withResolvers<void>()
   const delivered = Promise.withResolvers<void>()
+  let runningPromptMessageId: string | undefined
   const { chat, turns } = await harness({
     broadcast: (frame) => {
       if (frame.type !== "chatRun" || frame.status !== "running") return
+      runningPromptMessageId = frame.promptMessageId
       running.resolve()
       return delivered.promise
     },
   })
   const session = await chat.create()
 
-  await chat.send(session.id, "wait for mobile")
+  const prompt = await chat.send(session.id, "wait for mobile")
   await running.promise
   expect(turns).toHaveLength(0)
+  expect(runningPromptMessageId).toBe(prompt.id)
   expect((await chat.detail(session.id)).messages.find((message) => message.role === "USER")?.status).toBe("SENT")
 
   delivered.resolve()

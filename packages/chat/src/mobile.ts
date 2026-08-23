@@ -33,6 +33,28 @@ export const ChatMobileBindingSchema = ChatMobileConnectionSchema.extend({
 })
 export type ChatMobileBinding = z.infer<typeof ChatMobileBindingSchema>
 
+/** Telegram messages belonging to one application prompt, kept until that prompt is undone. */
+export const ChatMobileTurnSchema = z.object({
+  sessionId: z.string().min(1),
+  promptMessageId: z.string().min(1),
+  channel: ChatMobileChannelSchema,
+  externalChatId: z.string().min(1),
+  externalMessageIds: z.array(z.number().int().positive()),
+  createdAt: z.number().int().nonnegative(),
+})
+export type ChatMobileTurn = z.infer<typeof ChatMobileTurnSchema>
+
+export const ChatMobileTurnMessageSchema = ChatMobileTurnSchema.pick({
+  sessionId: true,
+  promptMessageId: true,
+  channel: true,
+  externalChatId: true,
+  createdAt: true,
+}).extend({
+  externalMessageId: z.number().int().positive(),
+})
+export type ChatMobileTurnMessage = z.infer<typeof ChatMobileTurnMessageSchema>
+
 export interface ChatMobileStore {
   list(): Promise<ChatMobileBinding[]>
   findBySession(sessionId: string): Promise<ChatMobileBinding | null>
@@ -40,4 +62,13 @@ export interface ChatMobileStore {
   /** A mobile account and a chat may each have only one current binding. */
   connect(binding: ChatMobileBinding): Promise<void>
   removeSession(sessionId: string): Promise<void>
+  /** Adds one Telegram message to the turn anchored by an application prompt. */
+  recordTurnMessage(message: ChatMobileTurnMessage): Promise<void>
+  findTurn(
+    promptMessageId: string,
+    channel: ChatMobileChannel,
+    externalChatId: string,
+  ): Promise<ChatMobileTurn | null>
+  /** Atomically claims every external copy of a turn for message deletion. */
+  takeTurns(promptMessageId: string): Promise<ChatMobileTurn[]>
 }

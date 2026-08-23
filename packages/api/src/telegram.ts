@@ -59,7 +59,7 @@ export interface TelegramInlineKeyboard {
   inline_keyboard: TelegramInlineButton[][]
 }
 
-type TelegramRequestValue = string | number | boolean | undefined | string[] | TelegramInlineKeyboard
+type TelegramRequestValue = string | number | boolean | undefined | string[] | number[] | TelegramInlineKeyboard
 type TelegramRequestBody = Readonly<Record<string, TelegramRequestValue>>
 type TelegramFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
@@ -76,6 +76,7 @@ export interface TelegramBotApiAccess {
   ): Promise<TelegramMessage>
   editMessageText(chatId: string, messageId: number, text: string): Promise<void>
   deleteMessage(chatId: string, messageId: number): Promise<void>
+  deleteMessages(chatId: string, messageIds: number[]): Promise<void>
   editMessageReplyMarkup(chatId: string, messageId: number, replyMarkup?: TelegramInlineKeyboard): Promise<void>
   answerCallbackQuery(callbackQueryId: string, text?: string, showAlert?: boolean): Promise<void>
 }
@@ -175,6 +176,13 @@ export class TelegramBotApi implements TelegramBotApiAccess {
     await this.call("deleteMessage", {
       chat_id: chatId,
       message_id: messageId,
+    }, z.literal(true))
+  }
+
+  async deleteMessages(chatId: string, messageIds: number[]): Promise<void> {
+    await this.call("deleteMessages", {
+      chat_id: chatId,
+      message_ids: messageIds,
     }, z.literal(true))
   }
 

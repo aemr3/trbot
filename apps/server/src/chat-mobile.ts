@@ -15,7 +15,12 @@ import type {
   ChatMobileState,
   ChatMobileStore,
 } from "@trbot/chat/mobile.ts"
-import type { ChatMessage, ChatSessionDetail } from "@trbot/chat/session.ts"
+import type {
+  ChatMessage,
+  ChatSessionDetail,
+  ChatUndoPreview,
+  ChatUndoResult,
+} from "@trbot/chat/session.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import type { ChatFrame } from "@trbot/protocol/stream.ts"
 
@@ -24,6 +29,7 @@ const TELEGRAM_MESSAGE_LIMIT = 4_096
 const TELEGRAM_CHUNK_SIZE = 4_000
 const TELEGRAM_DRAFT_INTERVAL_MS = 1_000
 const TELEGRAM_TYPING_INTERVAL_MS = 4_000
+const TELEGRAM_DELETE_BATCH_SIZE = 100
 const TELEGRAM_TOOL_RUNNING_ICON = "⚙️"
 const MAX_VOICE_DURATION_SECONDS = 10 * 60
 const POLL_RETRY_MS = 1_000
@@ -31,6 +37,8 @@ const POLL_RETRY_MS = 1_000
 interface MobileChatAccess {
   detail(sessionId: string): Promise<ChatSessionDetail>
   send(sessionId: string, text: string): Promise<ChatMessage>
+  previewUndo(sessionId: string, messageId: string): Promise<ChatUndoPreview>
+  undo(sessionId: string, messageId: string, revertEffects?: boolean): Promise<ChatUndoResult>
 }
 
 interface MobilePermissionAccess {
@@ -54,6 +62,7 @@ interface ApprovalMessage {
 interface StreamingMessage {
   sessionId: string
   runId: string
+  promptMessageId: string | null
   draftId: number
   chatId: string | null
   text: string
@@ -86,6 +95,7 @@ export class ChatMobileController {
   private readonly approvalMessages = new Map<string, ApprovalMessage>()
   private readonly suppressedUserMessages = new Map<string, string[]>()
   private readonly streamingMessages = new Map<string, StreamingMessage>()
+  private readonly undoingTurns = new Set<string>()
   private pendingVoiceMessages: Promise<void> = Promise.resolve()
   private readonly now: () => number
   private readonly draftIntervalMs: number
@@ -176,15 +186,20 @@ export class ChatMobileController {
       case "chatMessage":
         if (frame.message.role === "USER" && this.consumeSuppressed(frame.sessionId, frame.message.text)) return
         if (frame.message.role === "USER") {
-          this.runInBackground(this.deliver(frame.sessionId, `🖥️ ${frame.message.text}`))
+          this.runInBackground(this.deliverTurnPrompt(frame.sessionId, frame.message))
         } else if (frame.message.role === "ASSISTANT" && frame.message.text.trim()) {
           if (!this.finalizeStream(frame.sessionId, frame.message.text)) {
-            this.runInBackground(this.deliver(frame.sessionId, frame.message.text))
+            this.runInBackground(this.deliverAssistant(frame.sessionId, frame.message))
           }
         } else if (frame.message.role === "APP_EVENT" && frame.message.text.trim()) {
           this.runInBackground(this.deliver(frame.sessionId, `Update\n${frame.message.text}`))
         } else if (frame.message.role === "TOOL_RESULT" && frame.message.toolName) {
           return this.completeStreamTool(frame.sessionId, frame.message.toolName, frame.message.isError)
+        }
+        return
+      case "chatMessageRemoved":
+        if (!this.undoingTurns.has(frame.messageId)) {
+          this.runInBackground(this.removeTelegramTurn(frame.messageId))
         }
         return
       case "chatDelta": {
@@ -209,7 +224,7 @@ export class ChatMobileController {
         return
       case "chatRun":
         if (frame.status === "running") {
-          return this.beginStream(frame.sessionId, frame.runId)
+          return this.beginStream(frame.sessionId, frame.runId, frame.promptMessageId ?? null)
         } else if (frame.status === "failed" && frame.error) {
           const message = `Chat failed\n${frame.error}`
           if (!this.finalizeStream(frame.sessionId, message, frame.runId)) {
@@ -234,6 +249,7 @@ export class ChatMobileController {
     this.pairings.clear()
     this.approvalMessages.clear()
     this.suppressedUserMessages.clear()
+    this.undoingTurns.clear()
     for (const stream of this.streamingMessages.values()) this.stopStream(stream)
     this.streamingMessages.clear()
   }
@@ -310,7 +326,7 @@ export class ChatMobileController {
       return
     }
     if (!text) return
-    await this.sendChatText(binding, text)
+    await this.sendChatText(binding, text, message.message_id)
   }
 
   private async handleVoice(
@@ -345,13 +361,18 @@ export class ChatMobileController {
     if (!current || current.externalUserId !== binding.externalUserId || current.externalChatId !== binding.externalChatId) {
       return
     }
-    await this.sendChatText(current, text)
+    await this.sendChatText(current, text, message.message_id)
   }
 
-  private async sendChatText(binding: ChatMobileBinding, text: string): Promise<boolean> {
+  private async sendChatText(
+    binding: ChatMobileBinding,
+    text: string,
+    externalMessageId: number,
+  ): Promise<boolean> {
     this.suppress(binding.sessionId, text)
     try {
-      await this.options.chat.send(binding.sessionId, text)
+      const prompt = await this.options.chat.send(binding.sessionId, text)
+      await this.recordTurnMessages(binding.sessionId, prompt.id, binding.externalChatId, [externalMessageId])
       return true
     } catch (cause) {
       this.removeSuppression(binding.sessionId, text)
@@ -413,6 +434,12 @@ export class ChatMobileController {
       return
     }
 
+    const undo = parseUndoCallback(callback.data)
+    if (undo) {
+      await this.handleUndoCallback(callback, binding, undo)
+      return
+    }
+
     const parsed = parsePermissionCallback(callback.data)
     const request = parsed
       ? this.options.permissions.list().find((candidate) => candidate.id === parsed.requestId)
@@ -443,6 +470,74 @@ export class ChatMobileController {
     }
   }
 
+  private async handleUndoCallback(
+    callback: TelegramCallbackQuery,
+    binding: ChatMobileBinding,
+    undo: UndoCallback,
+  ): Promise<void> {
+    const message = callback.message
+    if (!message) return
+    const turn = await this.options.store.findTurn(undo.promptMessageId, "telegram", binding.externalChatId)
+    if (
+      !turn
+      || turn.sessionId !== binding.sessionId
+      || !turn.externalMessageIds.includes(message.message_id)
+    ) {
+      await this.answerCallback(callback.id, "This undo action is no longer available.", true)
+      await this.removeKeyboard(binding.externalChatId, message.message_id)
+      return
+    }
+
+    if (undo.action === "cancel") {
+      await this.options.telegram?.editMessageReplyMarkup(
+        binding.externalChatId,
+        message.message_id,
+        undoKeyboard(undo.promptMessageId),
+      )
+      await this.answerCallback(callback.id, "Undo cancelled.")
+      return
+    }
+
+    if (undo.action === "preview") {
+      try {
+        const preview = await this.options.chat.previewUndo(binding.sessionId, undo.promptMessageId)
+        await this.options.telegram?.editMessageReplyMarkup(
+          binding.externalChatId,
+          message.message_id,
+          undoChoiceKeyboard(undo.promptMessageId),
+        )
+        await this.answerCallback(callback.id, undoPreviewLabel(preview))
+      } catch (cause) {
+        if (!(cause instanceof ProtocolError)) this.options.onError(cause)
+        await this.answerCallback(
+          callback.id,
+          cause instanceof ProtocolError ? cause.message : "Could not inspect this conversation.",
+          true,
+        )
+      }
+      return
+    }
+
+    this.undoingTurns.add(undo.promptMessageId)
+    try {
+      const result = await this.options.chat.undo(
+        binding.sessionId,
+        undo.promptMessageId,
+        undo.action === "effects",
+      )
+      await this.answerCallback(callback.id, undoResultLabel(result))
+      await this.removeTelegramTurn(undo.promptMessageId)
+    } catch (cause) {
+      if (!(cause instanceof ProtocolError)) this.options.onError(cause)
+      const messageText = cause instanceof ProtocolError
+        ? cause.message
+        : "Could not undo this conversation."
+      await this.answerCallback(callback.id, messageText, true)
+    } finally {
+      this.undoingTurns.delete(undo.promptMessageId)
+    }
+  }
+
   private async sendPermission(request: ChatPermissionRequest): Promise<void> {
     const telegram = this.options.telegram
     if (!telegram || this.approvalMessages.has(request.id)) return
@@ -455,6 +550,10 @@ export class ChatMobileController {
       `Tool approval required\n\n${request.action}\nTool: ${request.toolName}${reason}`,
       { replyMarkup: permissionKeyboard(request), protectContent: true },
     )
+    const promptMessageId = this.streamingMessages.get(request.sessionId)?.promptMessageId
+    if (promptMessageId) {
+      await this.recordTurnMessages(request.sessionId, promptMessageId, binding.externalChatId, [sent.message_id])
+    }
     this.approvalMessages.set(request.id, {
       sessionId: request.sessionId,
       chatId: binding.externalChatId,
@@ -489,11 +588,45 @@ export class ChatMobileController {
     if (binding) await this.sendLong(binding.externalChatId, text)
   }
 
-  private beginStream(sessionId: string, runId: string): Promise<void> {
+  private async deliverTurnPrompt(sessionId: string, message: ChatMessage): Promise<void> {
+    const binding = await this.options.store.findBySession(sessionId)
+    if (!binding) return
+    const sent = await this.sendLong(binding.externalChatId, `🖥️ ${message.text}`)
+    await this.recordTurnMessages(sessionId, message.id, binding.externalChatId, sent.map((item) => item.message_id))
+  }
+
+  private async deliverAssistant(sessionId: string, message: ChatMessage): Promise<void> {
+    const binding = await this.options.store.findBySession(sessionId)
+    if (!binding) return
+    const promptMessageId = await this.promptForAssistant(sessionId, message.id)
+    const sent = await this.sendLong(binding.externalChatId, message.text)
+    if (promptMessageId) {
+      await this.finishTelegramTurn(
+        sessionId,
+        promptMessageId,
+        binding.externalChatId,
+        sent.map((item) => item.message_id),
+      )
+    }
+  }
+
+  private async promptForAssistant(sessionId: string, assistantMessageId: string): Promise<string | null> {
+    const detail = await this.options.chat.detail(sessionId)
+    const assistantIndex = detail.messages.findIndex((message) => message.id === assistantMessageId)
+    for (let index = assistantIndex - 1; index >= 0; index -= 1) {
+      const candidate = detail.messages[index]!
+      if (candidate.role === "USER") return candidate.id
+      if (candidate.role === "APP_EVENT") return null
+    }
+    return null
+  }
+
+  private beginStream(sessionId: string, runId: string, promptMessageId: string | null): Promise<void> {
     this.cancelStream(sessionId)
     const stream: StreamingMessage = {
       sessionId,
       runId,
+      promptMessageId,
       draftId: telegramDraftId(runId),
       chatId: null,
       text: "",
@@ -620,6 +753,9 @@ export class ChatMobileController {
         protectContent: true,
       })
       activity.messageId = sent.message_id
+      if (stream.promptMessageId) {
+        await this.recordTurnMessages(stream.sessionId, stream.promptMessageId, chatId, [sent.message_id])
+      }
       await this.updateStream(stream)
     })
   }
@@ -643,7 +779,10 @@ export class ChatMobileController {
         }
       } else if (failed && telegram && chatId) {
         try {
-          await telegram.sendMessage(chatId, `✕ ${toolName}`, { protectContent: true })
+          const sent = await telegram.sendMessage(chatId, `✕ ${toolName}`, { protectContent: true })
+          if (stream.promptMessageId) {
+            await this.recordTurnMessages(stream.sessionId, stream.promptMessageId, chatId, [sent.message_id])
+          }
         } catch (cause) {
           this.options.onError(cause)
         }
@@ -666,26 +805,95 @@ export class ChatMobileController {
     }
     const chunks = telegramChunks(text)
     if (chunks.length === 0) return
+    const messageIds: number[] = []
 
     if (stream.fallbackMessageId !== null) {
+      messageIds.push(stream.fallbackMessageId)
       if (chunks[0] === stream.lastPreview) {
         for (const chunk of chunks.slice(1)) {
-          await telegram.sendMessage(chatId, chunk, { protectContent: true })
+          const sent = await telegram.sendMessage(chatId, chunk, { protectContent: true })
+          messageIds.push(sent.message_id)
         }
+        await this.finishTelegramTurn(stream.sessionId, stream.promptMessageId, chatId, messageIds)
         return
       }
       try {
         await telegram.editMessageText(chatId, stream.fallbackMessageId, chunks[0]!)
         for (const chunk of chunks.slice(1)) {
-          await telegram.sendMessage(chatId, chunk, { protectContent: true })
+          const sent = await telegram.sendMessage(chatId, chunk, { protectContent: true })
+          messageIds.push(sent.message_id)
         }
+        await this.finishTelegramTurn(stream.sessionId, stream.promptMessageId, chatId, messageIds)
         return
       } catch (cause) {
         this.options.onError(cause)
       }
     }
 
-    for (const chunk of chunks) await telegram.sendMessage(chatId, chunk, { protectContent: true })
+    for (const chunk of chunks) {
+      const sent = await telegram.sendMessage(chatId, chunk, { protectContent: true })
+      messageIds.push(sent.message_id)
+    }
+    await this.finishTelegramTurn(stream.sessionId, stream.promptMessageId, chatId, messageIds)
+  }
+
+  private async finishTelegramTurn(
+    sessionId: string,
+    promptMessageId: string | null,
+    chatId: string,
+    messageIds: number[],
+  ): Promise<void> {
+    if (!promptMessageId || messageIds.length === 0) return
+    const recorded = await this.recordTurnMessages(sessionId, promptMessageId, chatId, messageIds)
+    if (!recorded) return
+    await this.options.telegram?.editMessageReplyMarkup(
+      chatId,
+      messageIds.at(-1)!,
+      undoKeyboard(promptMessageId),
+    )
+  }
+
+  private async recordTurnMessages(
+    sessionId: string,
+    promptMessageId: string,
+    externalChatId: string,
+    externalMessageIds: number[],
+  ): Promise<boolean> {
+    try {
+      for (const externalMessageId of externalMessageIds) {
+        await this.options.store.recordTurnMessage({
+          sessionId,
+          promptMessageId,
+          channel: "telegram",
+          externalChatId,
+          externalMessageId,
+          createdAt: this.now(),
+        })
+      }
+      return true
+    } catch (cause) {
+      this.options.onError(cause)
+      return false
+    }
+  }
+
+  private async removeTelegramTurn(promptMessageId: string): Promise<void> {
+    const telegram = this.options.telegram
+    const turns = await this.options.store.takeTurns(promptMessageId)
+    if (!telegram) return
+    for (const turn of turns) {
+      const messageIds = [...new Set(turn.externalMessageIds)]
+      for (let index = 0; index < messageIds.length; index += TELEGRAM_DELETE_BATCH_SIZE) {
+        try {
+          await telegram.deleteMessages(
+            turn.externalChatId,
+            messageIds.slice(index, index + TELEGRAM_DELETE_BATCH_SIZE),
+          )
+        } catch (cause) {
+          this.options.onError(cause)
+        }
+      }
+    }
   }
 
   private cancelStream(sessionId: string, runId?: string): void {
@@ -717,10 +925,14 @@ export class ChatMobileController {
     return stream.inFlight
   }
 
-  private async sendLong(chatId: string, text: string): Promise<void> {
+  private async sendLong(chatId: string, text: string): Promise<TelegramMessage[]> {
     const telegram = this.options.telegram
-    if (!telegram) return
-    for (const chunk of telegramChunks(text)) await telegram.sendMessage(chatId, chunk, { protectContent: true })
+    if (!telegram) return []
+    const sent: TelegramMessage[] = []
+    for (const chunk of telegramChunks(text)) {
+      sent.push(await telegram.sendMessage(chatId, chunk, { protectContent: true }))
+    }
+    return sent
   }
 
   private async bindingFor(sender: TelegramUser, message: TelegramMessage): Promise<ChatMobileBinding | null> {
@@ -873,6 +1085,62 @@ function permissionKeyboard(request: ChatPermissionRequest): TelegramInlineKeybo
       [{ text: "Deny", callback_data: `permission:d:${request.id}` }],
     ],
   }
+}
+
+function undoKeyboard(promptMessageId: string): TelegramInlineKeyboard {
+  return {
+    inline_keyboard: [[{
+      text: "↩ Undo",
+      callback_data: `undo:${promptMessageId}`,
+    }]],
+  }
+}
+
+function undoChoiceKeyboard(promptMessageId: string): TelegramInlineKeyboard {
+  return {
+    inline_keyboard: [
+      [{ text: "Conversation only", callback_data: `undo:c:${promptMessageId}` }],
+      [{ text: "Conversation + reversible actions", callback_data: `undo:r:${promptMessageId}` }],
+      [{ text: "Cancel", callback_data: `undo:x:${promptMessageId}` }],
+    ],
+  }
+}
+
+interface UndoCallback {
+  action: "preview" | "conversation" | "effects" | "cancel"
+  promptMessageId: string
+}
+
+function parseUndoCallback(data: string): UndoCallback | null {
+  const preview = data.match(/^undo:([0-9a-f-]{36})$/iu)
+  if (preview?.[1]) return { action: "preview", promptMessageId: preview[1] }
+
+  const choice = data.match(/^undo:([crx]):([0-9a-f-]{36})$/iu)
+  if (!choice?.[2]) return null
+  const action = choice[1] === "c" ? "conversation" : choice[1] === "r" ? "effects" : "cancel"
+  return { action, promptMessageId: choice[2] }
+}
+
+function undoPreviewLabel(preview: ChatUndoPreview): string {
+  if (preview.effects.length === 0) return "No recorded actions to restore."
+  const reversible = preview.effects.filter((effect) => effect.reversible).length
+  const preserved = preview.effects.length - reversible
+  const restoredLabel = `${reversible} reversible action${reversible === 1 ? "" : "s"}`
+  return preserved > 0
+    ? `${restoredLabel}; ${preserved} action${preserved === 1 ? "" : "s"} will be kept.`
+    : `${restoredLabel} can be restored.`
+}
+
+function undoResultLabel(result: ChatUndoResult): string {
+  const reverted = result.revertedEffects.length
+  const preserved = result.preservedEffects.length
+  if (reverted > 0) {
+    return `Conversation undone; restored ${reverted} action${reverted === 1 ? "" : "s"}`
+      + (preserved > 0 ? `; kept ${preserved}.` : ".")
+  }
+  return preserved > 0
+    ? `Conversation undone; kept ${preserved} action${preserved === 1 ? "" : "s"}.`
+    : "Conversation undone."
 }
 
 function parsePermissionCallback(data: string): {

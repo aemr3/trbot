@@ -76,6 +76,7 @@ export interface ChatControllerOptions {
 /** A reply being generated right now. */
 interface ChatRun {
   runId: string
+  promptMessageId: string
   seq: number
   text: string
   reasoning: string
@@ -434,7 +435,13 @@ export class ChatController {
       { type: "chatSessions", sessions: this.sessions.map((session) => this.withRunState(session)) },
     ]
     for (const [sessionId, run] of this.runs) {
-      frames.push({ type: "chatRun", sessionId, runId: run.runId, status: "running" })
+      frames.push({
+        type: "chatRun",
+        sessionId,
+        runId: run.runId,
+        status: "running",
+        promptMessageId: run.promptMessageId,
+      })
     }
     return frames
   }
@@ -476,13 +483,19 @@ export class ChatController {
       createdAt: now,
     }
     const runId = crypto.randomUUID()
-    const run: ChatRun = { runId, seq: 0, text: "", reasoning: "" }
+    const run: ChatRun = { runId, promptMessageId: task.id, seq: 0, text: "", reasoning: "" }
 
     await this.options.store.create(session)
     await this.options.store.append(session.id, { message: task, record: userRecord(task) })
     this.runs.set(session.id, run)
     this.options.broadcast({ type: "chatMessage", sessionId: session.id, message: task })
-    this.options.broadcast({ type: "chatRun", sessionId: session.id, runId, status: "running" })
+    this.options.broadcast({
+      type: "chatRun",
+      sessionId: session.id,
+      runId,
+      status: "running",
+      promptMessageId: task.id,
+    })
 
     return {
       sessionId: session.id,
@@ -497,6 +510,7 @@ export class ChatController {
           sessionId: session.id,
           runId,
           status: error ? "failed" : "done",
+          promptMessageId: task.id,
         }
         if (error) frame.error = error
         this.options.broadcast(frame)
@@ -553,6 +567,7 @@ export class ChatController {
           sessionId,
           runId: next.id,
           status: "failed",
+          promptMessageId: next.id,
           error: "Choose a model before sending a message",
         })
         return
@@ -568,6 +583,7 @@ export class ChatController {
           sessionId,
           runId: next.id,
           status: "failed",
+          promptMessageId: next.id,
           error: errorMessage(error),
         })
         return
@@ -585,6 +601,7 @@ export class ChatController {
   ): Promise<void> {
     const run: ChatRun = {
       runId: crypto.randomUUID(),
+      promptMessageId: asked.id,
       seq: 0,
       text: "",
       reasoning: "",
@@ -607,7 +624,13 @@ export class ChatController {
       // it sees that announcement, so the durable status must already say this
       // prompt is being handled rather than still being cancellable.
       await this.options.store.markSent(asked.id)
-      await this.options.broadcast({ type: "chatRun", sessionId, runId: run.runId, status: "running" })
+      await this.options.broadcast({
+        type: "chatRun",
+        sessionId,
+        runId: run.runId,
+        status: "running",
+        promptMessageId: asked.id,
+      })
       await this.announceSessions()
 
       if (this.options.compaction) {
@@ -722,6 +745,7 @@ export class ChatController {
         sessionId,
         runId: run.runId,
         status: "failed",
+        promptMessageId: asked.id,
         error: result.errorMessage,
       })
       await this.announceSessions()
@@ -733,6 +757,7 @@ export class ChatController {
       sessionId,
       runId: run.runId,
       status: result.aborted ? "aborted" : "done",
+      promptMessageId: asked.id,
     })
     if (result.completed && this.options.onTurnSettled) {
       try {

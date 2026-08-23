@@ -194,7 +194,14 @@ describe("server frames the terminal will act on", () => {
       { type: "chatMessage", sessionId: "chat-1", message: CHAT_MESSAGE },
       { type: "chatMessageRemoved", sessionId: "chat-1", messageId: "message-1" },
       { type: "chatDelta", sessionId: "chat-1", runId: "run-1", seq: 1, text: "Ready" },
-      { type: "chatRun", sessionId: "chat-1", runId: "run-1", status: "done", message: CHAT_MESSAGE },
+      {
+        type: "chatRun",
+        sessionId: "chat-1",
+        runId: "run-1",
+        status: "done",
+        promptMessageId: "message-prompt",
+        message: CHAT_MESSAGE,
+      },
       {
         type: "chatQuestionAsked",
         request: {

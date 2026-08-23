@@ -7,13 +7,25 @@ import type {
   TelegramUser,
 } from "@trbot/api/telegram.ts"
 import type { VoiceTranscriber } from "@trbot/ai/voice-transcription.ts"
-import type { ChatMobileBinding, ChatMobileChannel, ChatMobileStore } from "@trbot/chat/mobile.ts"
+import type {
+  ChatMobileBinding,
+  ChatMobileChannel,
+  ChatMobileStore,
+  ChatMobileTurn,
+  ChatMobileTurnMessage,
+} from "@trbot/chat/mobile.ts"
 import type { ChatPermissionReply, ChatPermissionRequest } from "@trbot/chat/permission.ts"
-import { chatBlockText, type ChatMessage, type ChatSessionDetail } from "@trbot/chat/session.ts"
+import {
+  chatBlockText,
+  type ChatMessage,
+  type ChatSessionDetail,
+  type ChatUndoEffect,
+} from "@trbot/chat/session.ts"
 import { ChatMobileController } from "./chat-mobile.ts"
 
 const USER: TelegramUser = { id: 42, is_bot: false, first_name: "Ada", username: "ada" }
 const PERMISSION_ID = "11111111-1111-4111-8111-111111111111"
+const PROMPT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 interface SentTelegramMessage {
   chatId: string
@@ -40,6 +52,7 @@ interface TelegramChatActionUpdate {
 
 class MemoryMobileStore implements ChatMobileStore {
   bindings: ChatMobileBinding[] = []
+  turns: ChatMobileTurn[] = []
 
   async list(): Promise<ChatMobileBinding[]> {
     return [...this.bindings]
@@ -69,6 +82,46 @@ class MemoryMobileStore implements ChatMobileStore {
   async removeSession(sessionId: string): Promise<void> {
     this.bindings = this.bindings.filter((binding) => binding.sessionId !== sessionId)
   }
+
+  async recordTurnMessage(message: ChatMobileTurnMessage): Promise<void> {
+    const existing = this.turns.find((turn) => (
+      turn.promptMessageId === message.promptMessageId
+      && turn.channel === message.channel
+      && turn.externalChatId === message.externalChatId
+    ))
+    if (existing) {
+      if (!existing.externalMessageIds.includes(message.externalMessageId)) {
+        existing.externalMessageIds.push(message.externalMessageId)
+      }
+      return
+    }
+    this.turns.push({
+      sessionId: message.sessionId,
+      promptMessageId: message.promptMessageId,
+      channel: message.channel,
+      externalChatId: message.externalChatId,
+      externalMessageIds: [message.externalMessageId],
+      createdAt: message.createdAt,
+    })
+  }
+
+  async findTurn(
+    promptMessageId: string,
+    channel: ChatMobileChannel,
+    externalChatId: string,
+  ): Promise<ChatMobileTurn | null> {
+    return this.turns.find((turn) => (
+      turn.promptMessageId === promptMessageId
+      && turn.channel === channel
+      && turn.externalChatId === externalChatId
+    )) ?? null
+  }
+
+  async takeTurns(promptMessageId: string): Promise<ChatMobileTurn[]> {
+    const turns = this.turns.filter((turn) => turn.promptMessageId === promptMessageId)
+    this.turns = this.turns.filter((turn) => turn.promptMessageId !== promptMessageId)
+    return turns
+  }
 }
 
 class FakeTelegram implements TelegramBotApiAccess {
@@ -77,8 +130,10 @@ class FakeTelegram implements TelegramBotApiAccess {
   readonly actions: TelegramChatActionUpdate[] = []
   readonly edits: Array<{ chatId: string; messageId: number; text: string }> = []
   readonly deleted: Array<{ chatId: string; messageId: number }> = []
+  readonly deletedBatches: Array<{ chatId: string; messageIds: number[] }> = []
   readonly callbacks: AnsweredTelegramCallback[] = []
   readonly cleared: Array<{ chatId: string; messageId: number }> = []
+  readonly markups: Array<{ chatId: string; messageId: number; replyMarkup: TelegramInlineKeyboard }> = []
   readonly downloadedFileIds: string[] = []
   fileData = new Uint8Array([79, 103, 103, 83])
   failNativeDraft = false
@@ -148,8 +203,20 @@ class FakeTelegram implements TelegramBotApiAccess {
     this.deleted.push({ chatId, messageId })
   }
 
-  async editMessageReplyMarkup(chatId: string, messageId: number): Promise<void> {
-    this.cleared.push({ chatId, messageId })
+  async deleteMessages(chatId: string, messageIds: number[]): Promise<void> {
+    this.deletedBatches.push({ chatId, messageIds })
+  }
+
+  async editMessageReplyMarkup(
+    chatId: string,
+    messageId: number,
+    replyMarkup?: TelegramInlineKeyboard,
+  ): Promise<void> {
+    if (replyMarkup && replyMarkup.inline_keyboard.length > 0) {
+      this.markups.push({ chatId, messageId, replyMarkup })
+    } else {
+      this.cleared.push({ chatId, messageId })
+    }
   }
 
   async answerCallbackQuery(id: string, text?: string, showAlert?: boolean): Promise<void> {
@@ -174,6 +241,9 @@ class FakeVoiceTranscriber implements VoiceTranscriber {
 
 class FakeChat {
   readonly sent: string[] = []
+  readonly previews: Array<{ sessionId: string; messageId: string }> = []
+  readonly undos: Array<{ sessionId: string; messageId: string; revertEffects: boolean }> = []
+  previewEffects: ChatUndoEffect[] = []
   onMessage: ((message: ChatMessage) => void) | null = null
   readonly detail: ChatSessionDetail = {
     session: {
@@ -211,6 +281,27 @@ class FakeChat {
     const queued = message(text, "USER")
     this.onMessage?.(queued)
     return queued
+  }
+
+  async previewUndo(sessionId: string, messageId: string) {
+    this.previews.push({ sessionId, messageId })
+    return { prompt: "Prompt", effects: this.previewEffects }
+  }
+
+  async undo(sessionId: string, messageId: string, revertEffects = false) {
+    this.undos.push({ sessionId, messageId, revertEffects })
+    const revertedEffects = revertEffects
+      ? this.previewEffects.filter((effect) => effect.reversible).map((effect) => effect.description)
+      : []
+    const preservedEffects = this.previewEffects
+      .filter((effect) => !revertEffects || !effect.reversible)
+      .map((effect) => effect.description)
+    return {
+      prompt: "Prompt",
+      removedMessageIds: [messageId],
+      revertedEffects,
+      preservedEffects,
+    }
   }
 }
 
@@ -250,7 +341,12 @@ function harness(now = 2_000) {
   const mobile = new ChatMobileController({
     store,
     telegram,
-    chat: { detail: (sessionId) => chat.getDetail(sessionId), send: (sessionId, text) => chat.send(sessionId, text) },
+    chat: {
+      detail: (sessionId) => chat.getDetail(sessionId),
+      send: (sessionId, text) => chat.send(sessionId, text),
+      previewUndo: (sessionId, messageId) => chat.previewUndo(sessionId, messageId),
+      undo: (sessionId, messageId, revertEffects) => chat.undo(sessionId, messageId, revertEffects),
+    },
     permissions,
     voiceTranscriber,
     onError: (cause) => errors.push(cause),
@@ -395,7 +491,12 @@ test("rejects an expired pairing token without creating a connection", async () 
   const mobile = new ChatMobileController({
     store,
     telegram,
-    chat: { detail: (sessionId) => chat.getDetail(sessionId), send: (sessionId, text) => chat.send(sessionId, text) },
+    chat: {
+      detail: (sessionId) => chat.getDetail(sessionId),
+      send: (sessionId, text) => chat.send(sessionId, text),
+      previewUndo: (sessionId, messageId) => chat.previewUndo(sessionId, messageId),
+      undo: (sessionId, messageId, revertEffects) => chat.undo(sessionId, messageId, revertEffects),
+    },
     permissions,
     onError: () => {},
     now: () => now,
@@ -444,7 +545,13 @@ test("shows native typing until assistant text can stream as a draft", async () 
   await pair(mobile, telegram)
   const runId = "22222222-2222-4222-8222-222222222222"
 
-  await mobile.accept({ type: "chatRun", sessionId: "chat-1", runId, status: "running" })
+  await mobile.accept({
+    type: "chatRun",
+    sessionId: "chat-1",
+    runId,
+    status: "running",
+    promptMessageId: PROMPT_ID,
+  })
   expect(telegram.actions).toEqual([{ chatId: "42", action: "typing" }])
   expect(telegram.drafts).toHaveLength(0)
 
@@ -464,6 +571,190 @@ test("shows native typing until assistant text can stream as a draft", async () 
   expect(telegram.drafts).toHaveLength(1)
   expect(telegram.drafts.some((draft) => draft.text.includes("hidden"))).toBe(false)
   expect(telegram.sent.filter((sent) => sent.text === "Streaming answer")).toHaveLength(1)
+  expect(telegram.markups.at(-1)?.replyMarkup).toEqual({
+    inline_keyboard: [[{ text: "↩ Undo", callback_data: `undo:${PROMPT_ID}` }]],
+  })
+  mobile.destroy()
+})
+
+test("offers conversation-only undo from Telegram and removes the turn messages", async () => {
+  const { mobile, store, telegram, chat } = harness()
+  await mobile.start()
+  await pair(mobile, telegram)
+
+  const prompt = message("Undo this turn", "USER")
+  prompt.id = PROMPT_ID
+  mobile.accept({ type: "chatMessage", sessionId: "chat-1", message: prompt })
+  await until(() => store.turns.some((turn) => turn.promptMessageId === PROMPT_ID))
+
+  const runId = "88888888-8888-4888-8888-888888888888"
+  await mobile.accept({
+    type: "chatRun",
+    sessionId: "chat-1",
+    runId,
+    status: "running",
+    promptMessageId: PROMPT_ID,
+  })
+  mobile.accept({
+    type: "chatMessage",
+    sessionId: "chat-1",
+    message: message("Answer to remove", "ASSISTANT"),
+  })
+  await until(() => telegram.markups.length === 1)
+  const answerMessageId = telegram.markups[0]!.messageId
+
+  telegram.push(update(2, undefined, {
+    id: "undo-1",
+    from: USER,
+    message: telegramMessage("Answer to remove", answerMessageId),
+    data: `undo:${PROMPT_ID}`,
+  }))
+  await until(() => telegram.markups.length === 2)
+
+  expect(chat.previews).toEqual([{ sessionId: "chat-1", messageId: PROMPT_ID }])
+  expect(chat.undos).toEqual([])
+  expect(telegram.callbacks.at(-1)).toEqual({
+    id: "undo-1",
+    text: "No recorded actions to restore.",
+    showAlert: false,
+  })
+  expect(telegram.markups.at(-1)?.replyMarkup).toEqual({
+    inline_keyboard: [
+      [{ text: "Conversation only", callback_data: `undo:c:${PROMPT_ID}` }],
+      [{ text: "Conversation + reversible actions", callback_data: `undo:r:${PROMPT_ID}` }],
+      [{ text: "Cancel", callback_data: `undo:x:${PROMPT_ID}` }],
+    ],
+  })
+
+  telegram.push(update(3, undefined, {
+    id: "undo-2",
+    from: USER,
+    message: telegramMessage("Answer to remove", answerMessageId),
+    data: `undo:c:${PROMPT_ID}`,
+  }))
+  await until(() => chat.undos.length === 1)
+  await until(() => telegram.deletedBatches.length === 1)
+
+  expect(chat.undos).toEqual([{
+    sessionId: "chat-1",
+    messageId: PROMPT_ID,
+    revertEffects: false,
+  }])
+  expect(telegram.callbacks.at(-1)?.text).toBe("Conversation undone.")
+  expect(telegram.deletedBatches).toEqual([{ chatId: "42", messageIds: [2, answerMessageId] }])
+  expect(store.turns).toEqual([])
+  mobile.destroy()
+})
+
+test("restores reversible actions when that Telegram undo choice is selected", async () => {
+  const { mobile, store, telegram, chat } = harness()
+  chat.previewEffects = [
+    { description: "Market monitor was created", reversible: true },
+    { description: "Broker order was submitted", reversible: false },
+  ]
+  await mobile.start()
+  await pair(mobile, telegram)
+  await store.recordTurnMessage({
+    sessionId: "chat-1",
+    promptMessageId: PROMPT_ID,
+    channel: "telegram",
+    externalChatId: "42",
+    externalMessageId: 21,
+    createdAt: 2_000,
+  })
+
+  telegram.push(update(2, undefined, {
+    id: "undo-preview",
+    from: USER,
+    message: telegramMessage("Answer to remove", 21),
+    data: `undo:${PROMPT_ID}`,
+  }))
+  await until(() => telegram.markups.length === 1)
+  expect(telegram.callbacks.at(-1)?.text).toBe("1 reversible action; 1 action will be kept.")
+
+  telegram.push(update(3, undefined, {
+    id: "undo-effects",
+    from: USER,
+    message: telegramMessage("Answer to remove", 21),
+    data: `undo:r:${PROMPT_ID}`,
+  }))
+  await until(() => chat.undos.length === 1)
+  await until(() => telegram.deletedBatches.length === 1)
+
+  expect(chat.undos).toEqual([{
+    sessionId: "chat-1",
+    messageId: PROMPT_ID,
+    revertEffects: true,
+  }])
+  expect(telegram.callbacks.at(-1)?.text).toBe("Conversation undone; restored 1 action; kept 1.")
+  expect(telegram.deletedBatches).toEqual([{ chatId: "42", messageIds: [21] }])
+  mobile.destroy()
+})
+
+test("can cancel a Telegram undo after previewing it", async () => {
+  const { mobile, store, telegram, chat } = harness()
+  await mobile.start()
+  await pair(mobile, telegram)
+  await store.recordTurnMessage({
+    sessionId: "chat-1",
+    promptMessageId: PROMPT_ID,
+    channel: "telegram",
+    externalChatId: "42",
+    externalMessageId: 21,
+    createdAt: 2_000,
+  })
+
+  telegram.push(update(2, undefined, {
+    id: "undo-preview",
+    from: USER,
+    message: telegramMessage("Answer to keep", 21),
+    data: `undo:${PROMPT_ID}`,
+  }))
+  await until(() => telegram.markups.length === 1)
+  telegram.push(update(3, undefined, {
+    id: "undo-cancel",
+    from: USER,
+    message: telegramMessage("Answer to keep", 21),
+    data: `undo:x:${PROMPT_ID}`,
+  }))
+  await until(() => telegram.markups.length === 2)
+
+  expect(chat.undos).toEqual([])
+  expect(store.turns).toHaveLength(1)
+  expect(telegram.deletedBatches).toEqual([])
+  expect(telegram.markups.at(-1)?.replyMarkup).toEqual({
+    inline_keyboard: [[{ text: "↩ Undo", callback_data: `undo:${PROMPT_ID}` }]],
+  })
+  expect(telegram.callbacks.at(-1)?.text).toBe("Undo cancelled.")
+  mobile.destroy()
+})
+
+test("removes Telegram turns when the conversation is undone elsewhere", async () => {
+  const { mobile, store, telegram } = harness()
+  await mobile.start()
+  await pair(mobile, telegram)
+  await store.recordTurnMessage({
+    sessionId: "chat-1",
+    promptMessageId: PROMPT_ID,
+    channel: "telegram",
+    externalChatId: "42",
+    externalMessageId: 21,
+    createdAt: 2_000,
+  })
+  await store.recordTurnMessage({
+    sessionId: "chat-1",
+    promptMessageId: PROMPT_ID,
+    channel: "telegram",
+    externalChatId: "42",
+    externalMessageId: 22,
+    createdAt: 2_000,
+  })
+
+  mobile.accept({ type: "chatMessageRemoved", sessionId: "chat-1", messageId: PROMPT_ID })
+  await until(() => telegram.deletedBatches.length === 1)
+
+  expect(telegram.deletedBatches).toEqual([{ chatId: "42", messageIds: [21, 22] }])
+  expect(store.turns).toEqual([])
   mobile.destroy()
 })
 
@@ -473,7 +764,13 @@ test("shows exact tool names with a cog and removes successful tools", async () 
   await pair(mobile, telegram)
   const runId = "55555555-5555-4555-8555-555555555555"
 
-  await mobile.accept({ type: "chatRun", sessionId: "chat-1", runId, status: "running" })
+  await mobile.accept({
+    type: "chatRun",
+    sessionId: "chat-1",
+    runId,
+    status: "running",
+    promptMessageId: PROMPT_ID,
+  })
   const searchStarted = mobile.accept({
     type: "chatDelta",
     sessionId: "chat-1",
@@ -535,7 +832,13 @@ test("exposes a promise that settles after a complete tool-start message reaches
   await pair(mobile, telegram)
   const runId = "66666666-6666-4666-8666-666666666666"
 
-  await mobile.accept({ type: "chatRun", sessionId: "chat-1", runId, status: "running" })
+  await mobile.accept({
+    type: "chatRun",
+    sessionId: "chat-1",
+    runId,
+    status: "running",
+    promptMessageId: PROMPT_ID,
+  })
 
   const gate = Promise.withResolvers<void>()
   telegram.nextMessageGate = gate.promise
@@ -567,7 +870,13 @@ test("falls back to editing one message when native drafts fail", async () => {
   telegram.failNativeDraft = true
   const runId = "33333333-3333-4333-8333-333333333333"
 
-  await mobile.accept({ type: "chatRun", sessionId: "chat-1", runId, status: "running" })
+  await mobile.accept({
+    type: "chatRun",
+    sessionId: "chat-1",
+    runId,
+    status: "running",
+    promptMessageId: PROMPT_ID,
+  })
   expect(telegram.actions).toEqual([{ chatId: "42", action: "typing" }])
   expect(errors).toHaveLength(0)
   expect(telegram.sent.some((sent) => sent.text === "Thinking...")).toBe(false)
@@ -595,7 +904,13 @@ test("streams the tail of a long reply and persists complete Unicode-safe chunks
   const runId = "44444444-4444-4444-8444-444444444444"
   const answer = "😀".repeat(2_500)
 
-  mobile.accept({ type: "chatRun", sessionId: "chat-1", runId, status: "running" })
+  mobile.accept({
+    type: "chatRun",
+    sessionId: "chat-1",
+    runId,
+    status: "running",
+    promptMessageId: PROMPT_ID,
+  })
   await until(() => telegram.actions.length === 1)
   mobile.accept({ type: "chatDelta", sessionId: "chat-1", runId, seq: 1, text: answer })
   await until(() => telegram.drafts.length === 1)
