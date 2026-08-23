@@ -365,6 +365,9 @@ export class CandlestickChart {
       flexGrow: 1,
       width: "100%",
       wrapMode: "none",
+      // Braille and tmux placeholders are text internally, but dragging over a
+      // chart is a chart gesture, not a request to copy its drawing.
+      selectable: false,
       onSizeChange: () => this.renderBodyAfterNextFrame(),
     })
     this.plotBitmap = new ChartBitmapRenderable(renderer, {
@@ -378,11 +381,13 @@ export class CandlestickChart {
       width: "100%",
       fg: AXIS_COLOR,
       wrapMode: "none",
+      selectable: false,
     })
     this.axis = new TextRenderable(renderer, {
       content: "",
       width: 10,
       wrapMode: "none",
+      selectable: false,
     })
     plotColumn.add(this.plotText)
     plotColumn.add(this.plotBitmap)

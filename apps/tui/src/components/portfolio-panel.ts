@@ -162,6 +162,9 @@ export class PortfolioPanel {
       width: "100%",
       flexGrow: 1,
       wrapMode: "none",
+      // Block bars and tmux image placeholders are an interactive plot, not
+      // copyable prose. Selection elsewhere in the panel remains available.
+      selectable: false,
       onSizeChange: () => this.liveRender.schedule(),
     })
     this.barsBitmap = new ChartBitmapRenderable(renderer, {
@@ -176,6 +179,7 @@ export class PortfolioPanel {
       flexShrink: 0,
       fg: MUTED_COLOR,
       wrapMode: "none",
+      selectable: false,
     })
     this.root.add(header)
     this.root.add(this.metrics)

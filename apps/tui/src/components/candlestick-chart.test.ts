@@ -518,6 +518,36 @@ test("pins the OHLC line to a clicked candle until it is cleared", async () => {
   setup.renderer.destroy()
 })
 
+test("does not start text selection when dragging across the chart", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 20 })
+  const source: CandleSource = {
+    async loadCandles(instrumentUid, range, interval) {
+      return {
+        instrumentUid,
+        range,
+        interval,
+        availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+        intervalMs: 300_000,
+        currency: "TRY",
+        candles,
+      }
+    },
+  }
+  const chart = new CandlestickChart(setup.renderer, { source })
+  setup.renderer.root.add(chart.root)
+  chart.setInstrument({ uid: "stock-1", symbol: "TUPRS", displayName: "TUPRS" })
+
+  const frame = await setup.waitForFrame((value) => braille.test(value))
+  const plotRow = frame.split("\n").findIndex((line) => braille.test(line))
+  expect(plotRow).toBeGreaterThanOrEqual(0)
+  await setup.mockMouse.drag(1, plotRow, 30, plotRow)
+
+  expect(setup.renderer.getSelection()).toBeNull()
+
+  chart.destroy()
+  setup.renderer.destroy()
+})
+
 test("applies a live tick that arrives while candle history is loading", async () => {
   const setup = await createTestRenderer({ width: 60, height: 16 })
   interface DeferredSeries {

@@ -145,6 +145,29 @@ test("selects a day from the chart and walks its profit with the keyboard", asyn
   renderer.destroy()
 })
 
+test("does not start text selection when dragging across the performance chart", async () => {
+  const { renderer, renderOnce, captureCharFrame, mockMouse, panel } = await mountPanel()
+
+  panel.showPortfolio(portfolio)
+  panel.showPerformance(performance())
+  await Bun.sleep(0)
+  await renderOnce()
+
+  const lines = captureCharFrame().split("\n")
+  const metrics = lines.findIndex((line) => line.includes("Week P/L"))
+  const zero = lines.findIndex((line, index) => index > metrics && line.includes("───"))
+  expect(zero).toBeGreaterThan(metrics)
+  await mockMouse.drag(1, zero, 30, zero)
+  expect(renderer.getSelection()).toBeNull()
+
+  const labels = lines.findIndex((line) => line.includes("10") && line.includes("11") && line.includes("12"))
+  expect(labels).toBeGreaterThan(zero)
+  await mockMouse.drag(1, labels, 30, labels)
+  expect(renderer.getSelection()).toBeNull()
+
+  renderer.destroy()
+})
+
 test("says so rather than drawing an empty field", async () => {
   const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel()
 
