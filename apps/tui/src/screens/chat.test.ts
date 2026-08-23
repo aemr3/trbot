@@ -1584,6 +1584,41 @@ test("shows every session's active monitor and loop counts in the sessions modal
   renderer.destroy()
 })
 
+test("shows mobile connections for every session in the sessions modal", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  const first = await chats.create()
+  const second = await chats.create()
+  chats.mobile = async (sessionId) => ({
+    available: true,
+    connection: sessionId === second.id
+      ? { sessionId, channel: "telegram", displayName: "@ada", connectedAt: 1_000 }
+      : null,
+  })
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+  screen.acceptSessions([
+    { ...first, title: "Terminal only" },
+    { ...second, title: "Connected chat" },
+  ])
+
+  mockInput.pressKey("s", { ctrl: true })
+  const modal = await waitForFrame((frame) => frame.includes("Sessions") && frame.includes("📱"))
+  const lines = modal.split("\n")
+  expect(lines.find((line) => line.includes("Connected chat"))).toContain("📱 Connected chat")
+  expect(lines.find((line) => line.includes("Terminal only"))).not.toContain("📱")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("reopens the chat session that was selected last", async () => {
   const chats = fakeChats()
   const first = await chats.create()

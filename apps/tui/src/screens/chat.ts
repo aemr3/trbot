@@ -1454,6 +1454,7 @@ export class ChatScreen {
       currentId: this.selectedSessionId,
       monitorCounts: this.armedMonitorCountBySession,
       loopCounts: this.activeLoopCountBySession,
+      mobileConnections: this.mobileConnectedBySession,
       onSelect: (sessionId) => {
         this.selectSession(sessionId)
         this.closeModal()
@@ -1467,6 +1468,7 @@ export class ChatScreen {
     void Promise.all([
       this.refreshAllMarketMonitorCounts(),
       this.refreshAllActiveLoopCounts(),
+      this.refreshAllMobileConnections(),
     ])
   }
 
@@ -1794,6 +1796,25 @@ export class ChatScreen {
     }
   }
 
+  private async refreshAllMobileConnections(): Promise<void> {
+    const sessions = this.sessions.filter((session) => session.parentSessionId === null)
+    const connections = await Promise.all(sessions.map(async (session) => {
+      try {
+        const state = await this.options.chats.mobile(session.id)
+        return { sessionId: session.id, connected: state.connection !== null }
+      } catch (error) {
+        this.options.logs.error("Mobile chat", error)
+        return null
+      }
+    }))
+    if (this.destroyed) return
+    for (const connection of connections) {
+      if (connection) this.mobileConnectedBySession.set(connection.sessionId, connection.connected)
+    }
+    if (this.selectedSessionId) this.refreshCommandMenu()
+    this.render.schedule()
+  }
+
   private refreshCommandMenu(): void {
     const session = this.selectedSession()
     const mobileCommand: MobileCommandName | null = !session
@@ -1873,6 +1894,7 @@ export class ChatScreen {
         this.selectedSessionId,
         this.armedMonitorCountBySession,
         this.activeLoopCountBySession,
+        this.mobileConnectedBySession,
       )
     }
     if (this.modal instanceof SubagentSessionModal) {

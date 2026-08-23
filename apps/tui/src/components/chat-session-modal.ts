@@ -25,6 +25,7 @@ export interface ChatSessionModalOptions {
   sessions: ChatSession[]
   monitorCounts?: ReadonlyMap<string, number>
   loopCounts?: ReadonlyMap<string, number>
+  mobileConnections?: ReadonlyMap<string, boolean>
   /** The chat on screen behind the modal, marked so a trader knows where they are. */
   currentId: string | null
   onSelect: (sessionId: string) => void
@@ -53,6 +54,7 @@ export class ChatSessionModal {
   private currentId: string | null
   private monitorCounts: ReadonlyMap<string, number>
   private loopCounts: ReadonlyMap<string, number>
+  private mobileConnections: ReadonlyMap<string, boolean>
   private highlighted: string | null = null
   private pendingDelete: string | null = null
   private destroyed = false
@@ -65,6 +67,7 @@ export class ChatSessionModal {
     this.currentId = options.currentId
     this.monitorCounts = options.monitorCounts ?? new Map()
     this.loopCounts = options.loopCounts ?? new Map()
+    this.mobileConnections = options.mobileConnections ?? new Map()
     this.highlighted = options.currentId ?? this.sessions[0]?.id ?? null
 
     this.root = new BoxRenderable(renderer, {
@@ -118,12 +121,14 @@ export class ChatSessionModal {
     currentId: string | null,
     monitorCounts: ReadonlyMap<string, number> = this.monitorCounts,
     loopCounts: ReadonlyMap<string, number> = this.loopCounts,
+    mobileConnections: ReadonlyMap<string, boolean> = this.mobileConnections,
   ): void {
     if (this.destroyed) return
     this.sessions = order(sessions)
     this.currentId = currentId
     this.monitorCounts = monitorCounts
     this.loopCounts = loopCounts
+    this.mobileConnections = mobileConnections
     if (!this.sessions.some((session) => session.id === this.highlighted)) {
       this.highlighted = currentId ?? this.sessions[0]?.id ?? null
     }
@@ -205,9 +210,10 @@ export class ChatSessionModal {
 
   private sessionRow(session: ChatSession, now: number): StyledText {
     const current = session.id === this.currentId
+    const title = `${this.mobileConnections.get(session.id) ? "📱 " : ""}${session.title}`
     const chunks: TextChunk[] = [
       fg(current ? ACCENT_COLOR : MUTED_COLOR)(current ? "• " : "  "),
-      fg(VALUE_COLOR)(session.title),
+      fg(VALUE_COLOR)(title),
     ]
     const marks: string[] = [formatWhen(session.updatedAt, now)]
     if (session.running) marks.push("answering")

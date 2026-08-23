@@ -37,6 +37,7 @@ async function mountModal(options: {
   currentId?: string | null
   monitorCounts?: ReadonlyMap<string, number>
   loopCounts?: ReadonlyMap<string, number>
+  mobileConnections?: ReadonlyMap<string, boolean>
 }) {
   const harness = await createTestRenderer({ width: 90, height: 26 })
   const selected: string[] = []
@@ -48,6 +49,7 @@ async function mountModal(options: {
     currentId: options.currentId ?? null,
     monitorCounts: options.monitorCounts,
     loopCounts: options.loopCounts,
+    mobileConnections: options.mobileConnections,
     now: () => NOW,
     onSelect: (sessionId) => {
       selected.push(sessionId)
@@ -135,6 +137,27 @@ test("shows armed monitor counts beside their sessions", async () => {
   await renderOnce()
 
   expect(captureCharFrame()).toContain("2 monitors")
+
+  modal.destroy()
+  renderer.destroy()
+})
+
+test("marks only sessions connected to mobile chat", async () => {
+  const { modal, renderOnce, captureCharFrame, renderer } = await mountModal({
+    sessions: [
+      session({ id: "chat-mobile", title: "Connected chat", updatedAt: TODAY }),
+      session({ id: "chat-local", title: "Terminal only", updatedAt: LAST_WEEK }),
+    ],
+    mobileConnections: new Map([
+      ["chat-mobile", true],
+      ["chat-local", false],
+    ]),
+  })
+  await renderOnce()
+
+  const lines = captureCharFrame().split("\n")
+  expect(lines.find((line) => line.includes("Connected chat"))).toContain("📱 Connected chat")
+  expect(lines.find((line) => line.includes("Terminal only"))).not.toContain("📱")
 
   modal.destroy()
   renderer.destroy()
