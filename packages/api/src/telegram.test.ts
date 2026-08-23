@@ -33,6 +33,45 @@ test("long polls only private messages and callback queries from the next offset
   expect(updates[0]?.message?.text).toBe("hello")
 })
 
+test("publishes bot commands and selects Telegram's commands menu", async () => {
+  const requests: Request[] = []
+  const api = new TelegramBotApi("123:secret", {
+    fetch: async (input, init) => {
+      requests.push(new Request(input, init))
+      return Response.json({ ok: true, result: true })
+    },
+  })
+
+  await api.setMyCommands([
+    { command: "balance", description: "Show account balance" },
+    { command: "exitall", description: "Exit all open positions" },
+  ])
+  await api.setChatMenuButton({ type: "commands" })
+
+  expect(new URL(requests[0]!.url).pathname).toEndWith("/setMyCommands")
+  expect(await requests[0]!.json()).toEqual({
+    commands: [
+      { command: "balance", description: "Show account balance" },
+      { command: "exitall", description: "Exit all open positions" },
+    ],
+  })
+  expect(new URL(requests[1]!.url).pathname).toEndWith("/setChatMenuButton")
+  expect(await requests[1]!.json()).toEqual({ menu_button: { type: "commands" } })
+})
+
+test("rejects invalid Telegram command definitions before sending them", async () => {
+  let called = false
+  const api = new TelegramBotApi("123:secret", {
+    fetch: async () => {
+      called = true
+      return Response.json({ ok: true, result: true })
+    },
+  })
+
+  await expect(api.setMyCommands([{ command: "Not-Valid", description: "Invalid" }])).rejects.toThrow()
+  expect(called).toBe(false)
+})
+
 test("downloads a Telegram voice file after resolving its server path", async () => {
   const requests: Request[] = []
   const api = new TelegramBotApi("123:secret", {

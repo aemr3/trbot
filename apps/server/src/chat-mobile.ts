@@ -1,4 +1,5 @@
 import type {
+  TelegramBotCommand,
   TelegramBotApiAccess,
   TelegramCallbackQuery,
   TelegramInlineKeyboard,
@@ -33,6 +34,56 @@ const TELEGRAM_DELETE_BATCH_SIZE = 100
 const TELEGRAM_TOOL_RUNNING_ICON = "⚙️"
 const MAX_VOICE_DURATION_SECONDS = 10 * 60
 const POLL_RETRY_MS = 1_000
+
+interface TelegramChatCommand extends TelegramBotCommand {
+  prompt: string
+}
+
+const TELEGRAM_CHAT_COMMANDS: TelegramChatCommand[] = [
+  {
+    command: "balance",
+    description: "Show account balance and collateral",
+    prompt: "Use get_account to report my current account balance and available collateral.",
+  },
+  {
+    command: "positions",
+    description: "List open VIOP positions",
+    prompt: "Use get_account to list my current open VIOP positions.",
+  },
+  {
+    command: "orders",
+    description: "List pending VIOP orders",
+    prompt: "Use list_pending_orders to show all of my current pending VIOP orders.",
+  },
+  {
+    command: "monitors",
+    description: "List this chat's market monitors",
+    prompt: "Use list_market_monitors to list the active market monitors for this chat.",
+  },
+  {
+    command: "loops",
+    description: "List this chat's scheduled loops",
+    prompt: "Use list_loops to list the scheduled loops for this chat.",
+  },
+  {
+    command: "cancelall",
+    description: "Cancel all pending VIOP orders",
+    prompt: "Cancel all pending VIOP orders. First use list_pending_orders, then use cancel_pending_viop_orders for every pending order.",
+  },
+  {
+    command: "exitall",
+    description: "Exit all open VIOP positions",
+    prompt: "Use exit_all_viop_positions to exit every current open VIOP position.",
+  },
+]
+
+const TELEGRAM_COMMAND_PROMPTS = new Map(
+  TELEGRAM_CHAT_COMMANDS.map(({ command, prompt }) => [command, prompt]),
+)
+const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
+  ...TELEGRAM_CHAT_COMMANDS.map(({ command, description }) => ({ command, description })),
+  { command: "disconnect", description: "Disconnect this Telegram chat" },
+]
 
 interface MobileChatAccess {
   detail(sessionId: string): Promise<ChatSessionDetail>
@@ -110,11 +161,20 @@ export class ChatMobileController {
 
   /** Validates the bot token, restores virtual permission clients, then polls outbound. */
   async start(): Promise<void> {
-    if (!this.options.telegram || this.destroyed) return
+    const telegram = this.options.telegram
+    if (!telegram || this.destroyed) return
     try {
-      const bot = await this.options.telegram.getMe(AbortSignal.timeout(10_000))
+      const bot = await telegram.getMe(AbortSignal.timeout(10_000))
       if (!bot.username) throw new Error("The configured Telegram bot has no username")
       this.botUsername = bot.username
+      try {
+        await Promise.all([
+          telegram.setMyCommands(TELEGRAM_BOT_COMMANDS),
+          telegram.setChatMenuButton({ type: "commands" }),
+        ])
+      } catch (cause) {
+        this.options.onError(cause)
+      }
       await this.reconcileClients()
       for (const request of this.options.permissions.list()) this.runInBackground(this.sendPermission(request))
 
@@ -292,10 +352,12 @@ export class ChatMobileController {
     const text = message.text?.trim()
     if (!telegram || !sender || sender.is_bot || message.chat.type !== "private" || (!text && !message.voice)) return
 
-    if (text) {
-      const start = text.match(/^\/start(?:\s+([A-Za-z0-9_-]+))?$/u)
-      if (start) {
-        const token = start[1]
+    const command = text ? parseTelegramCommand(text, this.botUsername) : null
+    if (command && !command.addressedToThisBot) return
+
+    if (command) {
+      if (command.name === "start") {
+        const token = command.argument
         if (!token) {
           const binding = await this.bindingFor(sender, message)
           if (binding) {
@@ -307,7 +369,7 @@ export class ChatMobileController {
         return
       }
 
-      if (text === "/disconnect") {
+      if (command.name === "disconnect" && !command.argument) {
         const binding = await this.bindingFor(sender, message)
         if (!binding) return
         await this.sendLong(message.chat.id.toString(), "Disconnected from trbot.")
@@ -326,7 +388,10 @@ export class ChatMobileController {
       return
     }
     if (!text) return
-    await this.sendChatText(binding, text, message.message_id)
+    const commandPrompt = command && !command.argument
+      ? TELEGRAM_COMMAND_PROMPTS.get(command.name)
+      : undefined
+    await this.sendChatText(binding, commandPrompt ?? text, message.message_id)
   }
 
   private async handleVoice(
@@ -1023,6 +1088,23 @@ function uniqueBindings(bindings: Array<ChatMobileBinding | null>): ChatMobileBi
 function telegramDisplayName(user: TelegramUser): string {
   if (user.username) return `@${user.username}`
   return [user.first_name, user.last_name].filter(Boolean).join(" ")
+}
+
+interface ParsedTelegramCommand {
+  name: string
+  argument: string | null
+  addressedToThisBot: boolean
+}
+
+function parseTelegramCommand(text: string, botUsername: string | null): ParsedTelegramCommand | null {
+  const match = text.match(/^\/([a-z][a-z0-9_]*)(?:@([a-z0-9_]+))?(?:\s+(.+))?$/iu)
+  if (!match?.[1]) return null
+  const target = match[2]
+  return {
+    name: match[1].toLowerCase(),
+    argument: match[3]?.trim() || null,
+    addressedToThisBot: !target || target.toLowerCase() === botUsername?.toLowerCase(),
+  }
 }
 
 function telegramDraftId(runId: string): number {

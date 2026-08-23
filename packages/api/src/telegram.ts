@@ -59,12 +59,33 @@ export interface TelegramInlineKeyboard {
   inline_keyboard: TelegramInlineButton[][]
 }
 
-type TelegramRequestValue = string | number | boolean | undefined | string[] | number[] | TelegramInlineKeyboard
+export const TelegramBotCommandSchema = z.object({
+  command: z.string().regex(/^[a-z0-9_]{1,32}$/u),
+  description: z.string().min(1).max(256),
+})
+export type TelegramBotCommand = z.infer<typeof TelegramBotCommandSchema>
+
+export interface TelegramMenuButtonCommands {
+  type: "commands"
+}
+
+type TelegramRequestValue =
+  | string
+  | number
+  | boolean
+  | undefined
+  | string[]
+  | number[]
+  | TelegramBotCommand[]
+  | TelegramMenuButtonCommands
+  | TelegramInlineKeyboard
 type TelegramRequestBody = Readonly<Record<string, TelegramRequestValue>>
 type TelegramFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
 export interface TelegramBotApiAccess {
   getMe(signal?: AbortSignal): Promise<TelegramUser>
+  setMyCommands(commands: TelegramBotCommand[]): Promise<void>
+  setChatMenuButton(menuButton: TelegramMenuButtonCommands): Promise<void>
   getUpdates(offset: number, signal?: AbortSignal): Promise<TelegramUpdate[]>
   downloadFile(fileId: string, signal?: AbortSignal): Promise<Uint8Array>
   sendChatAction(chatId: string, action: "typing"): Promise<void>
@@ -106,6 +127,15 @@ export class TelegramBotApi implements TelegramBotApiAccess {
 
   getMe(signal?: AbortSignal): Promise<TelegramUser> {
     return this.call("getMe", {}, TelegramUserSchema, signal)
+  }
+
+  async setMyCommands(commands: TelegramBotCommand[]): Promise<void> {
+    const validated = z.array(TelegramBotCommandSchema).max(100).parse(commands)
+    await this.call("setMyCommands", { commands: validated }, z.literal(true))
+  }
+
+  async setChatMenuButton(menuButton: TelegramMenuButtonCommands): Promise<void> {
+    await this.call("setChatMenuButton", { menu_button: menuButton }, z.literal(true))
   }
 
   getUpdates(offset: number, signal?: AbortSignal): Promise<TelegramUpdate[]> {

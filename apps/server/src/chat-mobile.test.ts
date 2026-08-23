@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test"
 import type {
   TelegramBotApiAccess,
+  TelegramBotCommand,
   TelegramInlineKeyboard,
+  TelegramMenuButtonCommands,
   TelegramMessage,
   TelegramUpdate,
   TelegramUser,
@@ -125,6 +127,8 @@ class MemoryMobileStore implements ChatMobileStore {
 }
 
 class FakeTelegram implements TelegramBotApiAccess {
+  readonly commandRegistrations: TelegramBotCommand[][] = []
+  readonly menuButtons: TelegramMenuButtonCommands[] = []
   readonly sent: SentTelegramMessage[] = []
   readonly drafts: TelegramDraftUpdate[] = []
   readonly actions: TelegramChatActionUpdate[] = []
@@ -143,6 +147,14 @@ class FakeTelegram implements TelegramBotApiAccess {
 
   async getMe(): Promise<TelegramUser> {
     return { id: 1, is_bot: true, first_name: "trbot", username: "trbot_test_bot" }
+  }
+
+  async setMyCommands(commands: TelegramBotCommand[]): Promise<void> {
+    this.commandRegistrations.push(commands)
+  }
+
+  async setChatMenuButton(menuButton: TelegramMenuButtonCommands): Promise<void> {
+    this.menuButtons.push(menuButton)
   }
 
   getUpdates(_offset: number, signal?: AbortSignal): Promise<TelegramUpdate[]> {
@@ -356,6 +368,61 @@ function harness(now = 2_000) {
   chat.onMessage = (queued) => mobile.accept({ type: "chatMessage", sessionId: "chat-1", message: queued })
   return { mobile, store, telegram, chat, permissions, voiceTranscriber, errors }
 }
+
+test("publishes Telegram chat commands in the native commands menu", async () => {
+  const { mobile, telegram } = harness()
+
+  await mobile.start()
+
+  expect(telegram.commandRegistrations).toHaveLength(1)
+  expect(telegram.commandRegistrations[0]?.map((command) => command.command)).toEqual([
+    "balance",
+    "positions",
+    "orders",
+    "monitors",
+    "loops",
+    "cancelall",
+    "exitall",
+    "disconnect",
+  ])
+  expect(telegram.menuButtons).toEqual([{ type: "commands" }])
+  mobile.destroy()
+})
+
+test("routes Telegram commands through the connected chat", async () => {
+  const { mobile, telegram, chat } = harness()
+  await mobile.start()
+  await pair(mobile, telegram)
+
+  const commands = [
+    "/balance@trbot_test_bot",
+    "/positions",
+    "/orders",
+    "/monitors",
+    "/loops",
+    "/cancelall",
+    "/exitall",
+  ]
+  for (const [index, command] of commands.entries()) {
+    telegram.push(update(index + 2, telegramMessage(command, index + 2)))
+  }
+  await until(() => chat.sent.length === commands.length)
+
+  expect(chat.sent).toEqual([
+    "Use get_account to report my current account balance and available collateral.",
+    "Use get_account to list my current open VIOP positions.",
+    "Use list_pending_orders to show all of my current pending VIOP orders.",
+    "Use list_market_monitors to list the active market monitors for this chat.",
+    "Use list_loops to list the scheduled loops for this chat.",
+    "Cancel all pending VIOP orders. First use list_pending_orders, then use cancel_pending_viop_orders for every pending order.",
+    "Use exit_all_viop_positions to exit every current open VIOP position.",
+  ])
+
+  telegram.push(update(9, telegramMessage("/balance@another_bot", 9)))
+  await Bun.sleep(5)
+  expect(chat.sent).toHaveLength(commands.length)
+  mobile.destroy()
+})
 
 test("pairs a private Telegram account and continues the same chat", async () => {
   const { mobile, store, telegram, chat, permissions, errors } = harness()
