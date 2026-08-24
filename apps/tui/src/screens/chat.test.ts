@@ -521,7 +521,7 @@ test("freezes the composer while a trading permission is pending", async () => {
   await waitForFrame((frame) => frame.includes("ask something") && !frame.includes("Permission required"))
   expect(chats.permissionDecisions).toEqual([{
     requestId: request.id,
-    reply: { decision: "ALLOW", scope: "SESSION" },
+    reply: { decision: "ALLOW", scope: "ONCE" },
   }])
 
   screen.destroy()

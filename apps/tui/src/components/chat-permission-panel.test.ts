@@ -19,7 +19,7 @@ function key(name: string): KeyEvent {
   return keyEvent(name, { sequence: name })
 }
 
-test("renders the exact action and remembers an allow decision for the session", async () => {
+test("renders the exact action and defaults to allowing only once", async () => {
   const harness = await createTestRenderer({ width: 90, height: 20 })
   const decisions: ChatPermissionReply[] = []
   const panel = new ChatPermissionPanel(harness.renderer, {
@@ -35,10 +35,12 @@ test("renders the exact action and remembers an allow decision for the session",
   expect(frame).toContain("Open the planned position")
   expect(frame).toContain("Allow for this session")
   expect(frame).toContain("Allow once")
+  expect(frame.indexOf("Allow once")).toBeLessThan(frame.indexOf("Allow for this session"))
+  expect(frame.split("\n").find((line) => line.includes("▶"))).toContain("Allow once")
   panel.handleKey(key("enter"))
   await Bun.sleep(0)
 
-  expect(decisions).toEqual([{ decision: "ALLOW", scope: "SESSION" }])
+  expect(decisions).toEqual([{ decision: "ALLOW", scope: "ONCE" }])
   panel.destroy()
   harness.renderer.destroy()
 })
@@ -87,7 +89,7 @@ test("can deny without entering a reason", async () => {
   harness.renderer.destroy()
 })
 
-test("can approve only the current call from a session-capable request", async () => {
+test("can remember an allow decision for the session when explicitly selected", async () => {
   const harness = await createTestRenderer({ width: 90, height: 20 })
   const decisions: ChatPermissionReply[] = []
   const panel = new ChatPermissionPanel(harness.renderer, {
@@ -102,7 +104,7 @@ test("can approve only the current call from a session-capable request", async (
   panel.handleKey(key("enter"))
   await Bun.sleep(0)
 
-  expect(decisions).toEqual([{ decision: "ALLOW", scope: "ONCE" }])
+  expect(decisions).toEqual([{ decision: "ALLOW", scope: "SESSION" }])
   panel.destroy()
   harness.renderer.destroy()
 })

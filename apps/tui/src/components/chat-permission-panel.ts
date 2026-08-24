@@ -126,12 +126,12 @@ export class ChatPermissionPanel {
 
   private choose(index: number): void {
     const request = this.options.request
-    if (request.scope === "SESSION" && index === 0) {
-      void this.decide({ decision: "ALLOW", scope: "SESSION" })
+    if (index === 0) {
+      void this.decide({ decision: "ALLOW", scope: "ONCE" })
       return
     }
-    if (index === 0 || (request.scope === "SESSION" && index === 1)) {
-      void this.decide({ decision: "ALLOW", scope: "ONCE" })
+    if (request.scope === "SESSION" && index === 1) {
+      void this.decide({ decision: "ALLOW", scope: "SESSION" })
       return
     }
     this.enteringDenialReason = true
@@ -197,6 +197,13 @@ export class ChatPermissionPanel {
       fg(this.typedReason ? TEXT_COLOR : MUTED_COLOR)(this.typedReason || "Why deny? (optional)"),
     ])
     this.list.setRows([
+      {
+        id: "allow-once",
+        content: new StyledText([
+          fg(TEXT_COLOR)("Allow once"),
+          fg(MUTED_COLOR)("  approve only this call"),
+        ]),
+      },
       ...(request.scope === "SESSION" ? [{
         id: "allow-session",
         content: new StyledText([
@@ -205,20 +212,13 @@ export class ChatPermissionPanel {
         ]),
       }] : []),
       {
-        id: "allow-once",
-        content: new StyledText([
-          fg(TEXT_COLOR)("Allow once"),
-          fg(MUTED_COLOR)("  approve only this call"),
-        ]),
-      },
-      {
         id: "deny",
         content: new StyledText([
           fg(TEXT_COLOR)("Deny"),
           fg(MUTED_COLOR)("  do not execute this action"),
         ]),
       },
-    ])
+    ], this.list.selectedIndex === -1 ? "allow-once" : undefined)
     this.footer.content = new StyledText([
       fg(this.error ? ERROR_COLOR : MUTED_COLOR)(
         this.error ?? (
