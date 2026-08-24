@@ -1,0 +1,15 @@
+table inet trbot_ts_host {
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+
+    iifname "trbot-host" oifname "ens4" accept
+    iifname "ens4" oifname "trbot-host" ct state established,related accept
+    iifname "trbot-host" drop
+    oifname "trbot-host" drop
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr 10.201.0.0/30 oifname "ens4" masquerade
+  }
+}

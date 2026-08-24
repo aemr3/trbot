@@ -1,0 +1,146 @@
+#!/bin/sh
+set -eu
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run this command with sudo." >&2
+  exit 1
+fi
+
+env_file=
+deploy_key=
+deploy_user=debian
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --env-file)
+      [ "$#" -ge 2 ] || { echo "--env-file requires a path" >&2; exit 2; }
+      env_file=$2
+      shift 2
+      ;;
+    --deploy-key)
+      [ "$#" -ge 2 ] || { echo "--deploy-key requires a path" >&2; exit 2; }
+      deploy_key=$2
+      shift 2
+      ;;
+    --deploy-user)
+      [ "$#" -ge 2 ] || { echo "--deploy-user requires a user" >&2; exit 2; }
+      deploy_user=$2
+      shift 2
+      ;;
+    *)
+      echo "usage: install [--env-file PATH] [--deploy-key PATH] [--deploy-user USER]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+source_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+for required_file in install uninstall deploy backup.ts healthcheck trbot-server.service server.env.example; do
+  if [ ! -f "$source_directory/$required_file" ]; then
+    echo "Missing installer asset: $source_directory/$required_file" >&2
+    exit 1
+  fi
+done
+
+app_user=trbot
+if ! id "$app_user" >/dev/null 2>&1; then
+  useradd --create-home --home-dir /home/trbot --shell /usr/sbin/nologin "$app_user"
+fi
+app_group=$(id -gn "$app_user")
+app_home=$(getent passwd "$app_user" | cut -d: -f6)
+app_root=$app_home
+
+install -d -o "$app_user" -g "$app_group" -m 750 "$app_root"
+install -d -o "$app_user" -g "$app_group" -m 700 "$app_root/.cache"
+install -d -o root -g root -m 755 "$app_root/bin"
+install -d -o "$app_user" -g "$app_group" -m 750 "$app_root/releases"
+install -d -o "$app_user" -g "$app_group" -m 700 "$app_root/shared"
+install -d -o "$app_user" -g "$app_group" -m 700 "$app_root/shared/data"
+install -d -o "$app_user" -g "$app_group" -m 700 "$app_root/shared/tls"
+install -d -o "$app_user" -g "$app_group" -m 700 "$app_root/shared/backups"
+rm -rf "$app_root/shared/data/tls"
+ln -s ../tls "$app_root/shared/data/tls"
+
+install -o root -g root -m 755 "$source_directory/deploy" "$app_root/bin/deploy"
+install -o root -g root -m 644 "$source_directory/backup.ts" "$app_root/bin/backup.ts"
+install -o root -g root -m 755 "$source_directory/healthcheck" "$app_root/bin/healthcheck"
+install -o root -g root -m 644 "$source_directory/trbot-server.service" /etc/systemd/system/trbot-server.service
+
+{
+  printf '%s ALL=(trbot) NOPASSWD: /home/trbot/bin/deploy\n' "$deploy_user"
+  printf 'trbot ALL=(root) NOPASSWD: /usr/bin/systemctl restart trbot-server.service\n'
+} > /etc/sudoers.d/trbot-server-deploy
+chmod 440 /etc/sudoers.d/trbot-server-deploy
+visudo -cf /etc/sudoers.d/trbot-server-deploy
+
+if [ -n "$deploy_key" ]; then
+  if [ ! -f "$deploy_key" ]; then
+    echo "Deployment public key does not exist: $deploy_key" >&2
+    exit 1
+  fi
+  deploy_home=$(getent passwd "$deploy_user" | cut -d: -f6)
+  if [ -z "$deploy_home" ] || [ ! -d "$deploy_home" ]; then
+    echo "Deployment user does not have a home directory: $deploy_user" >&2
+    exit 1
+  fi
+  key_type=$(awk 'NR == 1 { print $1 }' "$deploy_key")
+  key_body=$(awk 'NR == 1 { print $2 }' "$deploy_key")
+  case "$key_type" in
+    ssh-ed25519|ecdsa-sha2-nistp256|ssh-rsa) ;;
+    *) echo "Unsupported deployment public key." >&2; exit 1 ;;
+  esac
+  if [ -z "$key_body" ]; then
+    echo "Deployment public key is incomplete." >&2
+    exit 1
+  fi
+
+  deploy_group=$(id -gn "$deploy_user")
+  install -d -o "$deploy_user" -g "$deploy_group" -m 700 "$deploy_home/.ssh"
+  authorized_keys="$deploy_home/.ssh/authorized_keys"
+  filtered_keys=$(mktemp /tmp/trbot-authorized-keys.XXXXXX)
+  trap 'rm -f "$filtered_keys"' EXIT INT TERM
+  if [ -f "$authorized_keys" ]; then
+    grep -v ' trbot-server-deploy$' "$authorized_keys" > "$filtered_keys" || true
+  fi
+  printf 'restrict,command="/usr/bin/sudo -n -u trbot /home/trbot/bin/deploy" %s %s trbot-server-deploy\n' \
+    "$key_type" "$key_body" >> "$filtered_keys"
+  install -o "$deploy_user" -g "$deploy_group" -m 600 "$filtered_keys" "$authorized_keys"
+  install -o root -g root -m 644 "$deploy_key" "$app_root/bin/deploy-key.pub"
+  rm -f "$filtered_keys"
+  trap - EXIT INT TERM
+
+fi
+
+if [ -n "$env_file" ]; then
+  if [ ! -f "$env_file" ]; then
+    echo "Environment file does not exist: $env_file" >&2
+    exit 1
+  fi
+  filtered_env=$(mktemp /tmp/trbot-server-env.XXXXXX)
+  trap 'rm -f "$filtered_env"' EXIT INT TERM
+  awk '!/^(DATABASE_URL|TRBOT_SERVER_HOST|TRBOT_SERVER_PORT|TRBOT_SERVER_URL|TRBOT_SERVER_CA|TRBOT_SERVER_TLS_CERT|TRBOT_SERVER_TLS_KEY)=/' "$env_file" > "$filtered_env"
+  {
+    printf '\nDATABASE_URL=/home/trbot/shared/data/db.sqlite\n'
+    printf 'TRBOT_SERVER_HOST=0.0.0.0\n'
+    printf 'TRBOT_SERVER_PORT=7717\n'
+    printf 'TRBOT_SERVER_TLS_CERT=/home/trbot/shared/tls/server.crt\n'
+    printf 'TRBOT_SERVER_TLS_KEY=/home/trbot/shared/tls/server.key\n'
+  } >> "$filtered_env"
+  install -o "$app_user" -g "$app_group" -m 600 "$filtered_env" "$app_root/shared/server.env"
+  rm -f "$filtered_env"
+  trap - EXIT INT TERM
+elif [ ! -f "$app_root/shared/server.env" ]; then
+  install -o "$app_user" -g "$app_group" -m 600 "$source_directory/server.env.example" "$app_root/shared/server.env"
+fi
+
+if [ ! -x /home/linuxbrew/.linuxbrew/bin/bun ]; then
+  echo "Bun is not installed at /home/linuxbrew/.linuxbrew/bin/bun." >&2
+  exit 1
+fi
+
+/home/linuxbrew/.linuxbrew/bin/bun --version
+systemd-analyze verify /etc/systemd/system/trbot-server.service
+systemctl daemon-reload
+systemctl enable trbot-server.service
+
+echo "Installed the trbot server runtime under $app_root. Deploy a release with: bun run deploy"

@@ -1,0 +1,60 @@
+#!/bin/sh
+set -eu
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run this command with sudo." >&2
+  exit 1
+fi
+
+purge_data=false
+remove_user=false
+
+for option in "$@"; do
+  case "$option" in
+    --purge-data) purge_data=true ;;
+    --remove-user) remove_user=true ;;
+    --help)
+      echo "usage: uninstall [--purge-data] [--remove-user]"
+      exit 0
+      ;;
+    *)
+      echo "usage: uninstall [--purge-data] [--remove-user]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ "$remove_user" = true ] && [ "$purge_data" = false ]; then
+  echo "--remove-user requires --purge-data because it removes /home/trbot." >&2
+  exit 2
+fi
+
+systemctl disable --now trbot-server.service 2>/dev/null || true
+rm -f /etc/systemd/system/trbot-server.service
+rm -f /etc/sudoers.d/trbot-server-deploy
+rm -f /home/trbot/current
+rm -rf /home/trbot/releases
+rm -rf /home/trbot/bin
+systemctl reset-failed trbot-server.service 2>/dev/null || true
+systemctl daemon-reload
+
+deploy_home=$(getent passwd debian | cut -d: -f6)
+if [ -n "$deploy_home" ] && [ -f "$deploy_home/.ssh/authorized_keys" ]; then
+  filtered_keys=$(mktemp /tmp/trbot-authorized-keys.XXXXXX)
+  grep -v ' trbot-server-deploy$' "$deploy_home/.ssh/authorized_keys" > "$filtered_keys" || true
+  install -o debian -g "$(id -gn debian)" -m 600 "$filtered_keys" "$deploy_home/.ssh/authorized_keys"
+  rm -f "$filtered_keys"
+fi
+
+if [ "$purge_data" = true ]; then
+  rm -rf /home/trbot/shared /home/trbot/.cache
+fi
+if [ "$remove_user" = true ]; then
+  userdel --remove trbot 2>/dev/null || true
+fi
+echo "Removed the trbot server service and releases."
+if [ "$remove_user" = true ]; then
+  echo "Removed the trbot user and its home directory."
+elif [ "$purge_data" = false ]; then
+  echo "Preserved /home/trbot/shared."
+fi

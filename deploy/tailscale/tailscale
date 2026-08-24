@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run this command with sudo." >&2
+  exit 1
+fi
+
+exec /usr/bin/ip netns exec trbot /usr/bin/tailscale \
+  --socket=/run/trbot-tailscale/tailscaled.sock "$@"

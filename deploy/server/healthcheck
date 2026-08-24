@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+attempt=0
+while [ "$attempt" -lt 60 ]; do
+  if /usr/bin/curl --fail --silent --show-error \
+    --cacert /home/trbot/shared/tls/ca.crt \
+    https://127.0.0.1:7717/v1/health >/dev/null 2>&1; then
+    exit 0
+  fi
+  attempt=$((attempt + 1))
+  sleep 1
+done
+
+echo "The trbot HTTPS health check did not become ready." >&2
+exit 1

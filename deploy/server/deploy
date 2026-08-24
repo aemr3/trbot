@@ -1,0 +1,90 @@
+#!/bin/sh
+set -eu
+umask 077
+
+if [ "$(id -un)" != "trbot" ]; then
+  echo "Run this command as trbot." >&2
+  exit 1
+fi
+if [ "$#" -ne 0 ]; then
+  echo "usage: deploy < release.tar" >&2
+  exit 2
+fi
+
+app_root=/home/trbot
+shared=$app_root/shared
+bun=/home/linuxbrew/.linuxbrew/bin/bun
+
+if [ ! -x "$bun" ]; then
+  echo "The trbot Bun runtime is not installed." >&2
+  exit 1
+fi
+if [ ! -s "$shared/server.env" ]; then
+  echo "Configure $shared/server.env before deploying." >&2
+  exit 1
+fi
+
+archive=$(mktemp /tmp/trbot-release.XXXXXX)
+stage=
+cleanup() {
+  rm -f "$archive"
+  if [ -n "$stage" ] && [ -d "$stage" ]; then
+    rm -rf "$stage"
+  fi
+}
+trap cleanup EXIT INT TERM
+cat > "$archive"
+
+stage=$(mktemp -d "$app_root/releases/.incoming.XXXXXX")
+tar --extract --file "$archive" --directory "$stage" --no-same-owner --no-same-permissions
+
+revision=$(sed -n '1p' "$stage/.trbot-revision" 2>/dev/null || true)
+case "$revision" in
+  *[!0-9a-f]*|'') echo "Release has an invalid revision." >&2; exit 1 ;;
+esac
+if [ "${#revision}" -ne 40 ]; then
+  echo "Release has an invalid revision." >&2
+  exit 1
+fi
+rm -f "$stage/.trbot-revision"
+
+release=$app_root/releases/$revision
+if [ -e "$release" ]; then
+  rm -rf "$stage"
+  stage=
+else
+  mv "$stage" "$release"
+  stage=
+fi
+
+rm -rf "$release/data"
+ln -s "$shared/data" "$release/data"
+env HOME=/home/trbot "$bun" install --cwd "$release" --frozen-lockfile --ignore-scripts
+
+if [ -f "$shared/data/db.sqlite" ]; then
+  backup=$shared/backups/db-$(date -u +%Y%m%dT%H%M%SZ)-$revision.sqlite
+  "$bun" "$app_root/bin/backup.ts" "$shared/data/db.sqlite" "$backup"
+fi
+
+previous=$(readlink -f "$app_root/current" 2>/dev/null || true)
+next=$app_root/.current-next
+rm -f "$next"
+ln -s "$release" "$next"
+mv -Tf "$next" "$app_root/current"
+
+if /usr/bin/sudo -n /usr/bin/systemctl restart trbot-server.service; then
+  echo "Deployed $revision to https://trbot.tailb47e39.ts.net:7717"
+  exit 0
+fi
+
+echo "The new release failed its health check; restoring the previous release." >&2
+if [ -n "$previous" ] && [ -d "$previous" ]; then
+  rm -f "$next"
+  ln -s "$previous" "$next"
+  mv -Tf "$next" "$app_root/current"
+  /usr/bin/sudo -n /usr/bin/systemctl restart trbot-server.service || true
+else
+  rm -f "$app_root/current"
+fi
+journalctl -u trbot-server.service -n 50 --no-pager >&2 || true
+exit 1

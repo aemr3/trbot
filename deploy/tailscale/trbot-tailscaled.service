@@ -1,0 +1,18 @@
+[Unit]
+Description=Tailscale client isolated for trbot
+Requires=trbot-netns.service
+After=trbot-netns.service
+
+[Service]
+Type=notify
+StateDirectory=trbot-tailscale
+StateDirectoryMode=0700
+RuntimeDirectory=trbot-tailscale
+RuntimeDirectoryMode=0755
+ExecStart=/usr/bin/ip netns exec trbot /usr/sbin/tailscaled --state=/var/lib/trbot-tailscale/tailscaled.state --socket=/run/trbot-tailscale/tailscaled.sock --tun=tailscale0 --port=41641
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,81 @@
+#!/bin/sh
+set -eu
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run this command with sudo." >&2
+  exit 1
+fi
+
+keep_state=false
+remove_package=false
+remove_installer=false
+
+for option in "$@"; do
+  case "$option" in
+    --keep-state) keep_state=true ;;
+    --remove-package) remove_package=true ;;
+    --remove-installer) remove_installer=true ;;
+    --help)
+      echo "usage: trbot-tailscale-uninstall [--keep-state] [--remove-package] [--remove-installer]"
+      exit 0
+      ;;
+    *)
+      echo "usage: trbot-tailscale-uninstall [--keep-state] [--remove-package] [--remove-installer]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+previous_forwarding=0
+if [ -r /etc/trbot-tailscale/ip-forward.previous ]; then
+  IFS= read -r previous_forwarding < /etc/trbot-tailscale/ip-forward.previous
+fi
+
+if [ "$keep_state" = false ] && systemctl is-active --quiet trbot-tailscaled.service; then
+  /usr/local/sbin/trbot-tailscale logout 2>/dev/null || true
+fi
+
+systemctl disable trbot-tailscaled.service trbot-netns.service 2>/dev/null || true
+systemctl stop trbot-tailscaled.service 2>/dev/null || true
+systemctl stop trbot-netns.service 2>/dev/null || true
+
+if [ -x /usr/local/libexec/trbot-netns ]; then
+  /usr/local/libexec/trbot-netns stop
+else
+  /usr/sbin/nft delete table inet trbot_ts_host 2>/dev/null || true
+  /usr/bin/ip netns delete trbot 2>/dev/null || true
+fi
+
+rm -f /etc/systemd/system/trbot-tailscaled.service
+rm -f /etc/systemd/system/trbot-netns.service
+rm -f /usr/local/libexec/trbot-netns
+rm -f /usr/local/sbin/trbot-tailscale
+rm -f /etc/sysctl.d/80-trbot-tailscale.conf
+rm -rf /etc/trbot-tailscale
+rm -rf /etc/netns/trbot
+
+if [ "$keep_state" = false ]; then
+  rm -rf /var/lib/trbot-tailscale
+fi
+
+systemctl reset-failed trbot-tailscaled.service trbot-netns.service 2>/dev/null || true
+systemctl daemon-reload
+/usr/sbin/sysctl -w "net.ipv4.ip_forward=$previous_forwarding"
+
+if [ "$remove_package" = true ]; then
+  systemctl disable --now tailscaled.service 2>/dev/null || true
+  apt-get remove -y tailscale tailscale-archive-keyring
+  rm -f /etc/apt/sources.list.d/tailscale.list
+  rm -f /usr/share/keyrings/tailscale-archive-keyring.gpg
+fi
+
+if [ "$remove_installer" = true ]; then
+  rm -rf /usr/local/share/trbot-tailscale
+  rm -f /usr/local/sbin/trbot-tailscale-install
+  rm -f /usr/local/sbin/trbot-tailscale-uninstall
+fi
+
+echo "Removed the trbot Tailscale namespace and systemd configuration."
+if [ "$keep_state" = true ]; then
+  echo "Preserved authenticated state in /var/lib/trbot-tailscale."
+fi

@@ -1,0 +1,88 @@
+#!/bin/sh
+set -eu
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run this command with sudo." >&2
+  exit 1
+fi
+if [ "$#" -ne 0 ]; then
+  echo "usage: trbot-tailscale-install" >&2
+  exit 2
+fi
+
+source_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ ! -f "$source_directory/guard.nft" ]; then
+  source_directory=/usr/local/share/trbot-tailscale
+fi
+bundle=/usr/local/share/trbot-tailscale
+
+for required_file in install uninstall netns tailscale trbot-netns.service trbot-tailscaled.service host.nft guard.nft resolv.conf sysctl.conf; do
+  if [ ! -f "$source_directory/$required_file" ]; then
+    echo "Missing installer asset: $source_directory/$required_file" >&2
+    exit 1
+  fi
+done
+
+if [ ! -x /usr/sbin/tailscaled ] || [ ! -x /usr/bin/tailscale ]; then
+  installer_file=$(mktemp /tmp/trbot-tailscale-install.XXXXXX)
+  trap 'rm -f "$installer_file"' EXIT INT TERM
+  curl -fsSL https://tailscale.com/install.sh -o "$installer_file"
+  chmod 700 "$installer_file"
+  sh "$installer_file"
+  rm -f "$installer_file"
+  trap - EXIT INT TERM
+fi
+
+systemctl disable --now tailscaled.service 2>/dev/null || true
+systemctl stop trbot-tailscaled.service 2>/dev/null || true
+systemctl stop trbot-netns.service 2>/dev/null || true
+
+previous_forwarding=$(/usr/sbin/sysctl -n net.ipv4.ip_forward)
+install -d -o root -g root -m 755 "$bundle"
+install -d -o root -g root -m 700 /etc/trbot-tailscale
+install -d -o root -g root -m 755 /etc/netns/trbot
+install -d -o root -g root -m 755 /usr/local/libexec
+
+if [ ! -f /etc/trbot-tailscale/ip-forward.previous ]; then
+  umask 077
+  printf '%s\n' "$previous_forwarding" > /etc/trbot-tailscale/ip-forward.previous
+fi
+
+for asset in install uninstall netns tailscale trbot-netns.service trbot-tailscaled.service host.nft guard.nft resolv.conf sysctl.conf; do
+  install -o root -g root -m 644 "$source_directory/$asset" "$bundle/$asset"
+done
+chmod 755 "$bundle/install" "$bundle/uninstall" "$bundle/netns" "$bundle/tailscale"
+install -o root -g root -m 755 "$source_directory/netns" /usr/local/libexec/trbot-netns
+install -o root -g root -m 755 "$source_directory/tailscale" /usr/local/sbin/trbot-tailscale
+install -o root -g root -m 755 "$source_directory/install" /usr/local/sbin/trbot-tailscale-install
+install -o root -g root -m 755 "$source_directory/uninstall" /usr/local/sbin/trbot-tailscale-uninstall
+install -o root -g root -m 644 "$source_directory/trbot-netns.service" /etc/systemd/system/trbot-netns.service
+install -o root -g root -m 644 "$source_directory/trbot-tailscaled.service" /etc/systemd/system/trbot-tailscaled.service
+install -o root -g root -m 644 "$source_directory/host.nft" /etc/trbot-tailscale/host.nft
+install -o root -g root -m 644 "$source_directory/guard.nft" /etc/trbot-tailscale/guard.nft
+install -o root -g root -m 644 "$source_directory/resolv.conf" /etc/netns/trbot/resolv.conf
+install -o root -g root -m 644 "$source_directory/sysctl.conf" /etc/sysctl.d/80-trbot-tailscale.conf
+
+/usr/sbin/sysctl -w net.ipv4.ip_forward=1
+/usr/bin/systemd-analyze verify /etc/systemd/system/trbot-netns.service /etc/systemd/system/trbot-tailscaled.service
+/usr/sbin/nft -c -f /etc/trbot-tailscale/host.nft
+/usr/sbin/nft -c -f /etc/trbot-tailscale/guard.nft
+
+systemctl daemon-reload
+systemctl enable --now trbot-tailscaled.service
+
+attempt=0
+while [ "$attempt" -lt 20 ]; do
+  if /usr/local/sbin/trbot-tailscale status --json 2>/dev/null | /usr/bin/grep -q '"BackendState": "Running"'; then
+    break
+  fi
+  attempt=$((attempt + 1))
+  /usr/bin/sleep 1
+done
+
+if [ "$attempt" -lt 20 ]; then
+  echo "Installed and started the authenticated trbot Tailscale namespace."
+else
+  echo "Installed the trbot Tailscale namespace. Authenticate it with:"
+  echo "  sudo trbot-tailscale up --hostname=trbot --accept-dns=false"
+fi

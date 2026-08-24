@@ -10,6 +10,7 @@
     "all": "bun run scripts/all.ts",
     "db:generate": "bun run --filter @trbot/db db:generate",
     "db:migrate": "bun run packages/db/src/migrate.ts",
+    "deploy": "bun run scripts/deploy.ts",
     "dev": "bun --watch run apps/tui/src/index.ts",
     "lint": "oxlint apps packages scripts --deny-warnings",
     "lint:fix": "oxlint apps packages scripts --fix",

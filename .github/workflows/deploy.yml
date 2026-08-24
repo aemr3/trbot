@@ -1,0 +1,48 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun test
+      - name: Configure deployment SSH key
+        env:
+          DEPLOY_PRIVATE_KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/trbot-ssh"
+          printf '%s\n' "$DEPLOY_PRIVATE_KEY" > "$RUNNER_TEMP/trbot-ssh/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/trbot-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/trbot-ssh/key" "$RUNNER_TEMP/trbot-ssh/known_hosts"
+      - name: Deploy
+        env:
+          TRBOT_DEPLOY_TARGET: debian@51.89.142.2
+          TRBOT_DEPLOY_PORT: "3422"
+          TRBOT_DEPLOY_IDENTITY: ${{ runner.temp }}/trbot-ssh/key
+          TRBOT_DEPLOY_KNOWN_HOSTS: ${{ runner.temp }}/trbot-ssh/known_hosts
+          TRBOT_DEPLOY_REVISION: ${{ github.sha }}
+        run: bun run deploy

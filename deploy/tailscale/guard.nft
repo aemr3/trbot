@@ -1,0 +1,24 @@
+table inet trbot_ts_guard {
+  chain input {
+    type filter hook input priority filter; policy drop;
+
+    iifname "lo" accept
+    ct state established,related accept
+    iifname "tailscale0" accept
+
+    # The isolated daemon needs its WireGuard transport over the bootstrap veth.
+    iifname "trbot-net" udp dport 41641 accept
+  }
+
+  chain output {
+    type filter hook output priority filter; policy drop;
+
+    oifname "lo" accept
+    ct state established,related accept
+    oifname "tailscale0" accept
+
+    # tailscaled runs as root and alone may use the bootstrap route directly.
+    # The unprivileged Bun process cannot fall back to the VPS connection.
+    oifname "trbot-net" meta skuid 0 accept
+  }
+}

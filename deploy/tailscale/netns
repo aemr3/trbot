@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+namespace=trbot
+host_interface=trbot-host
+namespace_interface=trbot-net
+
+remove_network() {
+  /usr/sbin/nft delete table inet trbot_ts_host 2>/dev/null || true
+  /usr/bin/ip link delete "$host_interface" 2>/dev/null || true
+  /usr/bin/ip netns delete "$namespace" 2>/dev/null || true
+}
+
+start_network() {
+  # Clear only state owned by this service so an interrupted start is recoverable.
+  remove_network
+
+  /usr/bin/ip netns add "$namespace"
+  /usr/bin/ip link add "$host_interface" type veth peer name "$namespace_interface"
+  /usr/bin/ip link set "$namespace_interface" netns "$namespace"
+
+  /usr/bin/ip address add 10.201.0.1/30 dev "$host_interface"
+  /usr/bin/ip link set "$host_interface" up
+
+  /usr/bin/ip netns exec "$namespace" /usr/bin/ip link set lo up
+  /usr/bin/ip netns exec "$namespace" /usr/bin/ip address add 10.201.0.2/30 dev "$namespace_interface"
+  /usr/bin/ip netns exec "$namespace" /usr/bin/ip link set "$namespace_interface" up
+  /usr/bin/ip netns exec "$namespace" /usr/bin/ip route add default via 10.201.0.1 dev "$namespace_interface"
+
+  /usr/sbin/nft -f /etc/trbot-tailscale/host.nft
+  /usr/bin/ip netns exec "$namespace" /usr/sbin/nft -f /etc/trbot-tailscale/guard.nft
+}
+
+case "${1:-}" in
+  start) start_network ;;
+  stop) remove_network ;;
+  *) echo "usage: $0 {start|stop}" >&2; exit 2 ;;
+esac
