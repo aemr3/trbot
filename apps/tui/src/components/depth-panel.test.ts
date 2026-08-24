@@ -17,8 +17,24 @@ const book: DepthBook = {
   buyLots: 1_425_521,
   sellLots: 2_166_667,
   trades: [
-    { id: "2", price: 390, lots: 111, side: "BUY", buyer: "Gedik Yatırım", seller: "PhillipCapital" },
-    { id: "1", price: 389.75, lots: 18, side: "SELL", buyer: "İş Yatırım", seller: "Ak Yatırım" },
+    {
+      id: "2",
+      price: 390,
+      lots: 111,
+      timestamp: Date.parse("2026-08-21T10:15:30Z"),
+      side: "BUY",
+      buyer: "Gedik Yatırım",
+      seller: "PhillipCapital",
+    },
+    {
+      id: "1",
+      price: 389.75,
+      lots: 18,
+      timestamp: Date.parse("2026-08-21T10:15:29Z"),
+      side: "SELL",
+      buyer: "İş Yatırım",
+      seller: "Ak Yatırım",
+    },
   ],
   marketClosed: false,
 }
@@ -76,7 +92,29 @@ test("renders the ratio, both ladder sides, and the trade tape", async () => {
   expect(frame).toContain("Bid│Ask")
   expect(frame).toContain("38.384  389,75│390,00      28.352")
   expect(frame).toContain("Trades")
-  expect(frame).toContain("390,00      111 Gedik ← PhillipCapital")
+  const tradeLine = frame.split("\n").find((line) => line.includes("111")) ?? ""
+  expect(tradeLine).toContain("390,00      111 Gedik")
+  expect(tradeLine.trimEnd()).toEndWith("13:15:30")
+
+  renderer.destroy()
+})
+
+test("shows trade time without an empty broker column for futures", async () => {
+  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel(30, { initialTarget: "INSTRUMENT" })
+  panel.setEntitled(true)
+  panel.selectInstrument({ displayName: "ASELS", symbol: "F_ASELS0826", underlyingSymbol: "ASELS" })
+  panel.setStatus("live")
+  panel.showBook({
+    ...book,
+    symbol: "F_ASELS0826",
+    trades: book.trades.map((trade) => ({ ...trade, buyer: null, seller: null })),
+  })
+  await renderOnce()
+
+  const tradeLine = captureCharFrame().split("\n").find((line) => line.includes("111")) ?? ""
+  expect(tradeLine).not.toContain("←")
+  expect(tradeLine).not.toContain("—")
+  expect(tradeLine.trimEnd()).toEndWith("13:15:30")
 
   renderer.destroy()
 })

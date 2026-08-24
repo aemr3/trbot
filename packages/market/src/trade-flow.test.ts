@@ -3,7 +3,7 @@ import type { DepthBook, DepthTrade } from "./depth.ts"
 import { TradeFlowAccumulator } from "./trade-flow.ts"
 
 function trade(overrides: Partial<DepthTrade> & { id: string }): DepthTrade {
-  return { price: 100, lots: 10, side: "BUY", buyer: "Alpha", seller: "Beta", ...overrides }
+  return { price: 100, lots: 10, timestamp: 1_000, side: "BUY", buyer: "Alpha", seller: "Beta", ...overrides }
 }
 
 function book(trades: DepthTrade[]): DepthBook {

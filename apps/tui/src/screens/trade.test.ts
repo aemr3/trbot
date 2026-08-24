@@ -1721,7 +1721,15 @@ function depthBook(symbol: string): DepthBook {
     asks: [{ price: 390, lots: 28_352, orderCount: 51 }],
     buyLots: 1_425_521,
     sellLots: 2_166_667,
-    trades: [{ id: "1", price: 390, lots: 111, side: "BUY", buyer: "Gedik Yatırım", seller: "Ak Yatırım" }],
+    trades: [{
+      id: "1",
+      price: 390,
+      lots: 111,
+      timestamp: Date.parse("2026-08-21T10:15:30Z"),
+      side: "BUY",
+      buyer: "Gedik Yatırım",
+      seller: "Ak Yatırım",
+    }],
     marketClosed: false,
   }
 }

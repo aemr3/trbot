@@ -10,6 +10,8 @@ export interface DepthTrade {
   id: string
   price: number
   lots: number
+  /** Exchange print time as epoch milliseconds, or null when the feed omits it. */
+  timestamp: number | null
   // Which side crossed the spread: BUY means the trade printed on the ask.
   side: "BUY" | "SELL"
   buyer: string | null
@@ -39,6 +41,7 @@ const DepthTradeSchema = z.object({
   id: z.string(),
   price: z.number(),
   lots: z.number(),
+  timestamp: z.number().nullable(),
   side: z.enum(["BUY", "SELL"]),
   buyer: z.string().nullable(),
   seller: z.string().nullable(),

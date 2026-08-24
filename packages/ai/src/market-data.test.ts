@@ -1206,8 +1206,8 @@ function depthBook(): DepthBook {
     buyLots: 100,
     sellLots: 120,
     trades: [
-      { id: "trade-1", price: 401, lots: 2, side: "BUY", buyer: "A", seller: "B" },
-      { id: "trade-2", price: 400, lots: 1, side: "SELL", buyer: "C", seller: "D" },
+      { id: "trade-1", price: 401, lots: 2, timestamp: NOW, side: "BUY", buyer: "A", seller: "B" },
+      { id: "trade-2", price: 400, lots: 1, timestamp: NOW - 1_000, side: "SELL", buyer: "C", seller: "D" },
     ],
     marketClosed: false,
   }

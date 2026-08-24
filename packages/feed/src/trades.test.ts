@@ -72,7 +72,15 @@ describe("toTrade", () => {
       { p: 129.9, s: 30, a: "S", bb: "OYA", sb: "AKM", i: 7, t: 1 },
       new Map([["OYA", "Oyak"], ["AKM", "Ak"]]),
     )
-    expect(trade).toEqual({ id: "7", price: 129.9, lots: 30, side: "SELL", buyer: "Oyak", seller: "Ak" })
+    expect(trade).toEqual({
+      id: "7",
+      price: 129.9,
+      lots: 30,
+      timestamp: 1_000,
+      side: "SELL",
+      buyer: "Oyak",
+      seller: "Ak",
+    })
   })
 
   // Better a code on screen than a blank where a counterparty belongs.
@@ -80,6 +88,11 @@ describe("toTrade", () => {
     const trade = toTrade({ p: 1, s: 1, a: "B", bb: "ZZZ", sb: null, i: 1, t: 1 }, new Map())
     expect(trade.buyer).toBe("ZZZ")
     expect(trade.seller).toBeNull()
+  })
+
+  test("keeps an omitted print time unavailable", () => {
+    const trade = toTrade({ p: 1, s: 1, a: "B", bb: null, sb: null, i: 1 }, new Map())
+    expect(trade.timestamp).toBeNull()
   })
 })
 
@@ -97,7 +110,15 @@ describe("FeedTradeSource", () => {
     const { trades } = build()
     const tape = await trades.listTrades("GARAN")
 
-    expect(tape[0]).toEqual({ id: "40613119", price: 129.9, lots: 30, side: "SELL", buyer: "Oyak", seller: "Ak" })
+    expect(tape[0]).toEqual({
+      id: "40613119",
+      price: 129.9,
+      lots: 30,
+      timestamp: 1_787_324_992_000,
+      side: "SELL",
+      buyer: "Oyak",
+      seller: "Ak",
+    })
     // A brokerage with no short name falls back to its full one.
     expect(tape[1]?.seller).toBe("İş Yatırım")
   })

@@ -46,6 +46,15 @@ const PANEL_PADDING = 1
 const PRICE_WIDTH = 7
 const ORDER_WIDTH = 3
 const MIN_LOT_WIDTH = 6
+const TRADE_LOT_WIDTH = 8
+const TRADE_TIME_WIDTH = 8
+const TRADE_TIME_FORMAT = new Intl.DateTimeFormat("tr-TR", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+  timeZone: "Europe/Istanbul",
+})
 // Order counts are the first thing dropped when the panel is squeezed.
 const ORDER_COLUMN_MIN_WIDTH = 42
 const LADDER_LEVELS = 10
@@ -225,7 +234,13 @@ export class DepthPanel {
       ...ladderChunks(book, width),
       newline(),
       newline(),
-      ...tradeChunks(book.trades, width, this.tradeCapacity(), book.marketClosed),
+      ...tradeChunks(
+        book.trades,
+        width,
+        this.tradeCapacity(),
+        book.marketClosed,
+        this.target === "UNDERLYING",
+      ),
     ]
     this.content.content = new StyledText(chunks)
   }
@@ -470,7 +485,13 @@ function askRow(
   return shade(padded, 0, level ? barWidth(level.lots, maxLots, sideWidth) : 0, ASK_BAR_BG)
 }
 
-function tradeChunks(trades: DepthTrade[], width: number, capacity: number, marketClosed: boolean): TextChunk[] {
+function tradeChunks(
+  trades: DepthTrade[],
+  width: number,
+  capacity: number,
+  marketClosed: boolean,
+  showCounterparties: boolean,
+): TextChunk[] {
   const chunks: TextChunk[] = [fg(HEADING_COLOR)("Trades")]
   if (capacity <= 0) return chunks
   if (trades.length === 0) {
@@ -479,15 +500,29 @@ function tradeChunks(trades: DepthTrade[], width: number, capacity: number, mark
     chunks.push(newline(), fg(MUTED_COLOR)(marketClosed ? "No trades." : "No trades yet."))
     return chunks
   }
-  const counterpartyWidth = Math.max(0, width - PRICE_WIDTH - 1 - 8 - 1)
+  const valueWidth = PRICE_WIDTH + 1 + TRADE_LOT_WIDTH
+  const counterpartyWidth = showCounterparties
+    ? Math.max(0, width - valueWidth - 2 - TRADE_TIME_WIDTH)
+    : 0
   for (const trade of trades.slice(0, capacity)) {
     const color = trade.side === "BUY" ? BID_COLOR : ASK_COLOR
+    const time = formatTradeTime(trade.timestamp).padStart(TRADE_TIME_WIDTH)
     chunks.push(
       newline(),
       fg(color)(formatPrice(trade.price).padStart(PRICE_WIDTH)),
-      fg(VALUE_COLOR)(` ${formatLots(trade.lots).padStart(8)}`),
-      fg(MUTED_COLOR)(` ${counterparties(trade, counterpartyWidth)}`),
+      fg(VALUE_COLOR)(` ${formatLots(trade.lots).padStart(TRADE_LOT_WIDTH)}`),
     )
+    if (showCounterparties) {
+      chunks.push(
+        fg(MUTED_COLOR)(` ${counterparties(trade, counterpartyWidth).padEnd(counterpartyWidth)}`),
+        fg(MUTED_COLOR)(` ${time}`),
+      )
+    } else {
+      chunks.push(
+        fg(MUTED_COLOR)(" ".repeat(Math.max(1, width - valueWidth - TRADE_TIME_WIDTH))),
+        fg(MUTED_COLOR)(time),
+      )
+    }
   }
   return chunks
 }
@@ -523,4 +558,9 @@ function formatLots(lots: number): string {
 
 function formatPrice(price: number): string {
   return price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function formatTradeTime(timestamp: number | null): string {
+  if (timestamp === null) return "—"
+  return TRADE_TIME_FORMAT.format(new Date(timestamp))
 }

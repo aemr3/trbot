@@ -102,6 +102,7 @@ export function toTrade(print: TradePrint, brokerages: Map<string, string>): Dep
     id: String(print.i),
     price: print.p,
     lots: print.s,
+    timestamp: print.t == null ? null : print.t * 1_000,
     // `a` names the aggressor, which is what the contract means by side: a buy
     // print crossed into the ask.
     side: print.a?.toUpperCase() === "S" ? "SELL" : "BUY",
