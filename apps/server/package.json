@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@peculiar/x509": "^1.12.3",
+    "@peculiar/x509": "^2.0.0",
     "@trbot/ai": "workspace:*",
     "@trbot/api": "workspace:*",
     "@trbot/auth": "workspace:*",
