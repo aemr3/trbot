@@ -10,6 +10,7 @@ import type {
 import type { VoiceTranscriber } from "@trbot/ai/voice-transcription.ts"
 import type { ChatPermissionReply, ChatPermissionRequest } from "@trbot/chat/permission.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
+import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type {
   ChatMobileBinding,
   ChatMobileConnection,
@@ -83,6 +84,8 @@ const TELEGRAM_COMMAND_PROMPTS = new Map(
 )
 const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   ...TELEGRAM_CHAT_COMMANDS.map(({ command, description }) => ({ command, description })),
+  { command: "mute", description: "Silence routine chat notifications" },
+  { command: "unmute", description: "Restore routine chat notifications" },
   { command: "disconnect", description: "Disconnect this Telegram chat" },
 ]
 
@@ -133,6 +136,7 @@ interface StreamingMessage {
   promptMessageId: string | null
   draftId: number
   chatId: string | null
+  notificationsMuted: boolean
   text: string
   tools: Array<{ name: string; messageId: number | null }>
   lastPreview: string | null
@@ -309,6 +313,9 @@ export class ChatMobileController {
       case "chatQuestionResolved":
         this.runInBackground(this.clearQuestion(frame.requestId))
         return
+      case "chatNotification":
+        this.runInBackground(this.deliverNotification(frame.notification))
+        return
       case "chatRun":
         if (frame.status === "running") {
           return this.beginStream(frame.sessionId, frame.runId, frame.promptMessageId ?? null)
@@ -389,7 +396,11 @@ export class ChatMobileController {
         if (!token) {
           const binding = await this.bindingFor(sender, message)
           if (binding) {
-            await this.sendLong(message.chat.id.toString(), "This phone is already connected. Send a message to continue the chat.")
+            await this.sendLong(
+              message.chat.id.toString(),
+              "This phone is already connected. Send a message to continue the chat.",
+              binding.notificationsMuted,
+            )
           }
           return
         }
@@ -400,7 +411,11 @@ export class ChatMobileController {
       if (command.name === "disconnect" && !command.argument) {
         const binding = await this.bindingFor(sender, message)
         if (!binding) return
-        await this.sendLong(message.chat.id.toString(), "Disconnected from trbot.")
+        await this.sendLong(
+          message.chat.id.toString(),
+          "Disconnected from trbot.",
+          binding.notificationsMuted,
+        )
         await this.disconnect(binding.sessionId)
         return
       }
@@ -408,6 +423,21 @@ export class ChatMobileController {
 
     const binding = await this.bindingFor(sender, message)
     if (!binding) return
+
+    if (command && !command.argument && (command.name === "mute" || command.name === "unmute")) {
+      const muted = command.name === "mute"
+      await this.options.store.setNotificationsMuted(binding.sessionId, muted)
+      const stream = this.streamingMessages.get(binding.sessionId)
+      if (stream) stream.notificationsMuted = muted
+      await this.sendLong(
+        binding.externalChatId,
+        muted
+          ? "Routine Telegram notifications are muted. Permissions, questions, and notifications will still alert."
+          : "Routine Telegram notifications are enabled.",
+        muted,
+      )
+      return
+    }
 
     if (message.voice) {
       this.pendingVoiceMessages = this.pendingVoiceMessages
@@ -421,7 +451,11 @@ export class ChatMobileController {
         if (await this.handleCustomQuestionAnswer(binding.sessionId, text)) return
       } catch (cause) {
         if (!(cause instanceof ProtocolError)) this.options.onError(cause)
-        await this.sendLong(binding.externalChatId, "Could not apply that answer. Please try again.")
+        await this.sendLong(
+          binding.externalChatId,
+          "Could not apply that answer. Please try again.",
+          binding.notificationsMuted,
+        )
         return
       }
     }
@@ -441,11 +475,19 @@ export class ChatMobileController {
     const voice = message.voice
     if (!telegram || !voice) return
     if (!transcriber) {
-      await this.sendLong(binding.externalChatId, "Voice transcription is unavailable on this server.")
+      await this.sendLong(
+        binding.externalChatId,
+        "Voice transcription is unavailable on this server.",
+        binding.notificationsMuted,
+      )
       return
     }
     if (voice.duration > MAX_VOICE_DURATION_SECONDS) {
-      await this.sendLong(binding.externalChatId, "Voice messages can be up to 10 minutes long.")
+      await this.sendLong(
+        binding.externalChatId,
+        "Voice messages can be up to 10 minutes long.",
+        binding.notificationsMuted,
+      )
       return
     }
 
@@ -455,7 +497,11 @@ export class ChatMobileController {
       text = (await transcriber.transcribeOggOpus(audio)).trim()
       if (!text) throw new Error("No speech was detected")
     } catch (cause) {
-      await this.sendLong(binding.externalChatId, `Could not transcribe that voice message\n${errorMessage(cause)}`)
+      await this.sendLong(
+        binding.externalChatId,
+        `Could not transcribe that voice message\n${errorMessage(cause)}`,
+        binding.notificationsMuted,
+      )
       return
     }
 
@@ -467,7 +513,11 @@ export class ChatMobileController {
       if (await this.handleCustomQuestionAnswer(current.sessionId, text)) return
     } catch (cause) {
       if (!(cause instanceof ProtocolError)) this.options.onError(cause)
-      await this.sendLong(current.externalChatId, "Could not apply that answer. Please try again.")
+      await this.sendLong(
+        current.externalChatId,
+        "Could not apply that answer. Please try again.",
+        current.notificationsMuted,
+      )
       return
     }
     await this.sendChatText(current, text, message.message_id)
@@ -485,7 +535,11 @@ export class ChatMobileController {
       return true
     } catch (cause) {
       this.removeSuppression(binding.sessionId, text)
-      await this.sendLong(binding.externalChatId, `Could not send that message\n${errorMessage(cause)}`)
+      await this.sendLong(
+        binding.externalChatId,
+        `Could not send that message\n${errorMessage(cause)}`,
+        binding.notificationsMuted,
+      )
       return false
     }
   }
@@ -499,6 +553,7 @@ export class ChatMobileController {
     }
 
     const detail = await this.options.chat.detail(pairing.sessionId)
+    const previousForUser = await this.options.store.findByExternalUser("telegram", sender.id.toString())
     const binding: ChatMobileBinding = {
       sessionId: pairing.sessionId,
       channel: "telegram",
@@ -506,11 +561,9 @@ export class ChatMobileController {
       externalChatId: message.chat.id.toString(),
       displayName: telegramDisplayName(sender),
       connectedAt: this.now(),
+      notificationsMuted: previousForUser?.notificationsMuted ?? false,
     }
-    const displaced = await Promise.all([
-      this.options.store.findByExternalUser(binding.channel, binding.externalUserId),
-      this.options.store.findBySession(binding.sessionId),
-    ])
+    const displaced = [previousForUser, await this.options.store.findBySession(binding.sessionId)]
     for (const previous of uniqueBindings(displaced)) this.revokeBinding(previous)
     await this.options.store.connect(binding)
     await this.reconcileClients()
@@ -532,6 +585,7 @@ export class ChatMobileController {
     await this.sendLong(
       binding.externalChatId,
       `Connected to “${detail.session.title}”. Send a message here to continue.${transcript}`,
+      binding.notificationsMuted,
     )
   }
 
@@ -792,7 +846,7 @@ export class ChatMobileController {
     const sent = await telegram.sendMessage(
       conversation.chatId,
       questionText(conversation),
-      { replyMarkup: questionKeyboard(conversation), protectContent: true },
+      { replyMarkup: questionKeyboard(conversation), protectContent: true, disableNotification: false },
     )
     if (this.questionConversations.get(conversation.request.id) !== conversation) {
       await this.removeKeyboard(conversation.chatId, sent.message_id)
@@ -876,7 +930,7 @@ export class ChatMobileController {
     const sent = await telegram.sendMessage(
       binding.externalChatId,
       `⚠️ Tool approval required\n\n${request.action}\nTool: ${request.toolName}${reason}`,
-      { replyMarkup: permissionKeyboard(request), protectContent: true },
+      { replyMarkup: permissionKeyboard(request), protectContent: true, disableNotification: false },
     )
     const promptMessageId = this.streamingMessages.get(request.sessionId)?.promptMessageId
     if (promptMessageId) {
@@ -913,13 +967,27 @@ export class ChatMobileController {
 
   private async deliver(sessionId: string, text: string): Promise<void> {
     const binding = await this.options.store.findBySession(sessionId)
-    if (binding) await this.sendLong(binding.externalChatId, text)
+    if (binding) await this.sendLong(binding.externalChatId, text, binding.notificationsMuted)
+  }
+
+  private async deliverNotification(notification: ChatNotification): Promise<void> {
+    const binding = await this.options.store.findBySession(notification.sessionId)
+    if (!binding) return
+    await this.sendLong(
+      binding.externalChatId,
+      `🔔 ${notification.title}\n${notification.message}`,
+      false,
+    )
   }
 
   private async deliverTurnPrompt(sessionId: string, message: ChatMessage): Promise<void> {
     const binding = await this.options.store.findBySession(sessionId)
     if (!binding) return
-    const sent = await this.sendLong(binding.externalChatId, `🖥️ ${message.text}`)
+    const sent = await this.sendLong(
+      binding.externalChatId,
+      `🖥️ ${message.text}`,
+      binding.notificationsMuted,
+    )
     await this.recordTurnMessages(sessionId, message.id, binding.externalChatId, sent.map((item) => item.message_id))
   }
 
@@ -927,7 +995,7 @@ export class ChatMobileController {
     const binding = await this.options.store.findBySession(sessionId)
     if (!binding) return
     const promptMessageId = await this.promptForAssistant(sessionId, message.id)
-    const sent = await this.sendLong(binding.externalChatId, message.text)
+    const sent = await this.sendLong(binding.externalChatId, message.text, binding.notificationsMuted)
     if (promptMessageId) {
       await this.finishTelegramTurn(
         sessionId,
@@ -957,6 +1025,7 @@ export class ChatMobileController {
       promptMessageId,
       draftId: telegramDraftId(runId),
       chatId: null,
+      notificationsMuted: false,
       text: "",
       tools: [],
       lastPreview: null,
@@ -978,6 +1047,7 @@ export class ChatMobileController {
         return
       }
       stream.chatId = binding.externalChatId
+      stream.notificationsMuted = binding.notificationsMuted
       if (!stream.finalizing) await this.updateStream(stream)
     })
   }
@@ -1046,7 +1116,10 @@ export class ChatMobileController {
     // final response replaces it.
     if (!preview) return
     if (stream.fallbackMessageId === null) {
-      const sent = await telegram.sendMessage(chatId, preview, { protectContent: true })
+      const sent = await telegram.sendMessage(chatId, preview, {
+        protectContent: true,
+        disableNotification: stream.notificationsMuted,
+      })
       stream.fallbackMessageId = sent.message_id
     } else {
       await telegram.editMessageText(chatId, stream.fallbackMessageId, preview)
@@ -1079,6 +1152,7 @@ export class ChatMobileController {
       if (!telegram || !chatId || stream.cancelled) return
       const sent = await telegram.sendMessage(chatId, `${TELEGRAM_TOOL_RUNNING_ICON} ${toolName}`, {
         protectContent: true,
+        disableNotification: stream.notificationsMuted,
       })
       activity.messageId = sent.message_id
       if (stream.promptMessageId) {
@@ -1107,7 +1181,10 @@ export class ChatMobileController {
         }
       } else if (failed && telegram && chatId) {
         try {
-          const sent = await telegram.sendMessage(chatId, `✕ ${toolName}`, { protectContent: true })
+          const sent = await telegram.sendMessage(chatId, `✕ ${toolName}`, {
+            protectContent: true,
+            disableNotification: stream.notificationsMuted,
+          })
           if (stream.promptMessageId) {
             await this.recordTurnMessages(stream.sessionId, stream.promptMessageId, chatId, [sent.message_id])
           }
@@ -1139,7 +1216,10 @@ export class ChatMobileController {
       messageIds.push(stream.fallbackMessageId)
       if (chunks[0] === stream.lastPreview) {
         for (const chunk of chunks.slice(1)) {
-          const sent = await telegram.sendMessage(chatId, chunk, { protectContent: true })
+          const sent = await telegram.sendMessage(chatId, chunk, {
+            protectContent: true,
+            disableNotification: stream.notificationsMuted,
+          })
           messageIds.push(sent.message_id)
         }
         await this.finishTelegramTurn(stream.sessionId, stream.promptMessageId, chatId, messageIds)
@@ -1148,7 +1228,10 @@ export class ChatMobileController {
       try {
         await telegram.editMessageText(chatId, stream.fallbackMessageId, chunks[0]!)
         for (const chunk of chunks.slice(1)) {
-          const sent = await telegram.sendMessage(chatId, chunk, { protectContent: true })
+          const sent = await telegram.sendMessage(chatId, chunk, {
+            protectContent: true,
+            disableNotification: stream.notificationsMuted,
+          })
           messageIds.push(sent.message_id)
         }
         await this.finishTelegramTurn(stream.sessionId, stream.promptMessageId, chatId, messageIds)
@@ -1159,7 +1242,10 @@ export class ChatMobileController {
     }
 
     for (const chunk of chunks) {
-      const sent = await telegram.sendMessage(chatId, chunk, { protectContent: true })
+      const sent = await telegram.sendMessage(chatId, chunk, {
+        protectContent: true,
+        disableNotification: stream.notificationsMuted,
+      })
       messageIds.push(sent.message_id)
     }
     await this.finishTelegramTurn(stream.sessionId, stream.promptMessageId, chatId, messageIds)
@@ -1253,12 +1339,16 @@ export class ChatMobileController {
     return stream.inFlight
   }
 
-  private async sendLong(chatId: string, text: string): Promise<TelegramMessage[]> {
+  private async sendLong(
+    chatId: string,
+    text: string,
+    disableNotification = false,
+  ): Promise<TelegramMessage[]> {
     const telegram = this.options.telegram
     if (!telegram) return []
     const sent: TelegramMessage[] = []
     for (const chunk of telegramChunks(text)) {
-      sent.push(await telegram.sendMessage(chatId, chunk, { protectContent: true }))
+      sent.push(await telegram.sendMessage(chatId, chunk, { protectContent: true, disableNotification }))
     }
     return sent
   }

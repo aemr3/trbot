@@ -30,6 +30,8 @@ export type ChatMobilePairing = z.infer<typeof ChatMobilePairingSchema>
 export const ChatMobileBindingSchema = ChatMobileConnectionSchema.extend({
   externalUserId: z.string().min(1),
   externalChatId: z.string().min(1),
+  /** Silences routine conversation traffic, never prompts that require attention. */
+  notificationsMuted: z.boolean().default(false),
 })
 export type ChatMobileBinding = z.infer<typeof ChatMobileBindingSchema>
 
@@ -61,6 +63,7 @@ export interface ChatMobileStore {
   findByExternalUser(channel: ChatMobileChannel, externalUserId: string): Promise<ChatMobileBinding | null>
   /** A mobile account and a chat may each have only one current binding. */
   connect(binding: ChatMobileBinding): Promise<void>
+  setNotificationsMuted(sessionId: string, muted: boolean): Promise<void>
   removeSession(sessionId: string): Promise<void>
   /** Adds one Telegram message to the turn anchored by an application prompt. */
   recordTurnMessage(message: ChatMobileTurnMessage): Promise<void>

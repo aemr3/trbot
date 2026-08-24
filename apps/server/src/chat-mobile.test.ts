@@ -35,6 +35,7 @@ interface SentTelegramMessage {
   chatId: string
   text: string
   replyMarkup?: TelegramInlineKeyboard
+  disableNotification?: boolean
 }
 
 interface AnsweredTelegramCallback {
@@ -81,6 +82,11 @@ class MemoryMobileStore implements ChatMobileStore {
       && !(candidate.channel === binding.channel && candidate.externalUserId === binding.externalUserId)
     ))
     this.bindings.push(binding)
+  }
+
+  async setNotificationsMuted(sessionId: string, muted: boolean): Promise<void> {
+    const binding = this.bindings.find((candidate) => candidate.sessionId === sessionId)
+    if (binding) binding.notificationsMuted = muted
   }
 
   async removeSession(sessionId: string): Promise<void> {
@@ -194,10 +200,11 @@ class FakeTelegram implements TelegramBotApiAccess {
   async sendMessage(
     chatId: string,
     text: string,
-    options: { replyMarkup?: TelegramInlineKeyboard } = {},
+    options: { replyMarkup?: TelegramInlineKeyboard; disableNotification?: boolean } = {},
   ): Promise<TelegramMessage> {
     const sent: SentTelegramMessage = { chatId, text }
     if (options.replyMarkup) sent.replyMarkup = options.replyMarkup
+    if (options.disableNotification !== undefined) sent.disableNotification = options.disableNotification
     this.sent.push(sent)
     const gate = this.nextMessageGate
     this.nextMessageGate = null
@@ -407,6 +414,8 @@ test("publishes Telegram chat commands in the native commands menu", async () =>
     "loops",
     "cancelall",
     "exitall",
+    "mute",
+    "unmute",
     "disconnect",
   ])
   expect(telegram.menuButtons).toEqual([{ type: "commands" }])
@@ -445,6 +454,80 @@ test("routes Telegram commands through the connected chat", async () => {
   telegram.push(update(9, telegramMessage("/balance@another_bot", 9)))
   await Bun.sleep(5)
   expect(chat.sent).toHaveLength(commands.length)
+  mobile.destroy()
+})
+
+test("mutes routine Telegram messages and restores them with unmute", async () => {
+  const { mobile, store, telegram } = harness()
+  await mobile.start()
+  await pair(mobile, telegram)
+
+  telegram.push(update(2, telegramMessage("/mute", 2)))
+  await until(() => store.bindings[0]?.notificationsMuted === true)
+  await until(() => telegram.sent.some((sent) => sent.text.startsWith("Routine Telegram notifications are muted")))
+  expect(telegram.sent.at(-1)?.disableNotification).toBe(true)
+
+  mobile.accept({ type: "chatMessage", sessionId: "chat-1", message: message("Muted answer", "ASSISTANT") })
+  await until(() => telegram.sent.some((sent) => sent.text === "Muted answer"))
+  expect(telegram.sent.find((sent) => sent.text === "Muted answer")?.disableNotification).toBe(true)
+
+  telegram.push(update(3, telegramMessage("/unmute", 3)))
+  await until(() => store.bindings[0]?.notificationsMuted === false)
+  await until(() => telegram.sent.some((sent) => sent.text === "Routine Telegram notifications are enabled."))
+  expect(telegram.sent.at(-1)?.disableNotification).toBe(false)
+
+  mobile.accept({ type: "chatMessage", sessionId: "chat-1", message: message("Audible answer", "ASSISTANT") })
+  await until(() => telegram.sent.some((sent) => sent.text === "Audible answer"))
+  expect(telegram.sent.find((sent) => sent.text === "Audible answer")?.disableNotification).toBe(false)
+  mobile.destroy()
+})
+
+test("always alerts for permissions, questions, and agent notifications while muted", async () => {
+  const { mobile, telegram, permissions, questions } = harness()
+  await mobile.start()
+  await pair(mobile, telegram)
+  telegram.push(update(2, telegramMessage("/mute", 2)))
+  await until(() => telegram.sent.some((sent) => sent.text.startsWith("Routine Telegram notifications are muted")))
+
+  const permission: ChatPermissionRequest = {
+    id: PERMISSION_ID,
+    sessionId: "chat-1",
+    toolName: "place_viop_order",
+    action: "BUY 1 contract",
+    reason: "Confirm the order",
+    scope: "ONCE",
+    createdAt: 2_000,
+  }
+  permissions.pending.push(permission)
+  mobile.accept({ type: "chatPermissionRequested", request: permission })
+
+  const question = questionRequest([{
+    header: "Decision",
+    question: "Should I continue?",
+    options: [{ label: "Continue", description: "Keep working" }],
+  }])
+  questions.pending.push(question)
+  mobile.accept({ type: "chatQuestionAsked", request: question })
+
+  mobile.accept({
+    type: "chatNotification",
+    notification: {
+      id: "notification-1",
+      sessionId: "chat-1",
+      title: "Monitor triggered",
+      message: "Price reached the configured level.",
+      urgency: "IMPORTANT",
+      createdAt: 2_000,
+    },
+  })
+
+  await until(() => telegram.sent.some((sent) => sent.text.startsWith("⚠️ Tool approval required")))
+  await until(() => telegram.sent.some((sent) => sent.text.startsWith("❓ Agent asks")))
+  await until(() => telegram.sent.some((sent) => sent.text.startsWith("🔔 Monitor triggered")))
+
+  for (const prefix of ["⚠️ Tool approval required", "❓ Agent asks", "🔔 Monitor triggered"]) {
+    expect(telegram.sent.find((sent) => sent.text.startsWith(prefix))?.disableNotification).toBe(false)
+  }
   mobile.destroy()
 })
 

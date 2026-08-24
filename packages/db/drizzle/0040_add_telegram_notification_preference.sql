@@ -1,0 +1,1 @@
+ALTER TABLE `chat_mobile_connections` ADD `notifications_muted` integer DEFAULT false NOT NULL;

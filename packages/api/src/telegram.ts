@@ -93,7 +93,11 @@ export interface TelegramBotApiAccess {
   sendMessage(
     chatId: string,
     text: string,
-    options?: { replyMarkup?: TelegramInlineKeyboard; protectContent?: boolean },
+    options?: {
+      replyMarkup?: TelegramInlineKeyboard
+      protectContent?: boolean
+      disableNotification?: boolean
+    },
   ): Promise<TelegramMessage>
   editMessageText(chatId: string, messageId: number, text: string): Promise<void>
   deleteMessage(chatId: string, messageId: number): Promise<void>
@@ -183,12 +187,16 @@ export class TelegramBotApi implements TelegramBotApiAccess {
   sendMessage(
     chatId: string,
     text: string,
-    options: { replyMarkup?: TelegramInlineKeyboard; protectContent?: boolean } = {},
+    options: {
+      replyMarkup?: TelegramInlineKeyboard
+      protectContent?: boolean
+      disableNotification?: boolean
+    } = {},
   ): Promise<TelegramMessage> {
     const payload = {
       chat_id: chatId,
       text,
-      disable_notification: true,
+      disable_notification: options.disableNotification ?? false,
       protect_content: options.protectContent ?? true,
       reply_markup: options.replyMarkup,
     }

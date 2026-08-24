@@ -222,6 +222,7 @@ export const chatMobileConnections = sqliteTable(
     externalChatId: text("external_chat_id").notNull(),
     displayName: text("display_name").notNull(),
     connectedAt: integer("connected_at").notNull(),
+    notificationsMuted: integer("notifications_muted", { mode: "boolean" }).notNull().default(false),
   },
   (table) => [
     uniqueIndex("chat_mobile_connections_external_user").on(table.channel, table.externalUserId),

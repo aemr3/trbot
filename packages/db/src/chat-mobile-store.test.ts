@@ -28,6 +28,7 @@ function binding(sessionId: string, externalUserId = "user-1"): ChatMobileBindin
     externalChatId: externalUserId,
     displayName: "@trader",
     connectedAt: 3_000,
+    notificationsMuted: false,
   }
 }
 
@@ -63,6 +64,18 @@ test("moves one mobile account to its newly paired chat", async () => {
 
   expect(await store.findBySession("chat-1")).toBeNull()
   expect(await store.findBySession("chat-2")).toEqual(binding("chat-2"))
+})
+
+test("persists the Telegram notification preference", async () => {
+  const store = await setup()
+  await store.connect(binding("chat-1"))
+
+  await store.setNotificationsMuted("chat-1", true)
+
+  expect(await store.findBySession("chat-1")).toEqual({
+    ...binding("chat-1"),
+    notificationsMuted: true,
+  })
 })
 
 test("replaces the account previously attached to a chat", async () => {

@@ -57,6 +57,13 @@ export class DrizzleChatMobileStore implements ChatMobileStore {
     await this.db.insert(chatMobileConnections).values(parsed)
   }
 
+  async setNotificationsMuted(sessionId: string, muted: boolean): Promise<void> {
+    await this.db
+      .update(chatMobileConnections)
+      .set({ notificationsMuted: muted })
+      .where(eq(chatMobileConnections.sessionId, sessionId))
+  }
+
   async removeSession(sessionId: string): Promise<void> {
     await this.db.delete(chatMobileConnections).where(eq(chatMobileConnections.sessionId, sessionId))
   }
