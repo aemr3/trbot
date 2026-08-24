@@ -188,6 +188,7 @@ export class TelegramBotApi implements TelegramBotApiAccess {
     const payload = {
       chat_id: chatId,
       text,
+      disable_notification: true,
       protect_content: options.protectContent ?? true,
       reply_markup: options.replyMarkup,
     }

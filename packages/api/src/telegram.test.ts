@@ -100,7 +100,7 @@ test("downloads a Telegram voice file after resolving its server path", async ()
   expect(audio).toEqual(new Uint8Array([79, 103, 103, 83]))
 })
 
-test("sends protected messages with an inline keyboard", async () => {
+test("sends protected silent messages with an inline keyboard", async () => {
   let requestBody = ""
   const api = new TelegramBotApi("123:secret", {
     fetch: async (_input, init) => {
@@ -120,6 +120,7 @@ test("sends protected messages with an inline keyboard", async () => {
   expect(JSON.parse(requestBody)).toEqual({
     chat_id: "9",
     text: "Approve",
+    disable_notification: true,
     protect_content: true,
     reply_markup: { inline_keyboard: [[{ text: "Allow", callback_data: "allow" }]] },
   })
