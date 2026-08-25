@@ -1,3 +1,4 @@
+import type { DepthBookSnapshot, DepthBookSnapshotSource } from "@trbot/market/depth.ts"
 import { FeedBrokerageDirectory } from "./brokerages.ts"
 import { FeedBrokerVolumeSource } from "./broker-volume.ts"
 import { FeedCandleSource } from "./candles.ts"
@@ -66,7 +67,7 @@ export interface MarketFeedOptions {
  * account — so one of these is created at startup and outlives any number of
  * brokerage sign-ins.
  */
-export class MarketFeed {
+export class MarketFeed implements DepthBookSnapshotSource {
   readonly session: FeedSession
   readonly socket: MarketSocket
   readonly candles: FeedCandleSource
@@ -81,6 +82,7 @@ export class MarketFeed {
   readonly brokerages: FeedBrokerageDirectory
   /** The trading days the broker readings can be taken over. */
   readonly tradingDays: FeedTradingDays
+  private readonly depthBooks = new Map<string, DepthBookSnapshot>()
 
   constructor(private readonly options: MarketFeedOptions) {
     this.session = new FeedSession({
@@ -138,7 +140,12 @@ export class MarketFeed {
       // The socket only carries new prints, so the tape is seeded over HTTP.
       loadTrades: (symbol) => this.trades.listTrades(symbol),
       brokerageNames: () => this.brokerages.names(),
+      onSnapshot: (snapshot) => this.depthBooks.set(snapshot.book.symbol, snapshot),
     })
+  }
+
+  getDepthBookSnapshot(symbol: string): DepthBookSnapshot | null {
+    return this.depthBooks.get(symbol) ?? null
   }
 
   /**

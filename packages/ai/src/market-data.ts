@@ -3,7 +3,7 @@ import type { BrokerMarket, BrokerVolume, BrokerVolumeSource } from "@trbot/mark
 import type { BrokerageDistributionSource } from "@trbot/market/brokerage.ts"
 import type { BrokerageDateRange } from "@trbot/market/broker-calendar.ts"
 import type { CandleInstrumentResolver, CandleSource } from "@trbot/market/candle.ts"
-import type { DepthBook, DepthStream, DepthTarget } from "@trbot/market/depth.ts"
+import type { DepthBookSnapshotSource, DepthTarget } from "@trbot/market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "@trbot/market/equity-quote-stream.ts"
 import {
   DEFAULT_FINANCIAL_METRICS,
@@ -324,7 +324,7 @@ export interface MarketDataSources {
   brokerage: BrokerageDistributionSource
   settlement: SettlementSource
   memberFeatures: MemberFeatureSource
-  openDepthStream(): DepthStream
+  depthBooks: DepthBookSnapshotSource
   openEquityQuoteStream(): EquityQuoteStream
 }
 
@@ -1120,10 +1120,11 @@ function orderBookTool(clients: MarketDataToolClients): ChatTool<typeof DepthPar
     definition: {
       name: "get_order_book",
       description: [
-        "Take a live order-book snapshot for a VIOP contract or its available underlying cash/spot instrument,",
+        "Read the latest cached order book for a VIOP contract or its available underlying cash/spot instrument,",
         "with bid/ask levels, total lots, and recent trades. Use target INSTRUMENT for the futures book or",
         "UNDERLYING for the underlying book. When target is omitted, a contract symbol selects INSTRUMENT;",
         "an underlying alias selects UNDERLYING unless that contract has no underlying market-data instrument.",
+        "Returns immediately and includes updatedAt so freshness can be judged.",
       ].join(" "),
       parameters: DepthParameters,
     },
@@ -1137,9 +1138,14 @@ function orderBookTool(clients: MarketDataToolClients): ChatTool<typeof DepthPar
       const resolvedTarget: DepthTarget = target
         ?? (symbol.trim().toUpperCase().startsWith("F_") || !underlyingSymbol ? "INSTRUMENT" : "UNDERLYING")
       const requestedSymbol = depthSymbol(instrument, resolvedTarget)
-      const book = await readDepthSnapshot(sources.openDepthStream(), requestedSymbol, options.signal)
+      const snapshot = sources.depthBooks.getDepthBookSnapshot(requestedSymbol)
+      if (!snapshot) {
+        throw new Error(`No cached order book has been observed for ${requestedSymbol}`)
+      }
+      const book = snapshot.book
       const normalized = {
         ...book,
+        updatedAt: snapshot.updatedAt,
         symbol: requestedSymbol,
         instrumentSymbol: instrument.symbol,
         underlyingSymbol,
@@ -1149,7 +1155,8 @@ function orderBookTool(clients: MarketDataToolClients): ChatTool<typeof DepthPar
         trades: book.trades.slice(0, trades ?? 25),
       }
       const targetName = resolvedTarget === "INSTRUMENT" ? "VIOP contract" : "underlying"
-      return dataOutcome(`Read ${targetName} order book for ${requestedSymbol}.`, normalized)
+      const updatedAt = new Date(snapshot.updatedAt).toISOString()
+      return dataOutcome(`Read cached ${targetName} order book for ${requestedSymbol}, last updated ${updatedAt}.`, normalized)
     },
   }
 }
@@ -1394,21 +1401,6 @@ function dateRange(start?: string, end?: string): BrokerageDateRange {
   if (end && !start) throw new Error("A brokerage range cannot have an end date without a start date")
   if (start && end && end < start) throw new Error("The brokerage range end date cannot precede its start date")
   return { start: start ?? null, end: end ?? null }
-}
-
-function readDepthSnapshot(stream: DepthStream, symbol: string, signal?: AbortSignal): Promise<DepthBook> {
-  return streamSnapshot<DepthBook>({
-    signal,
-    start: () => stream.start(symbol),
-    stop: () => stream.stop(),
-    subscribe: (resolve, reject) => {
-      stream.subscribe(resolve)
-      stream.onStatusChange((status) => {
-        if (status === "unavailable") reject(new Error(`Order book is unavailable for ${symbol}`))
-      })
-    },
-    timeoutMessage: `Timed out waiting for the ${symbol} order book`,
-  })
 }
 
 function readEquityQuote(stream: EquityQuoteStream, symbol: string, signal?: AbortSignal): Promise<EquityQuoteUpdate> {

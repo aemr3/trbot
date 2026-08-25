@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import type { ToolCall } from "@earendil-works/pi-ai"
 import { DEFAULT_INTERVALS_BY_RANGE, type CandleSeries } from "@trbot/market/candle.ts"
-import type { DepthBook, DepthBookListener, DepthStatusListener, DepthStream } from "@trbot/market/depth.ts"
+import type { DepthBook } from "@trbot/market/depth.ts"
 import type { EquityQuoteListener, EquityQuoteStream } from "@trbot/market/equity-quote-stream.ts"
 import {
   DEFAULT_FINANCIAL_METRICS,
@@ -153,23 +153,6 @@ const INDEX_IMPACT: IndexImpactSnapshot = {
   ],
 }
 
-class FakeDepthStream implements DepthStream {
-  listener: DepthBookListener | null = null
-  statusListener: DepthStatusListener | null = null
-  stopped = 0
-  started: string[] = []
-
-  constructor(private readonly book: DepthBook | null) {}
-  subscribe(listener: DepthBookListener): void { this.listener = listener }
-  onStatusChange(listener: DepthStatusListener): void { this.statusListener = listener }
-  start(symbol: string): void {
-    this.started.push(symbol)
-    if (this.book) this.listener?.(this.book)
-    else this.statusListener?.("unavailable")
-  }
-  stop(): void { this.stopped += 1 }
-}
-
 class FakeEquityQuoteStream implements EquityQuoteStream {
   listener: EquityQuoteListener | null = null
   stopped = 0
@@ -195,8 +178,8 @@ function harness(
   patch: Partial<MarketDataSources> = {},
   candleInstruments?: MarketDataToolClients["candleData"]["instruments"],
 ) {
-  const depth = new FakeDepthStream(depthBook())
   const equity = new FakeEquityQuoteStream()
+  const depthLookups: string[] = []
   interface MarketCalls {
     brokerage: BrokerageDistributionRequest[]
     settlement: SettlementRequest[]
@@ -374,7 +357,12 @@ function harness(
       }),
     },
     memberFeatures: { loadFeatures: async () => memberFeatureSet(["MARKET_DEPTH", "BROKERAGE_DISTRIBUTION"]) },
-    openDepthStream: () => depth,
+    depthBooks: {
+      getDepthBookSnapshot: (symbol) => {
+        depthLookups.push(symbol)
+        return { book: { ...depthBook(), symbol }, updatedAt: NOW }
+      },
+    },
     openEquityQuoteStream: () => equity,
     ...patch,
   }
@@ -555,7 +543,7 @@ function harness(
     },
     stops: { list: async () => [] },
   }
-  return { clients, calls, depth, equity }
+  return { clients, calls, depthLookups, equity }
 }
 
 test("offers the complete read-only market toolset", () => {
@@ -972,7 +960,7 @@ test("rejects market-data views the selected contract does not provide before ca
   expect(testHarness.calls.candles).toEqual([])
   expect(testHarness.calls.feedCandles).toEqual([])
   expect(testHarness.calls.brokerage).toEqual([])
-  expect(testHarness.depth.started).toEqual(["F_XAUTRYM0826"])
+  expect(testHarness.depthLookups).toEqual(["F_XAUTRYM0826"])
 })
 
 test("falls back to the latest contract candle when closed-market quote sources have no price", async () => {
@@ -1103,7 +1091,7 @@ test("reads account, pending orders, features, and stop rules without mutations"
   expect(z.object({ rules: z.array(StopRuleSchema) }).parse(modelData(stops)).rules).toEqual([openRule])
 })
 
-test("takes bounded live depth and underlying-equity snapshots and closes both streams", async () => {
+test("reads bounded cached depth with its update time and closes the live equity stream", async () => {
   const testHarness = harness()
   const tools = new ChatTools(marketDataTools(testHarness.clients))
   const depth = await call(tools, "get_order_book", { symbol: "ASELS", levels: 1, trades: 1 })
@@ -1115,10 +1103,10 @@ test("takes bounded live depth and underlying-equity snapshots and closes both s
     instrumentSymbol: ASELS.symbol,
     underlyingSymbol: "ASELS",
     target: "UNDERLYING",
+    updatedAt: NOW,
   })
   expect(modelData(equity)).toMatchObject({ symbol: "ASELS", lastPrice: 80, sessionStatus: "OPEN", source: "LIVE_TICK" })
-  expect(testHarness.depth.started).toEqual(["ASELS"])
-  expect(testHarness.depth.stopped).toBe(1)
+  expect(testHarness.depthLookups).toEqual(["ASELS"])
   expect(testHarness.equity.stopped).toBe(1)
 })
 
@@ -1159,8 +1147,7 @@ test("selects the contract or underlying order book from the symbol and explicit
   expect(modelData(inferredContract)).toMatchObject({ symbol: ASELS.symbol, target: "INSTRUMENT" })
   expect(modelData(selectedUnderlying)).toMatchObject({ symbol: "ASELS", target: "UNDERLYING" })
   expect(modelData(selectedContract)).toMatchObject({ symbol: ASELS.symbol, target: "INSTRUMENT" })
-  expect(testHarness.depth.started).toEqual([ASELS.symbol, "ASELS", ASELS.symbol])
-  expect(testHarness.depth.stopped).toBe(3)
+  expect(testHarness.depthLookups).toEqual([ASELS.symbol, "ASELS", ASELS.symbol])
 })
 
 test("reads bounded brokerage and settlement reports for the requested range", async () => {
@@ -1215,9 +1202,8 @@ test("lists news without duplicating bodies and fetches an article separately", 
   expect(modelData(article)).toMatchObject({ uid: "news-1", body: "Full body", bodyTruncated: false })
 })
 
-test("reports unavailable depth and invalid broker date ranges as tool errors", async () => {
-  const unavailable = new FakeDepthStream(null)
-  const testHarness = harness({ openDepthStream: () => unavailable })
+test("reports missing cached depth and invalid broker date ranges as tool errors", async () => {
+  const testHarness = harness({ depthBooks: { getDepthBookSnapshot: () => null } })
   const tools = new ChatTools(marketDataTools(testHarness.clients))
   const depth = await call(tools, "get_order_book", { symbol: "ASELS" })
   const dates = await call(tools, "get_settlement", {
@@ -1228,8 +1214,7 @@ test("reports unavailable depth and invalid broker date ranges as tool errors", 
   })
 
   expect(depth.isError).toBe(true)
-  expect(depth.blocks[0]?.text).toContain("unavailable")
-  expect(unavailable.stopped).toBe(1)
+  expect(depth.blocks[0]?.text).toContain("No cached order book")
   expect(dates.isError).toBe(true)
   expect(dates.blocks[0]?.text).toContain("cannot precede")
 })

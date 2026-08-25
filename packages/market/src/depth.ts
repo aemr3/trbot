@@ -31,6 +31,18 @@ export interface DepthBook {
   marketClosed: boolean
 }
 
+/** The latest assembled book this server observed, retained after its live stream stops. */
+export interface DepthBookSnapshot {
+  book: DepthBook
+  /** When the feed last changed the cached book, as epoch milliseconds. */
+  updatedAt: number
+}
+
+/** Synchronous access to already-observed depth; reading it never opens or waits on a stream. */
+export interface DepthBookSnapshotSource {
+  getDepthBookSnapshot(symbol: string): DepthBookSnapshot | null
+}
+
 const DepthLevelSchema = z.object({
   price: z.number(),
   lots: z.number(),

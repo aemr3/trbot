@@ -1,6 +1,7 @@
 import type {
   DepthBook,
   DepthBookListener,
+  DepthBookSnapshot,
   DepthLevel,
   DepthStatus,
   DepthStatusListener,
@@ -39,6 +40,8 @@ export interface FeedDepthStreamOptions {
   loadTrades?: (symbol: string) => Promise<DepthTrade[]>
   /** Brokerage short names by code, for rendering a print's counterparties. */
   brokerageNames?: () => Promise<Map<string, string>>
+  /** Retains books for synchronous consumers after this stream is stopped. */
+  onSnapshot?: (snapshot: DepthBookSnapshot) => void
   now?: () => number
 }
 
@@ -78,6 +81,8 @@ export class FeedDepthStream implements DepthStream {
   private session: string | null = null
   private brokerages = new Map<string, string>()
   private release: (() => void) | null = null
+  private hasDepthUpdate = false
+  private updatedAt: number | null = null
 
   constructor(
     private readonly socket: SocketSubscriber,
@@ -118,6 +123,7 @@ export class FeedDepthStream implements DepthStream {
         // are the newest ones on the tape. Merging keeps them: replacing the list
         // outright would drop every print of the first second or two.
         this.trades = mergeTrades(this.trades, trades)
+        if (this.hasDepthUpdate && trades.length > 0) this.updatedAt = this.now()
         this.publish()
       })
       .catch(() => {})
@@ -153,6 +159,8 @@ export class FeedDepthStream implements DepthStream {
     this.trades = []
     this.buyLots = null
     this.sellLots = null
+    this.hasDepthUpdate = false
+    this.updatedAt = null
     this.setStatus("idle")
   }
 
@@ -175,6 +183,8 @@ export class FeedDepthStream implements DepthStream {
     else side.set(key.index, { price, lots, orderCount })
 
     // Frames are arriving, so the book is being tracked even while it is empty.
+    this.hasDepthUpdate = true
+    this.updatedAt = this.now()
     this.setStatus("live")
     this.publish()
   }
@@ -190,6 +200,7 @@ export class FeedDepthStream implements DepthStream {
     // an id, so the tape is deduplicated on the way in.
     if (this.trades.some((existing) => existing.id === trade.id)) return
     this.trades = [trade, ...this.trades].slice(0, MAX_TRADES)
+    if (this.hasDepthUpdate) this.updatedAt = this.now()
     this.setStatus("live")
     this.publish()
   }
@@ -208,13 +219,16 @@ export class FeedDepthStream implements DepthStream {
         changed = true
       }
     }
-    if (changed) this.publish()
+    if (changed) {
+      if (this.hasDepthUpdate) this.updatedAt = this.now()
+      this.publish()
+    }
   }
 
   private publish(): void {
     const symbol = this.symbol
     if (!symbol) return
-    const now = this.options.now?.() ?? Date.now()
+    const now = this.now()
     const book: DepthBook = {
       symbol,
       bids: sortLevels(this.bids, "bid"),
@@ -227,6 +241,13 @@ export class FeedDepthStream implements DepthStream {
       marketClosed: !isMarketOpen(this.session, now),
     }
     for (const listener of this.listeners) listener(book)
+    if (this.hasDepthUpdate && this.updatedAt !== null) {
+      this.options.onSnapshot?.({ book, updatedAt: this.updatedAt })
+    }
+  }
+
+  private now(): number {
+    return this.options.now?.() ?? Date.now()
   }
 
   private setStatus(status: DepthStatus): void {

@@ -12,7 +12,7 @@ import {
 } from "@trbot/feed"
 import type { BrokerageDistributionSource } from "@trbot/market/brokerage.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
-import type { DepthStream } from "@trbot/market/depth.ts"
+import type { DepthBookSnapshotSource, DepthStream } from "@trbot/market/depth.ts"
 import type { EquityQuoteStream } from "@trbot/market/equity-quote-stream.ts"
 import type { RecentFinancialSource } from "@trbot/market/financials.ts"
 import type { ViopInstrumentSource } from "@trbot/market/instrument.ts"
@@ -46,6 +46,7 @@ export interface ProviderSources {
   brokerage: BrokerageDistributionSource
   settlement: SettlementSource
   memberFeatures: MemberFeatureSource
+  depthBooks: DepthBookSnapshotSource
   quotes: QuoteStream
   accountStream: AccountStream
   /**
@@ -359,6 +360,7 @@ function providerSources(client: ApiClient, feed: MarketFeed, options: ProviderS
       brokerage: new ApiMemberFeatureSource(client),
       onError: report("Member features"),
     }),
+    depthBooks: feed,
     quotes: feed.openQuoteStream(),
     accountStream: new ApiAccountStream(client, {
       onError: report("Account stream"),
