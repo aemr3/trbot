@@ -328,6 +328,38 @@ test("keeps a reply that failed part way and reports why", async () => {
   expect(drafts[0]?.message.status).toBe("FAILED")
 })
 
+test("retries provider overloads with bounded backoff", async () => {
+  const { faux, models } = scripted()
+  faux.setResponses([
+    fauxAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Codex error: Our servers are currently overloaded. Please try again later.",
+    }),
+    fauxAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Codex error: Our servers are currently overloaded. Please try again later.",
+    }),
+    fauxAssistantMessage("Recovered answer."),
+  ])
+  const drafts: ChatMessageDraft[] = []
+
+  const result = await new ChatAgent({ models }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Capital of Turkey?",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onMessage: async (draft) => { drafts.push(draft) },
+    },
+  })
+
+  expect(result).toEqual({ completed: true, aborted: false, errorMessage: null })
+  expect(faux.state.callCount).toBe(3)
+  expect(drafts.map((draft) => draft.message.text)).toEqual(["Recovered answer."])
+})
+
 test("retries an abnormal provider disconnect without running completed tools again", async () => {
   let toolCalls = 0
   const tool: ChatTool = {

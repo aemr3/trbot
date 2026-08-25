@@ -447,7 +447,11 @@ export class App {
       onMessage: (sessionId, message) => chatViews.forEach((view) => view.acceptMessage(sessionId, message)),
       onMessageRemoved: (sessionId, messageId) => chatViews.forEach((view) => view.acceptMessageRemoved(sessionId, messageId)),
       onDelta: (sessionId, runId, delta) => chatViews.forEach((view) => view.acceptDelta(sessionId, runId, delta)),
-      onRun: (sessionId, runId, status, error) => chatViews.forEach((view) => view.acceptRun(sessionId, runId, status, error)),
+      onRun: (sessionId, runId, status, error) => {
+        // Both views consume the run state, but only one should log the same failure.
+        mainChat.acceptRun(sessionId, runId, status, error)
+        tradePanelChat.acceptRun(sessionId, runId, status)
+      },
       onQuestionAsked: (request) => chatViews.forEach((view) => view.acceptQuestion(request)),
       onQuestionResolved: (sessionId, requestId) => chatViews.forEach((view) => view.acceptQuestionResolved(sessionId, requestId)),
       onPermissionRequested: (request) => chatViews.forEach((view) => view.acceptPermission(request)),

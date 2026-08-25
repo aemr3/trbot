@@ -1,6 +1,7 @@
 import {
   isContextOverflow,
   isRecoverableLength,
+  isRetryableAssistantError,
   type Api,
   type AssistantMessage,
   type Context,
@@ -135,14 +136,9 @@ export interface ChatTurnResult {
   overflowed?: boolean
 }
 
-const MAX_TRANSIENT_STREAM_RETRIES = 1
-
-function isTransientStreamFailure(reply: AssistantMessage): boolean {
-  if (reply.stopReason !== "error") return false
-  const message = reply.errorMessage ?? ""
-  return /WebSocket closed (?:1001|1005|1006|1011|1012|1013|1015)\b/i.test(message)
-    || /WebSocket (?:idle timeout|stream closed before response\.completed)/i.test(message)
-}
+// A provider's own transport may already retry before returning an error message.
+// These outer retries also recover failures reported after a stream has opened.
+const TRANSIENT_STREAM_RETRY_DELAYS_MS = [500, 1_000] as const
 
 function hasUserVisibleReply(reply: AssistantMessage): boolean {
   return reply.content.some((block) => block.type !== "thinking")
@@ -181,12 +177,16 @@ export class ChatAgent {
     for (;;) {
       const { reply, timing } = await this.streamReply(context, turn)
       if (
-        transientRetries < MAX_TRANSIENT_STREAM_RETRIES
+        transientRetries < TRANSIENT_STREAM_RETRY_DELAYS_MS.length
         && !turn.signal?.aborted
         && !hasUserVisibleReply(reply)
-        && isTransientStreamFailure(reply)
+        && isRetryableAssistantError(reply)
       ) {
+        const delayMs = TRANSIENT_STREAM_RETRY_DELAYS_MS[transientRetries]
         transientRetries += 1
+        if (!(await waitForRetry(delayMs, turn.signal))) {
+          return { completed: false, aborted: true, errorMessage: null }
+        }
         continue
       }
       transientRetries = 0
@@ -290,6 +290,22 @@ export class ChatAgent {
     // stopped — spent the whole call thinking.
     return { reply, timing: { elapsedMs, thinkingMs: thought ? thinkingMs ?? elapsedMs : null } }
   }
+}
+
+/** Keeps provider backoff interruptible so stopping a run remains immediate. */
+function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const onAbort = (): void => {
+      clearTimeout(timeout)
+      resolve(false)
+    }
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve(true)
+    }, delayMs)
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
 }
 
 /** How long a reply took, and how much of that was spent before its first word. */
