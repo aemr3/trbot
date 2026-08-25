@@ -18,7 +18,10 @@ import {
 import { ChatQuestionRequestSchema, type ChatQuestionAnswer, type ChatQuestionRequest } from "@trbot/chat/question.ts"
 import { ChatNotificationSchema, type ChatNotification } from "@trbot/chat/notification.ts"
 import {
+  ChatPermissionModeStateSchema,
   ChatPermissionRequestSchema,
+  type ChatPermissionMode,
+  type ChatPermissionModeState,
   type ChatPermissionReply,
   type ChatPermissionRequest,
 } from "@trbot/chat/permission.ts"
@@ -152,6 +155,14 @@ export class HttpChatSessions implements ChatSessions {
     await this.http.post(ROUTES.chatPermissionReply(requestId), OkResponseSchema, { body: reply })
   }
 
+  permissionMode(sessionId: string): Promise<ChatPermissionModeState> {
+    return this.http.get(ROUTES.chatPermissionMode(sessionId), ChatPermissionModeStateSchema)
+  }
+
+  setPermissionMode(sessionId: string, mode: ChatPermissionMode): Promise<ChatPermissionModeState> {
+    return this.http.put(ROUTES.chatPermissionMode(sessionId), ChatPermissionModeStateSchema, { body: { mode } })
+  }
+
   notifications(): Promise<ChatNotification[]> {
     return this.http.get(ROUTES.chatNotifications, z.array(ChatNotificationSchema))
   }
@@ -171,6 +182,7 @@ export interface ChatEvents {
   onQuestionResolved?: (sessionId: string, requestId: string) => void
   onPermissionRequested?: (request: ChatPermissionRequest) => void
   onPermissionResolved?: (sessionId: string, requestId: string) => void
+  onPermissionModeChanged?: (state: ChatPermissionModeState) => void
   onNotification?: (notification: ChatNotification) => void
   onNotificationDismissed?: (notificationId: string) => void
   /**
@@ -244,6 +256,9 @@ export class ChatClient {
           return
         case "chatPermissionResolved":
           events.onPermissionResolved?.(frame.sessionId, frame.requestId)
+          return
+        case "chatPermissionModeChanged":
+          events.onPermissionModeChanged?.(frame.state)
           return
         case "chatNotification":
           events.onNotification?.(frame.notification)

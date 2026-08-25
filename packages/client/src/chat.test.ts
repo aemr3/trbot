@@ -69,6 +69,21 @@ test("delivers permission request and resolution frames", () => {
   expect(resolved).toEqual([request.id])
 })
 
+test("delivers permission mode changes", () => {
+  const connection = new FakeChatStream()
+  const changed: string[] = []
+  new ChatClient(connection, {
+    onPermissionModeChanged: (state) => changed.push(`${state.sessionId}:${state.mode}`),
+  })
+
+  connection.emit({
+    type: "chatPermissionModeChanged",
+    state: { sessionId: "chat-1", mode: "AUTO" },
+  })
+
+  expect(changed).toEqual(["chat-1:AUTO"])
+})
+
 test("requests only the bounded timeline used by the TUI", async () => {
   let requestedUrl = ""
   const http = new HttpClient({
@@ -180,5 +195,27 @@ test("connects, inspects, and disconnects a mobile chat through one route", asyn
     { method: "GET", path: "/v1/ai/chat/sessions/chat%2Fone/mobile" },
     { method: "POST", path: "/v1/ai/chat/sessions/chat%2Fone/mobile" },
     { method: "DELETE", path: "/v1/ai/chat/sessions/chat%2Fone/mobile" },
+  ])
+})
+
+test("reads and changes a chat's permission mode through one route", async () => {
+  const requests: Array<{ method: string; path: string; body: string }> = []
+  const http = new HttpClient({
+    url: "http://localhost:3000",
+    token: "test",
+    fetch: async (input, init) => {
+      const request = new Request(input, init)
+      const body = await request.text()
+      requests.push({ method: request.method, path: new URL(request.url).pathname, body })
+      return Response.json({ sessionId: "chat/one", mode: request.method === "PUT" ? "AUTO" : "MANUAL" })
+    },
+  })
+  const chats = new HttpChatSessions(http)
+
+  expect(await chats.permissionMode("chat/one")).toEqual({ sessionId: "chat/one", mode: "MANUAL" })
+  expect(await chats.setPermissionMode("chat/one", "AUTO")).toEqual({ sessionId: "chat/one", mode: "AUTO" })
+  expect(requests).toEqual([
+    { method: "GET", path: "/v1/ai/chat/sessions/chat%2Fone/permissions", body: "" },
+    { method: "PUT", path: "/v1/ai/chat/sessions/chat%2Fone/permissions", body: '{"mode":"AUTO"}' },
   ])
 })

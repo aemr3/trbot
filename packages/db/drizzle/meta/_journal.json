@@ -288,6 +288,13 @@
       "when": 1787579936454,
       "tag": "0040_add_telegram_notification_preference",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1787652967905,
+      "tag": "0041_add_chat_permission_mode",
+      "breakpoints": true
     }
   ]
 }

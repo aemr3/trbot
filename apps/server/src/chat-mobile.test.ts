@@ -16,7 +16,11 @@ import type {
   ChatMobileTurn,
   ChatMobileTurnMessage,
 } from "@trbot/chat/mobile.ts"
-import type { ChatPermissionReply, ChatPermissionRequest } from "@trbot/chat/permission.ts"
+import type {
+  ChatPermissionMode,
+  ChatPermissionReply,
+  ChatPermissionRequest,
+} from "@trbot/chat/permission.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import {
   chatBlockText,
@@ -328,12 +332,24 @@ class FakeChat {
 
 class FakePermissions {
   pending: ChatPermissionRequest[] = []
+  currentMode: ChatPermissionMode = "MANUAL"
+  readonly modeChanges: Array<{ sessionId: string; mode: ChatPermissionMode }> = []
   readonly replies: Array<{ requestId: string; reply: ChatPermissionReply; clientId: string | null }> = []
   readonly attached = new Set<string>()
   readonly detached: string[] = []
 
   list(): ChatPermissionRequest[] {
     return [...this.pending]
+  }
+
+  async mode(sessionId: string) {
+    return { sessionId, mode: this.currentMode }
+  }
+
+  async setMode(sessionId: string, mode: ChatPermissionMode) {
+    this.currentMode = mode
+    this.modeChanges.push({ sessionId, mode })
+    return { sessionId, mode }
   }
 
   async reply(requestId: string, reply: ChatPermissionReply, clientId: string | null = null): Promise<void> {
@@ -414,11 +430,54 @@ test("publishes Telegram chat commands in the native commands menu", async () =>
     "loops",
     "cancelall",
     "exitall",
+    "permissions",
     "mute",
     "unmute",
     "disconnect",
   ])
   expect(telegram.menuButtons).toEqual([{ type: "commands" }])
+  mobile.destroy()
+})
+
+test("shows and changes permission mode from Telegram", async () => {
+  const { mobile, telegram, permissions } = harness()
+  await mobile.start()
+  await pair(mobile, telegram)
+
+  telegram.push(update(2, telegramMessage("/permissions", 2)))
+  await until(() => telegram.sent.some((sent) => sent.text.startsWith("Permissions")))
+  const messageId = telegram.sent.findIndex((sent) => sent.text.startsWith("Permissions")) + 1
+  const selector = telegram.sent[messageId - 1]!
+  expect(selector.text).toContain("Current: ○ Manual Mode")
+  expect(selector.replyMarkup?.inline_keyboard.flat().map((button) => button.text)).toEqual([
+    "✓ ○ Manual",
+    "● Auto",
+  ])
+
+  telegram.push(update(3, undefined, {
+    id: "permission-mode-auto",
+    from: USER,
+    message: telegramMessage(selector.text, messageId),
+    data: "permission-mode:a",
+  }))
+  await until(() => permissions.modeChanges.length === 1)
+  expect(permissions.modeChanges).toEqual([{ sessionId: "chat-1", mode: "AUTO" }])
+  expect(telegram.edits.at(-1)?.text).toContain("Current: ● Auto Mode")
+  expect(telegram.markups.at(-1)?.replyMarkup.inline_keyboard.flat().map((button) => button.text)).toEqual([
+    "○ Manual",
+    "✓ ● Auto",
+  ])
+  expect(telegram.callbacks.at(-1)?.text).toBe("Auto permissions enabled.")
+
+  telegram.push(update(4, undefined, {
+    id: "permission-mode-manual",
+    from: USER,
+    message: telegramMessage("Permissions", messageId),
+    data: "permission-mode:m",
+  }))
+  await until(() => permissions.modeChanges.length === 2)
+  expect(permissions.modeChanges.at(-1)).toEqual({ sessionId: "chat-1", mode: "MANUAL" })
+  expect(telegram.callbacks.at(-1)?.text).toBe("Manual permissions enabled.")
   mobile.destroy()
 })
 

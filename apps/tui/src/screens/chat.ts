@@ -18,7 +18,11 @@ import {
 } from "@trbot/chat/session.ts"
 import type { ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
-import type { ChatPermissionRequest } from "@trbot/chat/permission.ts"
+import type {
+  ChatPermissionMode,
+  ChatPermissionModeState,
+  ChatPermissionRequest,
+} from "@trbot/chat/permission.ts"
 import { parseLoopInterval, type ChatAutomationState } from "@trbot/chat/automation.ts"
 import type { ViopInstrument } from "@trbot/market/instrument.ts"
 import type { MarketMonitor } from "@trbot/market/market-monitor.ts"
@@ -32,6 +36,7 @@ import { ChatHelpModal } from "../components/chat-help-modal.ts"
 import { ChatMobileModal } from "../components/chat-mobile-modal.ts"
 import { ChatQuestionPanel } from "../components/chat-question-panel.ts"
 import { ChatPermissionPanel } from "../components/chat-permission-panel.ts"
+import { ChatPermissionModeModal } from "../components/chat-permission-mode-modal.ts"
 import { ChatSessionModal } from "../components/chat-session-modal.ts"
 import { ChatTranscript, type ChatTranscriptBlock } from "../components/chat-transcript.ts"
 import { ChatUndoPanel } from "../components/chat-undo-panel.ts"
@@ -53,6 +58,8 @@ const ERROR_COLOR = TUI_THEME.negative
 const MODEL_COLOR = TUI_THEME.modelAccent
 const MONITOR_COLOR = TUI_THEME.monitorAccent
 const LOOP_COLOR = TUI_THEME.warning
+const MANUAL_PERMISSION_COLOR = TUI_THEME.warning
+const AUTO_PERMISSION_COLOR = TUI_THEME.positive
 const TOOL_COLOR = TUI_THEME.tool
 const PROMPT_BG = TUI_THEME.promptBackground
 const CLOSED_PROMPT_BG = TUI_THEME.promptClosedBackground
@@ -106,6 +113,7 @@ const DOUBLE_ESCAPE_MS = 600
 
 const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/model", description: "choose which model answers this chat" },
+  { name: "/permissions", description: "choose how sensitive tools are approved" },
   { name: "/reasoning", description: "choose the model's reasoning effort" },
   { name: "/thoughts", description: "show or hide model reasoning" },
   { name: "/monitors", description: "view or cancel this chat's market monitors" },
@@ -140,6 +148,7 @@ type Modal =
   | ChatSessionModal
   | ChatHelpModal
   | ChatMobileModal
+  | ChatPermissionModeModal
   | ChatUndoPanel
   | MarketMonitorModal
   | SubagentSessionModal
@@ -232,6 +241,8 @@ export class ChatScreen {
   private questionPanel: ChatQuestionPanel | null = null
   private pendingPermissions = new Map<string, ChatPermissionRequest>()
   private permissionPanel: ChatPermissionPanel | null = null
+  private permissionModeByRootSession = new Map<string, ChatPermissionMode>()
+  private changingPermissionMode = false
   private armedMonitorCountBySession = new Map<string, number>()
   private activeLoopCountBySession = new Map<string, number>()
   private mobileConnectedBySession = new Map<string, boolean>()
@@ -544,6 +555,11 @@ export class ChatScreen {
       this.questionPanel.handleKey(key)
       return
     }
+    if (isShiftTab(key)) {
+      this.lastEscapeAt = 0
+      void this.togglePermissionMode()
+      return
+    }
     if (this.focus === "permission" && this.permissionPanel) {
       this.lastEscapeAt = 0
       this.permissionPanel.handleKey(key)
@@ -802,6 +818,12 @@ export class ChatScreen {
     this.finishPermission(requestId)
   }
 
+  acceptPermissionMode(state: ChatPermissionModeState): void {
+    if (this.destroyed) return
+    this.permissionModeByRootSession.set(state.sessionId, state.mode)
+    this.render.schedule()
+  }
+
   acceptNotification(notification: ChatNotification): void {
     if (this.destroyed) return
     this.options.onNotification?.(notification)
@@ -859,6 +881,7 @@ export class ChatScreen {
           this.refreshMarketMonitorCount(this.selectedSessionId),
           this.refreshActiveLoopCount(this.selectedSessionId),
           this.refreshMobileConnection(this.selectedSessionId),
+          this.refreshPermissionMode(this.selectedSessionId),
         ])
       }
     } catch (error) {
@@ -1125,6 +1148,9 @@ export class ChatScreen {
     switch (command) {
       case "/model":
         await this.openModelPicker("model")
+        break
+      case "/permissions":
+        await this.openPermissionMode()
         break
       case "/reasoning":
         await this.openModelPicker("reasoning")
@@ -1667,6 +1693,55 @@ export class ChatScreen {
     }))
   }
 
+  private async openPermissionMode(): Promise<void> {
+    if (this.modal || this.destroyed) return
+    const session = this.selectedSession() ?? await this.startSession()
+    if (!session || this.modal || this.destroyed) return
+    let current = this.permissionMode(session)
+    try {
+      const state = await this.options.chats.permissionMode(session.id)
+      this.acceptPermissionMode(state)
+      current = state.mode
+    } catch (error) {
+      this.options.logs.error("Chat permissions", error)
+    }
+    if (this.modal || this.destroyed) return
+    this.showModal(new ChatPermissionModeModal(this.renderer, {
+      current,
+      onChoose: async (mode) => {
+        await this.applyPermissionMode(session.id, mode)
+        this.closeModal()
+      },
+      onClose: () => this.closeModal(),
+    }))
+  }
+
+  private async togglePermissionMode(): Promise<void> {
+    if (this.changingPermissionMode || this.destroyed || this.connected === false) return
+    this.changingPermissionMode = true
+    try {
+      const session = this.selectedSession() ?? await this.startSession()
+      if (!session || this.destroyed) return
+      const current = await this.options.chats.permissionMode(session.id)
+      await this.applyPermissionMode(session.id, current.mode === "MANUAL" ? "AUTO" : "MANUAL")
+    } catch (error) {
+      this.options.logs.error("Chat permissions", error)
+      this.commandNotice = "Could not change permissions."
+    } finally {
+      this.changingPermissionMode = false
+      if (!this.destroyed) this.render.schedule()
+    }
+  }
+
+  private async applyPermissionMode(sessionId: string, mode: ChatPermissionMode): Promise<void> {
+    const state = await this.options.chats.setPermissionMode(sessionId, mode)
+    if (this.destroyed) return
+    this.acceptPermissionMode(state)
+    this.commandNotice = mode === "AUTO"
+      ? "Auto permissions enabled."
+      : "Manual permissions enabled."
+  }
+
   private showModal(modal: Modal): void {
     this.modal = modal
     this.modalHost.add(modal.root)
@@ -1726,6 +1801,7 @@ export class ChatScreen {
     this.setSelectedSession(sessionId)
     if (!this.messagesBySession.has(sessionId)) void this.loadSession(sessionId)
     void this.refreshMobileConnection(sessionId)
+    void this.refreshPermissionMode(sessionId)
     const blocking = this.blockingFocus()
     if (blocking) this.setFocus(blocking)
     else if (this.focus === "question" || this.focus === "permission") this.setFocus("composer")
@@ -2003,14 +2079,16 @@ export class ChatScreen {
   private composerMetaText(session: ChatSession | null): StyledText {
     const model = session?.model || this.defaultChoice?.modelId
     const reasoning = session?.model ? session.reasoning : this.defaultChoice?.reasoning
-    if (!model) return new StyledText([fg(QUEUED_COLOR)("no model · ^O chooses one")])
+    const permission = permissionModeIcon(this.permissionMode(session))
+    if (!model) return new StyledText([...permission, fg(QUEUED_COLOR)("no model · ^O chooses one")])
     const label = session?.parentSessionId
       ? new StyledText([
         fg(MODEL_COLOR)(session.agent ?? "worker"),
         fg(FAINT_COLOR)(" · "),
+        ...permission,
         ...modelLabel(model, reasoning ?? null).chunks,
       ])
-      : modelLabel(model, reasoning ?? null)
+      : new StyledText([...permission, ...modelLabel(model, reasoning ?? null).chunks])
     if (!session) return label
     const monitorCount = this.armedMonitorCountBySession.get(session.id)
     if (monitorCount !== undefined && monitorCount > 0) {
@@ -2027,6 +2105,19 @@ export class ChatScreen {
       )
     }
     return label
+  }
+
+  private permissionMode(session: ChatSession | null): ChatPermissionMode {
+    const rootSessionId = session?.parentSessionId ?? session?.id
+    return rootSessionId ? (this.permissionModeByRootSession.get(rootSessionId) ?? "MANUAL") : "MANUAL"
+  }
+
+  private async refreshPermissionMode(sessionId: string): Promise<void> {
+    try {
+      this.acceptPermissionMode(await this.options.chats.permissionMode(sessionId))
+    } catch (error) {
+      this.options.logs.error("Chat permissions", error)
+    }
   }
 
   private usageFits(meta: StyledText, hint: string, usage: StyledText): boolean {
@@ -2444,6 +2535,12 @@ function modelLabel(model: string, reasoning: string | null): StyledText {
   return new StyledText(chunks)
 }
 
+function permissionModeIcon(mode: ChatPermissionMode): TextChunk[] {
+  return mode === "AUTO"
+    ? [fg(AUTO_PERMISSION_COLOR)("● ")]
+    : [fg(MANUAL_PERMISSION_COLOR)("○ ")]
+}
+
 /** Model provenance recedes with the rest of a transcript footer. */
 function transcriptModelLabel(model: string, reasoning: string | null): StyledText {
   const chunks: TextChunk[] = [fg(FAINT_COLOR)(model)]
@@ -2494,4 +2591,8 @@ function isAltArrow(key: KeyEvent, direction: "left" | "right" | "up"): boolean 
 
 function isEnter(key: KeyEvent): boolean {
   return key.name === "return" || key.name === "enter"
+}
+
+function isShiftTab(key: KeyEvent): boolean {
+  return key.name === "backtab" || (key.name === "tab" && key.shift)
 }

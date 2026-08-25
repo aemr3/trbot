@@ -7,7 +7,12 @@ import {
 } from "@trbot/chat/session.ts"
 import { ChatQuestionRequestSchema, type ChatQuestionRequest } from "@trbot/chat/question.ts"
 import { ChatNotificationSchema, type ChatNotification } from "@trbot/chat/notification.ts"
-import { ChatPermissionRequestSchema, type ChatPermissionRequest } from "@trbot/chat/permission.ts"
+import {
+  ChatPermissionModeStateSchema,
+  ChatPermissionRequestSchema,
+  type ChatPermissionModeState,
+  type ChatPermissionRequest,
+} from "@trbot/chat/permission.ts"
 import {
   AlertTriggerEventSchema,
   PriceAlertViewSchema,
@@ -109,6 +114,7 @@ export type ChatFrame =
   | { type: "chatQuestionResolved"; requestId: string; sessionId: string }
   | { type: "chatPermissionRequested"; request: ChatPermissionRequest }
   | { type: "chatPermissionResolved"; requestId: string; sessionId: string }
+  | { type: "chatPermissionModeChanged"; state: ChatPermissionModeState }
   | { type: "chatNotification"; notification: ChatNotification }
   | { type: "chatNotificationDismissed"; notificationId: string }
 
@@ -174,6 +180,7 @@ export const ServerFrameSchema: z.ZodType<ServerFrame> = z.discriminatedUnion("t
   z.object({ type: z.literal("chatQuestionResolved"), requestId: z.string(), sessionId: z.string() }),
   z.object({ type: z.literal("chatPermissionRequested"), request: ChatPermissionRequestSchema }),
   z.object({ type: z.literal("chatPermissionResolved"), requestId: z.string(), sessionId: z.string() }),
+  z.object({ type: z.literal("chatPermissionModeChanged"), state: ChatPermissionModeStateSchema }),
   z.object({ type: z.literal("chatNotification"), notification: ChatNotificationSchema }),
   z.object({ type: z.literal("chatNotificationDismissed"), notificationId: z.string() }),
   z.object({ type: z.literal("error"), channel: z.enum(STREAM_CHANNELS).optional(), message: z.string() }),

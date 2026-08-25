@@ -75,6 +75,7 @@ export const ROUTES = {
   chatQuestion: (id: string) => `${API_PREFIX}/ai/chat/questions/${encodeURIComponent(id)}`,
   chatPermissions: `${API_PREFIX}/ai/chat/permissions`,
   chatPermissionReply: (id: string) => `${API_PREFIX}/ai/chat/permissions/${encodeURIComponent(id)}/reply`,
+  chatPermissionMode: (id: string) => `${API_PREFIX}/ai/chat/sessions/${encodeURIComponent(id)}/permissions`,
   chatNotifications: `${API_PREFIX}/ai/chat/notifications`,
   chatNotification: (id: string) => `${API_PREFIX}/ai/chat/notifications/${encodeURIComponent(id)}`,
   streamTicket: `${API_PREFIX}/stream/ticket`,

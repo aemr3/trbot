@@ -10,6 +10,8 @@ import type {
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type {
+  ChatPermissionMode,
+  ChatPermissionModeState,
   ChatPermissionReply,
   ChatPermissionRequest,
 } from "@trbot/chat/permission.ts"
@@ -70,6 +72,8 @@ export interface ChatSessions {
   /** Sensitive tool calls currently blocking an agent turn. */
   permissions(): Promise<ChatPermissionRequest[]>
   answerPermission(requestId: string, reply: ChatPermissionReply): Promise<void>
+  permissionMode(sessionId: string): Promise<ChatPermissionModeState>
+  setPermissionMode(sessionId: string, mode: ChatPermissionMode): Promise<ChatPermissionModeState>
   /** Durable agent notices waiting for the user to acknowledge them. */
   notifications(): Promise<ChatNotification[]>
   dismissNotification(notificationId: string): Promise<void>

@@ -8,6 +8,8 @@ import { ChatPermissionController } from "./chat-permission.ts"
 
 function store(initial: ChatPermissionRequest[] = []) {
   const requests = [...initial]
+  const modes = new Map<string, "MANUAL" | "AUTO">()
+  const roots = new Map<string, string>()
   const value: ChatPermissionStore = {
     listRequests: async () => [...requests],
     putRequest: async (request) => { requests.push(request) },
@@ -15,9 +17,115 @@ function store(initial: ChatPermissionRequest[] = []) {
       const index = requests.findIndex((request) => request.id === id)
       if (index >= 0) requests.splice(index, 1)
     },
+    getMode: async (sessionId) => {
+      const root = roots.get(sessionId) ?? sessionId
+      return { sessionId: root, mode: modes.get(root) ?? "MANUAL" }
+    },
+    setMode: async (sessionId, mode) => {
+      const root = roots.get(sessionId) ?? sessionId
+      modes.set(root, mode)
+      return { sessionId: root, mode }
+    },
   }
-  return { value, requests }
+  return { value, requests, modes, roots }
 }
+
+test("automatically approves sensitive tools without opening a prompt in Auto mode", async () => {
+  const persistence = store()
+  const frames: ChatFrame[] = []
+  const permissions = new ChatPermissionController({
+    store: persistence.value,
+    broadcast: (frame) => { frames.push(frame) },
+  })
+
+  expect(await permissions.setMode("chat-1", "AUTO")).toEqual({ sessionId: "chat-1", mode: "AUTO" })
+  expect(await permissions.authorize({
+    sessionId: "chat-1",
+    toolName: "place_viop_order",
+    action: "BUY 1 F_ASELS0826 at 100",
+    scope: "SESSION",
+  })).toEqual({ decision: "ALLOW", reason: null })
+  expect(permissions.list()).toEqual([])
+  expect(frames).toEqual([
+    { type: "chatPermissionModeChanged", state: { sessionId: "chat-1", mode: "AUTO" } },
+  ])
+})
+
+test("switching modes clears session approvals", async () => {
+  const persistence = store()
+  const permissions = new ChatPermissionController({ store: persistence.value, broadcast: () => {} })
+  permissions.attachClient("client-1")
+  const first = permissions.authorize({
+    sessionId: "chat-1",
+    toolName: "update_stop_rule",
+    action: "Replace a stop rule",
+    scope: "SESSION",
+  })
+  await Bun.sleep(0)
+  await permissions.reply(permissions.list()[0]!.id, { decision: "ALLOW", scope: "SESSION" }, "client-1")
+  await first
+
+  await permissions.setMode("chat-1", "AUTO")
+  await permissions.setMode("chat-1", "MANUAL")
+  const afterSwitch = permissions.authorize({
+    sessionId: "chat-1",
+    toolName: "update_stop_rule",
+    action: "Replace the stop rule again",
+    scope: "SESSION",
+  })
+  await Bun.sleep(0)
+
+  expect(permissions.list()).toHaveLength(1)
+  await permissions.reply(permissions.list()[0]!.id, { decision: "DENY" })
+  expect(await afterSwitch).toEqual({ decision: "DENY", reason: null })
+})
+
+test("switching to Auto releases a permission request that is already waiting", async () => {
+  const persistence = store()
+  const permissions = new ChatPermissionController({ store: persistence.value, broadcast: () => {} })
+  const waiting = permissions.authorize({
+    sessionId: "chat-1",
+    toolName: "exit_viop_position",
+    action: "Exit the position",
+    scope: "SESSION",
+  })
+  await Bun.sleep(0)
+
+  await permissions.setMode("chat-1", "AUTO")
+
+  expect(await waiting).toEqual({ decision: "ALLOW", reason: null })
+  expect(permissions.list()).toEqual([])
+  expect(persistence.requests).toEqual([])
+})
+
+test("reconciles a durable pending request when an Auto chat restarts", async () => {
+  const request: ChatPermissionRequest = {
+    id: "permission-1",
+    sessionId: "chat-1",
+    toolName: "place_viop_order",
+    action: "BUY 1 F_ASELS0826 at 100",
+    reason: null,
+    scope: "SESSION",
+    createdAt: 1_000,
+  }
+  const persistence = store([request])
+  persistence.modes.set("chat-1", "AUTO")
+  const decisions: string[] = []
+  const permissions = new ChatPermissionController({
+    store: persistence.value,
+    broadcast: () => {},
+    onDetachedDecision: async (pending, resolution) => {
+      decisions.push(`${pending.id}:${resolution.decision}`)
+    },
+  })
+
+  await permissions.load()
+  await permissions.reconcileModes()
+
+  expect(decisions).toEqual(["permission-1:ALLOW"])
+  expect(permissions.list()).toEqual([])
+  expect(persistence.requests).toEqual([])
+})
 
 test("remembers an allowed tool only while the approving client is attached", async () => {
   const persistence = store()

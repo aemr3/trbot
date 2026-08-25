@@ -228,6 +228,7 @@ describe("server frames the terminal will act on", () => {
         },
       },
       { type: "chatPermissionResolved", requestId: "permission-1", sessionId: "chat-1" },
+      { type: "chatPermissionModeChanged", state: { sessionId: "chat-1", mode: "AUTO" } },
       {
         type: "chatNotification",
         notification: {
@@ -267,6 +268,7 @@ describe("server frames the terminal will act on", () => {
       { type: "chatQuestionResolved", requestId: "question-1" },
       { type: "chatPermissionRequested", request: {} },
       { type: "chatPermissionResolved", requestId: "permission-1" },
+      { type: "chatPermissionModeChanged", state: { sessionId: "chat-1", mode: "ALWAYS" } },
       { type: "chatNotification", notification: {} },
       { type: "chatNotificationDismissed" },
       { type: "error" },

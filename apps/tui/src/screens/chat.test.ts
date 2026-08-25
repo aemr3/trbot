@@ -4,7 +4,11 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { chatBlockText, type ChatMessage, type ChatSession, type ChatSessionDetail } from "@trbot/chat/session.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
-import type { ChatPermissionReply, ChatPermissionRequest } from "@trbot/chat/permission.ts"
+import type {
+  ChatPermissionMode,
+  ChatPermissionReply,
+  ChatPermissionRequest,
+} from "@trbot/chat/permission.ts"
 import { ChatLoopSchema, type ChatAutomationState } from "@trbot/chat/automation.ts"
 import { createMarketMonitor } from "@trbot/market/market-monitor.ts"
 import type { AiAccount, AiModelChoice, AiModelSummary, AiPreferences, AiProviderSummary } from "@trbot/protocol/ai.ts"
@@ -28,6 +32,8 @@ function fakeChats(): ChatSessions & {
   agentNotifications: ChatNotification[]
   dismissedNotifications: string[]
   permissionDecisions: Array<{ requestId: string; reply: ChatPermissionReply }>
+  permissionModes: Map<string, ChatPermissionMode>
+  permissionModeChanges: Array<{ sessionId: string; mode: ChatPermissionMode }>
   mobilePairings: string[]
   disconnectedMobile: string[]
 } {
@@ -43,6 +49,8 @@ function fakeChats(): ChatSessions & {
   const agentNotifications: ChatNotification[] = []
   const dismissedNotifications: string[] = []
   const permissionDecisions: Array<{ requestId: string; reply: ChatPermissionReply }> = []
+  const permissionModeChanges: Array<{ sessionId: string; mode: ChatPermissionMode }> = []
+  const permissionModes = new Map<string, ChatPermissionMode>()
   const mobilePairings: string[] = []
   const disconnectedMobile: string[] = []
   const automations = new Map<string, ChatAutomationState>()
@@ -60,6 +68,8 @@ function fakeChats(): ChatSessions & {
     agentNotifications,
     dismissedNotifications,
     permissionDecisions,
+    permissionModes,
+    permissionModeChanges,
     mobilePairings,
     disconnectedMobile,
     async list() {
@@ -241,6 +251,20 @@ function fakeChats(): ChatSessions & {
     },
     async answerPermission(requestId, reply) {
       permissionDecisions.push({ requestId, reply })
+    },
+    async permissionMode(sessionId) {
+      const session = sessions.find((entry) => entry.id === sessionId)
+      if (!session) throw new Error("no such chat")
+      const rootSessionId = session.parentSessionId ?? session.id
+      return { sessionId: rootSessionId, mode: permissionModes.get(rootSessionId) ?? "MANUAL" }
+    },
+    async setPermissionMode(sessionId, mode) {
+      const session = sessions.find((entry) => entry.id === sessionId)
+      if (!session) throw new Error("no such chat")
+      const rootSessionId = session.parentSessionId ?? session.id
+      permissionModes.set(rootSessionId, mode)
+      permissionModeChanges.push({ sessionId: rootSessionId, mode })
+      return { sessionId: rootSessionId, mode }
     },
     async notifications() {
       return [...agentNotifications]
@@ -724,6 +748,80 @@ test("opens a filtered slash-command menu below the composer", async () => {
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("No subagents have run in this session."))
   expect(chats.sent).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("changes permission mode from /permissions and shows its icon before the model", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+
+  const manual = await waitForFrame((frame) => frame.includes("○ test-model"))
+  expect(manual).not.toContain("● test-model")
+  await mockInput.typeText("/permissions")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Permissions") && frame.includes("Auto Mode"))
+  mockInput.pressArrow("down")
+  mockInput.pressEnter()
+
+  const automatic = await waitForFrame((frame) => frame.includes("Auto permissions enabled."))
+  expect(automatic).toContain("● test-model")
+  expect(chats.permissionModeChanges).toEqual([{ sessionId: "chat-1", mode: "AUTO" }])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("switches from Manual to Auto permissions with Shift+Tab", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+
+  await waitForFrame((frame) => frame.includes("○ test-model"))
+  mockInput.pressTab({ shift: true })
+  await waitForFrame((frame) => frame.includes("Auto permissions enabled.") && frame.includes("● test-model"))
+  expect(chats.permissionModeChanges).toEqual([{ sessionId: "chat-1", mode: "AUTO" }])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("switches from Auto to Manual permissions with Shift+Tab", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  const session = await chats.create()
+  chats.permissionModes.set(session.id, "AUTO")
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+
+  await waitForFrame((frame) => frame.includes("● test-model"))
+  mockInput.pressTab({ shift: true })
+  await waitForFrame((frame) => frame.includes("Manual permissions enabled.") && frame.includes("○ test-model"))
+  expect(chats.permissionModeChanges).toEqual([{ sessionId: "chat-1", mode: "MANUAL" }])
 
   screen.destroy()
   renderer.destroy()
@@ -1378,7 +1476,7 @@ test("opens durable worker transcripts with /subagents and returns with /parent"
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("Subagents") && frame.includes("Inspect the XU100 trend"))
   mockInput.pressEnter()
-  await waitForFrame((frame) => frame.includes("Subagent transcript") && frame.includes("worker · test-model"))
+  await waitForFrame((frame) => frame.includes("Subagent transcript") && frame.includes("worker · ○ test-model"))
 
   await mockInput.typeText("/parent")
   mockInput.pressEnter()
@@ -1413,13 +1511,13 @@ test("keeps the subagent model label intact beside a narrow running hint", async
   screen.mount()
 
   const idle = await waitForFrame((frame) => frame.includes("⌥←/→ workers") && frame.includes("⌥↑ parent"))
-  const idleStatus = idle.split("\n").find((line) => line.includes("worker · test-model")) ?? ""
-  expect(idleStatus).toMatch(/worker · test-model · high\s{2,}⌥←\/→ workers · ⌥↑ parent/)
+  const idleStatus = idle.split("\n").find((line) => line.includes("worker · ○ test-model")) ?? ""
+  expect(idleStatus).toMatch(/worker · ○ test-model · high\s{2,}⌥←\/→ workers · ⌥↑ parent/)
 
   screen.acceptRun(child.id, "run-narrow", "running")
   const running = await waitForFrame((frame) => frame.includes("Esc interrupt"))
   const runningStatus = running.split("\n").find((line) => line.includes("Esc interrupt")) ?? ""
-  expect(runningStatus).toMatch(/worker · test-model · high\s{2,}Esc interrupt · ⌥↑ parent/)
+  expect(runningStatus).toMatch(/worker · ○ test-model · high\s{2,}Esc interrupt · ⌥↑ parent/)
   expect(runningStatus).not.toContain("Subagent running")
 
   screen.destroy()

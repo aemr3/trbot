@@ -8,7 +8,12 @@ import type {
   TelegramUser,
 } from "@trbot/api/telegram.ts"
 import type { VoiceTranscriber } from "@trbot/ai/voice-transcription.ts"
-import type { ChatPermissionReply, ChatPermissionRequest } from "@trbot/chat/permission.ts"
+import type {
+  ChatPermissionMode,
+  ChatPermissionModeState,
+  ChatPermissionReply,
+  ChatPermissionRequest,
+} from "@trbot/chat/permission.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type {
@@ -84,6 +89,7 @@ const TELEGRAM_COMMAND_PROMPTS = new Map(
 )
 const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   ...TELEGRAM_CHAT_COMMANDS.map(({ command, description }) => ({ command, description })),
+  { command: "permissions", description: "Choose Manual or Auto approvals" },
   { command: "mute", description: "Silence routine chat notifications" },
   { command: "unmute", description: "Restore routine chat notifications" },
   { command: "disconnect", description: "Disconnect this Telegram chat" },
@@ -98,6 +104,8 @@ interface MobileChatAccess {
 
 interface MobilePermissionAccess {
   list(): ChatPermissionRequest[]
+  mode(sessionId: string): Promise<ChatPermissionModeState>
+  setMode(sessionId: string, mode: ChatPermissionMode): Promise<ChatPermissionModeState>
   reply(requestId: string, reply: ChatPermissionReply, clientId?: string | null): Promise<void>
   attachClient(clientId: string | null): void
   detachClient(clientId: string | null): void
@@ -439,6 +447,20 @@ export class ChatMobileController {
       return
     }
 
+    if (command?.name === "permissions" && !command.argument) {
+      const state = await this.options.permissions.mode(binding.sessionId)
+      await telegram.sendMessage(
+        binding.externalChatId,
+        permissionModeText(state.mode),
+        {
+          replyMarkup: permissionModeKeyboard(state.mode),
+          protectContent: true,
+          disableNotification: binding.notificationsMuted,
+        },
+      )
+      return
+    }
+
     if (message.voice) {
       this.pendingVoiceMessages = this.pendingVoiceMessages
         .then(() => this.handleVoice(binding, message))
@@ -612,6 +634,12 @@ export class ChatMobileController {
       return
     }
 
+    const permissionMode = parsePermissionModeCallback(callback.data)
+    if (permissionMode) {
+      await this.handlePermissionModeCallback(callback, binding, permissionMode)
+      return
+    }
+
     const parsed = parsePermissionCallback(callback.data)
     const request = parsed
       ? this.options.permissions.list().find((candidate) => candidate.id === parsed.requestId)
@@ -639,6 +667,35 @@ export class ChatMobileController {
     } catch (cause) {
       this.options.onError(cause)
       await this.answerCallback(callback.id, "Could not apply this decision.", true)
+    }
+  }
+
+  private async handlePermissionModeCallback(
+    callback: TelegramCallbackQuery,
+    binding: ChatMobileBinding,
+    mode: ChatPermissionMode,
+  ): Promise<void> {
+    const message = callback.message
+    if (!message) return
+    try {
+      const state = await this.options.permissions.setMode(binding.sessionId, mode)
+      await this.options.telegram?.editMessageText(
+        binding.externalChatId,
+        message.message_id,
+        permissionModeText(state.mode),
+      )
+      await this.options.telegram?.editMessageReplyMarkup(
+        binding.externalChatId,
+        message.message_id,
+        permissionModeKeyboard(state.mode),
+      )
+      await this.answerCallback(
+        callback.id,
+        state.mode === "AUTO" ? "Auto permissions enabled." : "Manual permissions enabled.",
+      )
+    } catch (cause) {
+      if (!(cause instanceof ProtocolError)) this.options.onError(cause)
+      await this.answerCallback(callback.id, "Could not change permissions.", true)
     }
   }
 
@@ -1533,6 +1590,25 @@ function permissionKeyboard(request: ChatPermissionRequest): TelegramInlineKeybo
   }
 }
 
+function permissionModeText(mode: ChatPermissionMode): string {
+  const current = mode === "AUTO" ? "● Auto Mode" : "○ Manual Mode"
+  return [
+    "Permissions",
+    `Current: ${current}`,
+    "Manual asks before sensitive actions. Auto fully approves them without asking.",
+    "Changing mode clears temporary session approvals.",
+  ].join("\n\n")
+}
+
+function permissionModeKeyboard(mode: ChatPermissionMode): TelegramInlineKeyboard {
+  return {
+    inline_keyboard: [[
+      { text: `${mode === "MANUAL" ? "✓ " : ""}○ Manual`, callback_data: "permission-mode:m" },
+      { text: `${mode === "AUTO" ? "✓ " : ""}● Auto`, callback_data: "permission-mode:a" },
+    ]],
+  }
+}
+
 function questionText(conversation: QuestionConversation, result?: string): string {
   const prompt = conversation.request.questions[conversation.questionIndex]
   if (!prompt) return "This question is no longer available."
@@ -1667,6 +1743,12 @@ function parsePermissionCallback(data: string): {
   if (!match) return null
   const action = match[1] === "o" ? "once" : match[1] === "s" ? "session" : "deny"
   return { action, requestId: match[2] ?? "" }
+}
+
+function parsePermissionModeCallback(data: string): ChatPermissionMode | null {
+  if (data === "permission-mode:m") return "MANUAL"
+  if (data === "permission-mode:a") return "AUTO"
+  return null
 }
 
 async function waitForRetry(signal: AbortSignal): Promise<void> {

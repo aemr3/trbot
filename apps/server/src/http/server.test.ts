@@ -6,6 +6,7 @@ import { HttpAiAccount } from "@trbot/client/ai.ts"
 import { HttpChatSessions } from "@trbot/client/chat.ts"
 import { HttpClient } from "@trbot/client/http.ts"
 import type { ChatNotification, ChatNotificationStore } from "@trbot/chat/notification.ts"
+import type { ChatPermissionMode } from "@trbot/chat/permission.ts"
 import type { ChatSessionDetail } from "@trbot/chat/session.ts"
 import { HttpInstrumentSource, HttpMemberFeatureSource, HttpOrderSource } from "@trbot/client/sources.ts"
 import { memberFeatureSet, type MemberFeatureSet } from "@trbot/member/features.ts"
@@ -24,6 +25,7 @@ import { StreamHub } from "../stream-hub.ts"
 import type { SocketData } from "../stream-hub.ts"
 import { z } from "zod"
 import type { ChatController } from "../chat.ts"
+import type { ChatPermissionController } from "../chat-permission.ts"
 
 const TOKEN = "integration-token"
 
@@ -67,6 +69,8 @@ describe("server and client over the wire", () => {
   let notifications: ChatNotificationController
   const compactedChats: string[] = []
   const detailedChats: Array<{ sessionId: string; topLevelLimit?: number }> = []
+  const permissionModeChanges: Array<{ sessionId: string; mode: ChatPermissionMode }> = []
+  let permissionMode: ChatPermissionMode = "MANUAL"
 
   beforeAll(async () => {
     connection = await openDatabase(":memory:")
@@ -125,6 +129,17 @@ describe("server and client over the wire", () => {
           },
         } as ChatController,
         notifications,
+        // SAFETY: this integration suite exercises only the permission-mode route methods.
+        permissions: {
+          async mode(sessionId: string) {
+            return { sessionId, mode: permissionMode }
+          },
+          async setMode(sessionId: string, mode: ChatPermissionMode) {
+            permissionMode = mode
+            permissionModeChanges.push({ sessionId, mode })
+            return { sessionId, mode }
+          },
+        } as ChatPermissionController,
         backlog: () => [],
         onDecision: () => {},
       }),
@@ -193,6 +208,21 @@ describe("server and client over the wire", () => {
 
     const error = await client
       .get(ROUTES.chatSession("chat/one"), z.unknown(), { query: { limit: "101" } })
+      .catch((cause: unknown) => cause)
+    expect(isProtocolError(error) && error.code).toBe("invalid_request")
+  })
+
+  test("reads and changes a chat permission mode over the wire", async () => {
+    permissionMode = "MANUAL"
+    permissionModeChanges.length = 0
+    const chats = new HttpChatSessions(client)
+
+    expect(await chats.permissionMode("chat/one")).toEqual({ sessionId: "chat/one", mode: "MANUAL" })
+    expect(await chats.setPermissionMode("chat/one", "AUTO")).toEqual({ sessionId: "chat/one", mode: "AUTO" })
+    expect(permissionModeChanges).toEqual([{ sessionId: "chat/one", mode: "AUTO" }])
+
+    const error = await client
+      .put(ROUTES.chatPermissionMode("chat/one"), z.unknown(), { body: { mode: "ALWAYS" } })
       .catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })

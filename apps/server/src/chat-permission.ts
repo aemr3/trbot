@@ -1,5 +1,7 @@
 import type { ChatPermissionAuthorizer } from "@trbot/ai/permission.ts"
 import {
+  type ChatPermissionMode,
+  type ChatPermissionModeState,
   type ChatPermissionReply,
   type ChatPermissionRequest,
   type ChatPermissionResolution,
@@ -32,6 +34,7 @@ export interface ChatPermissionDetachOptions {
 export class ChatPermissionController implements ChatPermissionAuthorizer {
   private readonly pending = new Map<string, PendingPermission>()
   private readonly grants = new Map<string, Set<string>>()
+  private readonly grantSessions = new Map<string, string>()
   private readonly clientGrants = new Map<string, Set<string>>()
   private readonly attachedClients = new Map<string, number>()
   private readonly pendingRevocations = new Map<string, ReturnType<typeof setTimeout>>()
@@ -49,6 +52,16 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
     }
   }
 
+  /** Clears a crash-window prompt after the chat queue is ready to receive its continuation. */
+  async reconcileModes(): Promise<void> {
+    const autoRoots = new Set<string>()
+    for (const pending of this.pending.values()) {
+      const state = await this.options.store.getMode(pending.request.sessionId)
+      if (state?.mode === "AUTO") autoRoots.add(state.sessionId)
+    }
+    for (const sessionId of autoRoots) await this.allowPending(sessionId)
+  }
+
   /** Reconciles database cascades after a chat is deleted. */
   async sync(): Promise<void> {
     const stored = new Set((await this.options.store.listRequests()).map((request) => request.id))
@@ -64,7 +77,9 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
   async authorize(input: Parameters<ChatPermissionAuthorizer["authorize"]>[0]): Promise<ChatPermissionResolution> {
     if (this.destroyed) throw new Error("Permission service is shutting down")
     if (input.signal?.aborted) throw abortError()
-    if (input.scope === "SESSION" && this.hasGrant(input.sessionId, input.toolName)) {
+    const mode = await this.requireMode(input.sessionId)
+    if (mode.mode === "AUTO") return { decision: "ALLOW", reason: null }
+    if (input.scope === "SESSION" && this.hasGrant(mode.sessionId, input.toolName)) {
       return { decision: "ALLOW", reason: null }
     }
 
@@ -82,6 +97,12 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
       await this.options.store.removeRequest(request.id)
       throw abortError()
     }
+    // The mode may have changed while the durable request was being written.
+    // Rechecking closes the only gap where Auto could still leave a prompt behind.
+    if ((await this.requireMode(input.sessionId)).mode === "AUTO") {
+      await this.options.store.removeRequest(request.id)
+      return { decision: "ALLOW", reason: null }
+    }
 
     return await new Promise<ChatPermissionResolution>((resolve, reject) => {
       const pending: PendingPermission = { request, resolve, reject, signal: input.signal }
@@ -98,6 +119,23 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
     return [...this.pending.values()].map((entry) => entry.request)
   }
 
+  async mode(sessionId: string): Promise<ChatPermissionModeState> {
+    return await this.requireMode(sessionId)
+  }
+
+  /** A policy switch clears temporary grants; Auto also releases requests already waiting. */
+  async setMode(sessionId: string, mode: ChatPermissionMode): Promise<ChatPermissionModeState> {
+    const current = await this.requireMode(sessionId)
+    if (current.mode === mode) return current
+    const next = await this.options.store.setMode(current.sessionId, mode)
+    if (!next) throw new ProtocolError("not_found", "No such chat session")
+
+    this.revokeSession(next.sessionId)
+    this.options.broadcast({ type: "chatPermissionModeChanged", state: next })
+    if (mode === "AUTO") await this.allowPending(next.sessionId)
+    return next
+  }
+
   async reply(requestId: string, reply: ChatPermissionReply, clientId: string | null = null): Promise<void> {
     const pending = this.require(requestId)
     if (reply.decision === "ALLOW" && reply.scope === "SESSION" && pending.request.scope !== "SESSION") {
@@ -111,7 +149,8 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
       if (!clientId || !this.attachedClients.has(clientId)) {
         throw new ProtocolError("invalid_request", "Session approval requires a connected client")
       }
-      this.grant(pending.request.sessionId, pending.request.toolName, clientId)
+      const mode = await this.requireMode(pending.request.sessionId)
+      this.grant(mode.sessionId, pending.request.toolName, clientId)
     }
     if (!pending.resolve) await this.options.onDetachedDecision?.(pending.request, resolution)
     await this.finish(pending, resolution)
@@ -159,6 +198,7 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
     }
     this.pending.clear()
     this.grants.clear()
+    this.grantSessions.clear()
     this.clientGrants.clear()
     this.attachedClients.clear()
     for (const revocation of this.pendingRevocations.values()) clearTimeout(revocation)
@@ -174,6 +214,7 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
     const clients = this.grants.get(key) ?? new Set<string>()
     clients.add(clientId)
     this.grants.set(key, clients)
+    this.grantSessions.set(key, sessionId)
 
     const keys = this.clientGrants.get(clientId) ?? new Set<string>()
     keys.add(key)
@@ -184,9 +225,42 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
     for (const key of this.clientGrants.get(clientId) ?? []) {
       const clients = this.grants.get(key)
       clients?.delete(clientId)
-      if (clients?.size === 0) this.grants.delete(key)
+      if (clients?.size === 0) {
+        this.grants.delete(key)
+        this.grantSessions.delete(key)
+      }
     }
     this.clientGrants.delete(clientId)
+  }
+
+  private revokeSession(sessionId: string): void {
+    for (const [key, grantSessionId] of this.grantSessions) {
+      if (grantSessionId !== sessionId) continue
+      const clients = this.grants.get(key) ?? []
+      this.grants.delete(key)
+      this.grantSessions.delete(key)
+      for (const clientId of clients) {
+        const keys = this.clientGrants.get(clientId)
+        keys?.delete(key)
+        if (keys?.size === 0) this.clientGrants.delete(clientId)
+      }
+    }
+  }
+
+  private async allowPending(rootSessionId: string): Promise<void> {
+    for (const pending of this.pending.values()) {
+      const mode = await this.options.store.getMode(pending.request.sessionId)
+      if (mode?.sessionId !== rootSessionId || !this.pending.has(pending.request.id)) continue
+      const resolution: ChatPermissionResolution = { decision: "ALLOW", reason: null }
+      if (!pending.resolve) await this.options.onDetachedDecision?.(pending.request, resolution)
+      await this.finish(pending, resolution)
+    }
+  }
+
+  private async requireMode(sessionId: string): Promise<ChatPermissionModeState> {
+    const mode = await this.options.store.getMode(sessionId)
+    if (!mode) throw new ProtocolError("not_found", "No such chat session")
+    return mode
   }
 
   private require(requestId: string): PendingPermission {

@@ -8,7 +8,7 @@ import {
   ChatUndoPreviewInputSchema,
 } from "@trbot/chat/session.ts"
 import { ChatQuestionReplySchema } from "@trbot/chat/question.ts"
-import { ChatPermissionReplySchema } from "@trbot/chat/permission.ts"
+import { ChatPermissionReplySchema, SetChatPermissionModeSchema } from "@trbot/chat/permission.ts"
 import { CreateChatGoalSchema, CreateChatLoopSchema, UpdateChatGoalSchema } from "@trbot/chat/automation.ts"
 import type { AppPreferences } from "@trbot/preferences/app.ts"
 import { AiCredentialsSchema } from "@trbot/protocol/ai.ts"
@@ -309,6 +309,20 @@ export const PARAMETERIZED: {
   method: string
   handle: (match: RegExpMatchArray, request: Request, context: RouteContext) => Promise<Response>
 }[] = [
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/permissions$/,
+    method: "GET",
+    handle: async (match, _request, { permissions }) =>
+      json(await permissions.mode(decodeURIComponent(match[1] ?? ""))),
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/permissions$/,
+    method: "PUT",
+    handle: async (match, request, { permissions }) => {
+      const body = check.payload(await readJsonObject(request), SetChatPermissionModeSchema, "permission mode")
+      return json(await permissions.setMode(decodeURIComponent(match[1] ?? ""), body.mode))
+    },
+  },
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/mobile$/,
     method: "GET",

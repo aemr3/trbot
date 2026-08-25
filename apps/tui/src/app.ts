@@ -456,6 +456,7 @@ export class App {
       onQuestionResolved: (sessionId, requestId) => chatViews.forEach((view) => view.acceptQuestionResolved(sessionId, requestId)),
       onPermissionRequested: (request) => chatViews.forEach((view) => view.acceptPermission(request)),
       onPermissionResolved: (sessionId, requestId) => chatViews.forEach((view) => view.acceptPermissionResolved(sessionId, requestId)),
+      onPermissionModeChanged: (state) => chatViews.forEach((view) => view.acceptPermissionMode(state)),
       onNotification: (notification) => chatViews.forEach((view) => view.acceptNotification(notification)),
       onNotificationDismissed: (notificationId) => chatViews.forEach((view) => view.acceptNotificationDismissed(notificationId)),
       onResync: (sessionId) => chatViews.forEach((view) => view.resync(sessionId)),

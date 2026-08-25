@@ -1,4 +1,5 @@
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { CHAT_PERMISSION_MODES } from "@trbot/chat/permission.ts"
 import { TRADE_RIGHT_VIEWS } from "@trbot/preferences/app.ts"
 
 export const authState = sqliteTable("auth_state", {
@@ -165,6 +166,7 @@ export const chatSessions = sqliteTable("chat_sessions", {
   model: text("model").notNull(),
   provider: text("provider"),
   reasoning: text("reasoning"),
+  permissionMode: text("permission_mode", { enum: CHAT_PERMISSION_MODES }).notNull().default("MANUAL"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 })

@@ -65,3 +65,21 @@ test("persists pending permissions and removes them with their chat", async () =
   await connection!.db.delete(chatSessions)
   expect(await permissions.listRequests()).toEqual([])
 })
+
+test("stores permission mode on the root chat and shares it with workers", async () => {
+  const { permissions } = await stores()
+  await connection!.db.insert(chatSessions).values({
+    id: "worker-1",
+    title: "Worker",
+    parentSessionId: "chat-1",
+    agent: "worker",
+    model: "test-model",
+    createdAt: 1_001,
+    updatedAt: 1_001,
+  })
+
+  expect(await permissions.getMode("worker-1")).toEqual({ sessionId: "chat-1", mode: "MANUAL" })
+  expect(await permissions.setMode("worker-1", "AUTO")).toEqual({ sessionId: "chat-1", mode: "AUTO" })
+  expect(await permissions.getMode("chat-1")).toEqual({ sessionId: "chat-1", mode: "AUTO" })
+  expect(await permissions.getMode("worker-1")).toEqual({ sessionId: "chat-1", mode: "AUTO" })
+})

@@ -3,6 +3,19 @@ import { z } from "zod"
 export const CHAT_PERMISSION_SCOPES = ["SESSION", "ONCE"] as const
 export type ChatPermissionScope = (typeof CHAT_PERMISSION_SCOPES)[number]
 
+export const CHAT_PERMISSION_MODES = ["MANUAL", "AUTO"] as const
+export const ChatPermissionModeSchema = z.enum(CHAT_PERMISSION_MODES)
+export type ChatPermissionMode = z.infer<typeof ChatPermissionModeSchema>
+
+/** The root chat that owns the permission policy and the policy currently in force. */
+export const ChatPermissionModeStateSchema = z.object({
+  sessionId: z.string().min(1),
+  mode: ChatPermissionModeSchema,
+})
+export type ChatPermissionModeState = z.infer<typeof ChatPermissionModeStateSchema>
+
+export const SetChatPermissionModeSchema = z.object({ mode: ChatPermissionModeSchema })
+
 /** A tool call waiting for the user to authorize it. */
 export const ChatPermissionRequestSchema = z.object({
   id: z.string().min(1),
@@ -42,4 +55,7 @@ export interface ChatPermissionStore {
   listRequests(): Promise<ChatPermissionRequest[]>
   putRequest(request: ChatPermissionRequest): Promise<void>
   removeRequest(id: string): Promise<void>
+  /** Resolves workers to the root chat that owns their permission policy. */
+  getMode(sessionId: string): Promise<ChatPermissionModeState | null>
+  setMode(sessionId: string, mode: ChatPermissionMode): Promise<ChatPermissionModeState | null>
 }
