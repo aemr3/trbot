@@ -293,14 +293,40 @@ test("refreshes the width an ATR trail follows, but not a standing ATR level", a
   expect(store.rules.get("rule-1")?.triggerPrice).toBeCloseTo(394, 6)
 })
 
-test("a submitted exit stands down the other levels on that position", async () => {
+test("a submitted whole-position exit stands down the other levels on that position", async () => {
   const stop = rule({ id: "rule-1", role: "STOP", value: 380 })
   const target = rule({ id: "rule-2", role: "TARGET", value: 420 })
   const { monitor, store } = await monitorWith([stop, target])
 
-  await monitor.resolveTrigger("rule-1", "SUBMITTED", "order-9")
+  await monitor.resolveTrigger("rule-1", "SUBMITTED", {
+    orderUid: "order-9",
+    quantity: 2,
+    positionQuantity: 2,
+  })
   expect(store.rules.get("rule-1")).toMatchObject({ status: "DONE", exitOrderUid: "order-9" })
   expect(store.rules.get("rule-2")?.status).toBe("PAUSED")
+})
+
+test("a submitted partial target leaves the remaining position protected", async () => {
+  const stop = rule({ id: "rule-1", role: "STOP", value: 380 })
+  const target = rule({ id: "rule-2", role: "TARGET", value: 420, quantity: 1 })
+  const { monitor, store, triggers } = await monitorWith([stop, target])
+
+  // The position update can beat the order response back to the monitor. The
+  // trigger snapshot still says this target was only half of the position.
+  monitor.setPositions([position(1)])
+  await monitor.resolveTrigger("rule-2", "SUBMITTED", {
+    orderUid: "order-9",
+    quantity: 1,
+    positionQuantity: 2,
+  })
+  expect(store.rules.get("rule-2")).toMatchObject({ status: "DONE", exitOrderUid: "order-9" })
+  expect(store.rules.get("rule-1")?.status).toBe("ARMED")
+
+  monitor.applyQuote(quote(390))
+  monitor.applyQuote(quote(379))
+  expect(triggers).toHaveLength(1)
+  expect(triggers[0]).toMatchObject({ rule: { id: "rule-1" }, quantity: 1, side: "SELL" })
 })
 
 test("a cancelled trigger leaves the rule on hold rather than re-arming it", async () => {

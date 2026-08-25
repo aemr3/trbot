@@ -10,7 +10,7 @@ import {
   type StopRuleStore,
 } from "@trbot/trading/stop.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
-import type { ViopPositionExitSource } from "@trbot/trading/order.ts"
+import type { SubmittedViopPositionExit, ViopPositionExitSource } from "@trbot/trading/order.ts"
 
 /** Matches the confirmation window the terminal used to run locally. */
 const DEFAULT_COUNTDOWN_MS = 10_000
@@ -260,14 +260,12 @@ export class StopController {
     // pending: a second timer must not be able to send it again.
     this.pending.delete(ruleId)
 
-    let orderUid: string
+    let submitted: SubmittedViopPositionExit
     try {
-      orderUid = (
-        await exits.exitPosition({
-          instrumentUid: stop.event.rule.instrumentUid,
-          quantity: stop.event.quantity,
-        })
-      ).orderUid
+      submitted = await exits.exitPosition({
+        instrumentUid: stop.event.rule.instrumentUid,
+        quantity: stop.event.quantity,
+      })
     } catch (error) {
       this.options.onError?.(error)
       // A refusal means nothing was sent. Anything else — a dropped connection,
@@ -283,7 +281,11 @@ export class StopController {
     // bookkeeping problem, not a trading one — reporting it as a failed exit
     // would be the one wrong answer.
     await this.monitor
-      .resolveTrigger(ruleId, "SUBMITTED", orderUid)
+      .resolveTrigger(ruleId, "SUBMITTED", {
+        orderUid: submitted.orderUid,
+        quantity: submitted.quantity,
+        positionQuantity: stop.event.position.quantity,
+      })
       .catch((cause: unknown) => this.options.onError?.(cause))
     this.options.broadcast({ type: "resolved", ruleId, outcome: "SUBMITTED" })
   }

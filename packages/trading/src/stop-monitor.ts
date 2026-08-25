@@ -54,6 +54,14 @@ const ATR_PERIOD = 14
 export const STOP_OUTCOMES = ["SUBMITTED", "CANCELLED", "FAILED", "UNKNOWN"] as const
 export type StopOutcome = (typeof STOP_OUTCOMES)[number]
 
+interface StopExitSubmission {
+  orderUid: string
+  quantity: number
+  // Snapshot that produced the trigger. The live position feed may already
+  // show the partial fill by the time the submission response comes back.
+  positionQuantity: number
+}
+
 export interface StopTriggerEvent {
   rule: StopRule
   position: AccountPosition
@@ -335,11 +343,15 @@ export class StopMonitor {
   }
 
   /**
-   * Closes out a trigger. A submitted exit ends the rule and stands the other
-   * levels on that position down — the position it protected is gone. A
-   * cancelled one leaves the rule triggered for the trader to decide on.
+   * Closes out a trigger. A whole-position exit stands sibling levels down to
+   * avoid duplicate closes; a partial exit leaves them armed for the contracts
+   * that remain. A cancelled trigger is left on hold for the trader to review.
    */
-  async resolveTrigger(id: string, outcome: StopOutcome, exitOrderUid?: string): Promise<void> {
+  async resolveTrigger(
+    id: string,
+    outcome: StopOutcome,
+    submission?: StopExitSubmission,
+  ): Promise<void> {
     const rule = this.rules.get(id)
     if (!rule) return
     const now = this.now()
@@ -354,9 +366,17 @@ export class StopMonitor {
       return
     }
 
-    const done: StopRule = { ...rule, status: "DONE", exitOrderUid: exitOrderUid ?? null, updatedAt: now }
+    const done: StopRule = { ...rule, status: "DONE", exitOrderUid: submission?.orderUid ?? null, updatedAt: now }
     this.rules.set(id, done)
     await this.persist(done)
+    const position = this.positions.get(rule.instrumentUid)
+    const openQuantity = Math.abs(submission?.positionQuantity ?? position?.quantity ?? 0)
+    const exitQuantity = submission?.quantity ?? (position ? stopRuleQuantity(rule, position) : null)
+    const leavesOpenPosition = exitQuantity !== null && exitQuantity < openQuantity
+    if (leavesOpenPosition) {
+      this.options.onChange?.()
+      return
+    }
     for (const sibling of this.rules.values()) {
       if (sibling.id === id || sibling.instrumentUid !== rule.instrumentUid || sibling.status !== "ARMED") continue
       const paused: StopRule = { ...sibling, status: "PAUSED", updatedAt: now }
