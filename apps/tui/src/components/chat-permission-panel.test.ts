@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { KeyEvent } from "@opentui/core"
+import { BoxRenderable, type KeyEvent } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { ChatPermissionReply, ChatPermissionRequest } from "@trbot/chat/permission.ts"
 import { keyEvent } from "../key-event.test-fixture.ts"
@@ -18,6 +18,37 @@ const REQUEST: ChatPermissionRequest = {
 function key(name: string): KeyEvent {
   return keyEvent(name, { sequence: name })
 }
+
+test("lets a click focus both the panel and its enclosing workspace", async () => {
+  const harness = await createTestRenderer({ width: 90, height: 20 })
+  let panelFocused = false
+  let workspaceFocused = false
+  const workspace = new BoxRenderable(harness.renderer, {
+    width: "100%",
+    height: "100%",
+    onMouseDown: (event) => {
+      if (event.button === 0) workspaceFocused = true
+    },
+  })
+  const panel = new ChatPermissionPanel(harness.renderer, {
+    request: REQUEST,
+    onDecide: async () => {},
+    onFocus: () => { panelFocused = true },
+    onLeave: () => {},
+  })
+  workspace.add(panel.root)
+  harness.renderer.root.add(workspace)
+
+  const frame = await harness.waitForFrame((value) => value.includes("Permission required"))
+  const line = frame.split("\n").findIndex((value) => value.includes("Permission required"))
+  const column = frame.split("\n")[line]?.indexOf("Permission required") ?? -1
+  await harness.mockMouse.click(column, line)
+
+  expect(panelFocused).toBe(true)
+  expect(workspaceFocused).toBe(true)
+  panel.destroy()
+  harness.renderer.destroy()
+})
 
 test("renders the exact action and defaults to allowing only once", async () => {
   const harness = await createTestRenderer({ width: 90, height: 20 })

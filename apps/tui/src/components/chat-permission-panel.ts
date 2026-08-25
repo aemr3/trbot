@@ -63,7 +63,8 @@ export class ChatPermissionPanel {
       flexDirection: "column",
       onMouseDown: (event) => {
         if (event.button !== 0) return
-        event.stopPropagation()
+        // The enclosing trade-side chat also uses this click to claim keyboard
+        // focus. Let it bubble so arrows are routed back to this panel.
         this.options.onFocus()
       },
     })
