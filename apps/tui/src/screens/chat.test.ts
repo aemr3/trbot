@@ -1244,6 +1244,12 @@ test("creates and inspects persistent goals and scheduled loops from slash comma
   mockInput.pressEnter()
   const listed = await waitForFrame((frame) => frame.includes("Scheduled tasks") && frame.includes("every 5m"))
   expect(listed).toContain("Refresh positions")
+  expect(listed).toContain("Esc close")
+  expect(screen.canReleaseFocus()).toBeFalse()
+  mockInput.pressEscape()
+  await waitForFrame((frame) => !frame.includes("Scheduled tasks"))
+  expect(screen.canReleaseFocus()).toBeTrue()
+  expect((await chats.automations(session.id)).loops).toHaveLength(1)
 
   await mockInput.typeText("/loop Recheck the account every 2 hours")
   mockInput.pressEnter()

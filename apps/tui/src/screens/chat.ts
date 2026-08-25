@@ -500,6 +500,7 @@ export class ChatScreen {
     const session = this.selectedSession()
     return this.undoPanel === null
       && this.focus === "composer"
+      && this.commandNotice === null
       && (!session || !this.streamingBySession.has(session.id))
   }
 
@@ -591,6 +592,15 @@ export class ChatScreen {
     // One Escape still interrupts. A second, while idle, opens the same undo picker
     // as /undo; keeping the presses close prevents an old Escape from firing later.
     if (key.name === "escape" || key.name === "esc") {
+      const selectedId = this.selectedSessionId ?? ""
+      const replying = this.selectedSession()?.running || this.streamingBySession.has(selectedId)
+      if (this.commandNotice && !replying) {
+        this.commandNotice = null
+        this.automationNotice = null
+        this.lastEscapeAt = 0
+        this.render.schedule()
+        return
+      }
       const now = Date.now()
       const doubleEscape = this.lastEscapeAt > 0 && now - this.lastEscapeAt <= DOUBLE_ESCAPE_MS
       this.lastEscapeAt = doubleEscape ? 0 : now
@@ -2164,7 +2174,7 @@ function formatAutomations(state: ChatAutomationState, focus: "goal" | "loop"): 
       `${goal.turnCount}/${goal.maxTurns} continuations · ${budget}`,
       ...(goal.lastEvaluation ? [`Evaluator: ${goal.lastEvaluation}`] : []),
       "",
-      "/goal pause · /goal resume · /goal clear",
+      "Esc close · /goal pause · /goal resume · /goal clear",
     ].join("\n")
   }
   if (state.loops.length === 0) return "No scheduled tasks in this chat.\n\n/loop [interval] [task]"
@@ -2174,7 +2184,7 @@ function formatAutomations(state: ChatAutomationState, focus: "goal" | "loop"): 
       `${loop.id} · ${loop.status.toLowerCase()} · ${formatLoopSchedule(loop)} · next ${new Date(loop.nextRunAt).toLocaleString()} · ${loop.prompt}`
     )),
     "",
-    "/loop cancel <id>",
+    "Esc close · /loop cancel <id>",
   ].join("\n")
 }
 
