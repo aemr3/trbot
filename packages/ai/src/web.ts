@@ -5,6 +5,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { Readability } from "@mozilla/readability"
 import { Type } from "@earendil-works/pi-ai"
 import { parseHTML } from "linkedom"
+import { paginationHint, paginationOffset, resultPage, type ResultPage } from "./pagination.ts"
 import { toolText, type ChatTool } from "./tool.ts"
 import { z } from "zod"
 
@@ -14,11 +15,17 @@ const MAX_REDIRECTS = 5
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 const MAX_PAGE_CHARS = 20_000
 const MAX_SEARCH_CHARS = 24_000
+const MAX_SEARCH_RESULTS = 25
 const USER_AGENT = "trbot/1.0 (+https://github.com/aemr3/trbot)"
 
 const SearchParameters = Type.Object({
   query: Type.String({ description: "What to search the public web for", minLength: 1, maxLength: 500 }),
-  limit: Type.Optional(Type.Integer({ description: "Number of results, from 1 to 10", minimum: 1, maximum: 10 })),
+  offset: paginationOffset(MAX_SEARCH_RESULTS - 1),
+  limit: Type.Optional(Type.Integer({
+    description: "Results per page, from 1 to 10; use page.nextOffset to continue",
+    minimum: 1,
+    maximum: 10,
+  })),
 })
 
 const FetchParameters = Type.Object({
@@ -57,19 +64,21 @@ export function webTools(options: WebToolsOptions = {}): ChatTool[] {
       description: "Search the current public web. Use source URLs from the results when answering.",
       parameters: SearchParameters,
     },
-    run: async ({ query, limit }, runOptions) => {
-      const results = await client.search(query, limit ?? 5, runOptions.signal)
-      const modelText = results.length === 0
+    run: async ({ query, offset, limit }, runOptions) => {
+      const search = await client.search(query, offset ?? 0, limit ?? 5, runOptions.signal)
+      const results = search.results
+      const resultText = results.length === 0
         ? `No web results found for: ${query}`
         : results.map((result, index) => [
-          `[${index + 1}] ${result.title}`,
+          `[${search.page.offset + index + 1}] ${result.title}`,
           result.url,
           result.snippet,
         ].filter(Boolean).join("\n")).join("\n\n")
+      const modelText = `Page: ${JSON.stringify(search.page)}\n\n${resultText}`
       return {
-        blocks: [toolText(`Found ${results.length} web result${results.length === 1 ? "" : "s"} for “${query}”.`)],
+        blocks: [toolText(`Returned ${results.length} web result${results.length === 1 ? "" : "s"} for “${query}”.${paginationHint(search.page)}`)],
         modelBlocks: [toolText(modelText)],
-        details: { query, results },
+        details: { query, results, page: search.page },
         isError: false,
       }
     },
@@ -110,8 +119,22 @@ class PublicWebClient {
     this.searchWeb = options.search ?? searchExa
   }
 
-  async search(query: string, limit: number, signal?: AbortSignal): Promise<WebResult[]> {
-    return parseSearchResults(await this.searchWeb(query.trim(), limit, signal), limit)
+  async search(query: string, offset: number, limit: number, signal?: AbortSignal): Promise<{
+    results: WebResult[]
+    page: ResultPage
+  }> {
+    const requestLimit = Math.min(MAX_SEARCH_RESULTS, offset + limit + 1)
+    const candidates = parseSearchResults(
+      await this.searchWeb(query.trim(), requestLimit, signal),
+      requestLimit,
+      limit,
+    )
+    const results = candidates.slice(offset, offset + limit)
+    const hasMore = offset + results.length < candidates.length
+    return {
+      results,
+      page: resultPage(offset, limit, results.length, hasMore ? null : candidates.length, hasMore),
+    }
   }
 
   async read(rawUrl: string, signal?: AbortSignal): Promise<{
@@ -187,8 +210,8 @@ function mcpText(result: McpResult): string {
     .trim()
 }
 
-function parseSearchResults(text: string, limit: number): WebResult[] {
-  const perResultLimit = Math.max(500, Math.floor(MAX_SEARCH_CHARS / limit))
+function parseSearchResults(text: string, limit: number, pageSize = limit): WebResult[] {
+  const perResultLimit = Math.max(500, Math.floor(MAX_SEARCH_CHARS / pageSize))
   return text
     .split(/\n\s*---\s*\n/)
     .map((section) => {

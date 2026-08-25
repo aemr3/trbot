@@ -584,6 +584,55 @@ test("offers the complete read-only market toolset", () => {
   ])
 })
 
+test("gives every limited market-data tool the same continuation parameter", () => {
+  const parameters = z.object({
+    properties: z.object({
+      limit: z.unknown().optional(),
+      offset: z.unknown().optional(),
+    }).passthrough(),
+  })
+  const limited = marketDataTools(harness().clients).flatMap((tool) => {
+    const { properties } = parameters.parse(tool.definition.parameters)
+    if (properties.limit === undefined) return []
+    expect(properties.offset).toBeDefined()
+    return [tool.definition.name]
+  })
+
+  expect(limited.sort()).toEqual([
+    "get_brokerage_distribution",
+    "get_candles",
+    "get_index_impact",
+    "get_settlement",
+    "get_viop_margin_calls",
+    "list_broker_market_share",
+    "list_instruments",
+    "list_news",
+    "list_short_sales",
+    "list_viop_equity_financials",
+    "list_viop_margin_requirements",
+  ])
+})
+
+test("rejects a negative pagination offset before reading market data", async () => {
+  let reads = 0
+  const testHarness = harness({
+    instruments: {
+      listInstruments: async () => {
+        reads += 1
+        return []
+      },
+    },
+  })
+  const result = await call(new ChatTools(marketDataTools(testHarness.clients)), "list_instruments", {
+    offset: -1,
+    limit: 10,
+  })
+
+  expect(result.isError).toBe(true)
+  expect(result.blocks[0]?.text).toContain("offset")
+  expect(reads).toBe(0)
+})
+
 test("ranks and filters short-sale activity", async () => {
   const testHarness = harness()
   const tools = new ChatTools(marketDataTools(testHarness.clients))
@@ -592,6 +641,7 @@ test("ranks and filters short-sale activity", async () => {
     start: "2026-08-20",
     end: "2026-08-21",
     sortBy: "LOT_SHARE_PERCENT",
+    offset: 1,
     limit: 1,
   })
   const selected = await call(tools, "list_short_sales", { symbol: "asels" })
@@ -599,7 +649,8 @@ test("ranks and filters short-sale activity", async () => {
   expect(modelData(ranked)).toMatchObject({
     matchedEquities: 2,
     returnedEquities: 1,
-    activities: [{ symbol: "THYAO", shortSaleLotSharePercent: 40 }],
+    activities: [{ symbol: "ASELS", shortSaleLotSharePercent: 10 }],
+    page: { offset: 1, returned: 1, total: 2, hasMore: false, nextOffset: null },
   })
   expect(modelData(selected)).toMatchObject({
     matchedEquities: 1,
@@ -620,13 +671,15 @@ test("filters and ranks VIOP margin-call history", async () => {
     end: "2026-08-21",
     sortBy: "AMOUNT_TRY",
     sortDirection: "ASC",
+    offset: 1,
     limit: 1,
   })
 
   expect(modelData(result)).toMatchObject({
     matchedObservations: 2,
     returnedObservations: 1,
-    calls: [{ date: "2026-08-20", amountTry: 200 }],
+    calls: [{ date: "2026-08-21", amountTry: 300 }],
+    page: { offset: 1, returned: 1, total: 2, hasMore: false, nextOffset: null },
   })
   expect(testHarness.calls.marginCalls).toBe(1)
 })
@@ -640,13 +693,15 @@ test("scans front-month margin requirements without using the brokerage session"
 
   const result = await call(tools, "list_viop_margin_requirements", {
     sortBy: "LEVERAGE",
+    offset: 1,
     limit: 1,
   })
 
   expect(modelData(result)).toMatchObject({
     matchedContracts: 2,
     returnedContracts: 1,
-    requirements: [{ underlyingSymbol: "THYAO", leverage: 8.33 }],
+    requirements: [{ underlyingSymbol: "ASELS", leverage: 6.67 }],
+    page: { offset: 1, returned: 1, total: 2, hasMore: false, nextOffset: null },
   })
   expect(testHarness.calls.marginRequirements).toBe(1)
 })
@@ -655,7 +710,7 @@ test("ranks active brokers by VIOP market share", async () => {
   const testHarness = harness()
   const tools = new ChatTools(marketDataTools(testHarness.clients))
 
-  const ranked = await call(tools, "list_broker_market_share", { limit: 1 })
+  const ranked = await call(tools, "list_broker_market_share", { offset: 1, limit: 1 })
   const selected = await call(tools, "list_broker_market_share", {
     market: "VIOP",
     query: "iş",
@@ -665,7 +720,8 @@ test("ranks active brokers by VIOP market share", async () => {
     market: "VIOP",
     matchedBrokers: 2,
     returnedBrokers: 1,
-    brokers: [{ code: "YKR", marketSharePercent: 21.21 }],
+    brokers: [{ code: "IYM", marketSharePercent: 10.18 }],
+    page: { offset: 1, returned: 1, total: 2, hasMore: false, nextOffset: null },
   })
   expect(modelData(selected)).toMatchObject({
     matchedBrokers: 1,
@@ -680,6 +736,11 @@ test("reads, filters, sorts, and pages complete index-impact snapshots", async (
 
   const ranked = await call(tools, "get_index_impact", {
     index: "BIST_30",
+    limit: 2,
+  })
+  const continued = await call(tools, "get_index_impact", {
+    index: "BIST_30",
+    offset: 2,
     limit: 2,
   })
   const negative = await call(tools, "get_index_impact", {
@@ -700,6 +761,11 @@ test("reads, filters, sorts, and pages complete index-impact snapshots", async (
     matchedConstituents: 4,
     returnedConstituents: 2,
     contributions: [{ symbol: "NEG" }, { symbol: "POS" }],
+    page: { offset: 0, returned: 2, total: 4, hasMore: true, nextOffset: 2 },
+  })
+  expect(modelData(continued)).toMatchObject({
+    contributions: [{ symbol: "FLAT" }, { symbol: "MISS" }],
+    page: { offset: 2, returned: 2, total: 4, hasMore: false, nextOffset: null },
   })
   expect(modelData(negative)).toMatchObject({
     matchedConstituents: 1,
@@ -709,7 +775,7 @@ test("reads, filters, sorts, and pages complete index-impact snapshots", async (
     matchedConstituents: 1,
     contributions: [{ symbol: "MISS", impactPoints: null }],
   })
-  expect(testHarness.calls.indexImpact).toEqual(["XU030", "XU030", "XU030"])
+  expect(testHarness.calls.indexImpact).toEqual(["XU030", "XU030", "XU030", "XU030"])
 })
 
 test("searches instruments and reads current quote and contract details", async () => {
@@ -755,7 +821,8 @@ test("optionally sorts instruments before limiting them and keeps missing values
   const change = await call(tools, "list_instruments", {
     sortBy: "CHANGE_PERCENT",
     sortDirection: "DESC",
-    limit: 2,
+    offset: 1,
+    limit: 1,
   })
   const magnitude = await call(tools, "list_instruments", {
     sortBy: "ABS_CHANGE_PERCENT",
@@ -769,7 +836,10 @@ test("optionally sorts instruments before limiting them and keeps missing values
   })
 
   expect(instrumentSymbols(unchanged)).toEqual(["F_THYAO0826", "F_ASELS0826", "F_KCHOL0826"])
-  expect(instrumentSymbols(change)).toEqual(["F_KCHOL0826", "F_THYAO0826"])
+  expect(instrumentSymbols(change)).toEqual(["F_THYAO0826"])
+  expect(modelData(change)).toMatchObject({
+    page: { offset: 1, returned: 1, total: 3, hasMore: true, nextOffset: 2 },
+  })
   expect(instrumentSymbols(magnitude)).toEqual(["F_KCHOL0826", "F_THYAO0826", "F_ASELS0826"])
   expect(instrumentSymbols(volume)).toEqual(["F_ASELS0826", "F_KCHOL0826", "F_THYAO0826"])
 })
@@ -785,6 +855,7 @@ test("lists scoped VIOP equity financials from either a contract or underlying s
   const ranked = await call(tools, "list_viop_equity_financials", {
     sortBy: "NET_INCOME",
     sortDirection: "ASC",
+    offset: 1,
     limit: 1,
   })
 
@@ -801,7 +872,8 @@ test("lists scoped VIOP equity financials from either a contract or underlying s
   })
   expect(modelData(ranked)).toMatchObject({
     matched: 2,
-    financials: [{ symbol: "ASELS", metrics: { NET_INCOME: 10_000_000_000 } }],
+    financials: [{ symbol: "THYAO", metrics: { NET_INCOME: 20_000_000_000 } }],
+    page: { offset: 1, returned: 1, total: 2, hasMore: false, nextOffset: null },
   })
   expect(testHarness.calls.financials[1]?.metrics).toEqual([
     ...DEFAULT_FINANCIAL_METRICS,
@@ -957,12 +1029,18 @@ test("returns every candle by default and optionally limits the result", async (
   } as const
   const complete = CandleResultSchema.parse(modelData(await call(tools, "get_candles", request)))
   const limited = CandleResultSchema.parse(modelData(await call(tools, "get_candles", { ...request, limit: 2 })))
+  const older = modelData(await call(tools, "get_candles", { ...request, offset: 2, limit: 2 }))
 
   expect(complete.totalCandles).toBe(4)
   expect(complete.candles.map((candle) => candle.close)).toEqual([400, 401, 402, 403])
   expect(limited.totalCandles).toBe(4)
   expect(limited.candles.map((candle) => candle.close)).toEqual([402, 403])
+  expect(older).toMatchObject({
+    candles: [{ close: 400 }, { close: 401 }],
+    page: { offset: 2, returned: 2, total: 4, hasMore: false, nextOffset: null },
+  })
   expect(testHarness.calls.feedCandles).toEqual([
+    { symbol: "ASELS", target: "UNDERLYING" },
     { symbol: "ASELS", target: "UNDERLYING" },
     { symbol: "ASELS", target: "UNDERLYING" },
   ])
@@ -1093,12 +1171,14 @@ test("reads bounded brokerage and settlement reports for the requested range", a
     side: "BUYER",
     start: "2026-08-18",
     end: "2026-08-19",
+    offset: 2,
     limit: 2,
   })
   const settlement = await call(tools, "get_settlement", {
     symbol: "ASELS",
     mode: "GAINED",
     start: "2026-08-18",
+    offset: 1,
     limit: 1,
   })
 
@@ -1107,11 +1187,16 @@ test("reads bounded brokerage and settlement reports for the requested range", a
   expect(modelData(brokerage)).toMatchObject({
     totalShares: 4,
     shares: [
-      { brokerage: "Broker 1", netLots: 100, grossLots: 500, volumeShare: 5 },
-      { brokerage: "Broker 2" },
+      { brokerage: "Broker 3", netLots: 98, grossLots: 498, volumeShare: 5 },
+      { brokerage: "Broker 4" },
     ],
+    page: { offset: 2, returned: 2, total: 4, hasMore: false, nextOffset: null },
   })
-  expect(modelData(settlement)).toMatchObject({ totalHoldings: 4, holdings: [{ brokerage: "Broker 1" }] })
+  expect(modelData(settlement)).toMatchObject({
+    totalHoldings: 4,
+    holdings: [{ brokerage: "Broker 2" }],
+    page: { offset: 1, returned: 1, total: 4, hasMore: true, nextOffset: 2 },
+  })
   expect(testHarness.calls.brokerage[0]).toMatchObject({ range: { start: "2026-08-18", end: "2026-08-19" } })
   expect(testHarness.calls.settlement[0]).toMatchObject({ range: { start: "2026-08-18", end: null } })
 })
@@ -1119,9 +1204,14 @@ test("reads bounded brokerage and settlement reports for the requested range", a
 test("lists news without duplicating bodies and fetches an article separately", async () => {
   const tools = new ChatTools(marketDataTools(harness().clients))
   const list = await call(tools, "list_news", { symbol: "ASELS" })
+  const exhausted = await call(tools, "list_news", { symbol: "ASELS", offset: 1, limit: 1 })
   const article = await call(tools, "get_news_article", { uid: "news-1" })
 
   expect(JSON.stringify(modelData(list))).not.toContain("Full body")
+  expect(modelData(exhausted)).toMatchObject({
+    articles: [],
+    page: { offset: 1, returned: 0, total: 1, hasMore: false, nextOffset: null },
+  })
   expect(modelData(article)).toMatchObject({ uid: "news-1", body: "Full body", bodyTruncated: false })
 })
 

@@ -35,6 +35,7 @@ import type { MemberFeatureSource } from "@trbot/member/features.ts"
 import type { AccountSource } from "@trbot/trading/account.ts"
 import type { ViopOrderCancellationSource, ViopOrderSource } from "@trbot/trading/order.ts"
 import { isOpenStopRule, type StopRule } from "@trbot/trading/stop.ts"
+import { paginate, paginateNewest, paginationHint, paginationOffset } from "./pagination.ts"
 import { toolText, type ChatTool } from "./tool.ts"
 
 const STREAM_SNAPSHOT_TIMEOUT_MS = 10_000
@@ -47,7 +48,12 @@ const SymbolParameter = Type.String({
   minLength: 1,
   maxLength: 80,
 })
-const InstrumentLimit = Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 25 }))
+const InstrumentLimit = Type.Optional(Type.Integer({
+  description: "Results per page; use page.nextOffset to continue",
+  minimum: 1,
+  maximum: 100,
+  default: 25,
+}))
 const InstrumentSort = Type.Union([
   Type.Literal("CHANGE_PERCENT"),
   Type.Literal("ABS_CHANGE_PERCENT"),
@@ -64,7 +70,12 @@ const FinancialSort = Type.Union([
   Type.Literal("PUBLISHED_AT"),
   ...FINANCIAL_METRICS.map((metric) => Type.Literal(metric)),
 ])
-const ResultLimit = Type.Optional(Type.Integer({ minimum: 1, maximum: 50, default: 20 }))
+const ResultLimit = Type.Optional(Type.Integer({
+  description: "Results per page; use page.nextOffset to continue",
+  minimum: 1,
+  maximum: 50,
+  default: 20,
+}))
 const CandleRange = Type.Union([
   Type.Literal("INTRADAY"),
   Type.Literal("WEEK"),
@@ -119,7 +130,13 @@ const PortfolioRange = Type.Union([
   Type.Literal("ALL_TIME"),
 ])
 const IsoDate = Type.String({ description: "Exchange-local date in YYYY-MM-DD format", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })
-const MarketScanLimit = Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 20 }))
+const MarketScanLimit = Type.Optional(Type.Integer({
+  description: "Results per page; use page.nextOffset to continue",
+  minimum: 1,
+  maximum: 100,
+  default: 20,
+}))
+const ResultOffset = paginationOffset()
 
 const ShortSaleSort = Type.Union([
   Type.Literal("SHORT_SALE_LOTS"),
@@ -133,6 +150,7 @@ const ShortSalesParameters = Type.Object({
   symbol: Type.Optional(Type.String({ description: "Exact BIST equity ticker", minLength: 1, maxLength: 30 })),
   sortBy: Type.Optional(ShortSaleSort),
   sortDirection: Type.Optional(SortDirection),
+  offset: ResultOffset,
   limit: MarketScanLimit,
 })
 const MarginCallSort = Type.Union([
@@ -146,6 +164,7 @@ const MarginCallParameters = Type.Object({
   end: Type.Optional(IsoDate),
   sortBy: Type.Optional(MarginCallSort),
   sortDirection: Type.Optional(SortDirection),
+  offset: ResultOffset,
   limit: MarketScanLimit,
 })
 const MarginRequirementSort = Type.Union([
@@ -160,6 +179,7 @@ const MarginRequirementParameters = Type.Object({
   query: Type.Optional(Type.String({ description: "Underlying or exact front-month contract", maxLength: 80 })),
   sortBy: Type.Optional(MarginRequirementSort),
   sortDirection: Type.Optional(SortDirection),
+  offset: ResultOffset,
   limit: MarketScanLimit,
 })
 const BrokerMarketParameter = Type.Union([
@@ -180,6 +200,7 @@ const BrokerVolumeParameters = Type.Object({
   query: Type.Optional(Type.String({ description: "Broker code or name fragment", maxLength: 80 })),
   sortBy: Type.Optional(BrokerVolumeSort),
   sortDirection: Type.Optional(SortDirection),
+  offset: ResultOffset,
   limit: MarketScanLimit,
 })
 
@@ -187,6 +208,7 @@ const ListInstrumentsParameters = Type.Object({
   query: Type.Optional(Type.String({ description: "Symbol or name fragment to search for", maxLength: 80 })),
   sortBy: Type.Optional(InstrumentSort),
   sortDirection: Type.Optional(SortDirection),
+  offset: ResultOffset,
   limit: InstrumentLimit,
 })
 const RecentFinancialsParameters = Type.Object({
@@ -210,7 +232,12 @@ const RecentFinancialsParameters = Type.Object({
   })),
   sortBy: Type.Optional(FinancialSort),
   sortDirection: Type.Optional(SortDirection),
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+  offset: ResultOffset,
+  limit: Type.Optional(Type.Integer({
+    description: "Results per page; use page.nextOffset to continue",
+    minimum: 1,
+    maximum: 100,
+  })),
 })
 const SymbolOnlyParameters = Type.Object({ symbol: SymbolParameter })
 const CandleParameters = Type.Object({
@@ -222,15 +249,24 @@ const CandleParameters = Type.Object({
   range: CandleRange,
   interval: CandleInterval,
   target: Type.Optional(CandleTarget),
-  limit: Type.Optional(Type.Integer({ description: "Return only this many newest candles; omit for the complete series", minimum: 1 })),
+  offset: ResultOffset,
+  limit: Type.Optional(Type.Integer({
+    description: "Page size from newest toward older candles; omit for the complete remaining series",
+    minimum: 1,
+  })),
 })
 const IndexImpactParameters = Type.Object({
   index: IndexImpactIndex,
   direction: Type.Optional(IndexImpactDirection),
   sortBy: Type.Optional(IndexImpactSort),
   sortDirection: Type.Optional(SortDirection),
-  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 500, default: 0 })),
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 20 })),
+  offset: ResultOffset,
+  limit: Type.Optional(Type.Integer({
+    description: "Results per page; use page.nextOffset to continue",
+    minimum: 1,
+    maximum: 100,
+    default: 20,
+  })),
 })
 const AccountParameters = Type.Object({ range: Type.Optional(PortfolioRange) })
 const DepthParameters = Type.Object({
@@ -249,6 +285,7 @@ const BrokerageParameters = Type.Object({
   side: Type.Union([Type.Literal("BUYER"), Type.Literal("SELLER")]),
   start: Type.Optional(IsoDate),
   end: Type.Optional(IsoDate),
+  offset: ResultOffset,
   limit: ResultLimit,
 })
 const SettlementParameters = Type.Object({
@@ -264,10 +301,12 @@ const SettlementParameters = Type.Object({
     description: "Last exchange-local date in YYYY-MM-DD format. Omit for a single-day reading starting on start.",
     pattern: "^\\d{4}-\\d{2}-\\d{2}$",
   })),
+  offset: ResultOffset,
   limit: ResultLimit,
 })
 const ListNewsParameters = Type.Object({
   symbol: Type.Optional(SymbolParameter),
+  offset: ResultOffset,
   limit: ResultLimit,
 })
 const ArticleParameters = Type.Object({
@@ -362,17 +401,17 @@ function indexImpactTool(clients: MarketDataToolClients): ChatTool<typeof IndexI
         sortBy ?? "ABS_POINT_IMPACT",
         sortDirection ?? "DESC",
       )
-      const start = offset ?? 0
-      const returned = sorted.slice(start, start + (limit ?? 20))
+      const page = paginate(sorted, offset, limit ?? 20)
       return dataOutcome(
-        `Read ${snapshot.index.title} impact; returned ${returned.length} of ${filtered.length} matching constituents.`,
+        `Read ${snapshot.index.title} impact; returned ${page.values.length} of ${filtered.length} matching constituents.${paginationHint(page.page)}`,
         {
           ...snapshot,
-          contributions: returned,
+          contributions: page.values,
           totalConstituents: snapshot.contributions.length,
           matchedConstituents: filtered.length,
-          offset: start,
-          returnedConstituents: returned.length,
+          offset: page.page.offset,
+          returnedConstituents: page.values.length,
+          page: page.page,
         },
       )
     },
@@ -450,23 +489,24 @@ function shortSalesTool(clients: MarketDataToolClients): ChatTool<typeof ShortSa
       ].join(" "),
       parameters: ShortSalesParameters,
     },
-    run: async ({ start, end, symbol, sortBy, sortDirection, limit }, options) => {
+    run: async ({ start, end, symbol, sortBy, sortDirection, offset, limit }, options) => {
       assertDateOrder(start, end, "short-sale")
       const snapshot = await clients.shortSales.listShortSales({ start, end, signal: options.signal })
       const wanted = symbol?.trim().toUpperCase()
       const matching = snapshot.activities.filter((activity) => !wanted || activity.symbol === wanted)
-      const returned = sortShortSales(
+      const page = paginate(sortShortSales(
         matching,
         sortBy ?? "SHORT_SALE_VOLUME",
         sortDirection ?? "DESC",
-      ).slice(0, limit ?? 20)
+      ), offset, limit ?? 20)
       return dataOutcome(
-        `Read short sales from ${snapshot.startDate} through ${snapshot.endDate}; returned ${returned.length} of ${matching.length} matching equities.`,
+        `Read short sales from ${snapshot.startDate} through ${snapshot.endDate}; returned ${page.values.length} of ${matching.length} matching equities.${paginationHint(page.page)}`,
         {
           ...snapshot,
-          activities: returned,
+          activities: page.values,
           matchedEquities: matching.length,
-          returnedEquities: returned.length,
+          returnedEquities: page.values.length,
+          page: page.page,
         },
       )
     },
@@ -508,23 +548,24 @@ function marginCallsTool(clients: MarketDataToolClients): ChatTool<typeof Margin
       ].join(" "),
       parameters: MarginCallParameters,
     },
-    run: async ({ start, end, sortBy, sortDirection, limit }, options) => {
+    run: async ({ start, end, sortBy, sortDirection, offset, limit }, options) => {
       assertDateOrder(start, end, "VIOP margin-call")
       const snapshot = await clients.viopMargins.listMarginCalls({ signal: options.signal })
       const matching = snapshot.calls.filter((call) =>
         (!start || call.date >= start) && (!end || call.date <= end),
       )
-      const returned = sortMarginCalls(
+      const page = paginate(sortMarginCalls(
         matching,
         sortBy ?? "DATE",
         sortDirection ?? "DESC",
-      ).slice(0, limit ?? 20)
+      ), offset, limit ?? 20)
       return dataOutcome(
-        `Read ${matching.length} VIOP margin-call observations; returned ${returned.length}.`,
+        `Read ${matching.length} VIOP margin-call observations; returned ${page.values.length}.${paginationHint(page.page)}`,
         {
-          calls: returned,
+          calls: page.values,
           matchedObservations: matching.length,
-          returnedObservations: returned.length,
+          returnedObservations: page.values.length,
+          page: page.page,
         },
       )
     },
@@ -574,7 +615,7 @@ function marginRequirementsTool(
       ].join(" "),
       parameters: MarginRequirementParameters,
     },
-    run: async ({ query, sortBy, sortDirection, limit }, options) => {
+    run: async ({ query, sortBy, sortDirection, offset, limit }, options) => {
       const snapshot = await clients.viopMargins.listMarginRequirements({ signal: options.signal })
       const wanted = query?.trim().toUpperCase()
       const matching = snapshot.requirements.filter((requirement) => !wanted || [
@@ -582,18 +623,19 @@ function marginRequirementsTool(
         requirement.underlyingSymbol,
       ].some((value) => value.toUpperCase().includes(wanted)))
       const field = sortBy ?? "UNDERLYING"
-      const returned = sortMarginRequirements(
+      const page = paginate(sortMarginRequirements(
         matching,
         field,
         sortDirection ?? (field === "UNDERLYING" ? "ASC" : "DESC"),
-      ).slice(0, limit ?? 20)
+      ), offset, limit ?? 20)
       return dataOutcome(
-        `Read VIOP margin requirements; returned ${returned.length} of ${matching.length} matching contracts.`,
+        `Read VIOP margin requirements; returned ${page.values.length} of ${matching.length} matching contracts.${paginationHint(page.page)}`,
         {
           ...snapshot,
-          requirements: returned,
+          requirements: page.values,
           matchedContracts: matching.length,
-          returnedContracts: returned.length,
+          returnedContracts: page.values.length,
+          page: page.page,
         },
       )
     },
@@ -652,7 +694,7 @@ function brokerMarketShareTool(clients: MarketDataToolClients): ChatTool<typeof 
       ].join(" "),
       parameters: BrokerVolumeParameters,
     },
-    run: async ({ market, query, sortBy, sortDirection, limit }, options) => {
+    run: async ({ market, query, sortBy, sortDirection, offset, limit }, options) => {
       const selectedMarket: BrokerMarket = market ?? "VIOP"
       const snapshot = await clients.brokerVolumes.listBrokerVolumes(selectedMarket, {
         signal: options.signal,
@@ -664,18 +706,19 @@ function brokerMarketShareTool(clients: MarketDataToolClients): ChatTool<typeof 
           value.toLocaleUpperCase("tr-TR").includes(wanted)
         )),
       )
-      const returned = sortBrokerVolumes(
+      const page = paginate(sortBrokerVolumes(
         matching,
         sortBy ?? "MARKET_SHARE",
         sortDirection ?? "DESC",
-      ).slice(0, limit ?? 20)
+      ), offset, limit ?? 20)
       return dataOutcome(
-        `Read ${selectedMarket} broker market share for ${snapshot.latestDate}; returned ${returned.length} of ${matching.length} active brokers.`,
+        `Read ${selectedMarket} broker market share for ${snapshot.latestDate}; returned ${page.values.length} of ${matching.length} active brokers.${paginationHint(page.page)}`,
         {
           ...snapshot,
-          brokers: returned,
+          brokers: page.values,
           matchedBrokers: matching.length,
-          returnedBrokers: returned.length,
+          returnedBrokers: page.values.length,
+          page: page.page,
         },
       )
     },
@@ -736,7 +779,7 @@ function recentFinancialsTool(clients: MarketDataToolClients): ChatTool<typeof R
       ].join(" "),
       parameters: RecentFinancialsParameters,
     },
-    run: async ({ period, symbols, metrics, includeAllMetrics, sortBy, sortDirection, limit }, options) => {
+    run: async ({ period, symbols, metrics, includeAllMetrics, sortBy, sortDirection, offset, limit }, options) => {
       if (includeAllMetrics && metrics) {
         throw new Error("Choose either metrics or includeAllMetrics, not both")
       }
@@ -761,16 +804,17 @@ function recentFinancialsTool(clients: MarketDataToolClients): ChatTool<typeof R
         sortBy ?? "PUBLISHED_AT",
         sortDirection ?? "DESC",
       )
-      const returned = sorted.slice(0, limit ?? (includeAllMetrics ? 10 : 20))
+      const page = paginate(sorted, offset, limit ?? (includeAllMetrics ? 10 : 20))
       return dataOutcome(
-        `Found ${result.financials.length} matching VIOP equity financial${result.financials.length === 1 ? "" : "s"}; returned ${returned.length}.`,
+        `Found ${result.financials.length} matching VIOP equity financial${result.financials.length === 1 ? "" : "s"}; returned ${page.values.length}.${paginationHint(page.page)}`,
         {
           universe: result.universe,
           eligibleSymbols: result.eligibleSymbols,
           metrics: result.metrics,
           period: period ?? null,
           matched: result.financials.length,
-          financials: returned,
+          financials: page.values,
+          page: page.page,
         },
       )
     },
@@ -822,7 +866,7 @@ function listInstrumentsTool(clients: MarketDataToolClients): ChatTool<typeof Li
       ].join(" "),
       parameters: ListInstrumentsParameters,
     },
-    run: async ({ query, sortBy, sortDirection, limit }, options) => {
+    run: async ({ query, sortBy, sortDirection, offset, limit }, options) => {
       const instruments = await clients.sources().instruments.listInstruments({ signal: options.signal })
       const wanted = query?.trim().toUpperCase()
       const matches = instruments.filter((instrument) => !wanted || [
@@ -830,10 +874,14 @@ function listInstrumentsTool(clients: MarketDataToolClients): ChatTool<typeof Li
         instrument.displayName,
         instrument.underlyingSymbol,
       ].some((value) => value?.toUpperCase().includes(wanted)))
-      const returned = sortInstruments(matches, sortBy, sortDirection ?? "DESC").slice(0, limit ?? 25)
+      const page = paginate(
+        sortInstruments(matches, sortBy, sortDirection ?? "DESC"),
+        offset,
+        limit ?? 25,
+      )
       return dataOutcome(
-        `Found ${matches.length} matching VIOP contract${matches.length === 1 ? "" : "s"}; returned ${returned.length}.`,
-        { matched: matches.length, instruments: returned },
+        `Found ${matches.length} matching VIOP contract${matches.length === 1 ? "" : "s"}; returned ${page.values.length}.${paginationHint(page.page)}`,
+        { matched: matches.length, instruments: page.values, page: page.page },
       )
     },
   }
@@ -955,7 +1003,7 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
       ].join(" "),
       parameters: CandleParameters,
     },
-    run: async ({ symbol, range, interval, target, limit }, options) => {
+    run: async ({ symbol, range, interval, target, offset, limit }, options) => {
       const resolvedTarget = indexTarget(target, symbol) ?? target ?? "INSTRUMENT"
       const indexSymbol = resolvedTarget === "BIST_100" ? "XU100" : resolvedTarget === "BIST_30" ? "XU030" : null
       const resolved = resolvedTarget === "UNDERLYING" || resolvedTarget === "INSTRUMENT"
@@ -971,7 +1019,11 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
         signal: options.signal,
         target: resolvedTarget,
       })
-      const candles = limit === undefined ? series.candles : series.candles.slice(-limit)
+      const page = paginateNewest(
+        series.candles,
+        offset,
+        limit ?? Math.max(1, series.candles.length - (offset ?? 0)),
+      )
       const instrument = resolved
         ? {
             symbol: resolved.contractSymbol,
@@ -979,7 +1031,7 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
             underlyingSymbol: resolved.underlyingSymbol,
           }
         : null
-      return dataOutcome(`Read ${candles.length} ${interval} candles for ${indexSymbol ?? resolved?.displayName}.`, {
+      return dataOutcome(`Read ${page.values.length} ${interval} candles for ${indexSymbol ?? resolved?.displayName}.${paginationHint(page.page)}`, {
         instrument,
         symbol: indexSymbol ?? resolved?.contractSymbol,
         candleSymbol,
@@ -990,7 +1042,8 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
         currency: series.currency,
         availableIntervalsByRange: series.availableIntervalsByRange,
         totalCandles: series.candles.length,
-        candles,
+        candles: page.values,
+        page: page.page,
       })
     },
   }
@@ -1168,7 +1221,7 @@ function brokerageTool(clients: MarketDataToolClients): ChatTool<typeof Brokerag
       ].join(" "),
       parameters: BrokerageParameters,
     },
-    run: async ({ symbol, side, start, end, limit }, options) => {
+    run: async ({ symbol, side, start, end, offset, limit }, options) => {
       const sources = clients.sources()
       const instrument = resolveViopInstrument(
         await sources.instruments.listInstruments({ signal: options.signal }),
@@ -1182,12 +1235,14 @@ function brokerageTool(clients: MarketDataToolClients): ChatTool<typeof Brokerag
         range,
         signal: options.signal,
       })
-      return dataOutcome(`Read ${side.toLowerCase()} brokerage distribution for ${instrument.displayName}.`, {
+      const page = paginate(distribution.shares, offset, limit ?? 20)
+      return dataOutcome(`Read ${side.toLowerCase()} brokerage distribution for ${instrument.displayName}.${paginationHint(page.page)}`, {
         instrument,
         range,
         ...distribution,
-        shares: distribution.shares.slice(0, limit ?? 20),
+        shares: page.values,
         totalShares: distribution.shares.length,
+        page: page.page,
       })
     },
   }
@@ -1205,7 +1260,7 @@ function settlementTool(clients: MarketDataToolClients): ChatTool<typeof Settlem
       ].join(" "),
       parameters: SettlementParameters,
     },
-    run: async ({ symbol, mode, start, end, limit }, options) => {
+    run: async ({ symbol, mode, start, end, offset, limit }, options) => {
       if (mode !== "HELD" && !start) {
         throw new Error(
           `get_settlement mode ${mode} requires start in YYYY-MM-DD format. `
@@ -1225,12 +1280,14 @@ function settlementTool(clients: MarketDataToolClients): ChatTool<typeof Settlem
         range,
         signal: options.signal,
       })
-      return dataOutcome(`Read ${mode.toLowerCase()} settlement for ${instrument.displayName}.`, {
+      const page = paginate(settlement.holdings, offset, limit ?? 20)
+      return dataOutcome(`Read ${mode.toLowerCase()} settlement for ${instrument.displayName}.${paginationHint(page.page)}`, {
         instrument,
         range,
         ...settlement,
-        holdings: settlement.holdings.slice(0, limit ?? 20),
+        holdings: page.values,
         totalHoldings: settlement.holdings.length,
+        page: page.page,
       })
     },
   }
@@ -1243,17 +1300,19 @@ function listNewsTool(clients: MarketDataToolClients): ChatTool<typeof ListNewsP
       description: "List recent general market news or news for the equity underlying a VIOP contract. Use get_news_article for the body.",
       parameters: ListNewsParameters,
     },
-    run: async ({ symbol, limit }, options) => {
+    run: async ({ symbol, offset, limit }, options) => {
       const sources = clients.sources()
       const instrument = symbol
         ? resolveViopInstrument(await sources.instruments.listInstruments({ signal: options.signal }), symbol)
         : null
       const articles = await sources.news.listNews({ instrumentUid: instrument?.uid, signal: options.signal })
-      const returned = articles.slice(0, limit ?? 20).map(({ body: _body, ...article }) => article)
-      return dataOutcome(`Found ${articles.length} news article${articles.length === 1 ? "" : "s"}; returned ${returned.length}.`, {
+      const page = paginate(articles, offset, limit ?? 20)
+      const returned = page.values.map(({ body: _body, ...article }) => article)
+      return dataOutcome(`Found ${articles.length} news article${articles.length === 1 ? "" : "s"}; returned ${returned.length}.${paginationHint(page.page)}`, {
         instrument,
         totalArticles: articles.length,
         articles: returned,
+        page: page.page,
       })
     },
   }
