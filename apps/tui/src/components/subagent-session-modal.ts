@@ -77,6 +77,7 @@ export class SubagentSessionModal {
     this.list = new SelectableList(renderer, {
       backgroundColor: PANEL_BG,
       selectedBackgroundColor: SELECTED_BG,
+      wrapContent: true,
       onSelect: (index) => {
         this.highlighted = this.sessions[index]?.id ?? null
         this.render()
@@ -147,12 +148,11 @@ export class SubagentSessionModal {
 
   private sessionRow(session: ChatSession, now: number): StyledText {
     const current = session.id === this.currentId
-    const status = session.running ? "running" : "done"
     const chunks: TextChunk[] = [
       fg(current ? ACCENT_COLOR : MUTED_COLOR)(current ? "• " : "  "),
+      fg(session.running ? RUNNING_COLOR : MUTED_COLOR)(session.running ? "● " : "✓ "),
+      fg(MUTED_COLOR)(`${formatWhen(session.updatedAt, now)} `),
       fg(VALUE_COLOR)(session.title),
-      fg(MUTED_COLOR)(`  ${session.agent ?? "worker"} · ${formatWhen(session.updatedAt, now)} · `),
-      fg(session.running ? RUNNING_COLOR : MUTED_COLOR)(status),
     ]
     return new StyledText(chunks)
   }
