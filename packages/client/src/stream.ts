@@ -18,7 +18,7 @@ function webSocketProtocols<T extends NonNullable<object>>(options: T): string[]
 export interface StreamConnectionOptions {
   url: string
   token: string
-  /** Shared with HTTP requests so temporary grants are revoked when this socket closes. */
+  /** Shared with HTTP requests so temporary grants follow this process across stream reconnects. */
   clientId?: string
   /**
    * Certificate authority to trust, for a server using a self-signed

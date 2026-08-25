@@ -60,6 +60,9 @@ const POSITION_SETTLE_MS = 750
 /** How often close-based rules re-read their candles, matching what the terminal did. */
 const CANDLE_REFRESH_MS = 30_000
 
+/** The stream retries after 1s, then 3s and 5s; do not revoke grants between those attempts. */
+const CLIENT_RECONNECT_GRACE_MS = 10_000
+
 async function startTrbotServer(): Promise<void> {
   const config = loadConfig()
   const serverConfig = loadServerConfig()
@@ -412,7 +415,9 @@ async function startTrbotServer(): Promise<void> {
     .catch((error) => log("Voice transcription model", error))
   hub = new StreamHub(session, {
     onClientAttach: (clientId) => permissions.attachClient(clientId),
-    onClientDetach: (clientId) => permissions.detachClient(clientId),
+    onClientDetach: (clientId) => permissions.detachClient(clientId, {
+      reconnectGraceMs: CLIENT_RECONNECT_GRACE_MS,
+    }),
     extraQuoteSymbols: () => [...new Set([...stops.symbols(), ...alerts.symbols(), ...marketMonitors.symbols()])],
     onQuote: (update) => {
       stops.applyQuote(update)

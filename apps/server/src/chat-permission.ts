@@ -23,12 +23,18 @@ export interface ChatPermissionControllerOptions {
   now?: () => number
 }
 
-/** Gates sensitive agent tools and keeps grants only while their approving client is attached. */
+export interface ChatPermissionDetachOptions {
+  /** Keeps grants through a short transport reconnect by the same client process. */
+  reconnectGraceMs?: number
+}
+
+/** Gates sensitive agent tools and keeps grants while their approving client remains connected. */
 export class ChatPermissionController implements ChatPermissionAuthorizer {
   private readonly pending = new Map<string, PendingPermission>()
   private readonly grants = new Map<string, Set<string>>()
   private readonly clientGrants = new Map<string, Set<string>>()
   private readonly attachedClients = new Map<string, number>()
+  private readonly pendingRevocations = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly now: () => number
   private destroyed = false
 
@@ -117,10 +123,13 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
 
   attachClient(clientId: string | null): void {
     if (!clientId) return
+    const revocation = this.pendingRevocations.get(clientId)
+    if (revocation) clearTimeout(revocation)
+    this.pendingRevocations.delete(clientId)
     this.attachedClients.set(clientId, (this.attachedClients.get(clientId) ?? 0) + 1)
   }
 
-  detachClient(clientId: string | null): void {
+  detachClient(clientId: string | null, options: ChatPermissionDetachOptions = {}): void {
     if (!clientId) return
     const connections = this.attachedClients.get(clientId)
     if (!connections) return
@@ -129,7 +138,16 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
       return
     }
     this.attachedClients.delete(clientId)
-    this.revokeClient(clientId)
+    const reconnectGraceMs = options.reconnectGraceMs ?? 0
+    if (reconnectGraceMs <= 0) {
+      this.revokeClient(clientId)
+      return
+    }
+    const revocation = setTimeout(() => {
+      this.pendingRevocations.delete(clientId)
+      if (!this.attachedClients.has(clientId)) this.revokeClient(clientId)
+    }, reconnectGraceMs)
+    this.pendingRevocations.set(clientId, revocation)
   }
 
   destroy(): void {
@@ -143,6 +161,8 @@ export class ChatPermissionController implements ChatPermissionAuthorizer {
     this.grants.clear()
     this.clientGrants.clear()
     this.attachedClients.clear()
+    for (const revocation of this.pendingRevocations.values()) clearTimeout(revocation)
+    this.pendingRevocations.clear()
   }
 
   private hasGrant(sessionId: string, toolName: string): boolean {

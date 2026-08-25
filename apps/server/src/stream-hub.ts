@@ -42,7 +42,7 @@ export interface StreamSocket {
 const BACKPRESSURE_LIMIT_BYTES = 1 << 20
 
 export interface StreamHubOptions {
-  /** Tracks the socket lifetime that owns temporary tool grants. */
+  /** Tracks the client process that owns temporary tool grants across brief reconnects. */
   onClientAttach?: (clientId: string | null) => void
   onClientDetach?: (clientId: string | null) => void
   /**

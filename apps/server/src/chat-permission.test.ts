@@ -68,6 +68,35 @@ test("remembers an allowed tool only while the approving client is attached", as
   expect(await afterClose).toEqual({ decision: "DENY", reason: null })
 })
 
+test("keeps a session grant when the same client reconnects briefly", async () => {
+  const persistence = store()
+  const permissions = new ChatPermissionController({ store: persistence.value, broadcast: () => {} })
+  permissions.attachClient("client-1")
+
+  const waiting = permissions.authorize({
+    sessionId: "chat-1",
+    toolName: "update_stop_rule",
+    action: "Replace a stop rule",
+    scope: "SESSION",
+  })
+  await Bun.sleep(0)
+  await permissions.reply(permissions.list()[0]!.id, { decision: "ALLOW", scope: "SESSION" }, "client-1")
+  expect(await waiting).toEqual({ decision: "ALLOW", reason: null })
+
+  permissions.detachClient("client-1", { reconnectGraceMs: 20 })
+  permissions.attachClient("client-1")
+  await Bun.sleep(30)
+
+  expect(await permissions.authorize({
+    sessionId: "chat-1",
+    toolName: "update_stop_rule",
+    action: "Replace the stop rule again",
+    scope: "SESSION",
+  })).toEqual({ decision: "ALLOW", reason: null })
+  expect(permissions.list()).toEqual([])
+  permissions.detachClient("client-1")
+})
+
 test("denial reason reaches the current request without creating a lasting denial", async () => {
   const persistence = store()
   const permissions = new ChatPermissionController({ store: persistence.value, broadcast: () => {} })
