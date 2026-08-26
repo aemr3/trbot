@@ -43,6 +43,7 @@ async function harness(options: {
       id: "chat-1",
       title: "Test",
       parentSessionId: null,
+      parentPromptMessageId: null,
       agent: null,
       model: "model",
       provider: "provider",

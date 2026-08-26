@@ -1,0 +1,1 @@
+ALTER TABLE `chat_sessions` ADD `parent_prompt_message_id` text;

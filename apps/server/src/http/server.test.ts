@@ -109,6 +109,7 @@ describe("server and client over the wire", () => {
                 id: sessionId,
                 title: "Test",
                 parentSessionId: null,
+                parentPromptMessageId: null,
                 agent: null,
                 provider: "test",
                 model: "test",

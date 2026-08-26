@@ -703,6 +703,7 @@ test("keeps child sessions out of the root list and finds them through their par
     id: "child-1",
     title: "Inspect ASELS",
     parentSessionId: parent.id,
+    parentPromptMessageId: "prompt-1",
     agent: "worker",
     createdAt: 2_000,
     updatedAt: 2_000,
@@ -714,8 +715,10 @@ test("keeps child sessions out of the root list and finds them through their par
   expect(await chats.listChildren(parent.id)).toMatchObject([{
     id: child.id,
     parentSessionId: parent.id,
+    parentPromptMessageId: "prompt-1",
     agent: "worker",
   }])
+  expect((await chats.get(child.id))?.session.parentPromptMessageId).toBe("prompt-1")
 
   await chats.append(child.id, draftFor({ role: "user", content: "delegated task", timestamp: 2_000 }, "SENT"))
   await chats.delete(parent.id)
@@ -728,6 +731,7 @@ function session(): ChatSession {
     id: "chat-1",
     title: "New chat",
     parentSessionId: null,
+    parentPromptMessageId: null,
     agent: null,
     model: "gpt-5.6-sol",
     provider: "openai-codex",

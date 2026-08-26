@@ -158,6 +158,7 @@ export const chatSessions = sqliteTable("chat_sessions", {
   // user is final. Legacy titles also remain null but cannot match a new placeholder.
   titleSource: text("title_source", { enum: ["auto", "user"] }),
   parentSessionId: text("parent_session_id"),
+  parentPromptMessageId: text("parent_prompt_message_id"),
   agent: text("agent"),
   // Recorded per session so an old transcript still says what wrote it, even
   // after the chosen model changes. The provider and the reasoning level are

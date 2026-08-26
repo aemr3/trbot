@@ -566,7 +566,7 @@ test("stopping the reply in flight leaves the rest of the queue alone", async ()
 test("stopping from a subagent transcript aborts its owning turn", async () => {
   const { chat, turns, finish } = await harness({ auto: false })
   const parent = await chat.create()
-  await chat.send(parent.id, "delegate this")
+  const prompt = await chat.send(parent.id, "delegate this")
   await settle()
   const worker = await chat.subagentSessions.start({
     parentSessionId: parent.id,
@@ -576,6 +576,7 @@ test("stopping from a subagent transcript aborts its owning turn", async () => {
     modelId: "test-model",
     reasoning: "high",
   })
+  expect((await chat.detail(worker.sessionId)).session.parentPromptMessageId).toBe(prompt.id)
 
   await chat.abort(worker.sessionId)
 
@@ -806,6 +807,7 @@ test("records subagents as live child sessions with their complete transcript", 
   expect(running).toMatchObject([{
     id: worker.sessionId,
     parentSessionId: parent.id,
+    parentPromptMessageId: null,
     agent: "worker",
     title: "Inspect the XU100 trend",
     running: true,

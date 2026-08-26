@@ -2,11 +2,31 @@ import { describe, expect, test } from "bun:test"
 import {
   chatBlockText,
   chatMessageText,
+  ChatSessionSchema,
   chatSessionTitle,
   defaultChatSessionTitle,
   isDefaultChatSessionTitle,
   recentChatTimeline,
 } from "./session.ts"
+
+test("defaults a legacy session's missing parent prompt association to null", () => {
+  const session = ChatSessionSchema.parse({
+    id: "chat-1",
+    title: "Legacy chat",
+    parentSessionId: null,
+    agent: null,
+    model: "test-model",
+    provider: "test-provider",
+    reasoning: null,
+    createdAt: 1,
+    updatedAt: 1,
+    messageCount: 0,
+    queued: 0,
+    running: false,
+  })
+
+  expect(session.parentPromptMessageId).toBeNull()
+})
 
 test("creates a recognizable timestamp placeholder", () => {
   const title = defaultChatSessionTitle(Date.UTC(2026, 7, 20, 12, 34, 56, 789))

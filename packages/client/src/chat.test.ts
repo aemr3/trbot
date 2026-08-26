@@ -114,6 +114,7 @@ test("requests only the bounded timeline used by the TUI", async () => {
           id: "chat-1",
           title: "Test",
           parentSessionId: null,
+          parentPromptMessageId: null,
           agent: null,
           provider: "test",
           model: "test",

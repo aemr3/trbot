@@ -62,6 +62,7 @@ const CHAT_SESSION = {
   id: "chat-1",
   title: "Market structure",
   parentSessionId: null,
+  parentPromptMessageId: null,
   agent: null,
   model: "gpt-5",
   provider: "openai",

@@ -19,6 +19,7 @@ function session(overrides: Partial<ChatSession> = {}): ChatSession {
     id: "chat-1",
     title: "ASELS setup",
     parentSessionId: null,
+    parentPromptMessageId: null,
     agent: null,
     provider: "test-provider",
     model: "test-model",

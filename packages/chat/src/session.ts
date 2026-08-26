@@ -92,6 +92,8 @@ export interface ChatSession {
   title: string
   /** Null for a trader chat; set for an isolated worker spawned from another session. */
   parentSessionId: string | null
+  /** The parent prompt whose turn created this worker. Null for roots and legacy workers. */
+  parentPromptMessageId: string | null
   /** The delegated agent name for a child session. Null on trader chats. */
   agent: string | null
   /**
@@ -228,6 +230,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   id: z.string(),
   title: z.string(),
   parentSessionId: z.string().nullable(),
+  parentPromptMessageId: z.string().nullable().default(null),
   agent: z.string().nullable(),
   model: z.string(),
   provider: z.string().nullable(),

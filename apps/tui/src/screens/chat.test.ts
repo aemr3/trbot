@@ -85,6 +85,7 @@ function fakeChats(): ChatSessions & {
         id: `chat-${sessions.length + 1}`,
         title: "New chat",
         parentSessionId: null,
+        parentPromptMessageId: null,
         agent: null,
         model: choice?.modelId ?? "test-model",
         provider: choice?.providerId ?? "test-provider",
@@ -1582,7 +1583,8 @@ test("opens durable worker transcripts with /subagents and returns with /parent"
   renderer.root.add(screen.root)
   screen.mount()
   routeKeys(renderer, screen)
-  await waitForFrame((frame) => frame.includes("ask something"))
+  const parentFrame = await waitForFrame((frame) => frame.includes("ask something"))
+  expect(parentFrame).not.toContain(child.title)
 
   await mockInput.typeText("/subagents")
   mockInput.pressEnter()
@@ -1599,15 +1601,112 @@ test("opens durable worker transcripts with /subagents and returns with /parent"
   renderer.destroy()
 })
 
+test("restores completed workers beside their parent turns after reopening", async () => {
+  const { renderer, mockMouse, waitForFrame } = await createTestRenderer({ width: 110, height: 36, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const firstPrompt = { ...userMessage("Analyze ASELS", "SENT"), createdAt: 1_000 }
+  const firstReply = { ...replyMessage("ASELS synthesis"), createdAt: 2_000 }
+  const secondPrompt = { ...userMessage("Analyze THYAO", "SENT"), createdAt: 3_000 }
+  const secondReply = { ...replyMessage("THYAO synthesis"), createdAt: 4_000 }
+  chats.messages.set(parent.id, [firstPrompt, firstReply, secondPrompt, secondReply])
+
+  const firstWorker: ChatSession = {
+    ...parent,
+    id: "worker-history-a",
+    title: "ASELS historical worker",
+    parentSessionId: parent.id,
+    parentPromptMessageId: firstPrompt.id,
+    agent: "worker",
+    createdAt: 1_200,
+    updatedAt: 3_700,
+  }
+  const secondWorker: ChatSession = {
+    ...firstWorker,
+    id: "worker-history-b",
+    title: "THYAO historical worker",
+    parentPromptMessageId: secondPrompt.id,
+    createdAt: 3_200,
+    updatedAt: 4_200,
+  }
+  const legacyWorker: ChatSession = {
+    ...firstWorker,
+    id: "worker-legacy",
+    title: "Legacy modal-only worker",
+    parentPromptMessageId: null,
+  }
+  const unavailableWorker: ChatSession = {
+    ...firstWorker,
+    id: "worker-unavailable",
+    title: "Temporarily unavailable worker",
+  }
+  const emptyWorker: ChatSession = {
+    ...secondWorker,
+    id: "worker-empty",
+    title: "Empty result worker",
+    createdAt: 3_300,
+  }
+  chats.sessions.push(firstWorker, secondWorker, legacyWorker, unavailableWorker, emptyWorker)
+  chats.messages.set(firstWorker.id, [
+    toolResultMessage("get_quote", "Read quote."),
+    replyMessage("Historical ASELS result"),
+  ])
+  chats.messages.set(secondWorker.id, [replyMessage("Historical THYAO result", "PARTIAL")])
+  chats.messages.set(emptyWorker.id, [replyMessage("")])
+  chats.messages.set(legacyWorker.id, [replyMessage("Legacy result")])
+  const get = chats.get.bind(chats)
+  chats.get = (sessionId) => sessionId === unavailableWorker.id
+    ? Promise.reject(new Error("worker detail unavailable"))
+    : get(sessionId)
+
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const restored = await waitForFrame((frame) => (
+    frame.includes(firstWorker.title)
+    && frame.includes(secondWorker.title)
+    && frame.includes(unavailableWorker.title)
+    && frame.includes(emptyWorker.title)
+    && frame.includes("1 toolcall · 2.5s")
+  ))
+  expect(restored).not.toContain(legacyWorker.title)
+  expect(restored.indexOf(firstPrompt.text)).toBeLessThan(restored.indexOf(firstReply.text))
+  expect(restored.indexOf(firstReply.text)).toBeLessThan(restored.indexOf(firstWorker.title))
+  expect(restored.indexOf(firstWorker.title)).toBeLessThan(restored.indexOf(secondPrompt.text))
+  expect(restored.indexOf(secondReply.text)).toBeLessThan(restored.indexOf(secondWorker.title))
+  const failedLine = restored.split("\n").find((line) => line.includes(secondWorker.title)) ?? ""
+  expect(failedLine.trimStart().startsWith("×")).toBeTrue()
+  const unavailableLine = restored.split("\n").find((line) => line.includes(unavailableWorker.title)) ?? ""
+  expect(unavailableLine.trimStart().startsWith("•")).toBeTrue()
+  const unavailableLineIndex = restored.split("\n").findIndex((line) => line.includes(unavailableWorker.title))
+  expect(restored.split("\n")[unavailableLineIndex + 1]).not.toContain("0 toolcalls")
+  const emptyLine = restored.split("\n").find((line) => line.includes(emptyWorker.title)) ?? ""
+  expect(emptyLine.trimStart().startsWith("×")).toBeTrue()
+
+  const lines = restored.split("\n")
+  const workerLine = lines.findIndex((line) => line.includes(firstWorker.title))
+  const workerColumn = lines[workerLine]?.indexOf(firstWorker.title) ?? -1
+  await mockMouse.click(workerColumn, workerLine)
+  await waitForFrame((frame) => frame.includes("Historical ASELS result") && frame.includes("Subagent transcript"))
+  expect(screen.isShowingSession(firstWorker.id)).toBe(true)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("shows only the current subagent tool and opens the worker when clicked", async () => {
   const { renderer, mockMouse, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const parent = await chats.create()
+  const parentPrompt = userMessage("Delegate the review", "SENT")
+  chats.messages.set(parent.id, [parentPrompt])
   const child: ChatSession = {
     ...parent,
     id: "worker-live",
     title: "Review the indicator implementation",
     parentSessionId: parent.id,
+    parentPromptMessageId: parentPrompt.id,
     agent: "worker",
     createdAt: 2_000,
     updatedAt: 2_000,
@@ -1673,9 +1772,15 @@ test("shows only the current subagent tool and opens the worker when clicked", a
   expect(chats.undone).toEqual([])
 
   await Bun.sleep(0)
+  chats.messages.set(child.id, [
+    userMessage("Review task", "SENT"),
+    toolResultMessage("get_quote", "Read quote."),
+    toolResultMessage("get_candles", "Read candles."),
+    replyMessage("Worker complete"),
+  ])
   screen.acceptRun(parent.id, "parent-run", "done")
   await Bun.sleep(1)
-  await waitForFrame((frame) => frame.includes("ask something") && !frame.includes(child.title))
+  await waitForFrame((frame) => frame.includes("ask something") && frame.includes(child.title) && frame.includes("2 toolcalls"))
 
   screen.destroy()
   renderer.destroy()
@@ -1689,6 +1794,8 @@ test("retains a worker when its delayed lookup finishes after the run", async ()
   })
   const chats = fakeChats()
   const parent = await chats.create()
+  const parentPrompt = userMessage("Delegate delayed work", "SENT")
+  chats.messages.set(parent.id, [parentPrompt])
   const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
   renderer.root.add(screen.root)
   screen.mount()
@@ -1699,6 +1806,7 @@ test("retains a worker when its delayed lookup finishes after the run", async ()
     id: "worker-delayed",
     title: "Delayed worker",
     parentSessionId: parent.id,
+    parentPromptMessageId: parentPrompt.id,
     agent: "worker",
     running: true,
   }
@@ -1709,10 +1817,12 @@ test("retains a worker when its delayed lookup finishes after the run", async ()
   screen.acceptRun(parent.id, "parent-run", "running")
   screen.acceptRun(child.id, "worker-run", "running")
   screen.acceptRun(child.id, "worker-run", "done")
+  chats.sessions.push({ ...child, running: false })
+  screen.acceptRun(parent.id, "parent-run", "done")
   delayed.resolve({
-    session: child,
+    session: { ...child, running: false },
     messages: [],
-    partial: { runId: "worker-run", seq: 0, text: "", reasoning: "" },
+    partial: null,
   })
   await Bun.sleep(0)
   await renderOnce()
@@ -1767,11 +1877,14 @@ test("retains completed parallel workers while their parent keeps running", asyn
   const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const parent = await chats.create()
+  const parentPrompt = userMessage("Run parallel workers", "SENT")
+  chats.messages.set(parent.id, [parentPrompt])
   const workerA: ChatSession = {
     ...parent,
     id: "worker-a",
     title: "First parallel worker",
     parentSessionId: parent.id,
+    parentPromptMessageId: parentPrompt.id,
     agent: "worker",
     running: true,
   }
@@ -1803,10 +1916,48 @@ test("retains completed parallel workers while their parent keeps running", asyn
   renderer.destroy()
 })
 
+test("settles a known running worker when an idle parent snapshot arrives", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const parentPrompt = userMessage("Reconnect after completion", "SENT")
+  chats.messages.set(parent.id, [parentPrompt])
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-idle-reconnect",
+    title: "Completed while disconnected",
+    parentSessionId: parent.id,
+    parentPromptMessageId: parentPrompt.id,
+    agent: "worker",
+    running: true,
+  }
+  chats.sessions.push(child)
+  chats.messages.set(child.id, [replyMessage("Finished offline")])
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptRun(parent.id, "parent-run", "running")
+  screen.acceptRun(child.id, "worker-run", "running")
+  await waitForFrame((frame) => frame.includes(child.title))
+  chats.sessions[chats.sessions.findIndex((session) => session.id === child.id)] = { ...child, running: false }
+  screen.acceptSessions([{ ...parent, running: false }])
+
+  const settled = await waitForFrame((frame) => frame.includes(child.title) && frame.includes("0 toolcalls"))
+  const workerLine = settled.split("\n").find((line) => line.includes(child.title)) ?? ""
+  expect(workerLine.trimStart().startsWith("✓")).toBeTrue()
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("discovers a running worker created while disconnected", async () => {
   const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const parent = await chats.create()
+  const parentPrompt = userMessage("Reconnect the worker", "SENT")
+  chats.messages.set(parent.id, [parentPrompt])
   const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
   renderer.root.add(screen.root)
   screen.mount()
@@ -1818,6 +1969,7 @@ test("discovers a running worker created while disconnected", async () => {
     id: "worker-reconnected",
     title: "Reconnected worker",
     parentSessionId: parent.id,
+    parentPromptMessageId: parentPrompt.id,
     agent: "worker",
     running: true,
   }
@@ -1833,6 +1985,82 @@ test("discovers a running worker created while disconnected", async () => {
   renderer.destroy()
 })
 
+test("ignores an idle child snapshot after that worker starts running", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const parentPrompt = userMessage("Start after reconnect", "SENT")
+  chats.messages.set(parent.id, [parentPrompt])
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-started-after-snapshot",
+    title: "Newly running worker",
+    parentSessionId: parent.id,
+    parentPromptMessageId: parentPrompt.id,
+    agent: "worker",
+    running: false,
+  }
+  chats.sessions.push(child)
+  chats.messages.set(child.id, [])
+  const delayed = Promise.withResolvers<ChatSession[]>()
+  chats.children = () => delayed.promise
+
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptRun(parent.id, "parent-run", "running")
+  chats.sessions[chats.sessions.findIndex((session) => session.id === child.id)] = { ...child, running: true }
+  screen.acceptRun(child.id, "worker-run", "running")
+  delayed.resolve([child])
+
+  const running = await waitForFrame((frame) => frame.includes(child.title))
+  const workerLine = running.split("\n").find((line) => line.includes(child.title)) ?? ""
+  expect(workerLine.trimStart().startsWith("⠋")).toBeTrue()
+  expect(running).not.toContain("0 toolcalls")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("replaces a provisional idle worker marker when its running frame arrives", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const parentPrompt = userMessage("Start from an idle snapshot", "SENT")
+  chats.messages.set(parent.id, [parentPrompt])
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-provisional-idle",
+    title: "Worker about to start",
+    parentSessionId: parent.id,
+    parentPromptMessageId: parentPrompt.id,
+    agent: "worker",
+    running: false,
+  }
+  chats.sessions.push(child)
+  chats.messages.set(child.id, [])
+
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  const idle = await waitForFrame((frame) => frame.includes(child.title))
+  const idleLine = idle.split("\n").find((line) => line.includes(child.title)) ?? ""
+  expect(idleLine.trimStart().startsWith("•")).toBeTrue()
+
+  screen.acceptRun(parent.id, "parent-run", "running")
+  screen.acceptRun(child.id, "worker-run", "running")
+  const running = await waitForFrame((frame) => {
+    const line = frame.split("\n").find((value) => value.includes(child.title)) ?? ""
+    return spinnerFrame(line) !== undefined
+  })
+  expect(running).not.toContain("0 toolcalls")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("ignores a stale child refresh after the worker completes", async () => {
   const { renderer, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({
     width: 100,
@@ -1841,11 +2069,14 @@ test("ignores a stale child refresh after the worker completes", async () => {
   })
   const chats = fakeChats()
   const parent = await chats.create()
+  const parentPrompt = userMessage("Refresh the worker", "SENT")
+  chats.messages.set(parent.id, [parentPrompt])
   const child: ChatSession = {
     ...parent,
     id: "worker-stale-refresh",
     title: "Stale refresh worker",
     parentSessionId: parent.id,
+    parentPromptMessageId: parentPrompt.id,
     agent: "worker",
     running: true,
   }

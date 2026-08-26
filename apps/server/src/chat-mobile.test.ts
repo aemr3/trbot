@@ -275,6 +275,7 @@ class FakeChat {
       id: "chat-1",
       title: "Index analysis",
       parentSessionId: null,
+      parentPromptMessageId: null,
       agent: null,
       model: "model",
       provider: "provider",
