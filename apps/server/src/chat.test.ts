@@ -213,7 +213,7 @@ test("the second question sees the first exchange as history", async () => {
 test("stores a rolling checkpoint without removing the visible transcript", async () => {
   const summary: ChatRecord = { role: "user", content: "<conversation-summary>first exchange</conversation-summary>", timestamp: 3 }
   const compaction: ChatCompactionRunner = {
-    history: (context) => context.records.map((entry) => modelRecord(entry.record)),
+    history: (context) => context.compaction ? [summary] : context.records.map((entry) => modelRecord(entry.record)),
     compact: async (input) => {
       const last = input.context.records.at(-1)
       if (!last) return null
@@ -236,6 +236,7 @@ test("stores a rolling checkpoint without removing the visible transcript", asyn
 
   await chat.send(session.id, "first")
   await settle()
+  expect((await store.context(session.id)).compaction?.summary).toBe("first exchange")
   await chat.send(session.id, "second")
   await settle()
 
@@ -292,7 +293,7 @@ test("manual compaction keeps new prompts queued until its checkpoint is saved",
   await settle()
 
   expect(compacted).toEqual({ compacted: true, tokensBefore: 24_000, tokensAfter: 2_400 })
-  expect(forceCalls).toEqual([false, true, false])
+  expect(forceCalls).toEqual([false, false, true, false, false])
   expect((await store.context(session.id)).compaction?.summary).toBe("manual checkpoint")
   expect((await chat.detail(session.id)).messages.map((message) => message.text)).toEqual([
     "keep this visible",
@@ -359,7 +360,7 @@ test("compacts and retries one clean overflow without duplicating durable output
 
   expect(turns.map((turn) => turn.prompt)).toEqual(["seed", "continue", "continue"])
   expect(turns.at(-1)?.history).toEqual([summary])
-  expect(forceCalls).toEqual([false, false, true])
+  expect(forceCalls).toEqual([false, false, false, true, false])
   expect((await chat.detail(session.id)).messages.map((message) => message.text)).toEqual([
     "seed",
     "answer to seed",

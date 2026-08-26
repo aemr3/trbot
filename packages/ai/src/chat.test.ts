@@ -440,6 +440,48 @@ test("reports a clean context overflow without persisting a disposable error rep
   expect(drafts).toEqual([])
 })
 
+test("reports a recoverable partial response for compaction instead of persisting it", async () => {
+  const { faux, models } = scripted()
+  faux.setResponses([fauxAssistantMessage("Incomplete answer", { stopReason: "length" })])
+  const drafts: ChatMessageDraft[] = []
+
+  const result = await new ChatAgent({ models }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Continue",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onMessage: async (draft) => { drafts.push(draft) },
+    },
+  })
+
+  expect(result.overflowed).toBe(true)
+  expect(drafts).toEqual([])
+})
+
+test("preserves a successful response even when provider usage exceeds the window", async () => {
+  const { faux, models } = scripted()
+  faux.setResponses([fauxAssistantMessage("Completed oversized answer")])
+  const drafts: ChatMessageDraft[] = []
+
+  const result = await new ChatAgent({ models }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "x".repeat(480_000),
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onMessage: async (draft) => { drafts.push(draft) },
+    },
+  })
+
+  expect(result).toEqual({ completed: true, aborted: false, errorMessage: null })
+  expect(drafts.map((draft) => draft.message.text)).toEqual(["Completed oversized answer"])
+})
+
 test("does not retry an overflow after a tool has produced a durable side effect", async () => {
   let calls = 0
   const tool: ChatTool = {

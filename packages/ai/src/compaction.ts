@@ -1,14 +1,13 @@
-import type { Api, Context, Message, Model, Models, Tool, ToolCall } from "@earendil-works/pi-ai"
+import type { Api, Message, Model, Models, ToolCall } from "@earendil-works/pi-ai"
 import type {
   ChatCompaction,
   ChatContextRecord,
   ChatModelContext,
 } from "@trbot/chat/session.ts"
-import { CHAT_SYSTEM_PROMPT, type ChatRecord } from "./chat.ts"
+import type { ChatRecord } from "./chat.ts"
 
 export const CHAT_COMPACTION_RESERVE_TOKENS = 16_384
 export const CHAT_COMPACTION_KEEP_RECENT_TOKENS = 20_000
-const SUMMARY_OUTPUT_TOKENS = 4_096
 const TOOL_RESULT_MAX_CHARS = 2_000
 
 const SUMMARY_SYSTEM_PROMPT = [
@@ -68,8 +67,6 @@ export interface ChatCompactionRunner {
 
 export interface ChatCompactorOptions {
   models: Models
-  tools?: Tool[]
-  systemPrompt?: string
   now?: () => number
   reserveTokens?: number
   keepRecentTokens?: number
@@ -77,13 +74,11 @@ export interface ChatCompactorOptions {
 
 /** Creates hidden rolling summaries while leaving the durable transcript intact. */
 export class ChatCompactor implements ChatCompactionRunner {
-  private readonly systemPrompt: string
   private readonly now: () => number
   private readonly reserveTokens: number
   private readonly keepRecentTokens: number
 
   constructor(private readonly options: ChatCompactorOptions) {
-    this.systemPrompt = options.systemPrompt ?? CHAT_SYSTEM_PROMPT
     this.now = options.now ?? Date.now
     this.reserveTokens = options.reserveTokens ?? CHAT_COMPACTION_RESERVE_TOKENS
     this.keepRecentTokens = options.keepRecentTokens ?? CHAT_COMPACTION_KEEP_RECENT_TOKENS
@@ -98,12 +93,10 @@ export class ChatCompactor implements ChatCompactionRunner {
 
   async compact(input: ChatCompactionInput): Promise<ChatCompactionResult | null> {
     const history = this.history(input.context)
-    const tokensBefore = estimateRequestTokens({
-      systemPrompt: this.systemPrompt,
-      tools: this.options.tools,
-      messages: [...history, userRecord(input.prompt, this.now())],
-    })
-    const threshold = Math.max(1, input.model.contextWindow - this.reserveTokens)
+    const estimatedTokens = history.reduce((total, message) => total + estimateMessageTokens(message), 0)
+    const measuredTokens = measuredContextTokens(input)
+    const tokensBefore = measuredTokens ?? estimatedTokens
+    const threshold = input.model.contextWindow - this.reserveTokens
     if (!input.force && tokensBefore <= threshold) return null
 
     // Overflow recovery is the last bounded attempt, so replace the complete
@@ -131,11 +124,7 @@ export class ChatCompactor implements ChatCompactionRunner {
       createdAt,
     }
     const compactedHistory = [summaryRecord(baseCheckpoint), ...tail.map((entry) => modelRecord(entry.record))]
-    const tokensAfter = estimateRequestTokens({
-      systemPrompt: this.systemPrompt,
-      tools: this.options.tools,
-      messages: [...compactedHistory, userRecord(input.prompt, this.now())],
-    })
+    const tokensAfter = compactedHistory.reduce((total, message) => total + estimateMessageTokens(message), 0)
     const checkpoint: ChatCompaction = { ...baseCheckpoint, tokensAfter }
     return {
       checkpoint,
@@ -167,12 +156,18 @@ export class ChatCompactor implements ChatCompactionRunner {
       messages: [userRecord(prompt, this.now())],
     }, {
       signal: input.signal,
-      maxTokens: Math.min(SUMMARY_OUTPUT_TOKENS, input.model.maxTokens),
+      maxTokens: Math.min(Math.floor(this.reserveTokens * 0.8), input.model.maxTokens),
       cacheRetention: "none",
     })
     if (response.stopReason === "aborted") return null
     if (response.stopReason === "error") {
       throw new Error(response.errorMessage ?? "Chat compaction failed")
+    }
+    if (response.stopReason === "length") {
+      throw new Error("Chat compaction failed: generation hit the token cap and the summary is incomplete")
+    }
+    if (response.content.some((block) => block.type === "toolCall")) {
+      throw new Error("Chat compaction attempted to call a tool")
     }
     const summary = response.content
       .filter((block) => block.type === "text")
@@ -205,13 +200,27 @@ export function selectRecentTurns(records: readonly ChatContextRecord[], keepTok
   return keepFrom
 }
 
-export function estimateRequestTokens(context: Context): number {
-  const text = context.systemPrompt ?? ""
-  const tools = context.tools?.length ? safeJson(context.tools) : ""
-  return estimateTextTokens(text) + estimateTextTokens(tools) + context.messages.reduce(
-    (total, message) => total + estimateMessageTokens(message),
-    0,
-  )
+/** Pi's context estimate starts at the last valid provider usage, then adds trailing messages. */
+function measuredContextTokens(input: ChatCompactionInput): number | null {
+  const records = input.context.records.map((entry) => modelRecord(entry.record))
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const message = records[index]
+    if (
+      message?.role !== "assistant"
+      || message.stopReason === "error"
+      || message.stopReason === "aborted"
+    ) continue
+    if (input.context.compaction && message.timestamp <= input.context.compaction.createdAt) continue
+    const usageTokens = message.usage.totalTokens || (
+      message.usage.input + message.usage.output + message.usage.cacheRead + message.usage.cacheWrite
+    )
+    if (usageTokens <= 0) continue
+    const trailingTokens = records
+      .slice(index + 1)
+      .reduce((total, record) => total + estimateMessageTokens(record), 0)
+    return usageTokens + trailingTokens
+  }
+  return null
 }
 
 function estimateMessageTokens(message: Message): number {
@@ -268,7 +277,7 @@ function userRecord(content: string, timestamp: number): ChatRecord {
   return { role: "user", content, timestamp }
 }
 
-function safeJson(value: Context["tools"] | ToolCall["arguments"]): string {
+function safeJson(value: ToolCall["arguments"]): string {
   try {
     return JSON.stringify(value) ?? ""
   } catch {

@@ -327,7 +327,7 @@ async function startTrbotServer(): Promise<void> {
   chat = new ChatController({
     store: new DrizzleChatSessionStore(connection.db, { harnessVersion: HARNESS_VERSION }),
     agent: new ChatAgent({ models, tools: chatTools }),
-    compaction: new ChatCompactor({ models, tools: chatTools.list() }),
+    compaction: new ChatCompactor({ models }),
     // A session runs on the model it records, so these read the stored choice per
     // turn rather than closing over one from startup.
     defaultChoice: () => ai.chatDefault(),

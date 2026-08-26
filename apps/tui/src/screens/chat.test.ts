@@ -1333,7 +1333,7 @@ test("compacts the selected chat without sending a message", async () => {
   renderer.destroy()
 })
 
-test("marks automatic compaction and reports the smaller active context", async () => {
+test("marks automatic compaction and waits for fresh provider usage", async () => {
   const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const session = await chats.create()
@@ -1366,7 +1366,63 @@ test("marks automatic compaction and reports the smaller active context", async 
   const frame = await waitForFrame((value) => value.includes("context compacted"))
   expect(frame.indexOf("older answer")).toBeLessThan(frame.indexOf("context compacted"))
   expect(frame.indexOf("context compacted")).toBeLessThan(frame.indexOf("after compaction"))
-  expect(frame).toContain("2.4K (2%)")
+  expect(frame).not.toContain("2.4K")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("uses the provider's total token count after compaction", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const reply = {
+    ...replyMessage("short answer"),
+    seq: 3,
+    createdAt: 4_000,
+    usage: { inputTokens: 777, outputTokens: 100, totalTokens: 100_777, costTotal: 0 },
+  }
+  chats.messages.set(session.id, [reply, userMessage("x".repeat(400), "QUEUED")])
+  const get = chats.get.bind(chats)
+  chats.get = async (sessionId) => ({
+    ...await get(sessionId),
+    compaction: {
+      sessionId,
+      summary: "Earlier discussion.",
+      compactedThroughSeq: 1,
+      firstKeptSeq: null,
+      tokensBefore: 124_000,
+      tokensAfter: 2_400,
+      createdAt: 3_000,
+    },
+  })
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const frame = await waitForFrame((value) => value.includes("short answer"))
+  expect(frame).toContain("100.8K (79%)")
+  expect(frame).not.toContain("100.9K")
+  expect(frame).not.toContain("777 (1%)")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("reports provider context totals without hiding overflow", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  chats.messages.set(session.id, [{
+    ...replyMessage("near the limit"),
+    usage: { inputTokens: 777, outputTokens: 100, totalTokens: 278_800, costTotal: 0 },
+  }])
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const frame = await waitForFrame((value) => value.includes("near the limit"))
+  expect(frame).toContain("278.8K (218%)")
 
   screen.destroy()
   renderer.destroy()
@@ -2513,8 +2569,8 @@ test("signs a reply underneath with the model, the time it took and what it cost
 
   // And the same conversation's totals stand under the composer, where they say when
   // it is time to start a new chat.
-  const status = lines.findLast((line) => line.includes("17.2K")) ?? ""
-  expect(status).toContain("(13%)")
+  const status = lines.findLast((line) => line.includes("18.6K")) ?? ""
+  expect(status).toContain("(15%)")
 
   screen.destroy()
   renderer.destroy()

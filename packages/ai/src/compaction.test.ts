@@ -33,7 +33,7 @@ test("compacts the old prefix and keeps recent complete turns verbatim", async (
       createdAt: 2_000,
     },
     records: [
-      record(3, { role: "user", content: `old question ${"x".repeat(800)}`, timestamp: 3_000 }),
+      record(3, { role: "user", content: `old question ${"x".repeat(4_000)}`, timestamp: 3_000 }),
       record(4, assistant("old answer", 4_000)),
       record(5, { role: "user", content: "recent question", timestamp: 5_000 }),
       record(6, assistant("recent answer", 6_000)),
@@ -69,6 +69,105 @@ test("does nothing below the model threshold", async () => {
     prompt: "next",
   })
   expect(result).toBeNull()
+})
+
+test("compacts when the last valid provider total exceeds the text estimate", async () => {
+  const { faux, models } = harness()
+  faux.setResponses([fauxAssistantMessage("Condensed history")])
+  const measured = assistant("short answer", 2)
+  measured.provider = faux.getModel().provider
+  measured.usage.input = 950
+  measured.usage.output = 10
+  measured.usage.totalTokens = 960
+  const compactor = new ChatCompactor({
+    models,
+    keepRecentTokens: 0,
+    reserveTokens: 100,
+    now: () => 3,
+  })
+
+  const result = await compactor.compact({
+    sessionId: "chat-1",
+    model: faux.getModel(),
+    context: {
+      compaction: null,
+      records: [
+        record(1, { role: "user", content: "short question", timestamp: 1 }),
+        record(2, measured),
+      ],
+    },
+    prompt: "next",
+  })
+
+  expect(result?.checkpoint.tokensBefore).toBeGreaterThanOrEqual(960)
+  expect(result?.checkpoint.compactedThroughSeq).toBe(2)
+})
+
+test("uses the last valid provider total even after the model changes", async () => {
+  const { faux, models } = harness()
+  faux.setResponses([fauxAssistantMessage("Condensed history")])
+  const measured = assistant("short answer", 2)
+  measured.usage.input = 950
+  measured.usage.totalTokens = 950
+  const compactor = new ChatCompactor({ models, keepRecentTokens: 0, reserveTokens: 100 })
+
+  const result = await compactor.compact({
+    sessionId: "chat-1",
+    model: faux.getModel(),
+    context: {
+      compaction: null,
+      records: [
+        record(1, { role: "user", content: "short question", timestamp: 1 }),
+        record(2, measured),
+      ],
+    },
+    prompt: "next",
+  })
+
+  expect(result?.checkpoint.tokensBefore).toBe(950)
+})
+
+test("adds messages after the last provider total to the context estimate", async () => {
+  const { faux, models } = harness()
+  faux.setResponses([fauxAssistantMessage("Condensed history")])
+  const measured = assistant("short answer", 2)
+  measured.usage.totalTokens = 850
+  const compactor = new ChatCompactor({ models, keepRecentTokens: 0, reserveTokens: 100 })
+
+  const result = await compactor.compact({
+    sessionId: "chat-1",
+    model: faux.getModel(),
+    context: {
+      compaction: null,
+      records: [
+        record(1, { role: "user", content: "short question", timestamp: 1 }),
+        record(2, measured),
+        record(3, { role: "user", content: "x".repeat(300), timestamp: 3 }),
+      ],
+    },
+    prompt: "next",
+  })
+
+  expect(result?.checkpoint.tokensBefore).toBe(925)
+})
+
+test("rejects an incomplete generated summary", async () => {
+  const { faux, models } = harness()
+  faux.setResponses([fauxAssistantMessage("Partial summary", { stopReason: "length" })])
+  const compactor = new ChatCompactor({ models, keepRecentTokens: 0, reserveTokens: 100 })
+
+  const compacting = compactor.compact({
+    sessionId: "chat-1",
+    model: faux.getModel(),
+    context: {
+      compaction: null,
+      records: [record(1, { role: "user", content: "history", timestamp: 1 })],
+    },
+    prompt: "next",
+    force: true,
+  })
+
+  await expect(compacting).rejects.toThrow("summary is incomplete")
 })
 
 test("keeps tool results with the turn that called them", () => {

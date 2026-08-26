@@ -2435,19 +2435,27 @@ export class ChatScreen {
   /**
    * What this conversation has used: the context it is carrying, and what it has cost.
    *
-   * A reply's input count is the context the model actually received; its output does
-   * not belong in the percentage. Before the first post-compaction reply, the stored
-   * checkpoint estimate supplies the smaller active size. Cost still adds every reply
-   * and remains hidden for subscription calls that report zero.
+   * Context starts with the last provider-reported total and estimates only messages
+   * added after it. Usage is unknown after compaction until the model reports a fresh
+   * total. Cost still adds every reply and remains hidden for subscription calls.
    */
   private usageText(session: ChatSession | null): StyledText {
     if (!session) return new StyledText([fg(MUTED_COLOR)("")])
     const messages = this.messagesBySession.get(session.id) ?? []
     const compaction = this.compactionBySession.get(session.id)
-    const latestReply = messages.findLast((message) => message.role === "ASSISTANT" && message.usage !== null)
-    const context = latestReply && (!compaction || latestReply.createdAt >= compaction.createdAt)
-      ? latestReply.usage?.inputTokens ?? null
-      : compaction?.tokensAfter ?? latestReply?.usage?.inputTokens ?? null
+    const latestReplyIndex = messages.findLastIndex((message) => (
+      message.role === "ASSISTANT"
+      && message.status === "COMPLETE"
+      && message.usage !== null
+      && message.usage.totalTokens > 0
+    ))
+    const latestReply = messages[latestReplyIndex]
+    const context = latestReply?.usage && (!compaction || latestReply.createdAt > compaction.createdAt)
+      ? latestReply.usage.totalTokens + messages
+        .slice(latestReplyIndex + 1)
+        .filter((message) => message.status !== "QUEUED")
+        .reduce((total, message) => total + estimateChatMessageTokens(message), 0)
+      : null
     const cost = messages.reduce((total, message) => total + (message.usage?.costTotal ?? 0), 0)
     const parts: string[] = []
     if (context !== null) {
@@ -2920,6 +2928,16 @@ function formatDuration(elapsedMs: number): string {
 function formatTokens(tokens: number): string {
   if (tokens < 1000) return `${tokens}`
   return `${(tokens / 1000).toFixed(1)}K`
+}
+
+function estimateChatMessageTokens(message: ChatMessage): number {
+  if (message.blocks.length === 0) return Math.ceil(message.text.length / 4)
+  const characters = message.blocks.reduce((total, block) => {
+    if (block.kind === "IMAGE") return total + 4_800
+    const argumentsText = block.toolArguments === null ? "" : (JSON.stringify(block.toolArguments) ?? "")
+    return total + (block.text?.length ?? 0) + (block.toolName?.length ?? 0) + argumentsText.length
+  }, 0)
+  return Math.ceil(characters / 4)
 }
 
 function styledTextWidth(value: StyledText): number {

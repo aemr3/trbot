@@ -190,8 +190,9 @@ export class ChatAgent {
         continue
       }
       transientRetries = 0
-      const retryableOverflow = !toolExecuted && reply.content.length === 0 && (
-        isContextOverflow(reply, turn.model.contextWindow) || isRecoverableLength(reply, turn.model.maxTokens)
+      const retryableOverflow = !toolExecuted && (
+        (reply.stopReason !== "stop" && isContextOverflow(reply, turn.model.contextWindow))
+        || isRecoverableLength(reply, turn.model.maxTokens)
       )
       if (retryableOverflow) {
         return {

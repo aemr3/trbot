@@ -748,6 +748,27 @@ export class ChatController {
         await this.options.broadcast({ type: "chatCompacted", sessionId, compaction: compacted.checkpoint })
         history = compacted.history
       }
+
+      // Compact a completed over-threshold response in place instead of discarding
+      // and retrying it. The next turn then starts from the new checkpoint.
+      if (result.completed && this.options.compaction) {
+        try {
+          const settledContext = await this.options.store.context(sessionId)
+          const compacted = await this.options.compaction.compact({
+            sessionId,
+            model: turnModel.model,
+            context: settledContext,
+            prompt: "",
+            signal: run.controller!.signal,
+          })
+          if (compacted) {
+            await this.options.store.saveCompaction(compacted.checkpoint)
+            await this.options.broadcast({ type: "chatCompacted", sessionId, compaction: compacted.checkpoint })
+          }
+        } catch (error) {
+          this.options.onError(error)
+        }
+      }
     } catch (error) {
       this.options.onError(error)
       result = { completed: false, aborted: false, errorMessage: errorMessage(error) }
