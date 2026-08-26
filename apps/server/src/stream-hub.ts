@@ -1,5 +1,4 @@
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
-import type { DepthBook } from "@trbot/market/depth.ts"
 import type { ClientFrame, ServerFrame, StreamChannel } from "@trbot/protocol/stream.ts"
 import type { AccountLiveUpdate } from "@trbot/trading/account.ts"
 import type { ProviderSessionAccess, ProviderSources } from "./session.ts"
@@ -54,8 +53,6 @@ export interface StreamHubOptions {
   extraQuoteSymbols?: () => string[]
   /** Called for every quote, including when no client is subscribed. */
   onQuote?: (update: QuoteUpdate) => void
-  /** Called before each depth book is delivered to subscribed clients. */
-  onDepth?: (book: DepthBook) => void
   /**
    * Called for every account update, including when no client is subscribed.
    *
@@ -306,10 +303,7 @@ export class StreamHub {
 
   private openDepth(sources: ProviderSources, symbol: string): SymbolStream {
     const stream = sources.openDepthStream()
-    stream.subscribe((book) => {
-      this.options.onDepth?.(book)
-      this.emit("depth", { type: "depth", book }, book.symbol)
-    })
+    stream.subscribe((book) => this.emit("depth", { type: "depth", book }, book.symbol))
     // Status frames carry no symbol, so they are routed by the stream that
     // reported them rather than by the frame's contents.
     stream.onStatusChange((status) => this.status(`depth:${symbol}`, "depth", { type: "depthStatus", status }, symbol))

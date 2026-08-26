@@ -50,7 +50,7 @@ import { startServer } from "./http/server.ts"
 import { ProviderSession, providerConnector } from "./session.ts"
 import { StopController } from "./monitors/stop.ts"
 import { StreamHub } from "./stream-hub.ts"
-import { LiveDepthBookCache } from "./depth-book-cache.ts"
+import { LiveDepthBookLoader } from "./depth-book-loader.ts"
 
 /** How often positions are refreshed so the stop monitor sees what it protects. */
 const POSITION_REFRESH_MS = 30_000
@@ -267,11 +267,13 @@ async function startTrbotServer(): Promise<void> {
   // has to survive the terminal that asked for it closing its tab or quitting.
   let automations!: ChatAutomationController
   let rewindEffects!: ChatRewindEffects
-  const depthBooks = new LiveDepthBookCache()
+  const depthBookLoader = new LiveDepthBookLoader({
+    openStream: () => session.require().openDepthStream({ requestSnapshot: true }),
+  })
   const chatTools = createAgentTools({
     models,
     marketData: {
-      sources: () => ({ ...session.require(), depthBooks }),
+      sources: () => ({ ...session.require(), depthBooks: depthBookLoader }),
       candleData: {
         instruments: feed.instruments,
         candles: feed.candles,
@@ -416,7 +418,6 @@ async function startTrbotServer(): Promise<void> {
     })
     .catch((error) => log("Voice transcription model", error))
   hub = new StreamHub(session, {
-    onDepth: (book) => depthBooks.accept(book),
     onClientAttach: (clientId) => permissions.attachClient(clientId),
     onClientDetach: (clientId) => permissions.detachClient(clientId, {
       reconnectGraceMs: CLIENT_RECONNECT_GRACE_MS,

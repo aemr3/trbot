@@ -201,6 +201,23 @@ describe("MarketSocket", () => {
     socket.stop()
   })
 
+  test("refreshes a shared topic without unsubscribing its existing consumer", async () => {
+    const { socket, sockets } = build()
+    const chartRelease = socket.subscribe(["GARAN/ob-10"], {})
+    await settle()
+    sockets[0]!.completeLogin()
+
+    const snapshotRelease = socket.subscribe(["GARAN/ob-10"], {}, { refresh: true })
+    expect(sockets[0]!.subscribedTopics()).toEqual(["GARAN/ob-10", "GARAN/ob-10"])
+
+    snapshotRelease()
+    expect(sockets[0]!.unsubscribedTopics()).toEqual([])
+
+    chartRelease()
+    expect(sockets[0]!.unsubscribedTopics()).toEqual(["GARAN/ob-10"])
+    socket.stop()
+  })
+
   test("unsubscribes a topic once the last consumer releases it", async () => {
     const { socket, sockets } = build()
     const first = socket.subscribe(["GARAN/C"], {})

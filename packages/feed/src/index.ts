@@ -1,3 +1,4 @@
+import type { DepthStreamOptions } from "@trbot/market/depth.ts"
 import { FeedBrokerageDirectory } from "./brokerages.ts"
 import { FeedBrokerVolumeSource } from "./broker-volume.ts"
 import { FeedCandleSource } from "./candles.ts"
@@ -131,13 +132,14 @@ export class MarketFeed {
     })
   }
 
-  openDepthStream(): FeedDepthStream {
+  openDepthStream(options: DepthStreamOptions = {}): FeedDepthStream {
     return new FeedDepthStream(this.socket, {
       onLicenseTaken: this.options.onLicenseTaken,
       loadSession: (symbol) => this.loadSession(symbol),
       // The socket only carries new prints, so the tape is seeded over HTTP.
       loadTrades: (symbol) => this.trades.listTrades(symbol),
       brokerageNames: () => this.brokerages.names(),
+      requestSnapshot: options.requestSnapshot,
     })
   }
 

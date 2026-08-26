@@ -12,7 +12,7 @@ import {
 } from "@trbot/feed"
 import type { BrokerageDistributionSource } from "@trbot/market/brokerage.ts"
 import type { CandleSource } from "@trbot/market/candle.ts"
-import type { DepthStream } from "@trbot/market/depth.ts"
+import type { DepthStream, DepthStreamOptions } from "@trbot/market/depth.ts"
 import type { EquityQuoteStream } from "@trbot/market/equity-quote-stream.ts"
 import type { RecentFinancialSource } from "@trbot/market/financials.ts"
 import type { ViopInstrumentSource } from "@trbot/market/instrument.ts"
@@ -53,7 +53,7 @@ export interface ProviderSources {
    * open a stream per symbol rather than sharing one. The session tracks what it
    * hands out and stops it all when the session ends.
    */
-  openDepthStream(): DepthStream
+  openDepthStream(options?: DepthStreamOptions): DepthStream
   openEquityQuoteStream(): EquityQuoteStream
 }
 
@@ -367,8 +367,8 @@ function providerSources(client: ApiClient, feed: MarketFeed, options: ProviderS
         `${channel} stream recovered after ${failures} consecutive disconnects`,
       ),
     }),
-    openDepthStream: () => {
-      const stream = feed.openDepthStream()
+    openDepthStream: (streamOptions) => {
+      const stream = feed.openDepthStream(streamOptions)
       options.track(stream)
       return stream
     },

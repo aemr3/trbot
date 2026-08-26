@@ -31,16 +31,19 @@ export interface DepthBook {
   marketClosed: boolean
 }
 
-/** The latest assembled book this server observed, retained after its live stream stops. */
+/** One freshly observed order book and when the server received it. */
 export interface DepthBookSnapshot {
   book: DepthBook
   /** When the server observed this book, as epoch milliseconds. */
   updatedAt: number
 }
 
-/** Synchronous access to already-observed depth; reading it never opens or waits on a stream. */
-export interface DepthBookSnapshotSource {
-  getDepthBookSnapshot(symbol: string): DepthBookSnapshot | null
+/** Reads a fresh opening snapshot through the shared market-data connection. */
+export interface DepthBookSnapshotLoader {
+  loadDepthBookSnapshot(
+    symbol: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<DepthBookSnapshot>
 }
 
 const DepthLevelSchema = z.object({
@@ -106,4 +109,9 @@ export interface DepthStream {
   onStatusChange(listener: DepthStatusListener): void
   start(symbol: string): void
   stop(): void
+}
+
+export interface DepthStreamOptions {
+  /** Ask the provider to send a fresh opening snapshot even if another consumer holds the topics. */
+  requestSnapshot?: boolean
 }

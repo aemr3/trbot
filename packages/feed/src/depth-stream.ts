@@ -5,6 +5,7 @@ import type {
   DepthStatus,
   DepthStatusListener,
   DepthStream,
+  DepthStreamOptions,
   DepthTrade,
 } from "@trbot/market/depth.ts"
 import { DEPTH_FIELDS, FEED_FIELDS, topic } from "./fields.ts"
@@ -39,6 +40,8 @@ export interface FeedDepthStreamOptions {
   loadTrades?: (symbol: string) => Promise<DepthTrade[]>
   /** Brokerage short names by code, for rendering a print's counterparties. */
   brokerageNames?: () => Promise<Map<string, string>>
+  /** Requests a new opening book even when these topics are already retained. */
+  requestSnapshot?: DepthStreamOptions["requestSnapshot"]
   now?: () => number
 }
 
@@ -140,6 +143,7 @@ export class FeedDepthStream implements DepthStream {
           this.options.onLicenseTaken?.()
         },
       },
+      { refresh: this.options.requestSnapshot },
     )
   }
 
@@ -190,7 +194,6 @@ export class FeedDepthStream implements DepthStream {
     // an id, so the tape is deduplicated on the way in.
     if (this.trades.some((existing) => existing.id === trade.id)) return
     this.trades = [trade, ...this.trades].slice(0, MAX_TRADES)
-    this.setStatus("live")
     this.publish()
   }
 

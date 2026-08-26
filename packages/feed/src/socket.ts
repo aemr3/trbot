@@ -57,6 +57,11 @@ export interface SocketListener {
   onLicenseTaken?(): void
 }
 
+export interface SocketSubscriptionOptions {
+  /** Sends a subscribe frame even when another consumer already retains the topic. */
+  refresh?: boolean
+}
+
 /**
  * The subscription surface a data consumer needs.
  *
@@ -64,7 +69,11 @@ export interface SocketListener {
  * starting, stopping, or reconnecting the shared connection.
  */
 export interface SocketSubscriber {
-  subscribe(topics: string[], listener: SocketListener): () => void
+  subscribe(
+    topics: string[],
+    listener: SocketListener,
+    options?: SocketSubscriptionOptions,
+  ): () => void
 }
 
 export interface MarketSocketOptions {
@@ -144,13 +153,20 @@ export class MarketSocket implements SocketSubscriber {
    * Registers `listener` for `topics`, opening the connection if needed.
    * Returns a function that releases those topics.
    */
-  subscribe(topics: string[], listener: SocketListener): () => void {
+  subscribe(
+    topics: string[],
+    listener: SocketListener,
+    options: SocketSubscriptionOptions = {},
+  ): () => void {
     const subscription: Subscription = { topics: new Set(topics), listener }
     this.subscriptions.add(subscription)
 
     const added = this.retain(subscription.topics)
     if (!this.running) this.start()
-    else if (this.loggedIn && added.length > 0) this.send({ type: "subscribe", topics: added })
+    else if (this.loggedIn) {
+      const requested = options.refresh ? [...subscription.topics] : added
+      if (requested.length > 0) this.send({ type: "subscribe", topics: requested })
+    }
     if (this.connected) listener.onConnectionChange?.(true)
 
     return () => this.release(subscription)

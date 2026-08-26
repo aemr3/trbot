@@ -358,7 +358,7 @@ function harness(
     },
     memberFeatures: { loadFeatures: async () => memberFeatureSet(["MARKET_DEPTH", "BROKERAGE_DISTRIBUTION"]) },
     depthBooks: {
-      getDepthBookSnapshot: (symbol) => {
+      loadDepthBookSnapshot: async (symbol) => {
         depthLookups.push(symbol)
         return { book: { ...depthBook(), symbol }, updatedAt: NOW }
       },
@@ -1091,7 +1091,7 @@ test("reads account, pending orders, features, and stop rules without mutations"
   expect(z.object({ rules: z.array(StopRuleSchema) }).parse(modelData(stops)).rules).toEqual([openRule])
 })
 
-test("reads bounded cached depth with its update time and closes the live equity stream", async () => {
+test("reads bounded live depth with its update time and closes the live equity stream", async () => {
   const testHarness = harness()
   const tools = new ChatTools(marketDataTools(testHarness.clients))
   const depth = await call(tools, "get_order_book", { symbol: "ASELS", levels: 1, trades: 1 })
@@ -1202,8 +1202,14 @@ test("lists news without duplicating bodies and fetches an article separately", 
   expect(modelData(article)).toMatchObject({ uid: "news-1", body: "Full body", bodyTruncated: false })
 })
 
-test("reports missing cached depth and invalid broker date ranges as tool errors", async () => {
-  const testHarness = harness({ depthBooks: { getDepthBookSnapshot: () => null } })
+test("reports unavailable live depth and invalid broker date ranges as tool errors", async () => {
+  const testHarness = harness({
+    depthBooks: {
+      loadDepthBookSnapshot: async () => {
+        throw new Error("Order book is unavailable for ASELS")
+      },
+    },
+  })
   const tools = new ChatTools(marketDataTools(testHarness.clients))
   const depth = await call(tools, "get_order_book", { symbol: "ASELS" })
   const dates = await call(tools, "get_settlement", {
@@ -1214,7 +1220,7 @@ test("reports missing cached depth and invalid broker date ranges as tool errors
   })
 
   expect(depth.isError).toBe(true)
-  expect(depth.blocks[0]?.text).toContain("No cached order book")
+  expect(depth.blocks[0]?.text).toContain("Order book is unavailable")
   expect(dates.isError).toBe(true)
   expect(dates.blocks[0]?.text).toContain("cannot precede")
 })

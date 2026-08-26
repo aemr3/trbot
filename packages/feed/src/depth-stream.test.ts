@@ -1,16 +1,22 @@
 import { describe, expect, test } from "bun:test"
 import type { DepthBook, DepthStatus } from "@trbot/market/depth.ts"
 import { FeedDepthStream } from "./depth-stream.ts"
-import type { SocketListener, SocketSubscriber } from "./socket.ts"
+import type { SocketListener, SocketSubscriber, SocketSubscriptionOptions } from "./socket.ts"
 import type { FeedRecord } from "./value.ts"
 
 class FakeMarketSocket implements SocketSubscriber {
   readonly subscribed: string[][] = []
   readonly released: string[][] = []
+  readonly refreshes: Array<boolean | undefined> = []
   listener: SocketListener = {}
 
-  subscribe(topics: string[], listener: SocketListener): () => void {
+  subscribe(
+    topics: string[],
+    listener: SocketListener,
+    options?: SocketSubscriptionOptions,
+  ): () => void {
     this.subscribed.push(topics)
+    this.refreshes.push(options?.refresh)
     this.listener = listener
     return () => this.released.push(topics)
   }
@@ -75,6 +81,15 @@ describe("FeedDepthStream", () => {
   test("subscribes to the book and side totals", () => {
     const { socket } = build()
     expect(socket.subscribed[0]).toEqual(["F_XU0300826/ob-10", "F_XU0300826/BV", "F_XU0300826/AV"])
+  })
+
+  test("can request a new opening snapshot for already-retained topics", () => {
+    const socket = new FakeMarketSocket()
+    const stream = new FeedDepthStream(socket, { requestSnapshot: true })
+
+    stream.start("F_XU0300826")
+
+    expect(socket.refreshes).toEqual([true])
   })
 
   // `obs` is "B" or "S"; `s` is the size in lots and `c` the order count.
