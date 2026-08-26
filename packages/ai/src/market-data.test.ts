@@ -360,7 +360,7 @@ function harness(
     depthBooks: {
       loadDepthBookSnapshot: async (symbol) => {
         depthLookups.push(symbol)
-        return { book: { ...depthBook(), symbol }, updatedAt: NOW }
+        return { ...depthBook(), symbol }
       },
     },
     openEquityQuoteStream: () => equity,
@@ -1091,7 +1091,7 @@ test("reads account, pending orders, features, and stop rules without mutations"
   expect(z.object({ rules: z.array(StopRuleSchema) }).parse(modelData(stops)).rules).toEqual([openRule])
 })
 
-test("reads bounded live depth with its update time and closes the live equity stream", async () => {
+test("reads bounded live depth and closes the live equity stream", async () => {
   const testHarness = harness()
   const tools = new ChatTools(marketDataTools(testHarness.clients))
   const depth = await call(tools, "get_order_book", { symbol: "ASELS", levels: 1, trades: 1 })
@@ -1103,8 +1103,8 @@ test("reads bounded live depth with its update time and closes the live equity s
     instrumentSymbol: ASELS.symbol,
     underlyingSymbol: "ASELS",
     target: "UNDERLYING",
-    updatedAt: NOW,
   })
+  expect(modelData(depth)).not.toHaveProperty("updatedAt")
   expect(modelData(equity)).toMatchObject({ symbol: "ASELS", lastPrice: 80, sessionStatus: "OPEN", source: "LIVE_TICK" })
   expect(testHarness.depthLookups).toEqual(["ASELS"])
   expect(testHarness.equity.stopped).toBe(1)

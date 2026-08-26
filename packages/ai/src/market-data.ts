@@ -1124,7 +1124,7 @@ function orderBookTool(clients: MarketDataToolClients): ChatTool<typeof DepthPar
         "with bid/ask levels, total lots, and recent trades. Use target INSTRUMENT for the futures book or",
         "UNDERLYING for the underlying book. When target is omitted, a contract symbol selects INSTRUMENT;",
         "an underlying alias selects UNDERLYING unless that contract has no underlying market-data instrument.",
-        "Uses a one-time subscription on the shared market connection and includes updatedAt.",
+        "Uses a one-time subscription on the shared market connection.",
       ].join(" "),
       parameters: DepthParameters,
     },
@@ -1138,13 +1138,11 @@ function orderBookTool(clients: MarketDataToolClients): ChatTool<typeof DepthPar
       const resolvedTarget: DepthTarget = target
         ?? (symbol.trim().toUpperCase().startsWith("F_") || !underlyingSymbol ? "INSTRUMENT" : "UNDERLYING")
       const requestedSymbol = depthSymbol(instrument, resolvedTarget)
-      const snapshot = await sources.depthBooks.loadDepthBookSnapshot(requestedSymbol, {
+      const book = await sources.depthBooks.loadDepthBookSnapshot(requestedSymbol, {
         signal: options.signal,
       })
-      const book = snapshot.book
       const normalized = {
         ...book,
-        updatedAt: snapshot.updatedAt,
         symbol: requestedSymbol,
         instrumentSymbol: instrument.symbol,
         underlyingSymbol,
@@ -1154,8 +1152,7 @@ function orderBookTool(clients: MarketDataToolClients): ChatTool<typeof DepthPar
         trades: book.trades.slice(0, trades ?? 25),
       }
       const targetName = resolvedTarget === "INSTRUMENT" ? "VIOP contract" : "underlying"
-      const updatedAt = new Date(snapshot.updatedAt).toISOString()
-      return dataOutcome(`Read live ${targetName} order book for ${requestedSymbol}, updated ${updatedAt}.`, normalized)
+      return dataOutcome(`Read live ${targetName} order book for ${requestedSymbol}.`, normalized)
     },
   }
 }

@@ -1,5 +1,5 @@
 import type {
-  DepthBookSnapshot,
+  DepthBook,
   DepthBookSnapshotLoader,
   DepthStatus,
   DepthStream,
@@ -9,14 +9,13 @@ const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_SETTLE_MS = 100
 
 interface PendingSnapshot {
-  promise: Promise<DepthBookSnapshot>
+  promise: Promise<DepthBook>
   cancel(): void
   waiters: number
 }
 
 export interface LiveDepthBookLoaderOptions {
   openStream(): DepthStream
-  now?: () => number
   timeoutMs?: number
   /** Lets the opening level batch and HTTP trade seed assemble before resolving. */
   settleMs?: number
@@ -31,7 +30,7 @@ export class LiveDepthBookLoader implements DepthBookSnapshotLoader {
   async loadDepthBookSnapshot(
     symbol: string,
     options: { signal?: AbortSignal } = {},
-  ): Promise<DepthBookSnapshot> {
+  ): Promise<DepthBook> {
     if (options.signal?.aborted) throw cancelledError()
 
     const normalized = normalizeSymbol(symbol)
@@ -61,16 +60,16 @@ export class LiveDepthBookLoader implements DepthBookSnapshotLoader {
 
   private capture(symbol: string): PendingSnapshot {
     let cancel = (): void => {}
-    const promise = new Promise<DepthBookSnapshot>((resolve, reject) => {
+    const promise = new Promise<DepthBook>((resolve, reject) => {
       let stream: DepthStream | null = null
       let live = false
       let started = false
       let settled = false
-      let latest: DepthBookSnapshot | null = null
+      let latest: DepthBook | null = null
       let settleTimer: ReturnType<typeof setTimeout> | null = null
       let timeoutTimer: ReturnType<typeof setTimeout> | null = null
 
-      const finish = (result: { value: DepthBookSnapshot } | { error: Error }): void => {
+      const finish = (result: { value: DepthBook } | { error: Error }): void => {
         if (settled) return
         settled = true
         if (settleTimer) clearTimeout(settleTimer)
@@ -95,7 +94,7 @@ export class LiveDepthBookLoader implements DepthBookSnapshotLoader {
       )
       stream.subscribe((book) => {
         if (!live) return
-        latest = { book, updatedAt: (this.options.now ?? Date.now)() }
+        latest = book
         if (settleTimer) clearTimeout(settleTimer)
         settleTimer = setTimeout(() => {
           if (latest) finish({ value: latest })
@@ -130,15 +129,15 @@ function depthStatusError(status: DepthStatus, symbol: string, started: boolean)
 }
 
 function waitForSnapshot(
-  promise: Promise<DepthBookSnapshot>,
+  promise: Promise<DepthBook>,
   signal?: AbortSignal,
-): Promise<DepthBookSnapshot> {
+): Promise<DepthBook> {
   if (!signal) return promise
   if (signal.aborted) return Promise.reject(cancelledError())
 
   return new Promise((resolve, reject) => {
     let settled = false
-    const finish = (result: { value: DepthBookSnapshot } | { error: Error }): void => {
+    const finish = (result: { value: DepthBook } | { error: Error }): void => {
       if (settled) return
       settled = true
       signal.removeEventListener("abort", onAbort)

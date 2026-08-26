@@ -68,17 +68,15 @@ function book(symbol: string, price: number): DepthBook {
 describe("LiveDepthBookLoader", () => {
   test("returns the complete opening turn and releases its stream", async () => {
     const factory = new FakeDepthFactory()
-    let now = 123_456
-    const loader = new LiveDepthBookLoader({ openStream: factory.open, now: () => now, settleMs: 0 })
+    const loader = new LiveDepthBookLoader({ openStream: factory.open, settleMs: 0 })
     const pending = loader.loadDepthBookSnapshot(" f_isctr0826 ")
     const stream = factory.opened[0]!
 
     stream.emit(book("F_ISCTR0826", 35.52))
-    now = 123_457
     const complete = book("F_ISCTR0826", 35.53)
     stream.emit(complete)
 
-    await expect(pending).resolves.toEqual({ book: complete, updatedAt: 123_457 })
+    await expect(pending).resolves.toEqual(complete)
     expect(stream.startedWith).toBe("F_ISCTR0826")
     expect(stream.stopped).toBe(1)
   })
@@ -107,7 +105,7 @@ describe("LiveDepthBookLoader", () => {
 
     const second = loader.loadDepthBookSnapshot("GARAN")
     factory.opened[1]!.emit(book("GARAN", 131))
-    await expect(second).resolves.toMatchObject({ book: { bids: [{ price: 131 }] } })
+    await expect(second).resolves.toMatchObject({ bids: [{ price: 131 }] })
     expect(factory.opened).toHaveLength(2)
   })
 

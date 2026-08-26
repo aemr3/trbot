@@ -31,19 +31,12 @@ export interface DepthBook {
   marketClosed: boolean
 }
 
-/** One freshly observed order book and when the server received it. */
-export interface DepthBookSnapshot {
-  book: DepthBook
-  /** When the server observed this book, as epoch milliseconds. */
-  updatedAt: number
-}
-
 /** Reads a fresh opening snapshot through the shared market-data connection. */
 export interface DepthBookSnapshotLoader {
   loadDepthBookSnapshot(
     symbol: string,
     options?: { signal?: AbortSignal },
-  ): Promise<DepthBookSnapshot>
+  ): Promise<DepthBook>
 }
 
 const DepthLevelSchema = z.object({
