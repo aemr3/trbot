@@ -2575,22 +2575,48 @@ export class ChatScreen {
       ? renderedMessages.find((message) => message.seq !== undefined && message.seq > compaction.compactedThroughSeq)?.id
       : undefined
     const childrenByPrompt = new Map<string, ChatSession[]>()
+    const childrenByToolCall = new Map<string, ChatSession[]>()
+    const associatedChildren: ChatSession[] = []
     if (session.parentSessionId === null) {
+      const promptMessageIds = new Set(messages.flatMap((message) => (
+        message.role === "USER" || message.role === "APP_EVENT" ? [message.id] : []
+      )))
       for (const child of this.sessions) {
-        if (child.parentSessionId !== session.id || child.parentPromptMessageId === null) continue
+        if (
+          child.parentSessionId !== session.id
+          || child.parentPromptMessageId === null
+          || !promptMessageIds.has(child.parentPromptMessageId)
+        ) continue
         const children = childrenByPrompt.get(child.parentPromptMessageId) ?? []
         children.push(child)
         childrenByPrompt.set(child.parentPromptMessageId, children)
+        associatedChildren.push(child)
+        if (child.parentToolCallId !== null) {
+          const toolChildren = childrenByToolCall.get(child.parentToolCallId) ?? []
+          toolChildren.push(child)
+          childrenByToolCall.set(child.parentToolCallId, toolChildren)
+        }
       }
       for (const children of childrenByPrompt.values()) {
         children.sort((left, right) => left.createdAt - right.createdAt)
       }
+      for (const children of childrenByToolCall.values()) {
+        children.sort((left, right) => left.createdAt - right.createdAt)
+      }
+      associatedChildren.sort((left, right) => left.createdAt - right.createdAt)
     }
     const blocks: ChatTranscriptBlock[] = []
     let promptMessageId: string | null = null
-    const appendSubagents = (): void => {
-      if (!promptMessageId) return
-      for (const child of childrenByPrompt.get(promptMessageId) ?? []) {
+    const completedSubagentCallIds = new Set(messages.flatMap((message) => (
+      message.role === "TOOL_RESULT" && message.toolName === "subagent" && message.toolCallId
+        ? [message.toolCallId]
+        : []
+    )))
+    const appendedSubagentIds = new Set<string>()
+    const appendSubagents = (children: readonly ChatSession[]): void => {
+      for (const child of children) {
+        if (appendedSubagentIds.has(child.id)) continue
+        appendedSubagentIds.add(child.id)
         const childStreaming = this.streamingBySession.get(child.id)
         blocks.push(subagentActivityBlock(
           child,
@@ -2600,10 +2626,18 @@ export class ChatScreen {
         ))
       }
     }
-    for (const message of renderedMessages) {
+    const appendLegacyPromptSubagents = (): void => {
+      if (!promptMessageId) return
+      appendSubagents((childrenByPrompt.get(promptMessageId) ?? []).filter((child) => child.parentToolCallId === null))
+    }
+    for (const message of messages) {
       if (message.role === "USER" || message.role === "APP_EVENT") {
-        appendSubagents()
+        appendLegacyPromptSubagents()
         promptMessageId = message.id
+      }
+      if (session.parentSessionId === null && message.role === "TOOL_RESULT" && message.toolName === "subagent") {
+        if (message.toolCallId) appendSubagents(childrenByToolCall.get(message.toolCallId) ?? [])
+        continue
       }
       if (message.id === firstAfterCompaction) blocks.push(compactionBlock())
       blocks.push(messageBlock(
@@ -2614,6 +2648,14 @@ export class ChatScreen {
         this.options.embedded === true,
         message.id !== activeQueuedPrompt,
       ))
+      for (const block of message.blocks) {
+        if (
+          block.kind === "TOOL_CALL"
+          && block.toolName === "subagent"
+          && block.toolCallId
+          && !completedSubagentCallIds.has(block.toolCallId)
+        ) appendSubagents(childrenByToolCall.get(block.toolCallId) ?? [])
+      }
     }
     const streaming = this.streamingBySession.get(session.id)
     if (streaming) {
@@ -2626,7 +2668,8 @@ export class ChatScreen {
         showThoughts: this.showThoughts,
       }))
     }
-    appendSubagents()
+    appendLegacyPromptSubagents()
+    appendSubagents(associatedChildren)
     if (this.commandNotice) {
       const content = this.compactingSessionId === session.id
         ? `${SPINNER_FRAMES[this.spinner] ?? SPINNER_FRAMES[0]!} ${this.commandNotice}`

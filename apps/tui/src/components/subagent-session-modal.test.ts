@@ -11,6 +11,7 @@ function session(overrides: Partial<ChatSession> = {}): ChatSession {
     title: "Inspect the market",
     parentSessionId: "chat-1",
     parentPromptMessageId: "prompt-1",
+    parentToolCallId: "call-subagent",
     agent: "worker",
     provider: "test-provider",
     model: "test-model",

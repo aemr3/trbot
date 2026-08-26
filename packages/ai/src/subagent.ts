@@ -73,6 +73,7 @@ export interface SubagentSessionRun {
 export interface SubagentSessionRecorder {
   start(input: {
     parentSessionId: string
+    parentToolCallId: string | null
     agent: string
     task: string
     providerId: string
@@ -131,6 +132,7 @@ export function subagentTool(
         reasoningEffort: options.reasoningEffort,
         signal: options.signal,
         chatSessionId: options.chatSessionId,
+        parentToolCallId: options.toolCallId,
         notificationBudget: options.notificationBudget ?? { sent: 0 },
         automationEvent: options.automationEvent,
         delegation: {
@@ -157,6 +159,7 @@ interface RunTaskOptions {
   reasoningEffort?: string | null
   signal?: AbortSignal
   chatSessionId?: string
+  parentToolCallId?: string
   notificationBudget: { sent: number }
   automationEvent?: { label: string | null; referenceId: string | null }
   delegation: ChatDelegationContext
@@ -273,6 +276,7 @@ async function runTask(
   const session = sessions && options.chatSessionId
     ? await sessions.start({
         parentSessionId: options.chatSessionId,
+        parentToolCallId: options.parentToolCallId ?? null,
         agent: agentName,
         task,
         providerId: options.model.provider,

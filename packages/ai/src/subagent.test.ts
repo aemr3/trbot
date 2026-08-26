@@ -84,6 +84,7 @@ test("records a worker's complete isolated session when a parent chat is availab
 
   expect(started).toEqual([{
     parentSessionId: "parent-1",
+    parentToolCallId: "subagent-recorded",
     agent: "worker",
     task: "Inspect ASELS",
     providerId: faux.getModel().provider,

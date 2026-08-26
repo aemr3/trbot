@@ -86,6 +86,7 @@ function fakeChats(): ChatSessions & {
         title: "New chat",
         parentSessionId: null,
         parentPromptMessageId: null,
+        parentToolCallId: null,
         agent: null,
         model: choice?.modelId ?? "test-model",
         provider: choice?.providerId ?? "test-provider",
@@ -1573,6 +1574,8 @@ test("opens durable worker transcripts with /subagents and returns with /parent"
     id: "worker-1",
     title: "Inspect the XU100 trend",
     parentSessionId: parent.id,
+    parentPromptMessageId: "removed-prompt",
+    parentToolCallId: "removed-call",
     agent: "worker",
     createdAt: 2_000,
     updatedAt: 2_000,
@@ -1601,15 +1604,32 @@ test("opens durable worker transcripts with /subagents and returns with /parent"
   renderer.destroy()
 })
 
-test("restores completed workers beside their parent turns after reopening", async () => {
+test("restores completed workers at their exact result when another prompt was queued", async () => {
   const { renderer, mockMouse, waitForFrame } = await createTestRenderer({ width: 110, height: 36, kittyKeyboard: true })
   const chats = fakeChats()
   const parent = await chats.create()
   const firstPrompt = { ...userMessage("Analyze ASELS", "SENT"), createdAt: 1_000 }
+  const firstSubagentResult = {
+    ...toolResultMessage("subagent", "ASELS workers completed"),
+    toolCallId: "call-subagent-a",
+    createdAt: 1_800,
+  }
   const firstReply = { ...replyMessage("ASELS synthesis"), createdAt: 2_000 }
-  const secondPrompt = { ...userMessage("Analyze THYAO", "SENT"), createdAt: 3_000 }
+  const secondPrompt = { ...userMessage("Analyze THYAO", "SENT"), createdAt: 1_100 }
+  const secondSubagentResult = {
+    ...toolResultMessage("subagent", "THYAO workers completed"),
+    toolCallId: "call-subagent-b",
+    createdAt: 3_800,
+  }
   const secondReply = { ...replyMessage("THYAO synthesis"), createdAt: 4_000 }
-  chats.messages.set(parent.id, [firstPrompt, firstReply, secondPrompt, secondReply])
+  chats.messages.set(parent.id, [
+    firstPrompt,
+    secondPrompt,
+    firstSubagentResult,
+    firstReply,
+    secondSubagentResult,
+    secondReply,
+  ])
 
   const firstWorker: ChatSession = {
     ...parent,
@@ -1617,6 +1637,7 @@ test("restores completed workers beside their parent turns after reopening", asy
     title: "ASELS historical worker",
     parentSessionId: parent.id,
     parentPromptMessageId: firstPrompt.id,
+    parentToolCallId: firstSubagentResult.toolCallId,
     agent: "worker",
     createdAt: 1_200,
     updatedAt: 3_700,
@@ -1626,6 +1647,7 @@ test("restores completed workers beside their parent turns after reopening", asy
     id: "worker-history-b",
     title: "THYAO historical worker",
     parentPromptMessageId: secondPrompt.id,
+    parentToolCallId: secondSubagentResult.toolCallId,
     createdAt: 3_200,
     updatedAt: 4_200,
   }
@@ -1671,10 +1693,13 @@ test("restores completed workers beside their parent turns after reopening", asy
     && frame.includes("1 toolcall · 2.5s")
   ))
   expect(restored).not.toContain(legacyWorker.title)
-  expect(restored.indexOf(firstPrompt.text)).toBeLessThan(restored.indexOf(firstReply.text))
-  expect(restored.indexOf(firstReply.text)).toBeLessThan(restored.indexOf(firstWorker.title))
-  expect(restored.indexOf(firstWorker.title)).toBeLessThan(restored.indexOf(secondPrompt.text))
-  expect(restored.indexOf(secondReply.text)).toBeLessThan(restored.indexOf(secondWorker.title))
+  expect(restored).not.toContain(firstSubagentResult.text)
+  expect(restored).not.toContain(secondSubagentResult.text)
+  expect(restored.indexOf(firstPrompt.text)).toBeLessThan(restored.indexOf(secondPrompt.text))
+  expect(restored.indexOf(secondPrompt.text)).toBeLessThan(restored.indexOf(firstWorker.title))
+  expect(restored.indexOf(firstWorker.title)).toBeLessThan(restored.indexOf(firstReply.text))
+  expect(restored.indexOf(firstReply.text)).toBeLessThan(restored.indexOf(secondWorker.title))
+  expect(restored.indexOf(secondWorker.title)).toBeLessThan(restored.indexOf(secondReply.text))
   const failedLine = restored.split("\n").find((line) => line.includes(secondWorker.title)) ?? ""
   expect(failedLine.trimStart().startsWith("×")).toBeTrue()
   const unavailableLine = restored.split("\n").find((line) => line.includes(unavailableWorker.title)) ?? ""
@@ -1695,6 +1720,105 @@ test("restores completed workers beside their parent turns after reopening", asy
   renderer.destroy()
 })
 
+test("anchors repeated subagent calls from one turn independently", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 110, height: 30, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const prompt = { ...userMessage("Run two reviews", "SENT"), createdAt: 1_000 }
+  const firstResult = {
+    ...toolResultMessage("subagent", "First review completed"),
+    toolCallId: "call-first",
+    createdAt: 1_500,
+  }
+  const secondResult = {
+    ...toolResultMessage("subagent", "Second review completed"),
+    toolCallId: "call-second",
+    createdAt: 2_000,
+  }
+  const reply = { ...replyMessage("Combined review"), createdAt: 2_500 }
+  chats.messages.set(parent.id, [prompt, firstResult, secondResult, reply])
+
+  const secondWorker: ChatSession = {
+    ...parent,
+    id: "worker-second-call",
+    title: "Second exact worker",
+    parentSessionId: parent.id,
+    parentPromptMessageId: prompt.id,
+    parentToolCallId: secondResult.toolCallId,
+    agent: "worker",
+    createdAt: 1_100,
+    updatedAt: 2_100,
+  }
+  const firstWorker: ChatSession = {
+    ...secondWorker,
+    id: "worker-first-call",
+    title: "First exact worker",
+    parentToolCallId: firstResult.toolCallId,
+    createdAt: 1_200,
+    updatedAt: 1_600,
+  }
+  chats.sessions.push(secondWorker, firstWorker)
+  chats.messages.set(firstWorker.id, [replyMessage("First result")])
+  chats.messages.set(secondWorker.id, [replyMessage("Second result")])
+
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const restored = await waitForFrame((frame) => (
+    frame.includes(firstWorker.title) && frame.includes(secondWorker.title) && frame.includes(reply.text)
+  ))
+  expect(restored.indexOf(firstWorker.title)).toBeLessThan(restored.indexOf(secondWorker.title))
+  expect(restored.indexOf(secondWorker.title)).toBeLessThan(restored.indexOf(reply.text))
+  expect(restored).not.toContain(firstResult.text)
+  expect(restored).not.toContain(secondResult.text)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("anchors a running worker at its tool call before a queued prompt", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 110, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const prompt = userMessage("Delegate now", "SENT")
+  const call: ChatMessage = {
+    ...replyMessage(""),
+    id: "reply-subagent-call",
+    blocks: [{
+      kind: "TOOL_CALL",
+      text: null,
+      toolName: "subagent",
+      toolCallId: "call-live-worker",
+      toolArguments: {},
+    }],
+  }
+  const queued = userMessage("Review next", "QUEUED")
+  chats.messages.set(parent.id, [prompt, call, queued])
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-live-anchor",
+    title: "Running exact worker",
+    parentSessionId: parent.id,
+    parentPromptMessageId: prompt.id,
+    parentToolCallId: "call-live-worker",
+    agent: "worker",
+    running: true,
+  }
+  chats.sessions.push(child)
+  chats.messages.set(child.id, [])
+
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const frame = await waitForFrame((value) => value.includes(child.title) && value.includes(queued.text))
+  expect(frame.indexOf(child.title)).toBeLessThan(frame.indexOf(queued.text))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("shows only the current subagent tool and opens the worker when clicked", async () => {
   const { renderer, mockMouse, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
@@ -1707,6 +1831,7 @@ test("shows only the current subagent tool and opens the worker when clicked", a
     title: "Review the indicator implementation",
     parentSessionId: parent.id,
     parentPromptMessageId: parentPrompt.id,
+    parentToolCallId: "call-subagent",
     agent: "worker",
     createdAt: 2_000,
     updatedAt: 2_000,
@@ -1768,6 +1893,7 @@ test("shows only the current subagent tool and opens the worker when clicked", a
   await mockMouse.doubleClick(resultColumn, resultLine)
   const completedWorker = await waitForFrame((frame) => frame.includes(child.title) && frame.includes("2 toolcalls"))
   expect(completedWorker).not.toContain("2 toolcalls · 0ms")
+  expect(completedWorker.indexOf(child.title)).toBeLessThan(completedWorker.indexOf("Parent finalizing"))
   expect(screen.isShowingSession(parent.id)).toBe(true)
   expect(chats.undone).toEqual([])
 

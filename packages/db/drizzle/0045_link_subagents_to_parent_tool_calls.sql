@@ -1,0 +1,1 @@
+ALTER TABLE `chat_sessions` ADD `parent_tool_call_id` text;

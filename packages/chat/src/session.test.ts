@@ -26,6 +26,7 @@ test("defaults a legacy session's missing parent prompt association to null", ()
   })
 
   expect(session.parentPromptMessageId).toBeNull()
+  expect(session.parentToolCallId).toBeNull()
 })
 
 test("creates a recognizable timestamp placeholder", () => {

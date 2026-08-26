@@ -47,6 +47,8 @@ export interface ChatToolRunOptions {
   reasoningEffort?: string | null
   /** Originating conversation, inherited by delegated workers. */
   chatSessionId?: string
+  /** Provider tool-call ID for associating durable child work with its parent transcript. */
+  toolCallId?: string
   /** Shared worker depth and budget for delegation during this turn. */
   delegation?: ChatDelegationContext
   /** Shared by the parent and every worker so one turn cannot spam notices. */
@@ -123,7 +125,7 @@ export class ChatTools implements ChatToolRegistry {
       return toolFailure(formatToolValidationFailure(tool.definition, call, message))
     }
     try {
-      return await tool.run(args, options)
+      return await tool.run(args, { ...options, toolCallId: call.id })
     } catch (error) {
       return toolFailure(error instanceof Error ? error.message : String(error))
     }

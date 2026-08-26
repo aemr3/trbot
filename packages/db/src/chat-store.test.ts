@@ -704,6 +704,7 @@ test("keeps child sessions out of the root list and finds them through their par
     title: "Inspect ASELS",
     parentSessionId: parent.id,
     parentPromptMessageId: "prompt-1",
+    parentToolCallId: "call-subagent",
     agent: "worker",
     createdAt: 2_000,
     updatedAt: 2_000,
@@ -716,6 +717,7 @@ test("keeps child sessions out of the root list and finds them through their par
     id: child.id,
     parentSessionId: parent.id,
     parentPromptMessageId: "prompt-1",
+    parentToolCallId: "call-subagent",
     agent: "worker",
   }])
   expect((await chats.get(child.id))?.session.parentPromptMessageId).toBe("prompt-1")
@@ -732,6 +734,7 @@ function session(): ChatSession {
     title: "New chat",
     parentSessionId: null,
     parentPromptMessageId: null,
+    parentToolCallId: null,
     agent: null,
     model: "gpt-5.6-sol",
     provider: "openai-codex",

@@ -276,6 +276,7 @@ class FakeChat {
       title: "Index analysis",
       parentSessionId: null,
       parentPromptMessageId: null,
+      parentToolCallId: null,
       agent: null,
       model: "model",
       provider: "provider",

@@ -570,6 +570,7 @@ test("stopping from a subagent transcript aborts its owning turn", async () => {
   await settle()
   const worker = await chat.subagentSessions.start({
     parentSessionId: parent.id,
+    parentToolCallId: null,
     agent: "worker",
     task: "inspect the market",
     providerId: "test-provider",
@@ -791,6 +792,7 @@ test("records subagents as live child sessions with their complete transcript", 
   const parent = await chat.create()
   const worker = await chat.subagentSessions.start({
     parentSessionId: parent.id,
+    parentToolCallId: null,
     agent: "worker",
     task: "Inspect the XU100 trend",
     providerId: "test-provider",
