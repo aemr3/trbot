@@ -32,7 +32,7 @@ test("round trips a goal", async () => {
     objective: "Finish analysis",
     status: "ACTIVE",
     turnCount: 2,
-    maxTurns: 50,
+    maxTurns: null,
     tokenBudget: 10_000,
     startedTokens: 500,
     usedTokens: 900,

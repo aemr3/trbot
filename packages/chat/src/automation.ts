@@ -15,7 +15,7 @@ export const ChatGoalSchema = z.object({
   objective: z.string().min(1),
   status: z.enum(CHAT_GOAL_STATUSES),
   turnCount: z.number().int().nonnegative(),
-  maxTurns: z.number().int().positive(),
+  maxTurns: z.number().int().positive().nullable(),
   tokenBudget: z.number().int().positive().nullable(),
   startedTokens: z.number().int().nonnegative(),
   usedTokens: z.number().int().nonnegative(),

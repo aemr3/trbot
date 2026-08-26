@@ -13,7 +13,7 @@ import { reversibleToolEffect, toolText, type ChatTool } from "./tool.ts"
 const GetGoalParameters = Type.Object({})
 const CreateGoalParameters = Type.Object({
   objective: Type.String({ description: "Concrete objective to pursue", minLength: 1, maxLength: 4_000 }),
-  max_turns: Type.Optional(Type.Integer({ description: "Safety cap for autonomous continuation turns", minimum: 1, maximum: 500 })),
+  max_turns: Type.Optional(Type.Integer({ description: "Optional continuation-turn limit", minimum: 1, maximum: 500 })),
   token_budget: Type.Optional(Type.Integer({ description: "Optional positive token budget for this goal", minimum: 1 })),
 })
 const UpdateGoalParameters = Type.Object({
@@ -287,7 +287,8 @@ function requireSession(sessionId: string | undefined): string {
 
 function goalText(goal: ChatGoal): string {
   const budget = goal.tokenBudget === null ? "no token budget" : `${goal.usedTokens}/${goal.tokenBudget} tokens`
-  return `${goal.status.toLowerCase()} goal: ${goal.objective}\n${goal.turnCount}/${goal.maxTurns} continuation turns; ${budget}.` +
+  const turns = goal.maxTurns === null ? `${goal.turnCount} continuation turns` : `${goal.turnCount}/${goal.maxTurns} continuation turns`
+  return `${goal.status.toLowerCase()} goal: ${goal.objective}\n${turns}; ${budget}.` +
     (goal.lastEvaluation ? `\nEvaluator: ${goal.lastEvaluation}` : "")
 }
 

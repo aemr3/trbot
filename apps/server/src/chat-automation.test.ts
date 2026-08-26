@@ -93,6 +93,8 @@ test("a goal starts immediately and a separate evaluator controls continuation",
   })
   const goal = await automation.createGoal("chat-1", { objective: "Verify the setup" })
   expect(goal.turnCount).toBe(1)
+  expect(goal.maxTurns).toBeNull()
+  expect(goal.tokenBudget).toBeNull()
   expect(events[0]?.label).toBe("goal")
 
   messages.push(reply(100))
@@ -106,6 +108,19 @@ test("a goal starts immediately and a separate evaluator controls continuation",
   expect(finished?.status).toBe("COMPLETE")
   expect(finished?.usedTokens).toBe(300)
   expect(notices).toEqual(["The result is verified."])
+})
+
+test("enforces an explicitly requested goal turn limit", async () => {
+  const { automation, messages, events } = await harness()
+  await automation.createGoal("chat-1", { objective: "Try once", maxTurns: 1 })
+
+  messages.push(reply(100))
+  await automation.onTurnSettled("chat-1")
+
+  const goal = (await automation.state("chat-1")).goal
+  expect(goal?.status).toBe("BLOCKED")
+  expect(goal?.lastEvaluation).toBe("Continuation limit reached (1 turn).")
+  expect(events).toHaveLength(1)
 })
 
 test("a due loop wakes its chat once and completes at max runs", async () => {

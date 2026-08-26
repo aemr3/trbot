@@ -14,7 +14,6 @@ import type { ChatNotification } from "@trbot/chat/notification.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import type { ChatTurnModel } from "@trbot/ai/chat.ts"
 
-const DEFAULT_MAX_GOAL_TURNS = 50
 const LOOP_POLL_MS = 15_000
 const EVIDENCE_MESSAGES = 16
 const MAX_SCHEDULED_TASKS = 50
@@ -85,7 +84,7 @@ export class ChatAutomationController {
       objective: input.objective.trim(),
       status: "ACTIVE",
       turnCount: 0,
-      maxTurns: input.maxTurns ?? DEFAULT_MAX_GOAL_TURNS,
+      maxTurns: input.maxTurns ?? null,
       tokenBudget: input.tokenBudget ?? null,
       startedTokens: totalTokens(detail),
       usedTokens: 0,
@@ -245,11 +244,10 @@ export class ChatAutomationController {
       await this.finishGoal(sessionId, "BLOCKED", `Token budget reached (${usedTokens}/${goal.tokenBudget}).`)
       return
     }
-    if (goal.turnCount >= goal.maxTurns) {
-      await this.finishGoal(sessionId, "BLOCKED", `Continuation limit reached (${goal.maxTurns} turns).`)
+    if (goal.maxTurns !== null && goal.turnCount >= goal.maxTurns) {
+      await this.finishGoal(sessionId, "BLOCKED", turnLimitReason(goal.maxTurns))
       return
     }
-
     const model = await this.options.resolveModel(detail)
     let evaluation
     try {
@@ -305,8 +303,8 @@ export class ChatAutomationController {
   private async queueGoalContinuation(goal: ChatGoal, reason: string): Promise<void> {
     if (goal.status !== "ACTIVE") return
     const turn = goal.pendingEventKey ? goal.turnCount : goal.turnCount + 1
-    if (turn > goal.maxTurns) {
-      await this.finishGoal(goal.sessionId, "BLOCKED", `Continuation limit reached (${goal.maxTurns} turns).`)
+    if (goal.maxTurns !== null && turn > goal.maxTurns) {
+      await this.finishGoal(goal.sessionId, "BLOCKED", turnLimitReason(goal.maxTurns))
       return
     }
     const key = goal.pendingEventKey ?? `chat-goal:${goal.id}:${turn}`
@@ -510,4 +508,8 @@ function deterministicOffset(id: string, maximum: number): number {
 
 function totalTokens(detail: ChatSessionDetail): number {
   return detail.messages.reduce((total, message) => total + (message.usage?.totalTokens ?? 0), 0)
+}
+
+function turnLimitReason(maxTurns: number): string {
+  return `Continuation limit reached (${maxTurns} turn${maxTurns === 1 ? "" : "s"}).`
 }

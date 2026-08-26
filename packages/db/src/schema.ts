@@ -256,7 +256,7 @@ export const chatGoals = sqliteTable("chat_goals", {
   objective: text("objective").notNull(),
   status: text("status").notNull(),
   turnCount: integer("turn_count").notNull(),
-  maxTurns: integer("max_turns").notNull(),
+  maxTurns: integer("max_turns"),
   tokenBudget: integer("token_budget"),
   startedTokens: integer("started_tokens").notNull(),
   usedTokens: integer("used_tokens").notNull(),
