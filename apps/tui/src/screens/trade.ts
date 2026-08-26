@@ -21,11 +21,11 @@ import { CandlestickChart } from "../components/candlestick-chart.ts"
 import { PortfolioPanel } from "../components/portfolio-panel.ts"
 import { DepthPanel } from "../components/depth-panel.ts"
 import { DOUBLE_CLICK_MS, SelectableList } from "../components/selectable-list.ts"
+import { TickerSearchModal } from "../components/ticker-search-modal.ts"
 import { isShortcutHelpKey, ShortcutHelp, type ShortcutHelpSection } from "../components/shortcut-help.ts"
 import { RenderCoalescer } from "../components/render-coalescer.ts"
 import {
   WORKSPACE_CHROME_MUTED,
-  WORKSPACE_CHROME_TEXT,
   workspaceChromeBackground,
 } from "../components/workspace-chrome.ts"
 import type { ApplicationLog } from "../logging/application-log.ts"
@@ -151,7 +151,7 @@ const TRADE_SHORTCUTS: ShortcutHelpSection[] = [
     title: "Ticker search",
     bindings: [
       { keys: "Type", description: "Filter by ticker or contract symbol" },
-      { keys: "↑/↓ or Ctrl+p/n", description: "Cycle through matches" },
+      { keys: "↑/↓", description: "Move through matches" },
       { keys: "Enter", description: "Switch to the selected match" },
       { keys: "Backspace", description: "Delete the last character" },
       { keys: "Esc", description: "Cancel search" },
@@ -360,8 +360,7 @@ export class TradeScreen {
   private readonly footer: BoxRenderable
   private orderTicket: ViopOrderTicket | null = null
   private shortcutHelp: ShortcutHelp | null = null
-  private tickerSearchQuery: string | null = null
-  private tickerSearchMatchIndex = 0
+  private tickerSearchModal: TickerSearchModal | null = null
   private pendingDestructiveAction: DestructiveAction | null = null
 
   private newsContent: Renderable | null = null
@@ -485,8 +484,11 @@ export class TradeScreen {
       this.alertEditor.handleKey(key)
       return
     }
-    if (this.tickerSearchQuery !== null) {
-      this.handleTickerSearchKey(key)
+    if (this.tickerSearchModal) {
+      // The modal routes typing into its focused field itself, so stop the renderer
+      // from delivering the same key to that field a second time.
+      key.preventDefault()
+      this.tickerSearchModal.handleKey(key)
       return
     }
     if (this.shortcutHelp) {
@@ -547,6 +549,9 @@ export class TradeScreen {
       return
     }
     if (isTickerSearchKey(key)) {
+      // Opening focuses the search field during this dispatch. Do not let the key
+      // that opened it become the first character of the query.
+      key.preventDefault()
       this.openTickerSearch()
       return
     }
@@ -964,7 +969,7 @@ export class TradeScreen {
     this.listResort.cancel()
     this.chart.destroy()
     this.accountPanel.destroy()
-    this.tickerSearchQuery = null
+    this.closeTickerSearch()
     this.closeShortcutHelp()
     this.closeOrderTicket()
     this.closeStopRuleEditor()
@@ -1050,7 +1055,7 @@ export class TradeScreen {
    */
   capturesInput(): boolean {
     return (this.rightView === "chat" && this.focus === "news" && (this.options.chat?.capturesInput() ?? false))
-      || this.tickerSearchQuery !== null
+      || this.tickerSearchModal !== null
       || this.orderTicket !== null
       || this.shortcutHelp !== null
       || this.brokerageDateModal !== null
@@ -1997,89 +2002,36 @@ export class TradeScreen {
   }
 
   private openTickerSearch(): void {
-    if (this.destroyed || this.tickerSearchQuery !== null) return
+    if (this.destroyed || this.tickerSearchModal) return
     if (this.hintTimer) clearTimeout(this.hintTimer)
     this.hintTimer = null
-    this.tickerSearchQuery = ""
-    this.tickerSearchMatchIndex = 0
-    this.renderTickerSearch()
+    this.hint.content = TRADE_HINT
+    this.hint.fg = WORKSPACE_CHROME_MUTED
+    const modal = new TickerSearchModal(this.renderer, {
+      instruments: this.instruments,
+      currentUid: this.instruments[this.instrumentList.selectedIndex]?.uid ?? null,
+      onSelect: (instrument) => {
+        const index = this.instruments.findIndex((candidate) => candidate.uid === instrument.uid)
+        if (index < 0) return
+        this.closeTickerSearch()
+        this.setFocus("instruments")
+        this.instrumentList.selectIndex(index)
+      },
+      onClose: () => this.closeTickerSearch(),
+    })
+    this.tickerSearchModal = modal
+    this.root.add(modal.root)
+    modal.mount()
+    this.renderer.requestRender()
   }
 
   private closeTickerSearch(): void {
-    if (this.tickerSearchQuery === null) return
-    this.tickerSearchQuery = null
-    this.tickerSearchMatchIndex = 0
-    this.hint.content = TRADE_HINT
-    this.hint.fg = WORKSPACE_CHROME_MUTED
-  }
-
-  private handleTickerSearchKey(key: KeyEvent): void {
-    if (key.name === "escape" || key.name === "esc") {
-      this.closeTickerSearch()
-      return
-    }
-    if (key.name === "return" || key.name === "enter") {
-      this.selectTickerSearchMatch()
-      return
-    }
-    if (key.name === "backspace") {
-      this.tickerSearchQuery = Array.from(this.tickerSearchQuery ?? "").slice(0, -1).join("")
-      this.tickerSearchMatchIndex = 0
-      this.renderTickerSearch()
-      return
-    }
-    const direction = key.name === "up" || (key.ctrl && key.name === "p")
-      ? -1
-      : key.name === "down" || (key.ctrl && key.name === "n")
-        ? 1
-        : 0
-    if (direction !== 0) {
-      const matches = this.tickerSearchMatches()
-      if (matches.length > 0) {
-        this.tickerSearchMatchIndex = (this.tickerSearchMatchIndex + direction + matches.length) % matches.length
-        this.renderTickerSearch()
-      }
-      return
-    }
-    const character = tickerSearchCharacter(key)
-    if (character === null) return
-    this.tickerSearchQuery = `${this.tickerSearchQuery ?? ""}${character}`
-    this.tickerSearchMatchIndex = 0
-    this.renderTickerSearch()
-  }
-
-  private selectTickerSearchMatch(): void {
-    const match = this.tickerSearchMatches()[this.tickerSearchMatchIndex]
-    if (!match) return
-    const index = this.instruments.findIndex((instrument) => instrument.uid === match.uid)
-    if (index < 0) return
-    this.closeTickerSearch()
-    this.setFocus("instruments")
-    this.instrumentList.selectIndex(index)
-  }
-
-  private tickerSearchMatches(): ViopInstrument[] {
-    const query = normalizedTickerSearch(this.tickerSearchQuery ?? "")
-    if (!query) return []
-    return this.instruments
-      .map((instrument, index) => ({ instrument, index, score: tickerSearchScore(instrument, query) }))
-      .filter((entry) => entry.score !== null)
-      .sort((left, right) => (left.score ?? 0) - (right.score ?? 0) || left.index - right.index)
-      .map((entry) => entry.instrument)
-  }
-
-  private renderTickerSearch(): void {
-    const query = this.tickerSearchQuery ?? ""
-    const matches = this.tickerSearchMatches()
-    if (this.tickerSearchMatchIndex >= matches.length) this.tickerSearchMatchIndex = 0
-    const match = matches[this.tickerSearchMatchIndex]
-    const result = !query
-      ? "type a ticker"
-      : match
-        ? `${match.displayName} · ${match.symbol}  ${this.tickerSearchMatchIndex + 1}/${matches.length}`
-        : "no matches"
-    this.hint.content = t`${fg(WORKSPACE_CHROME_TEXT)(`/${query}`)}  ${fg(match ? WORKSPACE_CHROME_TEXT : WORKSPACE_CHROME_MUTED)(result)}  ${fg(WORKSPACE_CHROME_MUTED)("Enter select · Esc cancel")}`
-    this.hint.fg = WORKSPACE_CHROME_TEXT
+    const modal = this.tickerSearchModal
+    if (!modal) return
+    this.tickerSearchModal = null
+    if (!this.root.isDestroyed && !modal.root.isDestroyed) this.root.remove(modal.root)
+    modal.destroy()
+    this.renderer.requestRender()
   }
 
   private closeShortcutHelp(): void {
@@ -2655,25 +2607,6 @@ function destructiveActionForKey(key: KeyEvent): DestructiveAction | null {
 function isTickerSearchKey(key: KeyEvent): boolean {
   if (key.ctrl || key.meta || key.option) return false
   return key.name === "/" || key.sequence === "/"
-}
-
-function tickerSearchCharacter(key: KeyEvent): string | null {
-  if (key.ctrl || key.meta || key.option) return null
-  const character = key.sequence || key.name
-  return /^[\p{L}\p{N}_.-]$/u.test(character) ? character : null
-}
-
-function normalizedTickerSearch(value: string): string {
-  return value.trim().toUpperCase()
-}
-
-function tickerSearchScore(instrument: ViopInstrument, query: string): number | null {
-  const values = [instrument.displayName, instrument.underlyingSymbol, instrument.symbol]
-    .filter((value): value is string => Boolean(value))
-    .map(normalizedTickerSearch)
-  if (values.some((value) => value === query || value === `F_${query}`)) return 0
-  if (values.some((value) => value.startsWith(query) || value.startsWith(`F_${query}`))) return 1
-  return values.some((value) => value.includes(query)) ? 2 : null
 }
 
 function errorMessage(cause: unknown): string {

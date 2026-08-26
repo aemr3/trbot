@@ -473,19 +473,23 @@ test("switches the news panel to its embedded chat and releases input for ticker
   expect(tickerColumn).toBeGreaterThanOrEqual(0)
   await mockMouse.click(tickerColumn, tickerLine)
   await mockInput.typeText("/")
-  await waitForFrame((frame) => frame.includes("type a ticker"))
+  await waitForFrame((frame) => frame.includes("Ticker search"))
   expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
 
-  mockInput.pressEscape()
+  await mockInput.typeText("thy")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("▶ F_THYAO0826") && !frame.includes("Ticker search"))
+
   mockInput.pressKey("c", { meta: true })
   mockInput.pressEscape()
   await mockInput.typeText("/")
-  await waitForFrame((frame) => frame.includes("type a ticker"))
+  await waitForFrame((frame) => frame.includes("Ticker search"))
   expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
   mockInput.pressEscape()
 
-  const sideChatLine = chatFrame.split("\n").findIndex((line) => line.includes("SIDE CHAT"))
-  const sideChatColumn = chatFrame.split("\n")[sideChatLine]?.indexOf("SIDE CHAT") ?? -1
+  const restoredChat = await waitForFrame((frame) => frame.includes("SIDE CHAT") && !frame.includes("Ticker search"))
+  const sideChatLine = restoredChat.split("\n").findIndex((line) => line.includes("SIDE CHAT"))
+  const sideChatColumn = restoredChat.split("\n")[sideChatLine]?.indexOf("SIDE CHAT") ?? -1
   expect(sideChatLine).toBeGreaterThanOrEqual(0)
   expect(sideChatColumn).toBeGreaterThanOrEqual(0)
   await mockMouse.click(sideChatColumn, sideChatLine)
@@ -494,7 +498,7 @@ test("switches the news panel to its embedded chat and releases input for ticker
   expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello/")
   expect(screen.capturesInput()).toBe(true)
   const focusedChat = await waitForFrame((frame) => frame.includes("SIDE CHAT"))
-  expect(focusedChat).not.toContain("type a ticker")
+  expect(focusedChat).not.toContain("Ticker search")
 
   mockInput.pressEscape()
   mockInput.pressEscape()
@@ -1310,16 +1314,16 @@ test("searches tickers with slash and switches only after Enter", async () => {
   await waitForFrame((frame) => frame.includes("Chart  XU030 stock"))
 
   await mockInput.typeText("/thy")
-  const searchFrame = await waitForFrame((frame) => frame.includes("/thy") && frame.includes("THYAO · F_THYAO0826"))
+  const searchFrame = await waitForFrame((frame) => frame.includes("Ticker search") && frame.includes("THYAO  F_THYAO0826"))
   expect(searchFrame).toContain("Chart  XU030 stock")
 
   mockInput.pressEnter()
   const selectedFrame = await waitForFrame((frame) => frame.includes("Chart  THYAO stock") && frame.includes("/ ticker"))
-  expect(selectedFrame).not.toContain("/thy")
+  expect(selectedFrame).not.toContain("Ticker search")
   expect(preferences.at(-1)?.selectedInstrumentUid).toBe("u2")
 
   await mockInput.typeText("/xu")
-  await waitForFrame((frame) => frame.includes("XU030 · F_XU0300826"))
+  await waitForFrame((frame) => frame.includes("Ticker search") && frame.includes("XU030  F_XU0300826"))
   mockInput.pressEscape()
   await waitForFrame((frame) => frame.includes("Chart  THYAO stock") && frame.includes("/ ticker"))
 
