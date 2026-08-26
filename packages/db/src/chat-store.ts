@@ -154,6 +154,7 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
   async get(sessionId: string, topLevelLimit?: number): Promise<ChatSessionDetail | null> {
     const [session] = await this.db.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).limit(1)
     if (!session) return null
+    const [compaction] = await this.db.select().from(chatCompactions).where(eq(chatCompactions.sessionId, sessionId)).limit(1)
     const allRows = await this.messageRows(sessionId)
     const rows = topLevelLimit === undefined ? allRows : recentChatTimeline(allRows, topLevelLimit)
     const blocks = await this.blockRows(rows.map((row) => row.id))
@@ -175,6 +176,7 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
       },
       messages,
       partial: null,
+      compaction: compaction ?? null,
     }
   }
 
@@ -222,6 +224,7 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
         compactedThroughSeq: compaction.compactedThroughSeq,
         firstKeptSeq: compaction.firstKeptSeq,
         tokensBefore: compaction.tokensBefore,
+        tokensAfter: compaction.tokensAfter,
         createdAt: compaction.createdAt,
       } : null,
       records: replayableRows.map((row) => ({
@@ -243,6 +246,7 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
           compactedThroughSeq: compaction.compactedThroughSeq,
           firstKeptSeq: compaction.firstKeptSeq,
           tokensBefore: compaction.tokensBefore,
+          tokensAfter: compaction.tokensAfter,
           createdAt: compaction.createdAt,
         },
       })
@@ -720,6 +724,7 @@ function toContentBlock(row: BlockRow): JsonObject {
 function toMessage(row: MessageRow, blocks: BlockRow[]): ChatMessage {
   return {
     id: row.id,
+    seq: row.seq,
     role: ChatRoleSchema.parse(row.role),
     status: ChatMessageStatusSchema.parse(row.status),
     text: row.text,

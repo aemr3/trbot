@@ -452,6 +452,7 @@ describe("chat session store", () => {
       compactedThroughSeq: before.records[1]!.seq,
       firstKeptSeq: before.records[2]!.seq,
       tokensBefore: 90_000,
+      tokensAfter: 9_000,
       createdAt: 4_000,
     })
 
@@ -478,6 +479,7 @@ describe("chat session store", () => {
       compactedThroughSeq: old.records[0]!.seq,
       firstKeptSeq: null,
       tokensBefore: 80_000,
+      tokensAfter: 8_000,
       createdAt: 2_000,
     })
     await chats.append("chat-1", draftFor({ role: "user", content: "new", timestamp: 3_000 }))
@@ -594,6 +596,7 @@ describe("chat session store", () => {
       compactedThroughSeq: before.records[2]!.seq,
       firstKeptSeq: before.records[3]!.seq,
       tokensBefore: 80_000,
+      tokensAfter: 8_000,
       createdAt: 5_000,
     })
     const target = (await chats.get("chat-1"))?.messages.find((message) => message.text === "second question")

@@ -154,6 +154,7 @@ function fakeChats(): ChatSessions & {
       return {
         compacted: true,
         tokensBefore: 24_000,
+        tokensAfter: 2_400,
       }
     },
     async mobile(_sessionId) {
@@ -441,8 +442,7 @@ test("shows only prompts waiting behind the active turn as queued", async () => 
   expect(chats.sent).toEqual(["where is ASELS heading?"])
   expect(active).not.toContain("queued")
 
-  screen.acceptMessage("chat-1", userMessage("where is ASELS heading?", "SENT"))
-  screen.acceptRun("chat-1", "run-1", "running")
+  screen.acceptRun("chat-1", "run-1", "running", "message-where is ASELS heading?")
   await waitForFrame((frame) => frame.includes("thinking…"))
   // A slower send response must not overwrite the stream's claimed prompt.
   screen.acceptMessage("chat-1", userMessage("where is ASELS heading?", "QUEUED"))
@@ -1313,7 +1313,7 @@ test("compacts the selected chat without sending a message", async () => {
   expect(second).toBeDefined()
   expect(second).not.toBe(first)
 
-  compacting.resolve({ compacted: true, tokensBefore: 24_000 })
+  compacting.resolve({ compacted: true, tokensBefore: 24_000, tokensAfter: 2_400 })
   await Bun.sleep(0)
   const frame = await waitForFrame((value) => value.includes("24.0K estimated tokens summarized"))
 
@@ -1321,6 +1321,45 @@ test("compacts the selected chat without sending a message", async () => {
   expect(spinnerFrame(frame)).toBeUndefined()
   expect(chats.compacted).toEqual([session.id])
   expect(chats.sent).toEqual([])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("marks automatic compaction and reports the smaller active context", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const prompt = { ...userMessage("older prompt", "SENT"), seq: 0, createdAt: 1_000 }
+  const reply = {
+    ...replyMessage("older answer"),
+    seq: 1,
+    createdAt: 2_000,
+    usage: { inputTokens: 120_000, outputTokens: 4_000, totalTokens: 124_000, costTotal: 0 },
+  }
+  const current = { ...userMessage("after compaction", "SENT"), seq: 2, createdAt: 4_000 }
+  chats.messages.set(session.id, [prompt, reply, current])
+  const get = chats.get.bind(chats)
+  chats.get = async (sessionId) => ({
+    ...await get(sessionId),
+    compaction: {
+      sessionId,
+      summary: "Earlier discussion.",
+      compactedThroughSeq: 1,
+      firstKeptSeq: null,
+      tokensBefore: 124_000,
+      tokensAfter: 2_400,
+      createdAt: 3_000,
+    },
+  })
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const frame = await waitForFrame((value) => value.includes("context compacted"))
+  expect(frame.indexOf("older answer")).toBeLessThan(frame.indexOf("context compacted"))
+  expect(frame.indexOf("context compacted")).toBeLessThan(frame.indexOf("after compaction"))
+  expect(frame).toContain("2.4K (2%)")
 
   screen.destroy()
   renderer.destroy()
@@ -2189,8 +2228,8 @@ test("signs a reply underneath with the model, the time it took and what it cost
 
   // And the same conversation's totals stand under the composer, where they say when
   // it is time to start a new chat.
-  const status = lines.findLast((line) => line.includes("18.6K")) ?? ""
-  expect(status).toContain("(15%)")
+  const status = lines.findLast((line) => line.includes("17.2K")) ?? ""
+  expect(status).toContain("(13%)")
 
   screen.destroy()
   renderer.destroy()

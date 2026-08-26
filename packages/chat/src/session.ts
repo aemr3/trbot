@@ -44,6 +44,8 @@ export interface ChatUsage {
 
 export interface ChatMessage {
   id: string
+  /** Durable conversation order; absent on frames from older servers. */
+  seq?: number
   role: ChatRole
   status: ChatMessageStatus
   /** The readable text of the message, which is what a transcript shows. */
@@ -125,7 +127,19 @@ export interface ChatSessionDetail {
   session: ChatSession
   messages: ChatMessage[]
   partial: ChatPartial | null
+  /** The current model-context checkpoint; optional while older servers are supported. */
+  compaction?: ChatCompaction | null
 }
+
+export const ChatCompactionSchema: z.ZodType<ChatCompaction> = z.object({
+  sessionId: z.string(),
+  summary: z.string(),
+  compactedThroughSeq: z.number().int(),
+  firstKeptSeq: z.number().int().nullable(),
+  tokensBefore: z.number().int(),
+  tokensAfter: z.number().int().nullable(),
+  createdAt: z.number(),
+})
 
 export const CHAT_TOOL_EFFECT_KINDS = [
   "MARKET_MONITOR",
@@ -193,6 +207,7 @@ const ChatUsageSchema: z.ZodType<ChatUsage> = z.object({
 
 export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
   id: z.string(),
+  seq: z.number().int().optional(),
   role: ChatRoleSchema,
   status: ChatMessageStatusSchema,
   text: z.string(),
@@ -235,6 +250,7 @@ export const ChatSessionDetailSchema: z.ZodType<ChatSessionDetail> = z.object({
   session: ChatSessionSchema,
   messages: z.array(ChatMessageSchema),
   partial: ChatPartialSchema.nullable(),
+  compaction: z.lazy(() => ChatCompactionSchema).nullable().optional(),
 })
 
 export const ChatToolEffectSchema: z.ZodType<ChatToolEffect> = z.object({
@@ -329,15 +345,17 @@ export interface ChatCompaction {
   compactedThroughSeq: number
   firstKeptSeq: number | null
   tokensBefore: number
+  /** Estimated active context after compaction; null on older checkpoints. */
+  tokensAfter: number | null
   createdAt: number
 }
 
 export type ChatCompactionReport =
-  | { compacted: true; tokensBefore: number }
+  | { compacted: true; tokensBefore: number; tokensAfter: number }
   | { compacted: false; tokensBefore: null }
 
 export const ChatCompactionReportSchema: z.ZodType<ChatCompactionReport> = z.discriminatedUnion("compacted", [
-  z.object({ compacted: z.literal(true), tokensBefore: z.number().int() }),
+  z.object({ compacted: z.literal(true), tokensBefore: z.number().int(), tokensAfter: z.number().int() }),
   z.object({ compacted: z.literal(false), tokensBefore: z.null() }),
 ])
 

@@ -1,7 +1,9 @@
 import {
   ChatMessageSchema,
+  ChatCompactionSchema,
   ChatSessionSchema,
   type ChatMessage,
+  type ChatCompaction,
   type ChatRunStatus,
   type ChatSession,
 } from "@trbot/chat/session.ts"
@@ -99,6 +101,7 @@ export type ChatFrame =
   | { type: "chatSessions"; sessions: ChatSession[] }
   | { type: "chatMessage"; sessionId: string; message: ChatMessage }
   | { type: "chatMessageRemoved"; sessionId: string; messageId: string }
+  | { type: "chatCompacted"; sessionId: string; compaction: ChatCompaction }
   | { type: "chatDelta"; sessionId: string; runId: string; seq: number; text?: string; reasoning?: string; toolName?: string }
   | {
       type: "chatRun"
@@ -158,6 +161,7 @@ export const ServerFrameSchema: z.ZodType<ServerFrame> = z.discriminatedUnion("t
   z.object({ type: z.literal("chatSessions"), sessions: z.array(ChatSessionSchema) }),
   z.object({ type: z.literal("chatMessage"), sessionId: z.string(), message: ChatMessageSchema }),
   z.object({ type: z.literal("chatMessageRemoved"), sessionId: z.string(), messageId: z.string() }),
+  z.object({ type: z.literal("chatCompacted"), sessionId: z.string(), compaction: ChatCompactionSchema }),
   z.object({
     type: z.literal("chatDelta"),
     sessionId: z.string(),

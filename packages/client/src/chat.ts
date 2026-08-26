@@ -6,6 +6,7 @@ import {
   ChatSessionSchema,
   ChatUndoPreviewSchema,
   ChatUndoResultSchema,
+  type ChatCompaction,
   type ChatMessage,
   type ChatCompactionReport,
   type ChatModelChoice,
@@ -176,8 +177,9 @@ export interface ChatEvents {
   onSessions?: (sessions: ChatSession[]) => void
   onMessage?: (sessionId: string, message: ChatMessage) => void
   onMessageRemoved?: (sessionId: string, messageId: string) => void
+  onCompaction?: (compaction: ChatCompaction) => void
   onDelta?: (sessionId: string, runId: string, delta: ChatDelta) => void
-  onRun?: (sessionId: string, runId: string, status: ChatRunStatus, error?: string) => void
+  onRun?: (sessionId: string, runId: string, status: ChatRunStatus, promptMessageId?: string, error?: string) => void
   onQuestionAsked?: (request: ChatQuestionRequest) => void
   onQuestionResolved?: (sessionId: string, requestId: string) => void
   onPermissionRequested?: (request: ChatPermissionRequest) => void
@@ -222,6 +224,9 @@ export class ChatClient {
         case "chatMessageRemoved":
           events.onMessageRemoved?.(frame.sessionId, frame.messageId)
           return
+        case "chatCompacted":
+          events.onCompaction?.(frame.compaction)
+          return
         case "chatDelta": {
           const expected = (this.seqByRun.get(frame.runId) ?? 0) + 1
           this.seqByRun.set(frame.runId, frame.seq)
@@ -243,7 +248,7 @@ export class ChatClient {
             events.onResync?.(frame.sessionId)
           }
           if (frame.status !== "running") this.seqByRun.delete(frame.runId)
-          events.onRun?.(frame.sessionId, frame.runId, frame.status, frame.error)
+          events.onRun?.(frame.sessionId, frame.runId, frame.status, frame.promptMessageId, frame.error)
           return
         case "chatQuestionAsked":
           events.onQuestionAsked?.(frame.request)

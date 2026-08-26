@@ -224,6 +224,7 @@ test("stores a rolling checkpoint without removing the visible transcript", asyn
           compactedThroughSeq: last.seq,
           firstKeptSeq: null,
           tokensBefore: 100,
+          tokensAfter: 20,
           createdAt: 3,
         },
         history: [summary],
@@ -264,6 +265,7 @@ test("manually compacts a settled chat without changing its transcript", async (
           compactedThroughSeq: last.seq,
           firstKeptSeq: null,
           tokensBefore: 24_000,
+          tokensAfter: 2_400,
           createdAt: 5,
         },
         history: [],
@@ -277,7 +279,7 @@ test("manually compacts a settled chat without changing its transcript", async (
 
   const compacted = await chat.compact(session.id)
 
-  expect(compacted).toEqual({ compacted: true, tokensBefore: 24_000 })
+  expect(compacted).toEqual({ compacted: true, tokensBefore: 24_000, tokensAfter: 2_400 })
   expect(forceCalls).toEqual([false, true])
   expect((await store.context(session.id)).compaction?.summary).toBe("manual checkpoint")
   expect((await chat.detail(session.id)).messages.map((message) => message.text)).toEqual([
@@ -316,6 +318,7 @@ test("compacts and retries one clean overflow without duplicating durable output
           compactedThroughSeq: last.seq,
           firstKeptSeq: null,
           tokensBefore: 100,
+          tokensAfter: 20,
           createdAt: 4,
         },
         history: [summary],

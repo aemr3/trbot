@@ -29,6 +29,7 @@ test("compacts the old prefix and keeps recent complete turns verbatim", async (
       compactedThroughSeq: 2,
       firstKeptSeq: 3,
       tokensBefore: 900,
+      tokensAfter: 90,
       createdAt: 2_000,
     },
     records: [

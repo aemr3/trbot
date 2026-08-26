@@ -120,14 +120,23 @@ export class ChatCompactor implements ChatCompactionRunner {
     })
     if (!summary) return null
 
-    const checkpoint: ChatCompaction = {
+    const createdAt = this.now()
+    const baseCheckpoint: ChatCompaction = {
       sessionId: input.sessionId,
       summary,
       compactedThroughSeq: head.at(-1)!.seq,
       firstKeptSeq: tail[0]?.seq ?? null,
       tokensBefore,
-      createdAt: this.now(),
+      tokensAfter: 0,
+      createdAt,
     }
+    const compactedHistory = [summaryRecord(baseCheckpoint), ...tail.map((entry) => modelRecord(entry.record))]
+    const tokensAfter = estimateRequestTokens({
+      systemPrompt: this.systemPrompt,
+      tools: this.options.tools,
+      messages: [...compactedHistory, userRecord(input.prompt, this.now())],
+    })
+    const checkpoint: ChatCompaction = { ...baseCheckpoint, tokensAfter }
     return {
       checkpoint,
       history: [summaryRecord(checkpoint), ...tail.map((entry) => modelRecord(entry.record))],

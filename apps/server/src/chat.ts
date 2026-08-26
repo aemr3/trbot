@@ -411,7 +411,12 @@ export class ChatController {
     })
     if (!compacted) return { compacted: false, tokensBefore: null }
     await this.options.store.saveCompaction(compacted.checkpoint)
-    return { compacted: true, tokensBefore: compacted.checkpoint.tokensBefore }
+    await this.options.broadcast({ type: "chatCompacted", sessionId, compaction: compacted.checkpoint })
+    return {
+      compacted: true,
+      tokensBefore: compacted.checkpoint.tokensBefore,
+      tokensAfter: compacted.checkpoint.tokensAfter ?? compacted.checkpoint.tokensBefore,
+    }
   }
 
   destroy(): void {
@@ -644,6 +649,7 @@ export class ChatController {
           })
           if (compacted) {
             await this.options.store.saveCompaction(compacted.checkpoint)
+            await this.options.broadcast({ type: "chatCompacted", sessionId, compaction: compacted.checkpoint })
             const refreshed = await this.options.store.context(sessionId)
             modelContext = {
               ...refreshed,
@@ -727,6 +733,7 @@ export class ChatController {
         }
         if (!compacted) break
         await this.options.store.saveCompaction(compacted.checkpoint)
+        await this.options.broadcast({ type: "chatCompacted", sessionId, compaction: compacted.checkpoint })
         history = compacted.history
       }
     } catch (error) {

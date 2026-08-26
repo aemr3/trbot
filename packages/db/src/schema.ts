@@ -368,6 +368,7 @@ export const chatCompactions = sqliteTable("chat_compactions", {
   compactedThroughSeq: integer("compacted_through_seq").notNull(),
   firstKeptSeq: integer("first_kept_seq"),
   tokensBefore: integer("tokens_before").notNull(),
+  tokensAfter: integer("tokens_after"),
   createdAt: integer("created_at").notNull(),
 })
 

@@ -12,6 +12,7 @@ import {
 import {
   CHAT_TIMELINE_LIMIT,
   recentChatTimeline,
+  type ChatCompaction,
   type ChatMessage,
   type ChatRunStatus,
   type ChatSession,
@@ -235,6 +236,7 @@ export class ChatScreen {
 
   private sessions: ChatSession[] = []
   private messagesBySession = new Map<string, ChatMessage[]>()
+  private compactionBySession = new Map<string, ChatCompaction>()
   private streamingBySession = new Map<string, Streaming>()
   private runningRunIds = new Set<string>()
   private pendingQuestions = new Map<string, ChatQuestionRequest>()
@@ -764,8 +766,12 @@ export class ChatScreen {
     this.render.schedule()
   }
 
-  acceptRun(sessionId: string, runId: string, status: ChatRunStatus, error?: string): void {
+  acceptRun(sessionId: string, runId: string, status: ChatRunStatus, promptMessageId?: string, error?: string): void {
     if (this.destroyed) return
+    if (status === "running" && promptMessageId) {
+      const prompt = this.messagesBySession.get(sessionId)?.find((message) => message.id === promptMessageId)
+      if (prompt?.status === "QUEUED") prompt.status = "SENT"
+    }
     const wasRunning = status === "running" ? false : this.runningRunIds.delete(runId)
     if (status !== "running") this.streamingBySession.delete(sessionId)
     // A run announces itself before its first delta, and a model can think for a long
@@ -789,6 +795,12 @@ export class ChatScreen {
     this.sessions = this.sessions.map((session) => (
       session.id === sessionId ? { ...session, running: status === "running" } : session
     ))
+    this.render.schedule()
+  }
+
+  acceptCompaction(compaction: ChatCompaction): void {
+    if (this.destroyed) return
+    this.compactionBySession.set(compaction.sessionId, compaction)
     this.render.schedule()
   }
 
@@ -902,6 +914,8 @@ export class ChatScreen {
       // Keep this guard even though the HTTP client requests the same window. It
       // protects the renderer while a newer TUI is connected to an older server.
       this.messagesBySession.set(sessionId, recentChatTimeline(detail.messages, CHAT_TIMELINE_LIMIT))
+      if (detail.compaction) this.compactionBySession.set(sessionId, detail.compaction)
+      else this.compactionBySession.delete(sessionId)
       if (detail.partial) {
         const known = this.streamingBySession.get(sessionId)
         // A partial that already carries words is a run this terminal did not watch
@@ -1226,6 +1240,7 @@ export class ChatScreen {
       this.commandNotice = "Compacting context…"
       this.render.schedule()
       const compacted = await this.options.chats.compact(session.id)
+      if (compacted.compacted) await this.loadSession(session.id)
       if (this.selectedSessionId === session.id) {
         this.commandNotice = compacted.compacted
           ? `Context compacted · ${formatTokens(compacted.tokensBefore)} estimated tokens summarized.`
@@ -2194,18 +2209,19 @@ export class ChatScreen {
   /**
    * What this conversation has used: the context it is carrying, and what it has cost.
    *
-   * The context is the last reply's own token count, because a request carries the whole
-   * conversation — that number is the size of the conversation, not of one message. The
-   * cost is every reply added up, and is zero on a subscription, which is why nothing is
-   * shown rather than `$0.00`.
+   * A reply's input count is the context the model actually received; its output does
+   * not belong in the percentage. Before the first post-compaction reply, the stored
+   * checkpoint estimate supplies the smaller active size. Cost still adds every reply
+   * and remains hidden for subscription calls that report zero.
    */
   private usageText(session: ChatSession | null): StyledText {
     if (!session) return new StyledText([fg(MUTED_COLOR)("")])
     const messages = this.messagesBySession.get(session.id) ?? []
-    const context = messages.reduce<number | null>(
-      (last, message) => (message.role === "ASSISTANT" && message.usage ? message.usage.totalTokens : last),
-      null,
-    )
+    const compaction = this.compactionBySession.get(session.id)
+    const latestReply = messages.findLast((message) => message.role === "ASSISTANT" && message.usage !== null)
+    const context = latestReply && (!compaction || latestReply.createdAt >= compaction.createdAt)
+      ? latestReply.usage?.inputTokens ?? null
+      : compaction?.tokensAfter ?? latestReply?.usage?.inputTokens ?? null
     const cost = messages.reduce((total, message) => total + (message.usage?.costTotal ?? 0), 0)
     const parts: string[] = []
     if (context !== null) {
@@ -2237,15 +2253,21 @@ export class ChatScreen {
       : messages.slice(lastReply + 1).find((message) => (
           (message.role === "USER" || message.role === "APP_EVENT") && message.status === "QUEUED"
         ))?.id ?? null
-    const blocks = messages
-      .map((message) => messageBlock(
+    const compaction = this.compactionBySession.get(session.id)
+    const firstAfterCompaction = compaction
+      ? messages.find((message) => message.seq !== undefined && message.seq > compaction.compactedThroughSeq)?.id
+      : undefined
+    const blocks = messages.flatMap((message) => [
+      ...(message.id === firstAfterCompaction ? [compactionBlock()] : []),
+      messageBlock(
         message,
         current,
         this.showThoughts,
         this.promptBackground(),
         this.options.embedded === true,
         message.id !== activeQueuedPrompt,
-      ))
+      ),
+    ])
     const streaming = this.streamingBySession.get(session.id)
     if (streaming) {
       blocks.push(streamingBlock(streaming, current, {
@@ -2567,6 +2589,15 @@ function transcriptModelLabel(model: string, reasoning: string | null): StyledTe
 /** Something the screen is saying itself, so it carries no signature or role marker. */
 function note(text: string): ChatTranscriptBlock {
   return { id: "note", content: new StyledText([fg(MUTED_COLOR)(text)]) }
+}
+
+/** Marks the point where older turns were replaced by the model-facing summary. */
+function compactionBlock(): ChatTranscriptBlock {
+  return {
+    id: "compaction",
+    padded: true,
+    content: new StyledText([fg(MUTED_COLOR)("────────── context compacted ──────────")]),
+  }
 }
 
 /** Reasoning is long and only its tail is worth the room while it streams. */

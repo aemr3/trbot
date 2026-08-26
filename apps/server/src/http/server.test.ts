@@ -125,7 +125,7 @@ describe("server and client over the wire", () => {
           },
           async compact(sessionId: string) {
             compactedChats.push(sessionId)
-            return { compacted: true, tokensBefore: 24_000 }
+            return { compacted: true, tokensBefore: 24_000, tokensAfter: 2_400 }
           },
         } as ChatController,
         notifications,
@@ -195,7 +195,7 @@ describe("server and client over the wire", () => {
     compactedChats.length = 0
     const chats = new HttpChatSessions(client)
 
-    expect(await chats.compact("chat/one")).toEqual({ compacted: true, tokensBefore: 24_000 })
+    expect(await chats.compact("chat/one")).toEqual({ compacted: true, tokensBefore: 24_000, tokensAfter: 2_400 })
     expect(compactedChats).toEqual(["chat/one"])
   })
 

@@ -84,6 +84,24 @@ test("delivers permission mode changes", () => {
   expect(changed).toEqual(["chat-1:AUTO"])
 })
 
+test("delivers the prompt that owns a chat run", () => {
+  const connection = new FakeChatStream()
+  const runs: Array<{ status: string; promptMessageId?: string }> = []
+  new ChatClient(connection, {
+    onRun: (_sessionId, _runId, status, promptMessageId) => runs.push({ status, promptMessageId }),
+  })
+
+  connection.emit({
+    type: "chatRun",
+    sessionId: "chat-1",
+    runId: "run-1",
+    status: "running",
+    promptMessageId: "message-1",
+  })
+
+  expect(runs).toEqual([{ status: "running", promptMessageId: "message-1" }])
+})
+
 test("requests only the bounded timeline used by the TUI", async () => {
   let requestedUrl = ""
   const http = new HttpClient({
