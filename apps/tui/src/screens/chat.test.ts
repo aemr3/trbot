@@ -1543,6 +1543,186 @@ test("opens durable worker transcripts with /subagents and returns with /parent"
   renderer.destroy()
 })
 
+test("shows only the current subagent tool and opens the worker when clicked", async () => {
+  const { renderer, mockMouse, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-live",
+    title: "Review the indicator implementation",
+    parentSessionId: parent.id,
+    agent: "worker",
+    createdAt: 2_000,
+    updatedAt: 2_000,
+    running: true,
+  }
+  chats.sessions.push(child)
+  chats.messages.set(child.id, [])
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptRun(parent.id, "parent-run", "running")
+  screen.acceptDelta(parent.id, "parent-run", { toolName: "subagent" })
+  screen.acceptRun(child.id, "worker-run", "running")
+  await waitForFrame((frame) => frame.includes(child.title))
+  screen.acceptDelta(child.id, "worker-run", { toolName: "get_candles" })
+  screen.acceptDelta(child.id, "worker-run", { toolName: "get_quote" })
+
+  const active = await waitForFrame((frame) => (
+    frame.includes(child.title) && frame.includes("↳ get_quote")
+  ))
+  expect(active).not.toContain("get_candles")
+  expect(active).not.toContain("⚙ subagent")
+
+  screen.acceptMessage(child.id, toolResultMessage("get_quote", "Read quote."))
+  screen.acceptMessage(child.id, toolResultMessage("get_candles", "Read candles."))
+  screen.acceptMessage(parent.id, toolResultMessage("subagent", "Subagent worker completed."))
+  const betweenTools = await waitForFrame((frame) => (
+    frame.includes(child.title) && !frame.includes("↳ get_quote") && !frame.includes("↳ get_candles")
+  ))
+  expect(betweenTools).not.toContain("Subagent worker completed.")
+
+  const lines = betweenTools.split("\n")
+  const line = lines.findIndex((value) => value.includes(child.title))
+  const column = lines[line]?.indexOf(child.title) ?? -1
+  expect(line).toBeGreaterThanOrEqual(0)
+  expect(column).toBeGreaterThanOrEqual(0)
+  await mockMouse.click(column, line)
+  await waitForFrame((frame) => frame.includes("Subagent running"))
+  expect(screen.isShowingSession(child.id)).toBe(true)
+  expect(chats.undone).toEqual([])
+
+  screen.openSession(parent.id)
+  screen.acceptRun(child.id, "worker-run", "done")
+  await waitForFrame((frame) => frame.includes("ask something") && !frame.includes(child.title))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("does not resurrect a worker when its delayed lookup finishes after the run", async () => {
+  const { renderer, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-delayed",
+    title: "Delayed worker",
+    parentSessionId: parent.id,
+    agent: "worker",
+    running: true,
+  }
+  const delayed = Promise.withResolvers<ChatSessionDetail>()
+  const get = chats.get.bind(chats)
+  chats.get = (sessionId) => sessionId === child.id ? delayed.promise : get(sessionId)
+
+  screen.acceptRun(parent.id, "parent-run", "running")
+  screen.acceptRun(child.id, "worker-run", "running")
+  screen.acceptRun(child.id, "worker-run", "done")
+  delayed.resolve({
+    session: child,
+    messages: [],
+    partial: { runId: "worker-run", seq: 0, text: "", reasoning: "" },
+  })
+  await Bun.sleep(0)
+  await renderOnce()
+
+  expect(captureCharFrame()).not.toContain(child.title)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("reconciles completed parallel workers while their parent keeps running", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const workerA: ChatSession = {
+    ...parent,
+    id: "worker-a",
+    title: "First parallel worker",
+    parentSessionId: parent.id,
+    agent: "worker",
+    running: true,
+  }
+  const workerB: ChatSession = {
+    ...workerA,
+    id: "worker-b",
+    title: "Second parallel worker",
+  }
+  chats.sessions.push(workerA, workerB)
+  chats.messages.set(workerA.id, [])
+  chats.messages.set(workerB.id, [])
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptRun(parent.id, "parent-run", "running")
+  screen.acceptRun(workerA.id, "worker-a-run", "running")
+  screen.acceptRun(workerB.id, "worker-b-run", "running")
+  await waitForFrame((frame) => frame.includes(workerA.title) && frame.includes(workerB.title))
+
+  chats.sessions[chats.sessions.findIndex((session) => session.id === workerA.id)] = { ...workerA, running: false }
+  screen.acceptSessions([{ ...parent, running: true }])
+  await waitForFrame((frame) => !frame.includes(workerA.title) && frame.includes(workerB.title))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("ignores a stale child refresh after the worker completes", async () => {
+  const { renderer, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-stale-refresh",
+    title: "Stale refresh worker",
+    parentSessionId: parent.id,
+    agent: "worker",
+    running: true,
+  }
+  chats.sessions.push(child)
+  chats.messages.set(child.id, [])
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+  screen.acceptRun(parent.id, "parent-run", "running")
+  screen.acceptRun(child.id, "worker-run", "running")
+  await waitForFrame((frame) => frame.includes(child.title))
+
+  const delayed = Promise.withResolvers<ChatSession[]>()
+  chats.children = () => delayed.promise
+  screen.acceptSessions([{ ...parent, running: true }])
+  screen.acceptRun(child.id, "worker-run", "done")
+  delayed.resolve([child])
+  await Bun.sleep(0)
+  await renderOnce()
+
+  expect(captureCharFrame()).not.toContain(child.title)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("keeps the subagent model label intact beside a narrow running hint", async () => {
   const { renderer, waitForFrame } = await createTestRenderer({ width: 60, height: 18, kittyKeyboard: true })
   const chats = fakeChats()

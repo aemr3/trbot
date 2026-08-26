@@ -86,6 +86,7 @@ const NO_MODEL_HINT = "No model chosen for this chat · ^O to choose one"
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const SPINNER_INTERVAL_MS = 120
+const SUBAGENT_BLOCK_PREFIX = "subagent:"
 const MARKET_MONITOR_MUTATIONS = new Set([
   "create_market_monitor",
   "update_market_monitor",
@@ -238,7 +239,8 @@ export class ChatScreen {
   private messagesBySession = new Map<string, ChatMessage[]>()
   private compactionBySession = new Map<string, ChatCompaction>()
   private streamingBySession = new Map<string, Streaming>()
-  private runningRunIds = new Set<string>()
+  private runIdBySession = new Map<string, string>()
+  private sessionRevision = new Map<string, number>()
   private pendingQuestions = new Map<string, ChatQuestionRequest>()
   private questionPanel: ChatQuestionPanel | null = null
   private pendingPermissions = new Map<string, ChatPermissionRequest>()
@@ -307,7 +309,7 @@ export class ChatScreen {
       backgroundColor: this.surfaceBackground,
       resolveContractSymbol: (mention) => this.contractByMention.get(mention) ?? null,
       onContractSelect: options.onContractSelect,
-      onBlockSelect: (messageId) => this.openUndo(messageId),
+      onBlockSelect: (blockId) => this.selectTranscriptBlock(blockId),
     })
     this.emptyState = new BoxRenderable(renderer, {
       position: "absolute",
@@ -669,7 +671,16 @@ export class ChatScreen {
 
   acceptSessions(sessions: ChatSession[]): void {
     if (this.destroyed) return
-    const knownChildren = this.sessions.filter((session) => session.parentSessionId !== null)
+    const runningParents = new Set(sessions.filter((session) => session.running).map((session) => session.id))
+    const knownChildren = this.sessions
+      .filter((session) => session.parentSessionId !== null)
+      .map((child) => {
+        if (runningParents.has(child.parentSessionId!)) return child
+        this.runIdBySession.delete(child.id)
+        this.bumpSessionRevision(child.id)
+        this.streamingBySession.delete(child.id)
+        return child.running ? { ...child, running: false } : child
+      })
     this.sessions = [
       ...sessions,
       ...knownChildren.filter((child) => !sessions.some((session) => session.id === child.id)),
@@ -679,9 +690,12 @@ export class ChatScreen {
     // stream, so settle root sessions the snapshot says are idle.
     for (const session of sessions) {
       if (session.running) continue
-      const stale = this.streamingBySession.get(session.id)
-      if (stale) this.runningRunIds.delete(stale.runId)
+      this.runIdBySession.delete(session.id)
+      this.bumpSessionRevision(session.id)
       this.streamingBySession.delete(session.id)
+    }
+    for (const session of sessions) {
+      if (session.running) void this.refreshRunningChildren(session.id)
     }
     if (
       !this.awaitingFirstPrompt
@@ -772,7 +786,8 @@ export class ChatScreen {
       const prompt = this.messagesBySession.get(sessionId)?.find((message) => message.id === promptMessageId)
       if (prompt?.status === "QUEUED") prompt.status = "SENT"
     }
-    const wasRunning = status === "running" ? false : this.runningRunIds.delete(runId)
+    const wasRunning = status !== "running" && this.runIdBySession.get(sessionId) === runId
+    this.bumpSessionRevision(sessionId)
     if (status !== "running") this.streamingBySession.delete(sessionId)
     // A run announces itself before its first delta, and a model can think for a long
     // while before that one arrives: holding the run from here is what makes the
@@ -780,8 +795,12 @@ export class ChatScreen {
     else if (this.streamingBySession.get(sessionId)?.runId !== runId) {
       this.streamingBySession.set(sessionId, { runId, startedAt: Date.now(), thinkingMs: null, text: "", reasoning: "", tools: [] })
     }
-    if (status === "running") this.runningRunIds.add(runId)
+    if (status === "running") this.runIdBySession.set(sessionId, runId)
+    else if (wasRunning) this.runIdBySession.delete(sessionId)
     const session = this.sessions.find((candidate) => candidate.id === sessionId)
+    // Child sessions are absent from the root session snapshot. Their run frame is
+    // the first thing a parent transcript sees, so resolve its title on demand.
+    if (status === "running" && !session) void this.loadSession(sessionId, runId)
     // A worker finishing is only one step inside its parent's turn. The parent
     // completion is the single user-facing event worth sounding.
     if (
@@ -868,7 +887,11 @@ export class ChatScreen {
         this.options.chats.notifications(),
       ])
       if (this.destroyed) return
-      this.sessions = sessions
+      const knownChildren = this.sessions.filter((session) => session.parentSessionId !== null)
+      this.sessions = [
+        ...sessions,
+        ...knownChildren.filter((child) => !sessions.some((session) => session.id === child.id)),
+      ]
       for (const request of questions) {
         if (this.pendingQuestions.has(request.id)) continue
         this.pendingQuestions.set(request.id, request)
@@ -906,10 +929,16 @@ export class ChatScreen {
     this.render.schedule()
   }
 
-  private async loadSession(sessionId: string): Promise<void> {
+  private async loadSession(sessionId: string, expectedRunId?: string): Promise<void> {
+    const revision = this.sessionRevision.get(sessionId) ?? 0
     try {
       const detail = await this.options.chats.get(sessionId)
       if (this.destroyed) return
+      if ((this.sessionRevision.get(sessionId) ?? 0) !== revision) {
+        if (!expectedRunId) void this.loadSession(sessionId)
+        return
+      }
+      if (expectedRunId && this.runIdBySession.get(sessionId) !== expectedRunId) return
       this.rememberSession(detail.session)
       // Keep this guard even though the HTTP client requests the same window. It
       // protects the renderer while a newer TUI is connected to an older server.
@@ -917,6 +946,7 @@ export class ChatScreen {
       if (detail.compaction) this.compactionBySession.set(sessionId, detail.compaction)
       else this.compactionBySession.delete(sessionId)
       if (detail.partial) {
+        this.runIdBySession.set(sessionId, detail.partial.runId)
         const known = this.streamingBySession.get(sessionId)
         // A partial that already carries words is a run this terminal did not watch
         // start, so it keeps no start time: see `Streaming.startedAt`.
@@ -927,11 +957,10 @@ export class ChatScreen {
           thinkingMs: known?.runId === detail.partial.runId ? known.thinkingMs : null,
           text: detail.partial.text,
           reasoning: detail.partial.reasoning,
-          tools: [],
+          tools: activeToolCalls(detail.messages),
         })
       } else {
-        const stale = this.streamingBySession.get(sessionId)
-        if (stale) this.runningRunIds.delete(stale.runId)
+        this.runIdBySession.delete(sessionId)
         this.streamingBySession.delete(sessionId)
       }
       this.render.schedule()
@@ -1815,6 +1844,30 @@ export class ChatScreen {
       : [...this.sessions, session]
   }
 
+  private bumpSessionRevision(sessionId: string): void {
+    this.sessionRevision.set(sessionId, (this.sessionRevision.get(sessionId) ?? 0) + 1)
+  }
+
+  /** Reconciles parallel workers after reconnect; root snapshots intentionally omit them. */
+  private async refreshRunningChildren(parentSessionId: string): Promise<void> {
+    const revisions = new Map(this.sessionRevision)
+    try {
+      const children = await this.options.chats.children(parentSessionId)
+      if (this.destroyed) return
+      for (const child of children) {
+        if ((this.sessionRevision.get(child.id) ?? 0) !== (revisions.get(child.id) ?? 0)) continue
+        this.rememberSession(child)
+        if (child.running) continue
+        this.runIdBySession.delete(child.id)
+        this.bumpSessionRevision(child.id)
+        this.streamingBySession.delete(child.id)
+      }
+      this.render.schedule()
+    } catch (error) {
+      this.options.logs.error("Subagent sessions", error)
+    }
+  }
+
   private selectSession(sessionId: string): void {
     if (sessionId === this.selectedSessionId) return
     this.setSelectedSession(sessionId)
@@ -1825,6 +1878,15 @@ export class ChatScreen {
     if (blocking) this.setFocus(blocking)
     else if (this.focus === "question" || this.focus === "permission") this.setFocus("composer")
     this.render.schedule()
+  }
+
+  private selectTranscriptBlock(blockId: string): void {
+    if (blockId.startsWith(SUBAGENT_BLOCK_PREFIX)) {
+      const sessionId = blockId.slice(SUBAGENT_BLOCK_PREFIX.length)
+      if (sessionId) this.selectSession(sessionId)
+      return
+    }
+    this.openUndo(blockId)
   }
 
   /** Opens the exact conversation where an agent is waiting for an answer. */
@@ -2258,10 +2320,13 @@ export class ChatScreen {
           (message.role === "USER" || message.role === "APP_EVENT") && message.status === "QUEUED"
         ))?.id ?? null
     const compaction = this.compactionBySession.get(session.id)
+    const renderedMessages = session.parentSessionId === null
+      ? messages.filter((message) => !(message.role === "TOOL_RESULT" && message.toolName === "subagent"))
+      : messages
     const firstAfterCompaction = compaction
-      ? messages.find((message) => message.seq !== undefined && message.seq > compaction.compactedThroughSeq)?.id
+      ? renderedMessages.find((message) => message.seq !== undefined && message.seq > compaction.compactedThroughSeq)?.id
       : undefined
-    const blocks = messages.flatMap((message) => [
+    const blocks = renderedMessages.flatMap((message) => [
       ...(message.id === firstAfterCompaction ? [compactionBlock()] : []),
       messageBlock(
         message,
@@ -2274,11 +2339,27 @@ export class ChatScreen {
     ])
     const streaming = this.streamingBySession.get(session.id)
     if (streaming) {
-      blocks.push(streamingBlock(streaming, current, {
+      const activeSubagents = session.parentSessionId === null
+        ? this.sessions
+          .filter((child) => child.parentSessionId === session.id && (child.running || this.streamingBySession.has(child.id)))
+          .sort((left, right) => left.createdAt - right.createdAt)
+        : []
+      const visibleStreaming = session.parentSessionId === null
+        ? { ...streaming, tools: streaming.tools.filter((tool) => tool !== "subagent") }
+        : streaming
+      blocks.push(streamingBlock(visibleStreaming, current, {
         spinner: SPINNER_FRAMES[this.spinner] ?? SPINNER_FRAMES[0]!,
         elapsedMs: streaming.startedAt === null ? null : Date.now() - streaming.startedAt,
         showThoughts: this.showThoughts,
       }))
+      for (const child of activeSubagents) {
+        const childStreaming = this.streamingBySession.get(child.id)
+        blocks.push(subagentActivityBlock(
+          child,
+          childStreaming?.tools.at(-1) ?? activeToolCalls(this.messagesBySession.get(child.id) ?? []).at(-1) ?? null,
+          SPINNER_FRAMES[this.spinner] ?? SPINNER_FRAMES[0]!,
+        ))
+      }
     }
     if (this.commandNotice) {
       const content = this.compactingSessionId === session.id
@@ -2514,6 +2595,33 @@ function streamingBlock(
     content: new StyledText(chunks),
     footer: new StyledText(footer),
   }
+}
+
+/** A running worker in its parent's transcript; clicking it opens the full child chat. */
+function subagentActivityBlock(session: ChatSession, toolName: string | null, spinner: string): ChatTranscriptBlock {
+  const chunks: TextChunk[] = [fg(TEXT_COLOR)(session.title)]
+  if (toolName) chunks.push(fg(MUTED_COLOR)(`\n↳ ${toolName}`))
+  return {
+    id: `${SUBAGENT_BLOCK_PREFIX}${session.id}`,
+    marker: new StyledText([fg(TOOL_COLOR)(spinner)]),
+    selectable: true,
+    content: new StyledText(chunks),
+  }
+}
+
+/** Calls with no durable result yet; completed tool history stays in the child transcript. */
+function activeToolCalls(messages: ChatMessage[]): string[] {
+  const answered = new Set(messages.flatMap((message) => (
+    message.role === "TOOL_RESULT" && message.toolCallId ? [message.toolCallId] : []
+  )))
+  return messages.flatMap((message) => message.blocks.flatMap((block) => (
+    block.kind === "TOOL_CALL"
+    && block.toolName
+    && block.toolCallId
+    && !answered.has(block.toolCallId)
+      ? [block.toolName]
+      : []
+  )))
 }
 
 /**
