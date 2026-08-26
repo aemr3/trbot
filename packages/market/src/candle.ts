@@ -228,8 +228,14 @@ export function closedCandles(series: CandleSeries, now: number): Candle[] {
  * reading around as it prints.
  */
 export function averageTrueRange(candles: Candle[], period = 14): number | null {
-  if (!Number.isInteger(period) || period <= 0 || candles.length < period + 1) return null
-  const ranges: number[] = []
+  return averageTrueRangeSeries(candles, period).at(-1) ?? null
+}
+
+/** Wilder ATR aligned to its source candles; the first `period` changes are warm-up. */
+export function averageTrueRangeSeries(candles: Candle[], period = 14): (number | null)[] {
+  const values: (number | null)[] = candles.map(() => null)
+  if (!Number.isInteger(period) || period <= 0 || candles.length < period + 1) return values
+  let average = 0
   for (let index = 1; index < candles.length; index++) {
     const candle = candles[index]!
     const previousClose = candles[index - 1]!.close
@@ -238,17 +244,19 @@ export function averageTrueRange(candles: Candle[], period = 14): number | null 
       Math.abs(candle.high - previousClose),
       Math.abs(candle.low - previousClose),
     )
-    if (!Number.isFinite(range)) return null
-    ranges.push(range)
+    if (!Number.isFinite(range)) return candles.map(() => null)
+    if (index <= period) {
+      average += range
+      if (index === period) {
+        average /= period
+        values[index] = average > 0 ? average : null
+      }
+      continue
+    }
+    average = (average * (period - 1) + range) / period
+    values[index] = average > 0 ? average : null
   }
-  if (ranges.length < period) return null
-
-  // Seed with the first `period` ranges, then smooth the rest into it.
-  let average = ranges.slice(0, period).reduce((sum, range) => sum + range, 0) / period
-  for (let index = period; index < ranges.length; index++) {
-    average = (average * (period - 1) + ranges[index]!) / period
-  }
-  return average > 0 ? average : null
+  return values
 }
 
 export function applyLivePrice(series: CandleSeries, price: number, timestamp: number): boolean {

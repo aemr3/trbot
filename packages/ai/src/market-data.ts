@@ -6,6 +6,11 @@ import type { CandleInstrumentResolver, CandleSource } from "@trbot/market/candl
 import type { DepthBookSnapshotLoader, DepthTarget } from "@trbot/market/depth.ts"
 import type { EquityQuoteStream, EquityQuoteUpdate } from "@trbot/market/equity-quote-stream.ts"
 import {
+  CANDLE_INDICATORS,
+  candleIndicatorSeries,
+  type CandleIndicatorSeries,
+} from "@trbot/market/indicator.ts"
+import {
   DEFAULT_FINANCIAL_METRICS,
   FINANCIAL_METRICS,
   FINANCIAL_PERIOD_PATTERN,
@@ -102,6 +107,12 @@ const CandleTarget = Type.Union([
   Type.Literal("BIST_100"),
   Type.Literal("BIST_30"),
 ])
+const CandleIndicatorParameter = Type.Union(
+  CANDLE_INDICATORS.map((indicator) => Type.Literal(indicator)),
+  {
+    description: "Indicator calculated from bars at the requested interval; PIVOT_CLASSIC uses the previous completed bar",
+  },
+)
 const IndexImpactIndex = Type.Union([
   Type.Literal("BIST_30"),
   Type.Literal("BIST_100"),
@@ -249,6 +260,12 @@ const CandleParameters = Type.Object({
   range: CandleRange,
   interval: CandleInterval,
   target: Type.Optional(CandleTarget),
+  indicators: Type.Optional(Type.Array(CandleIndicatorParameter, {
+    description: "Optional index-aligned indicator series; omit to return candles only",
+    minItems: 1,
+    maxItems: CANDLE_INDICATORS.length,
+    uniqueItems: true,
+  })),
   offset: ResultOffset,
   limit: Type.Optional(Type.Integer({
     description: "Page size from newest toward older candles; omit for the complete remaining series",
@@ -999,11 +1016,12 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
       description: [
         "Read the complete OHLCV candle series for a VIOP contract, an available underlying cash/spot instrument, BIST 100, or BIST 30.",
         "For indices, pass XU100/XU030 as symbol or select BIST_100/BIST_30 without a symbol.",
+        "Optional indicators use bars at the requested interval and are aligned by index with the returned candles.",
         CANDLE_INTERVAL_HELP,
       ].join(" "),
       parameters: CandleParameters,
     },
-    run: async ({ symbol, range, interval, target, offset, limit }, options) => {
+    run: async ({ symbol, range, interval, target, indicators, offset, limit }, options) => {
       const resolvedTarget = indexTarget(target, symbol) ?? target ?? "INSTRUMENT"
       const indexSymbol = resolvedTarget === "BIST_100" ? "XU100" : resolvedTarget === "BIST_30" ? "XU030" : null
       const resolved = resolvedTarget === "UNDERLYING" || resolvedTarget === "INSTRUMENT"
@@ -1019,11 +1037,15 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
         signal: options.signal,
         target: resolvedTarget,
       })
+      const pageLimit = limit ?? Math.max(1, series.candles.length - (offset ?? 0))
       const page = paginateNewest(
         series.candles,
         offset,
-        limit ?? Math.max(1, series.candles.length - (offset ?? 0)),
+        pageLimit,
       )
+      const indicatorResults = indicators
+        ? pageIndicatorSeries(candleIndicatorSeries(series.candles, indicators, series.intervalMs), offset, pageLimit)
+        : null
       const instrument = resolved
         ? {
             symbol: resolved.contractSymbol,
@@ -1043,10 +1065,27 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
         availableIntervalsByRange: series.availableIntervalsByRange,
         totalCandles: series.candles.length,
         candles: page.values,
+        indicators: indicatorResults ?? undefined,
         page: page.page,
       })
     },
   }
+}
+
+function pageIndicatorSeries(
+  indicators: CandleIndicatorSeries[],
+  offset: number | undefined,
+  limit: number,
+): CandleIndicatorSeries[] {
+  return indicators.map((indicator) => ({
+    indicator: indicator.indicator,
+    lines: Object.fromEntries(
+      Object.entries(indicator.lines).map(([name, values]) => [
+        name,
+        paginateNewest(values, offset, limit).values,
+      ]),
+    ),
+  }))
 }
 
 function requireSymbol(symbol: string | undefined): string {

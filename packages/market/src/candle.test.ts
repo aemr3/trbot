@@ -5,6 +5,7 @@ import {
   DEFAULT_INTERVALS_BY_RANGE,
   applyLivePrice,
   averageTrueRange,
+  averageTrueRangeSeries,
   closedCandles,
   rangeForInterval,
   type Candle,
@@ -91,6 +92,22 @@ test("reports no ATR when the series is too short", () => {
   expect(averageTrueRange(short, 14)).toBeNull()
   expect(averageTrueRange(short, 9)).toBeCloseTo(2, 6)
   expect(averageTrueRange(short, 0)).toBeNull()
+})
+
+test("aligns ATR values after the full Wilder warm-up window", () => {
+  const candles = Array.from({ length: 16 }, (_, index) => ({
+    timestamp: index,
+    open: 100,
+    high: 101,
+    low: 99,
+    close: 100,
+    volume: 1,
+  }))
+  const values = averageTrueRangeSeries(candles, 14)
+
+  expect(values.slice(0, 14)).toEqual(Array.from({ length: 14 }, () => null))
+  expect(values[14]).toBe(2)
+  expect(values[15]).toBe(2)
 })
 
 describe("rangeForInterval", () => {

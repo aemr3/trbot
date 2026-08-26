@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test"
 import type { Candle } from "./candle.ts"
 import {
+  CANDLE_INDICATORS,
+  CHART_INDICATORS,
   bollingerBands,
+  candleIndicatorSeries,
+  classicPivotLevels,
   exponentialMovingAverage,
   indicatorLines,
+  movingAverageConvergenceDivergence,
+  relativeStrengthIndex,
   volumeWeightedAveragePrice,
 } from "./indicator.ts"
 
@@ -80,4 +86,60 @@ test("draws only the active indicators, and drops VWAP on daily candles", () => 
 
   expect(indicatorLines(candles, [], HOUR_MS)).toEqual([])
   expect(indicatorLines([], ["EMA_20"], HOUR_MS)).toEqual([])
+})
+
+test("calculates Wilder RSI on the requested candle sequence", () => {
+  const rising = relativeStrengthIndex(bars(Array.from({ length: 15 }, (_, index) => 100 + index)), 14)
+  expect(rising.slice(0, 14)).toEqual(Array.from({ length: 14 }, () => null))
+  expect(rising[14]).toBe(100)
+
+  const flat = relativeStrengthIndex(bars(Array.from({ length: 15 }, () => 100)), 14)
+  expect(flat[14]).toBe(50)
+
+  const reference = relativeStrengthIndex(bars([
+    44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42,
+    45.84, 46.08, 45.89, 46.03, 45.61, 46.28, 46.28,
+  ]), 14)
+  expect(reference[14]).toBeCloseTo(70.4641, 4)
+})
+
+test("aligns MACD and its signal after both warm-up windows", () => {
+  const candles = bars(Array.from({ length: 40 }, (_, index) => 100 + index))
+  const { macd, signal, histogram } = movingAverageConvergenceDivergence(candles)
+
+  expect(macd.slice(0, 25).every((value) => value === null)).toBe(true)
+  expect(macd[25]).toBeCloseTo(7, 10)
+  expect(signal.slice(0, 33).every((value) => value === null)).toBe(true)
+  expect(signal[33]).toBeCloseTo(7, 10)
+  expect(histogram[33]).toBeCloseTo(0, 10)
+})
+
+test("uses only the prior candle for classic pivot levels", () => {
+  const candles = bars([100, 500])
+  candles[0] = { ...candles[0]!, high: 110, low: 90, close: 100 }
+  const levels = classicPivotLevels(candles)
+
+  expect(levels.pivot).toEqual([null, 100])
+  expect(levels.r1[1]).toBe(110)
+  expect(levels.r2[1]).toBe(120)
+  expect(levels.r3[1]).toBe(130)
+  expect(levels.s1[1]).toBe(90)
+  expect(levels.s2[1]).toBe(80)
+  expect(levels.s3[1]).toBe(70)
+})
+
+test("keeps agent-only indicators outside the chart indicator set", () => {
+  const candles = bars(Array.from({ length: 40 }, (_, index) => 100 + index))
+  const result = candleIndicatorSeries(candles, ["EMA_20", "ATR_14", "RSI_14", "MACD", "PIVOT_CLASSIC"], HOUR_MS)
+
+  expect(result.map((indicator) => indicator.indicator)).toEqual([
+    "EMA_20",
+    "ATR_14",
+    "RSI_14",
+    "MACD",
+    "PIVOT_CLASSIC",
+  ])
+  expect(result.find((indicator) => indicator.indicator === "ATR_14")?.lines.atr).toHaveLength(candles.length)
+  expect(CHART_INDICATORS).toEqual(["EMA_20", "EMA_50", "EMA_100", "VWAP", "BOLLINGER"])
+  expect(CANDLE_INDICATORS).toContain("PIVOT_CLASSIC")
 })

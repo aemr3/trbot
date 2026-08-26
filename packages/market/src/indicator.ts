@@ -2,9 +2,24 @@
 // pure function from candles to one value per candle, aligned to the series so
 // a chart can slice it the same way it slices the candles; a value is null
 // wherever the indicator has nothing to say yet.
-import type { Candle } from "./candle.ts"
+import { averageTrueRangeSeries, type Candle } from "./candle.ts"
 
-export const CHART_INDICATORS = ["EMA_20", "EMA_50", "EMA_100", "VWAP", "BOLLINGER"] as const
+export const CANDLE_INDICATORS = [
+  "EMA_20",
+  "EMA_50",
+  "EMA_100",
+  "VWAP",
+  "BOLLINGER",
+  "ATR_14",
+  "RSI_14",
+  "MACD",
+  "PIVOT_CLASSIC",
+] as const
+export type CandleIndicator = (typeof CANDLE_INDICATORS)[number]
+
+// Keep the terminal chart's compact overlay controls separate from the larger
+// indicator set available to agents.
+export const CHART_INDICATORS = ["EMA_20", "EMA_50", "EMA_100", "VWAP", "BOLLINGER"] as const satisfies readonly CandleIndicator[]
 export type ChartIndicator = (typeof CHART_INDICATORS)[number]
 
 export const CHART_INDICATOR_LABELS = {
@@ -50,6 +65,12 @@ export interface IndicatorLine {
   indicator: ChartIndicator
   color: string
   values: (number | null)[]
+}
+
+/** Named, index-aligned lines returned for one requested candle indicator. */
+export interface CandleIndicatorSeries {
+  indicator: CandleIndicator
+  lines: Record<string, (number | null)[]>
 }
 
 /**
@@ -128,6 +149,151 @@ export function bollingerBands(
   return { upper, middle, lower }
 }
 
+/** Wilder RSI of candle closes, neutral when a full window has no movement. */
+export function relativeStrengthIndex(candles: Candle[], period = 14): (number | null)[] {
+  const values: (number | null)[] = candles.map(() => null)
+  if (!Number.isInteger(period) || period <= 0 || candles.length < period + 1) return values
+  let averageGain = 0
+  let averageLoss = 0
+  for (let index = 1; index < candles.length; index++) {
+    const change = candles[index]!.close - candles[index - 1]!.close
+    if (!Number.isFinite(change)) return candles.map(() => null)
+    const gain = Math.max(0, change)
+    const loss = Math.max(0, -change)
+    if (index <= period) {
+      averageGain += gain
+      averageLoss += loss
+      if (index === period) {
+        averageGain /= period
+        averageLoss /= period
+        values[index] = relativeStrength(averageGain, averageLoss)
+      }
+      continue
+    }
+    averageGain = (averageGain * (period - 1) + gain) / period
+    averageLoss = (averageLoss * (period - 1) + loss) / period
+    values[index] = relativeStrength(averageGain, averageLoss)
+  }
+  return values
+}
+
+export interface MacdSeries {
+  macd: (number | null)[]
+  signal: (number | null)[]
+  histogram: (number | null)[]
+}
+
+/** Standard 12/26 EMA MACD with a 9-period EMA signal line. */
+export function movingAverageConvergenceDivergence(
+  candles: Candle[],
+  fastPeriod = 12,
+  slowPeriod = 26,
+  signalPeriod = 9,
+): MacdSeries {
+  const macd: (number | null)[] = candles.map(() => null)
+  const signal: (number | null)[] = candles.map(() => null)
+  const histogram: (number | null)[] = candles.map(() => null)
+  if (
+    !Number.isInteger(fastPeriod)
+    || !Number.isInteger(slowPeriod)
+    || !Number.isInteger(signalPeriod)
+    || fastPeriod <= 0
+    || slowPeriod <= fastPeriod
+    || signalPeriod <= 0
+  ) return { macd, signal, histogram }
+
+  const fast = exponentialMovingAverage(candles, fastPeriod)
+  const slow = exponentialMovingAverage(candles, slowPeriod)
+  const start = slow.findIndex((value) => value !== null)
+  if (start < 0) return { macd, signal, histogram }
+  const macdValues: number[] = []
+  for (let index = start; index < candles.length; index++) {
+    const fastValue = fast[index]
+    const slowValue = slow[index]
+    if (fastValue === null || slowValue === null) continue
+    const value = fastValue - slowValue
+    macd[index] = value
+    macdValues.push(value)
+  }
+  const signalValues = exponentialMovingAverageValues(macdValues, signalPeriod)
+  for (let index = 0; index < signalValues.length; index++) {
+    const signalValue = signalValues[index]
+    const sourceIndex = start + index
+    signal[sourceIndex] = signalValue
+    const macdValue = macd[sourceIndex]
+    if (signalValue !== null && macdValue !== null) histogram[sourceIndex] = macdValue - signalValue
+  }
+  return { macd, signal, histogram }
+}
+
+export interface ClassicPivotSeries {
+  pivot: (number | null)[]
+  r1: (number | null)[]
+  r2: (number | null)[]
+  r3: (number | null)[]
+  s1: (number | null)[]
+  s2: (number | null)[]
+  s3: (number | null)[]
+}
+
+/** Classic floor pivots derived only from the previous candle at this timeframe. */
+export function classicPivotLevels(candles: Candle[]): ClassicPivotSeries {
+  const series: ClassicPivotSeries = {
+    pivot: candles.map(() => null),
+    r1: candles.map(() => null),
+    r2: candles.map(() => null),
+    r3: candles.map(() => null),
+    s1: candles.map(() => null),
+    s2: candles.map(() => null),
+    s3: candles.map(() => null),
+  }
+  for (let index = 1; index < candles.length; index++) {
+    const previous = candles[index - 1]!
+    const pivot = (previous.high + previous.low + previous.close) / 3
+    const width = previous.high - previous.low
+    if (!Number.isFinite(pivot) || !Number.isFinite(width)) continue
+    series.pivot[index] = pivot
+    series.r1[index] = 2 * pivot - previous.low
+    series.s1[index] = 2 * pivot - previous.high
+    series.r2[index] = pivot + width
+    series.s2[index] = pivot - width
+    series.r3[index] = previous.high + 2 * (pivot - previous.low)
+    series.s3[index] = previous.low - 2 * (previous.high - pivot)
+  }
+  return series
+}
+
+/** Computes only requested indicators, all aligned to the original candle indexes. */
+export function candleIndicatorSeries(
+  candles: Candle[],
+  active: readonly CandleIndicator[],
+  grainMs: number | null,
+): CandleIndicatorSeries[] {
+  const result: CandleIndicatorSeries[] = []
+  for (const indicator of CANDLE_INDICATORS) {
+    if (!active.includes(indicator)) continue
+    if (indicator === "BOLLINGER") {
+      result.push({ indicator, lines: { ...bollingerBands(candles) } })
+    } else if (indicator === "VWAP") {
+      result.push({
+        indicator,
+        lines: { vwap: grainMs !== null && grainMs >= DAY_MS ? candles.map(() => null) : volumeWeightedAveragePrice(candles) },
+      })
+    } else if (indicator === "ATR_14") {
+      result.push({ indicator, lines: { atr: averageTrueRangeSeries(candles, 14) } })
+    } else if (indicator === "RSI_14") {
+      result.push({ indicator, lines: { rsi: relativeStrengthIndex(candles, 14) } })
+    } else if (indicator === "MACD") {
+      result.push({ indicator, lines: { ...movingAverageConvergenceDivergence(candles) } })
+    } else if (indicator === "PIVOT_CLASSIC") {
+      result.push({ indicator, lines: { ...classicPivotLevels(candles) } })
+    } else {
+      result.push({ indicator, lines: { ema: exponentialMovingAverage(candles, EMA_PERIODS[indicator]) } })
+    }
+  }
+  return result
+}
+
 /**
  * The lines the chart should draw for the active indicators, in the order they
  * are listed. VWAP is dropped on daily candles and coarser: one candle per
@@ -165,4 +331,25 @@ export function indicatorLines(
 function sessionDay(timestamp: number): string {
   return new Intl.DateTimeFormat("en", { dateStyle: "short", timeZone: "Europe/Istanbul" })
     .format(new Date(timestamp))
+}
+
+function exponentialMovingAverageValues(source: number[], period: number): (number | null)[] {
+  const values: (number | null)[] = source.map(() => null)
+  if (period <= 0 || source.length < period) return values
+  let sum = 0
+  for (let index = 0; index < period; index++) sum += source[index]!
+  let average = sum / period
+  values[period - 1] = average
+  const weight = 2 / (period + 1)
+  for (let index = period; index < source.length; index++) {
+    average = source[index]! * weight + average * (1 - weight)
+    values[index] = average
+  }
+  return values
+}
+
+function relativeStrength(averageGain: number, averageLoss: number): number {
+  if (averageLoss === 0) return averageGain === 0 ? 50 : 100
+  if (averageGain === 0) return 0
+  return 100 - 100 / (1 + averageGain / averageLoss)
 }

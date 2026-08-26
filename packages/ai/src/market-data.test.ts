@@ -26,6 +26,13 @@ const CandleResultSchema = z.object({
   totalCandles: z.number(),
   candles: z.array(z.object({ close: z.number() })),
 })
+const CandleIndicatorResultSchema = z.object({
+  candles: z.array(z.object({ close: z.number() })),
+  indicators: z.array(z.object({
+    indicator: z.string(),
+    lines: z.record(z.string(), z.array(z.number().nullable())),
+  })),
+})
 const InstrumentResultSchema = z.object({ instruments: z.array(ViopInstrumentSchema) })
 
 const NOW = 1_786_000_000_000
@@ -1033,6 +1040,44 @@ test("returns every candle by default and optionally limits the result", async (
     { symbol: "ASELS", target: "UNDERLYING" },
   ])
   expect(testHarness.calls.candles).toEqual([])
+})
+
+test("calculates requested indicators before slicing the candle page", async () => {
+  const testHarness = harness()
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+  const request = {
+    symbol: "ASELS",
+    range: "WEEK",
+    interval: "HOUR_1",
+    target: "UNDERLYING",
+    indicators: ["EMA_20", "PIVOT_CLASSIC"],
+    limit: 2,
+  } as const
+  const result = CandleIndicatorResultSchema.parse(modelData(await call(tools, "get_candles", request)))
+  const older = CandleIndicatorResultSchema.parse(modelData(await call(tools, "get_candles", {
+    ...request,
+    offset: 2,
+  })))
+
+  expect(result.candles.map((candle) => candle.close)).toEqual([402, 403])
+  expect(result.indicators).toEqual([
+    { indicator: "EMA_20", lines: { ema: [null, null] } },
+    {
+      indicator: "PIVOT_CLASSIC",
+      lines: {
+        pivot: [401, 402],
+        r1: [402, 403],
+        r2: [403, 404],
+        r3: [404, 405],
+        s1: [400, 401],
+        s2: [399, 400],
+        s3: [398, 399],
+      },
+    },
+  ])
+  expect(older.candles.map((candle) => candle.close)).toEqual([400, 401])
+  expect(older.indicators.find((indicator) => indicator.indicator === "PIVOT_CLASSIC")?.lines.pivot)
+    .toEqual([null, 400])
 })
 
 test("reads BIST index candles without requiring an active VIOP contract", async () => {
