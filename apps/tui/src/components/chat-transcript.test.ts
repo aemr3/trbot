@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { StyledText, TextAttributes, fg } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { ChatTranscript, type ChatTranscriptBlock } from "./chat-transcript.ts"
+import { DOUBLE_CLICK_MS } from "./selectable-list.ts"
 
 /** A reply: plain text, signed underneath. */
 function reply(text: string, signature = "gpt-5.6-sol"): ChatTranscriptBlock {
@@ -257,6 +258,37 @@ test("selects a clickable prompt while preserving contract-link priority", async
   const promptX = lines[promptY]?.indexOf("revisit") ?? -1
   await mockMouse.click(promptX + 2, promptY)
   expect(blocks).toEqual(["asked-revisit ASELS after earnings"])
+
+  transcript.destroy()
+  renderer.destroy()
+})
+
+test("does not treat clicks on different rows as a double-click", async () => {
+  const { renderer, mockMouse, renderOnce, captureCharFrame } = await createTestRenderer({ width: 50, height: 10 })
+  const blocks: string[] = []
+  let doubleClicks = 0
+  const transcript = new ChatTranscript(renderer, {
+    backgroundColor: "#101010",
+    canDoubleClick: () => true,
+    onBlockSelect: (id) => blocks.push(id),
+    onDoubleClick: () => { doubleClicks += 1 },
+  })
+  renderer.root.add(transcript.root)
+  transcript.setBlocks([
+    { ...asked("first prompt"), selectable: true },
+    { ...asked("second prompt"), selectable: true },
+  ])
+  await renderOnce()
+
+  const lines = captureCharFrame().split("\n")
+  const firstY = lines.findIndex((line) => line.includes("first prompt"))
+  const secondY = lines.findIndex((line) => line.includes("second prompt"))
+  await mockMouse.click((lines[firstY]?.indexOf("first") ?? -1) + 2, firstY)
+  await mockMouse.click((lines[secondY]?.indexOf("second") ?? -1) + 2, secondY)
+  await Bun.sleep(DOUBLE_CLICK_MS + 10)
+
+  expect(doubleClicks).toBe(0)
+  expect(blocks).toEqual(["asked-first prompt", "asked-second prompt"])
 
   transcript.destroy()
   renderer.destroy()

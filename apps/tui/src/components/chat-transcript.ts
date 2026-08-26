@@ -1,4 +1,5 @@
 import { TUI_THEME } from "../theme.ts"
+import { DOUBLE_CLICK_MS } from "./selectable-list.ts"
 import {
   BoxRenderable,
   ScrollBoxRenderable,
@@ -27,6 +28,8 @@ export interface ChatTranscriptBlock {
   fill?: string
   /** Optional left rail used instead of a filled block. */
   rail?: string
+  /** Additional cells before the marker and content for nested activity. */
+  indent?: number
   /** Whether the turn gets a blank line above and below its content. */
   padded?: boolean
   /** Above the content: what the model thought, or which tool answered. */
@@ -45,6 +48,8 @@ export interface ChatTranscriptOptions {
   resolveContractSymbol?: (mention: string) => string | null
   onContractSelect?: (symbol: string) => void
   onBlockSelect?: (id: string) => void
+  canDoubleClick?: () => boolean
+  onDoubleClick?: () => void
 }
 
 const LEFT_RAIL: ["left"] = ["left"]
@@ -81,6 +86,9 @@ export class ChatTranscript {
     selectable: boolean
     blockId: string
   }[] = []
+  private lastClickAt = 0
+  private lastClickTarget: string | null = null
+  private pendingClick: { action: () => void; timer: ReturnType<typeof setTimeout> } | null = null
 
   constructor(
     private readonly renderer: RenderContext,
@@ -97,6 +105,13 @@ export class ChatTranscript {
         flexDirection: "column",
         paddingRight: 1,
         backgroundColor: options.backgroundColor,
+      },
+      onMouseDown: (event) => {
+        if (event.button !== 0 || !this.options.canDoubleClick?.() || !this.registerClick(`root:${event.y}`)) return
+        this.cancelPendingClick()
+        event.preventDefault()
+        event.stopPropagation()
+        this.options.onDoubleClick?.()
       },
     })
     // Nothing here scrolls sideways, and a horizontal bar would take a line off the
@@ -126,10 +141,12 @@ export class ChatTranscript {
         row.box.borderColor = block.rail
         row.box.borderStyle = "heavy"
       }
-      if (block.marker !== undefined) row.box.paddingLeft = 2
-      else row.box.paddingLeft = block.rail === undefined ? 0 : 1
+      const indent = block.indent ?? 0
+      if (block.marker !== undefined) row.box.paddingLeft = indent + 2
+      else row.box.paddingLeft = indent + (block.rail === undefined ? 0 : 1)
       row.marker.visible = block.marker !== undefined
       if (block.marker !== undefined) row.marker.content = block.marker
+      row.marker.left = indent
       row.marker.top = block.padded ? 1 : 0
       row.box.paddingTop = block.padded ? 1 : 0
       row.box.paddingBottom = block.padded ? 1 : 0
@@ -156,7 +173,29 @@ export class ChatTranscript {
   }
 
   destroy(): void {
+    this.cancelPendingClick()
     if (!this.root.isDestroyed) this.root.destroyRecursively()
+  }
+
+  private registerClick(target: string): boolean {
+    const now = Date.now()
+    const isDoubleClick = this.lastClickTarget === target && now - this.lastClickAt < DOUBLE_CLICK_MS
+    this.lastClickAt = isDoubleClick ? 0 : now
+    this.lastClickTarget = isDoubleClick ? null : target
+    return isDoubleClick
+  }
+
+  private cancelPendingClick(): void {
+    if (this.pendingClick) clearTimeout(this.pendingClick.timer)
+    this.pendingClick = null
+  }
+
+  private flushPendingClick(): void {
+    const pending = this.pendingClick
+    if (!pending) return
+    clearTimeout(pending.timer)
+    this.pendingClick = null
+    pending.action()
   }
 
   private resize(count: number): void {
@@ -180,6 +219,14 @@ export class ChatTranscript {
       paddingRight: 1,
       marginBottom: 1,
       backgroundColor: this.options.backgroundColor,
+      onMouseDown: (event) => {
+        if (event.button !== 0 || !this.options.canDoubleClick?.()) return
+        event.stopPropagation()
+        if (!this.registerClick(`row:${this.rows[index]?.blockId}`)) return
+        this.cancelPendingClick()
+        event.preventDefault()
+        this.options.onDoubleClick?.()
+      },
     })
     try {
       const marker = new TextRenderable(this.renderer, {
@@ -203,6 +250,31 @@ export class ChatTranscript {
           if (event.button !== 0) return
           const row = this.rows[index]
           const symbol = contractAtPoint(body, row?.contracts ?? [], event.x, event.y)
+          if (this.options.canDoubleClick?.()) {
+            event.stopPropagation()
+            const clickTarget = symbol ? `contract:${row?.blockId}:${symbol}` : `block:${row?.blockId}`
+            if (this.registerClick(clickTarget)) {
+              this.cancelPendingClick()
+              event.preventDefault()
+              this.options.onDoubleClick?.()
+              return
+            }
+            const action = symbol
+              ? () => this.options.onContractSelect?.(symbol)
+              : row?.selectable
+                ? () => this.options.onBlockSelect?.(row.blockId)
+                : null
+            if (action) {
+              event.preventDefault()
+              this.flushPendingClick()
+              const timer = setTimeout(() => {
+                this.pendingClick = null
+                action()
+              }, DOUBLE_CLICK_MS)
+              this.pendingClick = { action, timer }
+            }
+            return
+          }
           if (symbol) {
             event.preventDefault()
             event.stopPropagation()
