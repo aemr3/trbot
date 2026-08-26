@@ -34,7 +34,7 @@ export interface DepthBook {
 /** The latest assembled book this server observed, retained after its live stream stops. */
 export interface DepthBookSnapshot {
   book: DepthBook
-  /** When the feed last changed the cached book, as epoch milliseconds. */
+  /** When the server observed this book, as epoch milliseconds. */
   updatedAt: number
 }
 

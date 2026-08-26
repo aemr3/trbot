@@ -28,7 +28,6 @@ export function providerSources(overrides: Partial<ProviderSources> = {}): Provi
     brokerage: { loadDistribution: unavailable },
     settlement: { loadSettlement: unavailable },
     memberFeatures: { loadFeatures: async () => memberFeatureSet([]) },
-    depthBooks: { getDepthBookSnapshot: () => null },
     quotes: { subscribe: noOp, onConnectionChange: noOp, start: noOp, stop: noOp },
     accountStream: {
       subscribe: noOp,

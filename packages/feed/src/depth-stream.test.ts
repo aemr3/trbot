@@ -39,29 +39,6 @@ function latest(books: DepthBook[]): DepthBook {
 }
 
 describe("FeedDepthStream", () => {
-  test("caches only actual ladder observations with their update time", async () => {
-    const socket = new FakeMarketSocket()
-    const snapshots: Array<{ updatedAt: number; bids: number[] }> = []
-    const stream = new FeedDepthStream(socket, {
-      loadSession: async () => "0955-1810",
-      loadTrades: async () => [],
-      now: () => 123_456,
-      onSnapshot: ({ book, updatedAt }) => {
-        snapshots.push({ updatedAt, bids: book.bids.map((level) => level.price) })
-      },
-    })
-    stream.start("F_XU0300826")
-    await Bun.sleep(5)
-
-    expect(snapshots).toEqual([])
-
-    socket.level({ l: 0, obs: "B", p: 16821, c: 1, s: 5 })
-    expect(snapshots).toEqual([{ updatedAt: 123_456, bids: [16821] }])
-
-    stream.stop()
-    expect(snapshots).toEqual([{ updatedAt: 123_456, bids: [16821] }])
-  })
-
   test("reports a closed market from the symbol's trading hours", async () => {
     const socket = new FakeMarketSocket()
     const books: DepthBook[] = []

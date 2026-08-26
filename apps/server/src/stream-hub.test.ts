@@ -210,6 +210,27 @@ describe("stream hub", () => {
     expect(b.sent).toEqual([{ type: "depth", book: book("BBB") }])
   })
 
+  test("observes the same depth book it delivers to a client", () => {
+    const depth = new FakeDepthFactory()
+    const observed: DepthBook[] = []
+    const hub = new StreamHub(sessionWith(sourcesWith(new FakeQuoteStream(), depth)), {
+      onDepth: (value) => observed.push(value),
+    })
+    const client = socket()
+    const visible = {
+      ...book("F_ISCTR0826"),
+      bids: [{ price: 35.52, lots: 10, orderCount: 1 }],
+      asks: [{ price: 35.54, lots: 50, orderCount: 3 }],
+    }
+
+    hub.add(client)
+    hub.handle(client, { type: "subscribe", channel: "depth", symbol: "F_ISCTR0826" })
+    depth.forSymbol("F_ISCTR0826")?.listener?.(visible)
+
+    expect(observed).toEqual([visible])
+    expect(client.sent).toEqual([{ type: "depth", book: visible }])
+  })
+
   test("a depth symbol nobody watches any more is stopped", () => {
     const depth = new FakeDepthFactory()
     const hub = new StreamHub(sessionWith(sourcesWith(new FakeQuoteStream(), depth)))
