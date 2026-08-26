@@ -701,8 +701,12 @@ export class ChatScreen {
     if (this.destroyed) return
     const messages = this.messagesBySession.get(sessionId) ?? []
     const existing = messages.findIndex((entry) => entry.id === message.id)
-    if (existing >= 0) messages[existing] = message
-    else messages.push(message)
+    // The stream can announce that a prompt was claimed before its send request
+    // returns the older queued snapshot. Never move a prompt backward into the queue.
+    if (existing < 0) messages.push(message)
+    else if (!(message.status === "QUEUED" && messages[existing]?.status !== "QUEUED")) {
+      messages[existing] = message
+    }
     this.messagesBySession.set(sessionId, recentChatTimeline(messages, CHAT_TIMELINE_LIMIT))
     // A stored reply replaces what was streaming, so the words are not shown twice.
     if (message.role === "ASSISTANT") this.streamingBySession.delete(sessionId)
@@ -2223,13 +2227,24 @@ export class ChatScreen {
     }
 
     const current = transcriptModelLabel(session.model || "model", session.reasoning)
-    const blocks = (this.messagesBySession.get(session.id) ?? [])
+    const messages = this.messagesBySession.get(session.id) ?? []
+    const lastReply = messages.findLastIndex((message) => message.role === "ASSISTANT")
+    const activePromptRecorded = messages.slice(lastReply + 1).some((message) => (
+      (message.role === "USER" || message.role === "APP_EVENT") && message.status !== "QUEUED"
+    ))
+    const activeQueuedPrompt = activePromptRecorded
+      ? null
+      : messages.slice(lastReply + 1).find((message) => (
+          (message.role === "USER" || message.role === "APP_EVENT") && message.status === "QUEUED"
+        ))?.id ?? null
+    const blocks = messages
       .map((message) => messageBlock(
         message,
         current,
         this.showThoughts,
         this.promptBackground(),
         this.options.embedded === true,
+        message.id !== activeQueuedPrompt,
       ))
     const streaming = this.streamingBySession.get(session.id)
     if (streaming) {
@@ -2365,6 +2380,7 @@ function messageBlock(
   showThoughts: boolean,
   promptBackground: string,
   embedded: boolean,
+  showQueued: boolean,
 ): ChatTranscriptBlock {
   if (message.role === "APP_EVENT") {
     return {
@@ -2372,7 +2388,7 @@ function messageBlock(
       marker: new StyledText([fg(COMPOSER_COLOR)("◆")]),
       header: new StyledText([fg(COMPOSER_COLOR)(message.toolName ?? "market monitor")]),
       content: new StyledText([fg(MUTED_COLOR)(message.text)]),
-      ...(message.status === "QUEUED"
+      ...(message.status === "QUEUED" && showQueued
         ? { footer: new StyledText([fg(QUEUED_COLOR)("waiting for agent")]) }
         : message.status === "FAILED"
           ? { footer: new StyledText([fg(ERROR_COLOR)("agent wake-up failed")]) }
@@ -2380,7 +2396,7 @@ function messageBlock(
     }
   }
   if (message.role === "USER") {
-    const queued = message.status === "QUEUED"
+    const queued = message.status === "QUEUED" && showQueued
     const block: ChatTranscriptBlock = {
       id: message.id,
       padded: true,

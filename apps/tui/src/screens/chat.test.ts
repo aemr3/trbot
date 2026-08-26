@@ -425,7 +425,7 @@ test("asks the trader to connect a provider before offering a composer", async (
   renderer.destroy()
 })
 
-test("sends what is typed and shows it waiting its turn", async () => {
+test("shows only prompts waiting behind the active turn as queued", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
@@ -437,12 +437,22 @@ test("sends what is typed and shows it waiting its turn", async () => {
   await mockInput.typeText("where is ASELS heading?")
   mockInput.pressEnter()
 
-  await waitForFrame((frame) => frame.includes("where is ASELS heading?"))
+  const active = await waitForFrame((frame) => frame.includes("where is ASELS heading?"))
   expect(chats.sent).toEqual(["where is ASELS heading?"])
-  // Queued is shown, not hidden: a trader can see what the model has not reached
-  // yet, and that it can still be taken back.
-  const queued = await waitForFrame((frame) => frame.includes("queued"))
+  expect(active).not.toContain("queued")
+
+  screen.acceptMessage("chat-1", userMessage("where is ASELS heading?", "SENT"))
+  screen.acceptRun("chat-1", "run-1", "running")
+  await waitForFrame((frame) => frame.includes("thinking…"))
+  // A slower send response must not overwrite the stream's claimed prompt.
+  screen.acceptMessage("chat-1", userMessage("where is ASELS heading?", "QUEUED"))
+  await mockInput.typeText("and what about THYAO?")
+  mockInput.pressEnter()
+
+  // The first prompt is already being answered; only the second can be cancelled.
+  const queued = await waitForFrame((frame) => frame.includes("and what about THYAO?") && frame.includes("queued"))
   expect(queued).toContain("^X cancels it")
+  expect(queued.match(/queued/gu)).toHaveLength(1)
 
   screen.destroy()
   renderer.destroy()
