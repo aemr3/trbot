@@ -249,13 +249,15 @@ test("stores a rolling checkpoint without removing the visible transcript", asyn
   ])
 })
 
-test("manually compacts a settled chat without changing its transcript", async () => {
+test("manual compaction keeps new prompts queued until its checkpoint is saved", async () => {
   const forceCalls: boolean[] = []
+  const finishCompaction = Promise.withResolvers<void>()
   const compaction: ChatCompactionRunner = {
     history: (context) => context.records.map((entry) => modelRecord(entry.record)),
     compact: async (input) => {
       forceCalls.push(input.force === true)
       if (!input.force) return null
+      await finishCompaction.promise
       const last = input.context.records.at(-1)
       if (!last) return null
       return {
@@ -272,19 +274,31 @@ test("manually compacts a settled chat without changing its transcript", async (
       }
     },
   }
-  const { chat, store } = await harness({ compaction })
+  const { chat, store, turns } = await harness({ compaction })
   const session = await chat.create()
   await chat.send(session.id, "keep this visible")
   await settle()
 
-  const compacted = await chat.compact(session.id)
+  const compacting = chat.compact(session.id)
+  await settle()
+  await chat.send(session.id, "wait behind compaction")
+  await settle()
+
+  expect(turns.map((turn) => turn.prompt)).toEqual(["keep this visible"])
+  expect((await chat.detail(session.id)).messages.at(-1)?.status).toBe("QUEUED")
+
+  finishCompaction.resolve()
+  const compacted = await compacting
+  await settle()
 
   expect(compacted).toEqual({ compacted: true, tokensBefore: 24_000, tokensAfter: 2_400 })
-  expect(forceCalls).toEqual([false, true])
+  expect(forceCalls).toEqual([false, true, false])
   expect((await store.context(session.id)).compaction?.summary).toBe("manual checkpoint")
   expect((await chat.detail(session.id)).messages.map((message) => message.text)).toEqual([
     "keep this visible",
     "answer to keep this visible",
+    "wait behind compaction",
+    "answer to wait behind compaction",
   ])
 })
 

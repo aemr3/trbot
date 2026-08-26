@@ -106,6 +106,8 @@ export class ChatController {
   private sessions: ChatSession[] = []
   /** Sessions whose queue is being worked through, so a second send does not start a race. */
   private readonly draining = new Set<string>()
+  /** Manual compaction occupies the same per-session slot as a running turn. */
+  private readonly manualCompactions = new Set<string>()
   /** Prevents a just-aborted parent or child from writing after its rows were removed. */
   private readonly removedSessionIds = new Set<string>()
   /** Serializes destructive transcript changes for one conversation. */
@@ -391,31 +393,41 @@ export class ChatController {
   /** Forces a fresh rolling summary without adding anything to the conversation. */
   async compact(sessionId: string): Promise<ChatCompactionReport> {
     const detail = await this.detail(sessionId)
-    if (detail.session.running || detail.session.queued > 0) {
+    if (detail.session.running || detail.session.queued > 0 || this.manualCompactions.has(sessionId)) {
       throw new ProtocolError("invalid_request", "Wait for this chat to finish before compacting it")
     }
     if (!this.options.compaction) {
       throw new ProtocolError("invalid_request", "Chat compaction is unavailable")
     }
 
-    const choice = choiceOf(detail.session)
-    if (!choice) throw new ProtocolError("invalid_request", "Choose a chat model before compacting this session")
-    await this.options.requireModel(choice)
-    const turnModel = await this.options.resolveModel(choice)
-    const compacted = await this.options.compaction.compact({
-      sessionId,
-      model: turnModel.model,
-      context: await this.options.store.context(sessionId),
-      prompt: "",
-      force: true,
-    })
-    if (!compacted) return { compacted: false, tokensBefore: null }
-    await this.options.store.saveCompaction(compacted.checkpoint)
-    await this.options.broadcast({ type: "chatCompacted", sessionId, compaction: compacted.checkpoint })
-    return {
-      compacted: true,
-      tokensBefore: compacted.checkpoint.tokensBefore,
-      tokensAfter: compacted.checkpoint.tokensAfter ?? compacted.checkpoint.tokensBefore,
+    this.manualCompactions.add(sessionId)
+    this.draining.add(sessionId)
+    await this.announceSessions()
+    try {
+      const choice = choiceOf(detail.session)
+      if (!choice) throw new ProtocolError("invalid_request", "Choose a chat model before compacting this session")
+      await this.options.requireModel(choice)
+      const turnModel = await this.options.resolveModel(choice)
+      const compacted = await this.options.compaction.compact({
+        sessionId,
+        model: turnModel.model,
+        context: await this.options.store.context(sessionId),
+        prompt: "",
+        force: true,
+      })
+      if (!compacted) return { compacted: false, tokensBefore: null }
+      await this.options.store.saveCompaction(compacted.checkpoint)
+      await this.options.broadcast({ type: "chatCompacted", sessionId, compaction: compacted.checkpoint })
+      return {
+        compacted: true,
+        tokensBefore: compacted.checkpoint.tokensBefore,
+        tokensAfter: compacted.checkpoint.tokensAfter ?? compacted.checkpoint.tokensBefore,
+      }
+    } finally {
+      this.manualCompactions.delete(sessionId)
+      this.draining.delete(sessionId)
+      await this.announceSessions()
+      this.drain(sessionId)
     }
   }
 
@@ -837,7 +849,7 @@ export class ChatController {
   }
 
   private withRunState(session: ChatSession): ChatSession {
-    return { ...session, running: this.runs.has(session.id) }
+    return { ...session, running: this.runs.has(session.id) || this.manualCompactions.has(session.id) }
   }
 
   private async announceSessions(): Promise<void> {

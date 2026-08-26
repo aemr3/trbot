@@ -1313,6 +1313,12 @@ test("compacts the selected chat without sending a message", async () => {
   expect(second).toBeDefined()
   expect(second).not.toBe(first)
 
+  await mockInput.typeText("must wait")
+  mockInput.pressEnter()
+  const queued = await waitForFrame((value) => value.includes("must wait") && value.includes("queued"))
+  expect(queued).toContain("^X cancels it")
+  expect(chats.sent).toEqual(["must wait"])
+
   compacting.resolve({ compacted: true, tokensBefore: 24_000, tokensAfter: 2_400 })
   await Bun.sleep(0)
   const frame = await waitForFrame((value) => value.includes("24.0K estimated tokens summarized"))
@@ -1320,7 +1326,8 @@ test("compacts the selected chat without sending a message", async () => {
   expect(frame).toContain("Context compacted")
   expect(spinnerFrame(frame)).toBeUndefined()
   expect(chats.compacted).toEqual([session.id])
-  expect(chats.sent).toEqual([])
+  expect(chats.sent).toEqual(["must wait"])
+  expect(frame).toContain("ask something")
 
   screen.destroy()
   renderer.destroy()

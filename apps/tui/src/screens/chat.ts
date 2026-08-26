@@ -1961,7 +1961,9 @@ export class ChatScreen {
 
   /** No provider or no model means there is nothing to type into yet. */
   private composerUsable(): boolean {
-    return this.connected !== false && this.selectedHasModel() && this.blockingFocus() === null
+    return this.connected !== false
+      && this.selectedHasModel()
+      && this.blockingFocus() === null
   }
 
   // --- painting ----------------------------------------------------------------
@@ -2248,7 +2250,9 @@ export class ChatScreen {
     const activePromptRecorded = messages.slice(lastReply + 1).some((message) => (
       (message.role === "USER" || message.role === "APP_EVENT") && message.status !== "QUEUED"
     ))
-    const activeQueuedPrompt = activePromptRecorded
+    const occupiedWithoutPrompt = this.compactingSessionId === session.id
+      || (session.running && !this.streamingBySession.has(session.id))
+    const activeQueuedPrompt = activePromptRecorded || occupiedWithoutPrompt
       ? null
       : messages.slice(lastReply + 1).find((message) => (
           (message.role === "USER" || message.role === "APP_EVENT") && message.status === "QUEUED"
