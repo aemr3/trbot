@@ -50,6 +50,7 @@ export interface ChatTranscriptOptions {
   onBlockSelect?: (id: string) => void
   canDoubleClick?: () => boolean
   onDoubleClick?: () => void
+  onBottomChange?: (atBottom: boolean) => void
 }
 
 const LEFT_RAIL: ["left"] = ["left"]
@@ -89,6 +90,9 @@ export class ChatTranscript {
   private lastClickAt = 0
   private lastClickTarget: string | null = null
   private pendingClick: { action: () => void; timer: ReturnType<typeof setTimeout> } | null = null
+  private atBottom = true
+  private bottomCheckScheduled = false
+  private readonly scrollChangeListener = () => this.scheduleBottomCheck()
 
   constructor(
     private readonly renderer: RenderContext,
@@ -114,6 +118,7 @@ export class ChatTranscript {
         this.options.onDoubleClick?.()
       },
     })
+    this.root.verticalScrollBar.on("change", this.scrollChangeListener)
     // Nothing here scrolls sideways, and a horizontal bar would take a line off the
     // window while the content still measures the full height — which is enough
     // overflow for the sticky bottom to hide the first line of the conversation.
@@ -166,14 +171,23 @@ export class ChatTranscript {
       if (block.footer !== undefined) row.footer.content = block.footer
       row.footer.marginTop = block.footer !== undefined && bodyVisible ? 1 : 0
     })
+    this.scheduleBottomCheck()
   }
 
   handleKey(key: KeyEvent): boolean {
-    return this.root.handleKeyPress(key)
+    const handled = this.root.handleKeyPress(key)
+    this.scheduleBottomCheck()
+    return handled
+  }
+
+  scrollToBottom(): void {
+    this.root.scrollTo({ x: this.root.scrollLeft, y: this.root.scrollHeight })
+    this.updateBottomState()
   }
 
   destroy(): void {
     this.cancelPendingClick()
+    this.root.verticalScrollBar.off("change", this.scrollChangeListener)
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
 
@@ -196,6 +210,23 @@ export class ChatTranscript {
     clearTimeout(pending.timer)
     this.pendingClick = null
     pending.action()
+  }
+
+  private scheduleBottomCheck(): void {
+    if (this.bottomCheckScheduled) return
+    this.bottomCheckScheduled = true
+    queueMicrotask(() => {
+      this.bottomCheckScheduled = false
+      if (!this.root.isDestroyed) this.updateBottomState()
+    })
+  }
+
+  private updateBottomState(): void {
+    const maxScrollTop = Math.max(0, this.root.scrollHeight - this.root.viewport.height)
+    const atBottom = this.root.scrollTop >= maxScrollTop
+    if (atBottom === this.atBottom) return
+    this.atBottom = atBottom
+    this.options.onBottomChange?.(atBottom)
   }
 
   private resize(count: number): void {

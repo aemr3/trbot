@@ -230,6 +230,7 @@ export class ChatScreen {
   readonly root: BoxRenderable
 
   private readonly transcript: ChatTranscript
+  private readonly jumpToBottomBar: BoxRenderable
   private readonly emptyState: BoxRenderable
   private readonly commandMenu: ChatCommandMenu
   private readonly composerRow: BoxRenderable
@@ -326,7 +327,33 @@ export class ChatScreen {
       onBlockSelect: (blockId) => this.selectTranscriptBlock(blockId),
       canDoubleClick: () => Boolean(this.selectedSession()?.parentSessionId),
       onDoubleClick: () => { this.openParentFromTranscript() },
+      onBottomChange: (atBottom) => { this.jumpToBottomBar.visible = !atBottom },
     })
+    this.jumpToBottomBar = new BoxRenderable(renderer, {
+      width: "100%",
+      height: 1,
+      flexShrink: 0,
+      alignItems: "center",
+      backgroundColor: this.surfaceBackground,
+      visible: false,
+    })
+    const jumpToBottom = new BoxRenderable(renderer, {
+      width: 26,
+      height: 1,
+      backgroundColor: TUI_THEME.activeControl,
+      onMouseDown: (event) => {
+        if (event.button !== 0) return
+        event.preventDefault()
+        event.stopPropagation()
+        this.transcript.scrollToBottom()
+      },
+    })
+    jumpToBottom.add(new TextRenderable(renderer, {
+      content: " Jump to bottom (click) ↓ ",
+      fg: TEXT_COLOR,
+      wrapMode: "none",
+    }))
+    this.jumpToBottomBar.add(jumpToBottom)
     this.emptyState = new BoxRenderable(renderer, {
       position: "absolute",
       top: 0,
@@ -352,6 +379,7 @@ export class ChatScreen {
       wrapMode: "word",
     }))
     body.add(this.transcript.root)
+    body.add(this.jumpToBottomBar)
     body.add(this.emptyState)
     this.commandMenu = new ChatCommandMenu(renderer, visibleChatCommands("/connect"), {
       backgroundColor: this.surfaceBackground,
@@ -2171,6 +2199,7 @@ export class ChatScreen {
     if (sessionId) this.awaitingFirstPrompt = false
     if (sessionId === this.selectedSessionId) return
     this.closeUndo()
+    this.transcript.scrollToBottom()
     this.selectedSessionId = sessionId
     this.commandNotice = null
     this.automationNotice = null
@@ -2568,11 +2597,8 @@ export class ChatScreen {
           (message.role === "USER" || message.role === "APP_EVENT") && message.status === "QUEUED"
         ))?.id ?? null
     const compaction = this.compactionBySession.get(session.id)
-    const renderedMessages = session.parentSessionId === null
-      ? messages.filter((message) => !(message.role === "TOOL_RESULT" && message.toolName === "subagent"))
-      : messages
     const firstAfterCompaction = compaction
-      ? renderedMessages.find((message) => message.seq !== undefined && message.seq > compaction.compactedThroughSeq)?.id
+      ? messages.find((message) => message.seq !== undefined && message.seq > compaction.compactedThroughSeq)?.id
       : undefined
     const childrenByPrompt = new Map<string, ChatSession[]>()
     const childrenByToolCall = new Map<string, ChatSession[]>()
@@ -2613,6 +2639,7 @@ export class ChatScreen {
         : []
     )))
     const appendedSubagentIds = new Set<string>()
+    let hasDurableActiveSubagentCall = false
     const appendSubagents = (children: readonly ChatSession[]): void => {
       for (const child of children) {
         if (appendedSubagentIds.has(child.id)) continue
@@ -2635,10 +2662,17 @@ export class ChatScreen {
         appendLegacyPromptSubagents()
         promptMessageId = message.id
       }
-      if (session.parentSessionId === null && message.role === "TOOL_RESULT" && message.toolName === "subagent") {
-        if (message.toolCallId) appendSubagents(childrenByToolCall.get(message.toolCallId) ?? [])
-        continue
-      }
+      const messageToolCalls = message.blocks.filter((block) => block.kind === "TOOL_CALL" && block.toolCallId)
+      const firstActiveCall = messageToolCalls.findIndex((block) => (
+        block.toolCallId !== null && !completedSubagentCallIds.has(block.toolCallId)
+      ))
+      const firstCall = messageToolCalls[0]
+      const activeSubagentCalls = session.parentSessionId === null
+        && firstActiveCall === 0
+        && firstCall?.toolName === "subagent"
+        ? [firstCall]
+        : []
+      if (activeSubagentCalls.length > 0) hasDurableActiveSubagentCall = true
       if (message.id === firstAfterCompaction) blocks.push(compactionBlock())
       blocks.push(messageBlock(
         message,
@@ -2647,19 +2681,19 @@ export class ChatScreen {
         this.promptBackground(),
         this.options.embedded === true,
         message.id !== activeQueuedPrompt,
+        activeSubagentCalls.map(() => "subagent"),
       ))
-      for (const block of message.blocks) {
-        if (
-          block.kind === "TOOL_CALL"
-          && block.toolName === "subagent"
-          && block.toolCallId
-          && !completedSubagentCallIds.has(block.toolCallId)
-        ) appendSubagents(childrenByToolCall.get(block.toolCallId) ?? [])
+      if (session.parentSessionId === null && message.role === "TOOL_RESULT" && message.toolName === "subagent") {
+        if (message.toolCallId) appendSubagents(childrenByToolCall.get(message.toolCallId) ?? [])
+        continue
+      }
+      for (const block of activeSubagentCalls) {
+        if (block.toolCallId) appendSubagents(childrenByToolCall.get(block.toolCallId) ?? [])
       }
     }
     const streaming = this.streamingBySession.get(session.id)
     if (streaming) {
-      const visibleStreaming = session.parentSessionId === null
+      const visibleStreaming = hasDurableActiveSubagentCall
         ? { ...streaming, tools: streaming.tools.filter((tool) => tool !== "subagent") }
         : streaming
       blocks.push(streamingBlock(visibleStreaming, current, {
@@ -2798,6 +2832,7 @@ function messageBlock(
   promptBackground: string,
   embedded: boolean,
   showQueued: boolean,
+  activeTools: readonly string[] = [],
 ): ChatTranscriptBlock {
   if (message.role === "APP_EVENT") {
     return {
@@ -2842,6 +2877,9 @@ function messageBlock(
   }
   const chunks: TextChunk[] = []
   if (message.text) chunks.push(fg(TEXT_COLOR)(message.text))
+  for (const tool of activeTools) {
+    chunks.push(fg(MUTED_COLOR)(`${chunks.length > 0 ? "\n" : ""}⚙ ${tool}`))
+  }
   if (message.status === "PARTIAL") chunks.push(fg(MUTED_COLOR)(`${chunks.length > 0 ? "\n" : ""}stopped`))
   if (message.errorMessage) chunks.push(fg(ERROR_COLOR)(`${chunks.length > 0 ? "\n" : ""}${message.errorMessage}`))
   const thought = thoughtHeader(reasoningText(message), {

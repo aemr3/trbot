@@ -1693,12 +1693,14 @@ test("restores completed workers at their exact result when another prompt was q
     && frame.includes("1 toolcall · 2.5s")
   ))
   expect(restored).not.toContain(legacyWorker.title)
-  expect(restored).not.toContain(firstSubagentResult.text)
-  expect(restored).not.toContain(secondSubagentResult.text)
+  expect(restored).toContain(firstSubagentResult.text)
+  expect(restored).toContain(secondSubagentResult.text)
   expect(restored.indexOf(firstPrompt.text)).toBeLessThan(restored.indexOf(secondPrompt.text))
   expect(restored.indexOf(secondPrompt.text)).toBeLessThan(restored.indexOf(firstWorker.title))
+  expect(restored.indexOf(firstSubagentResult.text)).toBeLessThan(restored.indexOf(firstWorker.title))
   expect(restored.indexOf(firstWorker.title)).toBeLessThan(restored.indexOf(firstReply.text))
   expect(restored.indexOf(firstReply.text)).toBeLessThan(restored.indexOf(secondWorker.title))
+  expect(restored.indexOf(secondSubagentResult.text)).toBeLessThan(restored.indexOf(secondWorker.title))
   expect(restored.indexOf(secondWorker.title)).toBeLessThan(restored.indexOf(secondReply.text))
   const failedLine = restored.split("\n").find((line) => line.includes(secondWorker.title)) ?? ""
   expect(failedLine.trimStart().startsWith("×")).toBeTrue()
@@ -1769,9 +1771,67 @@ test("anchors repeated subagent calls from one turn independently", async () => 
     frame.includes(firstWorker.title) && frame.includes(secondWorker.title) && frame.includes(reply.text)
   ))
   expect(restored.indexOf(firstWorker.title)).toBeLessThan(restored.indexOf(secondWorker.title))
+  expect(restored.indexOf(firstResult.text)).toBeLessThan(restored.indexOf(firstWorker.title))
+  expect(restored.indexOf(secondResult.text)).toBeLessThan(restored.indexOf(secondWorker.title))
   expect(restored.indexOf(secondWorker.title)).toBeLessThan(restored.indexOf(reply.text))
-  expect(restored).not.toContain(firstResult.text)
-  expect(restored).not.toContain(secondResult.text)
+  expect(restored).toContain(firstResult.text)
+  expect(restored).toContain(secondResult.text)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("keeps a later running subagent call after an earlier call result", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 110, height: 30, kittyKeyboard: true })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const prompt = userMessage("Run reviews in order", "SENT")
+  const calls: ChatMessage = {
+    ...replyMessage(""),
+    id: "reply-sequential-subagent-calls",
+    blocks: [
+      { kind: "TOOL_CALL", text: null, toolName: "subagent", toolCallId: "call-finished", toolArguments: {} },
+      { kind: "TOOL_CALL", text: null, toolName: "subagent", toolCallId: "call-running", toolArguments: {} },
+    ],
+  }
+  const firstResult = {
+    ...toolResultMessage("subagent", "First sequential review completed"),
+    toolCallId: "call-finished",
+  }
+  chats.messages.set(parent.id, [prompt, calls, firstResult])
+  const firstWorker: ChatSession = {
+    ...parent,
+    id: "worker-sequential-finished",
+    title: "Finished sequential worker",
+    parentSessionId: parent.id,
+    parentPromptMessageId: prompt.id,
+    parentToolCallId: "call-finished",
+    agent: "worker",
+  }
+  const secondWorker: ChatSession = {
+    ...firstWorker,
+    id: "worker-sequential-running",
+    title: "Running sequential worker",
+    parentToolCallId: "call-running",
+    running: true,
+  }
+  chats.sessions.push(firstWorker, secondWorker)
+  chats.messages.set(firstWorker.id, [replyMessage("Finished result")])
+  chats.messages.set(secondWorker.id, [])
+
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((value) => value.includes(firstWorker.title) && value.includes(secondWorker.title))
+  screen.acceptRun(parent.id, "parent-sequential-run", "running")
+  screen.acceptDelta(parent.id, "parent-sequential-run", { toolName: "subagent" })
+
+  const frame = await waitForFrame((value) => (
+    value.includes(firstWorker.title) && value.includes(secondWorker.title) && value.includes("⚙ subagent")
+  ))
+  expect(frame.indexOf(firstResult.text)).toBeLessThan(frame.indexOf(firstWorker.title))
+  expect(frame.indexOf(firstWorker.title)).toBeLessThan(frame.indexOf("⚙ subagent"))
+  expect(frame.indexOf("⚙ subagent")).toBeLessThan(frame.indexOf(secondWorker.title))
 
   screen.destroy()
   renderer.destroy()
@@ -1813,7 +1873,35 @@ test("anchors a running worker at its tool call before a queued prompt", async (
   screen.mount()
 
   const frame = await waitForFrame((value) => value.includes(child.title) && value.includes(queued.text))
+  expect(frame.indexOf("⚙ subagent")).toBeLessThan(frame.indexOf(child.title))
   expect(frame.indexOf(child.title)).toBeLessThan(frame.indexOf(queued.text))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("offers a clickable jump to the newest message after scrolling up", async () => {
+  const { renderer, mockMouse, waitForFrame } = await createTestRenderer({ width: 80, height: 20, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  chats.messages.set(session.id, Array.from({ length: 16 }, (_, index) => (
+    { ...replyMessage(`Reply ${index}`), id: `reply-${index}`, createdAt: 1_000 + index }
+  )))
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("Reply 15") && !frame.includes("Jump to bottom"))
+
+  await mockMouse.scroll(10, 5, "up")
+  const scrolled = await waitForFrame((frame) => frame.includes("Jump to bottom (click) ↓"))
+  const lines = scrolled.split("\n")
+  const jumpLine = lines.findIndex((line) => line.includes("Jump to bottom (click) ↓"))
+  const jumpColumn = lines[jumpLine]?.indexOf("Jump to bottom (click) ↓") ?? -1
+  expect(jumpLine).toBeGreaterThanOrEqual(0)
+  expect(jumpColumn).toBeGreaterThanOrEqual(0)
+
+  await mockMouse.click(jumpColumn, jumpLine)
+  await waitForFrame((frame) => frame.includes("Reply 15") && !frame.includes("Jump to bottom"))
 
   screen.destroy()
   renderer.destroy()
@@ -1845,6 +1933,17 @@ test("shows only the current subagent tool and opens the worker when clicked", a
   await waitForFrame((frame) => frame.includes("ask something"))
 
   screen.acceptRun(parent.id, "parent-run", "running")
+  screen.acceptMessage(parent.id, {
+    ...replyMessage(""),
+    id: "reply-live-subagent-call",
+    blocks: [{
+      kind: "TOOL_CALL",
+      text: null,
+      toolName: "subagent",
+      toolCallId: "call-subagent",
+      toolArguments: {},
+    }],
+  })
   screen.acceptDelta(parent.id, "parent-run", { toolName: "subagent" })
   screen.acceptRun(child.id, "worker-run", "running")
   await waitForFrame((frame) => frame.includes(child.title))
@@ -1856,7 +1955,8 @@ test("shows only the current subagent tool and opens the worker when clicked", a
     frame.includes(child.title) && frame.includes("↳ get_quote")
   ))
   expect(active).not.toContain("get_candles")
-  expect(active).not.toContain("⚙ subagent")
+  expect(active).toContain("⚙ subagent")
+  expect(active.indexOf("⚙ subagent")).toBeLessThan(active.indexOf(child.title))
   const activeLines = active.split("\n")
   const thinkingLine = activeLines.find((value) => value.includes("thinking")) ?? ""
   const childLine = activeLines.find((value) => value.includes(child.title)) ?? ""
@@ -1868,7 +1968,7 @@ test("shows only the current subagent tool and opens the worker when clicked", a
   const betweenTools = await waitForFrame((frame) => (
     frame.includes(child.title) && !frame.includes("↳ get_quote") && !frame.includes("↳ get_candles")
   ))
-  expect(betweenTools).not.toContain("Subagent worker completed.")
+  expect(betweenTools).toContain("Subagent worker completed.")
 
   const lines = betweenTools.split("\n")
   const line = lines.findIndex((value) => value.includes(child.title))

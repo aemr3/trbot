@@ -163,6 +163,34 @@ test("keeps the newest turn in view as a reply streams in", async () => {
   renderer.destroy()
 })
 
+test("reports when scrolling leaves the bottom and can jump back", async () => {
+  const { renderer, mockMouse, renderOnce } = await createTestRenderer({ width: 40, height: 8 })
+  const bottomStates: boolean[] = []
+  const transcript = new ChatTranscript(renderer, {
+    backgroundColor: "#101010",
+    onBottomChange: (atBottom) => bottomStates.push(atBottom),
+  })
+  renderer.root.add(transcript.root)
+  transcript.setBlocks(Array.from({ length: 12 }, (_, index) => reply(`answer ${index}`)))
+  await renderOnce()
+
+  await mockMouse.scroll(10, 4, "up")
+  await renderOnce()
+  expect(bottomStates.at(-1)).toBe(false)
+
+  transcript.scrollToBottom()
+  await renderOnce()
+  expect(bottomStates.at(-1)).toBe(true)
+
+  const slider = transcript.root.verticalScrollBar.slider
+  await mockMouse.click(slider.screenX, slider.screenY)
+  await renderOnce()
+  expect(bottomStates.at(-1)).toBe(false)
+
+  transcript.destroy()
+  renderer.destroy()
+})
+
 test("a note carries neither header nor footer, so an empty state does not look like someone spoke", async () => {
   const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 60, height: 8 })
   const transcript = new ChatTranscript(renderer, { backgroundColor: "#101010" })
