@@ -21,6 +21,8 @@ export const ChatGoalSchema = z.object({
   usedTokens: z.number().int().nonnegative(),
   lastEvaluation: z.string().nullable(),
   pendingEventKey: z.string().nullable(),
+  failureCount: z.number().int().nonnegative().default(0),
+  retryAt: z.number().int().nonnegative().nullable().default(null),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 })

@@ -264,6 +264,8 @@ export const chatGoals = sqliteTable("chat_goals", {
   usedTokens: integer("used_tokens").notNull(),
   lastEvaluation: text("last_evaluation"),
   pendingEventKey: text("pending_event_key"),
+  failureCount: integer("failure_count").notNull().default(0),
+  retryAt: integer("retry_at"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 })

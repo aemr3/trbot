@@ -179,7 +179,11 @@ test("makes goal turn limits optional without breaking rewind snapshots", async 
     const row = z.object({ effects: z.string() }).parse(database.query("SELECT effects FROM chat_messages").get())
     const effects = z.array(ChatToolEffectSchema).parse(JSON.parse(row.effects))
     expect(effects).toHaveLength(1)
-    expect(ChatGoalSchema.parse(effects[0]?.after).maxTurns).toBeNull()
+    expect(ChatGoalSchema.parse(effects[0]?.after)).toMatchObject({
+      maxTurns: null,
+      failureCount: 0,
+      retryAt: null,
+    })
   } finally {
     database.close()
   }

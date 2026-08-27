@@ -23,6 +23,8 @@ async function harness(options: {
   now?: () => number
   evaluations?: ChatGoalEvaluation[]
   defaultLoopPrompt?: () => Promise<string | null>
+  enqueueResults?: boolean[]
+  resolveModel?: () => Promise<void>
 } = {}) {
   connection = await openDatabase(":memory:")
   await connection.db.insert(chatSessions).values({
@@ -37,6 +39,9 @@ async function harness(options: {
   const events: ChatApplicationEvent[] = []
   const notices: string[] = []
   const cancelledLabels: string[] = []
+  const resumedQueues: string[] = []
+  let queued = 0
+  const enqueueResults = [...(options.enqueueResults ?? [])]
   const evaluations = [...(options.evaluations ?? [])]
   const detail = (): ChatSessionDetail => ({
     session: {
@@ -52,18 +57,33 @@ async function harness(options: {
       createdAt: 1_000,
       updatedAt: 1_000,
       messageCount: messages.length,
-      queued: 0,
+      queued,
       running: false,
     },
     messages,
     partial: null,
   })
+  const store = new DrizzleChatAutomationStore(connection.db)
   controller = new ChatAutomationController({
-    store: new DrizzleChatAutomationStore(connection.db),
+    store,
     detail: async () => detail(),
-    enqueueEvent: async (_sessionId, event) => { events.push(event) },
-    cancelQueuedEvents: async (_sessionId, label) => { cancelledLabels.push(label) },
-    resolveModel: async () => ({ model }),
+    enqueueEvent: async (_sessionId, event) => {
+      const enqueued = enqueueResults.shift() ?? true
+      if (enqueued) {
+        events.push(event)
+        queued += 1
+      }
+      return enqueued
+    },
+    resumeQueue: (sessionId) => { resumedQueues.push(sessionId) },
+    cancelQueuedEvents: async (_sessionId, label) => {
+      cancelledLabels.push(label)
+      queued = 0
+    },
+    resolveModel: async () => {
+      await options.resolveModel?.()
+      return { model }
+    },
     evaluator: {
       evaluate: async () => evaluations.shift() ?? { verdict: "COMPLETE", reason: "Done." },
     },
@@ -83,11 +103,21 @@ async function harness(options: {
     now: options.now,
     pollMs: 3_600_000,
   })
-  return { automation: controller, messages, events, notices, cancelledLabels }
+  return {
+    automation: controller,
+    store,
+    messages,
+    events,
+    notices,
+    cancelledLabels,
+    resumedQueues,
+    settleEvents: () => { queued = 0 },
+    setQueued: (count: number) => { queued = count },
+  }
 }
 
 test("a goal starts immediately and a separate evaluator controls continuation", async () => {
-  const { automation, messages, events, notices } = await harness({
+  const { automation, messages, events, notices, settleEvents } = await harness({
     evaluations: [
       { verdict: "CONTINUE", reason: "One verification remains." },
       { verdict: "COMPLETE", reason: "The result is verified." },
@@ -99,11 +129,13 @@ test("a goal starts immediately and a separate evaluator controls continuation",
   expect(goal.tokenBudget).toBeNull()
   expect(events[0]?.label).toBe("goal")
 
+  settleEvents()
   messages.push(reply(100))
   await automation.onTurnSettled("chat-1")
   expect(events).toHaveLength(2)
   expect((await automation.state("chat-1")).goal?.lastEvaluation).toBe("One verification remains.")
 
+  settleEvents()
   messages.push(reply(200))
   await automation.onTurnSettled("chat-1")
   const finished = (await automation.state("chat-1")).goal
@@ -112,10 +144,153 @@ test("a goal starts immediately and a separate evaluator controls continuation",
   expect(notices).toEqual(["The result is verified."])
 })
 
+test("a failed goal wake-up retries with durable backoff", async () => {
+  let now = 1_000
+  const { automation, events, settleEvents } = await harness({ now: () => now })
+  const goal = await automation.createGoal("chat-1", { objective: "Keep monitoring" })
+  settleEvents()
+
+  await automation.onTurnFailed("chat-1", { label: "goal", referenceId: goal.id })
+
+  expect(events).toHaveLength(1)
+  const waiting = (await automation.state("chat-1")).goal
+  expect(waiting).toMatchObject({ status: "ACTIVE", failureCount: 1, retryAt: 61_000 })
+
+  now = waiting?.retryAt ?? now
+  await automation.start()
+
+  expect(events).toHaveLength(2)
+  expect(events.map((event) => event.key)).toEqual([
+    `chat-goal:${goal.id}:1`,
+    `chat-goal:${goal.id}:2`,
+  ])
+  expect(events[1]?.prompt).toContain("previous wake-up failed")
+  expect((await automation.state("chat-1")).goal?.turnCount).toBe(2)
+})
+
+test("blocks a goal after five consecutive wake-up failures", async () => {
+  const { automation, settleEvents, notices } = await harness({ now: () => 1_000 })
+  const goal = await automation.createGoal("chat-1", { objective: "Keep monitoring" })
+  settleEvents()
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await automation.onTurnFailed("chat-1", { label: "goal", referenceId: goal.id })
+  }
+  expect((await automation.state("chat-1")).goal).toMatchObject({
+    status: "ACTIVE",
+    failureCount: 4,
+    retryAt: 481_000,
+  })
+
+  await automation.onTurnFailed("chat-1", { label: "goal", referenceId: goal.id })
+
+  expect((await automation.state("chat-1")).goal).toMatchObject({
+    status: "BLOCKED",
+    failureCount: 5,
+    retryAt: null,
+    lastEvaluation: "Agent wake-up failed 5 times; resume the goal to try again.",
+  })
+  expect(notices).toEqual(["Agent wake-up failed 5 times; resume the goal to try again."])
+})
+
+test("advances past a stale pending event key after restart", async () => {
+  const { automation, store, events, settleEvents } = await harness({
+    now: () => 1_000,
+    enqueueResults: [true, false, true],
+  })
+  const goal = await automation.createGoal("chat-1", { objective: "Keep monitoring" })
+  settleEvents()
+  const current = await store.getGoal("chat-1")
+  expect(current).not.toBeNull()
+  await store.putGoal({ ...current!, pendingEventKey: events[0]!.key })
+
+  await automation.start()
+
+  expect(events.map((event) => event.key)).toEqual([
+    `chat-goal:${goal.id}:1`,
+    `chat-goal:${goal.id}:2`,
+  ])
+  expect((await automation.state("chat-1")).goal).toMatchObject({ turnCount: 2, pendingEventKey: null })
+})
+
+test("repairs an idle active goal after queued work fails", async () => {
+  let now = 1_000
+  const { automation, events, settleEvents, setQueued } = await harness({ now: () => now })
+  const goal = await automation.createGoal("chat-1", { objective: "Keep monitoring" })
+  settleEvents()
+  setQueued(1)
+
+  await automation.onTurnSettled("chat-1", { label: "goal", referenceId: goal.id })
+  expect(events).toHaveLength(1)
+
+  setQueued(0)
+  now += 15_000
+  await automation.start()
+
+  expect(events.map((event) => event.key)).toEqual([
+    `chat-goal:${goal.id}:1`,
+    `chat-goal:${goal.id}:2`,
+  ])
+})
+
+test("polling resumes queued work that was waiting for provider reconnection", async () => {
+  const { automation, resumedQueues, setQueued } = await harness({ now: () => 1_000 })
+  await automation.createGoal("chat-1", { objective: "Keep monitoring" })
+  setQueued(2)
+
+  await automation.start()
+
+  expect(resumedQueues).toContain("chat-1")
+})
+
+test("backs off when goal evaluation cannot resolve its model", async () => {
+  const { automation, messages, settleEvents } = await harness({
+    now: () => 1_000,
+    resolveModel: async () => { throw new Error("provider disconnected") },
+  })
+  const goal = await automation.createGoal("chat-1", { objective: "Keep monitoring" })
+  settleEvents()
+  messages.push(reply(100))
+
+  await expect(automation.onTurnSettled("chat-1", { label: "goal", referenceId: goal.id })).rejects.toThrow(
+    "provider disconnected",
+  )
+
+  expect((await automation.state("chat-1")).goal).toMatchObject({
+    status: "ACTIVE",
+    failureCount: 1,
+    retryAt: 61_000,
+  })
+})
+
+test("a stale turn cannot finish a replaced or paused goal", async () => {
+  const { automation } = await harness({ now: () => 1_000 })
+  const original = await automation.createGoal("chat-1", { objective: "Original" })
+  const replacement = await automation.createGoal("chat-1", { objective: "Replacement" })
+
+  await expect(automation.finishGoalWithNotice(
+    "chat-1",
+    "COMPLETE",
+    "Old work finished.",
+    original.id,
+  )).rejects.toThrow("goal changed")
+  expect((await automation.state("chat-1")).goal).toMatchObject({ id: replacement.id, status: "ACTIVE" })
+
+  await automation.updateGoal("chat-1", { action: "PAUSE" })
+  await expect(automation.finishGoalWithNotice(
+    "chat-1",
+    "COMPLETE",
+    "Late completion.",
+    replacement.id,
+  )).rejects.toThrow("goal changed")
+  expect((await automation.state("chat-1")).goal).toMatchObject({ id: replacement.id, status: "PAUSED" })
+})
+
 test("enforces an explicitly requested goal turn limit", async () => {
-  const { automation, messages, events } = await harness()
+  const { automation, messages, events, settleEvents } = await harness()
   await automation.createGoal("chat-1", { objective: "Try once", maxTurns: 1 })
 
+  settleEvents()
   messages.push(reply(100))
   await automation.onTurnSettled("chat-1")
 

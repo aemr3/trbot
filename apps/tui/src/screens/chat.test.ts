@@ -190,6 +190,8 @@ function fakeChats(): ChatSessions & {
         usedTokens: 0,
         lastEvaluation: null,
         pendingEventKey: null,
+        failureCount: 0,
+        retryAt: null,
         createdAt: now,
         updatedAt: now,
       }

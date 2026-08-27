@@ -42,6 +42,14 @@ async function harness(options: {
   compaction?: ChatCompactionRunner
   generateTitle?: (message: string, signal: AbortSignal) => Promise<string | null>
   run?: (turn: ChatTurnOptions, call: number) => Promise<ChatTurnResult>
+  onTurnFailed?: (
+    sessionId: string,
+    event: { label: string | null; referenceId: string | null },
+  ) => Promise<void>
+  onTurnSettled?: (
+    sessionId: string,
+    event: { label: string | null; referenceId: string | null } | null,
+  ) => Promise<void>
   rewindEffects?: ChatRewindEffectManager
   broadcast?: (frame: ChatFrame) => Promise<void> | void
 } = {}): Promise<Harness> {
@@ -82,6 +90,8 @@ async function harness(options: {
       if (options.connected === false) throw new Error("test-provider is not connected")
     },
     rewindEffects: options.rewindEffects,
+    onTurnFailed: options.onTurnFailed,
+    onTurnSettled: options.onTurnSettled,
     broadcast: (frame) => {
       frames.push(frame)
       return options.broadcast?.(frame)
@@ -642,6 +652,72 @@ test("a turn that fails leaves its question visible to send again", async () => 
     error: "the model gave up",
   })
   expect(failed?.type === "chatRun" ? failed.runId : null).toEqual(expect.any(String))
+})
+
+test("reports a failed application wake-up to its automation owner", async () => {
+  const failed: Array<{
+    sessionId: string
+    event: { label: string | null; referenceId: string | null }
+  }> = []
+  const { chat, finish } = await harness({
+    auto: false,
+    onTurnFailed: async (sessionId, event) => { failed.push({ sessionId, event }) },
+  })
+  const session = await chat.create()
+  await chat.enqueueEvent(session.id, {
+    key: "goal-event-1",
+    label: "goal",
+    referenceId: "goal-1",
+    text: "Continuing goal",
+    prompt: "Continue the goal",
+  })
+  await settle()
+
+  finish({ completed: false, errorMessage: "provider timed out" })
+  await settle()
+
+  expect(failed).toEqual([{
+    sessionId: session.id,
+    event: { label: "goal", referenceId: "goal-1" },
+  }])
+})
+
+test("moves a disconnected goal wake-up into automation backoff", async () => {
+  const failed: string[] = []
+  const { chat } = await harness({
+    connected: false,
+    onTurnFailed: async (_sessionId, event) => { failed.push(event.referenceId ?? "") },
+  })
+  const session = await chat.create()
+  await chat.enqueueEvent(session.id, {
+    key: "goal-disconnected-1",
+    label: "goal",
+    referenceId: "goal-1",
+    text: "Continuing goal",
+    prompt: "Continue the goal",
+  })
+  await settle()
+
+  expect(failed).toEqual(["goal-1"])
+  expect((await chat.detail(session.id)).messages.find((message) => message.role === "APP_EVENT")?.status).toBe("FAILED")
+})
+
+test("keeps a turn running until its automation settlement finishes", async () => {
+  let controller: ChatController | null = null
+  let runningDuringSettlement = false
+  const built = await harness({
+    onTurnSettled: async (sessionId) => {
+      runningDuringSettlement = (await controller?.detail(sessionId))?.session.running ?? false
+    },
+  })
+  controller = built.chat
+  const session = await built.chat.create()
+
+  await built.chat.send(session.id, "continue the goal")
+  await settle()
+
+  expect(runningDuringSettlement).toBe(true)
+  expect((await built.chat.detail(session.id)).session.running).toBe(false)
 })
 
 test("a queue survives a restart of the server", async () => {

@@ -68,6 +68,11 @@ export interface ChatControllerOptions {
     sessionId: string,
     event: { label: string | null; referenceId: string | null } | null,
   ) => Promise<void>
+  /** Lets durable automations recover when their application-owned turn fails. */
+  onTurnFailed?: (
+    sessionId: string,
+    event: { label: string | null; referenceId: string | null },
+  ) => Promise<void>
   rewindEffects?: ChatRewindEffectManager
   broadcast: (frame: ChatFrame) => Promise<void> | void
   onError: (cause: unknown) => void
@@ -139,6 +144,11 @@ export class ChatController {
   async list(): Promise<ChatSession[]> {
     this.sessions = await this.options.store.list()
     return this.sessions.map((session) => this.withRunState(session))
+  }
+
+  /** Rechecks an existing durable queue, typically after an external dependency recovers. */
+  resumeQueue(sessionId: string): void {
+    this.drain(sessionId)
   }
 
   async create(choice?: ChatModelChoice): Promise<ChatSession> {
@@ -603,17 +613,27 @@ export class ChatController {
       try {
         await this.options.requireModel(choice)
       } catch (error) {
-        // A model that cannot be reached — none chosen, or a provider disconnected —
-        // is not a failure of the message: it waits where it is and runs once that is
-        // fixed, rather than being marked failed and lost.
+        const message = errorMessage(error)
+        // User input waits for reconnection rather than being marked failed. A goal
+        // wake-up instead enters its durable retry schedule so it cannot strand the goal.
         this.options.broadcast({
           type: "chatRun",
           sessionId,
           runId: next.id,
           status: "failed",
           promptMessageId: next.id,
-          error: errorMessage(error),
+          error: message,
         })
+        if (next.role === "APP_EVENT" && next.toolName === "goal" && this.options.onTurnFailed) {
+          await this.options.store.setStatus(next.id, "FAILED")
+          try {
+            await this.options.onTurnFailed(sessionId, { label: next.toolName, referenceId: next.toolCallId })
+          } catch (failure) {
+            this.options.onError(failure)
+          }
+          await this.announceSessions()
+          continue
+        }
         return
       }
 
@@ -637,6 +657,9 @@ export class ChatController {
       controller: new AbortController(),
     }
     this.runs.set(sessionId, run)
+    const automationEvent = asked.role === "APP_EVENT"
+      ? { label: asked.toolName, referenceId: asked.toolCallId }
+      : null
 
     let result: ChatTurnResult
     try {
@@ -693,16 +716,13 @@ export class ChatController {
       }
       let recoveryAttempted = false
       for (;;) {
-        const automationEvent = asked.role === "APP_EVENT"
-          ? { label: asked.toolName, referenceId: asked.toolCallId }
-          : undefined
         result = await this.options.agent.run({
           model: turnModel.model,
           reasoningEffort: turnModel.reasoningEffort,
           history,
           prompt,
           chatSessionId: sessionId,
-          automationEvent,
+          automationEvent: automationEvent ?? undefined,
           signal: run.controller!.signal,
           events: {
             onText: (delta) => {
@@ -796,44 +816,55 @@ export class ChatController {
     } catch (error) {
       this.options.onError(error)
       result = { completed: false, aborted: false, errorMessage: errorMessage(error) }
-    } finally {
-      this.runs.delete(sessionId)
     }
 
-    if (result.errorMessage !== null) {
-      // The question is left visible as failed rather than silently consumed, so
-      // the trader can send it again or drop it.
-      await this.options.store.setStatus(asked.id, "FAILED")
+    try {
+      if (result.errorMessage !== null) {
+        // The question is left visible as failed rather than silently consumed, so
+        // the trader can send it again or drop it.
+        await this.options.store.setStatus(asked.id, "FAILED")
+        if (automationEvent && this.options.onTurnFailed) {
+          try {
+            await this.options.onTurnFailed(sessionId, automationEvent)
+          } catch (error) {
+            this.options.onError(error)
+          }
+        }
+        this.options.broadcast({
+          type: "chatRun",
+          sessionId,
+          runId: run.runId,
+          status: "failed",
+          promptMessageId: asked.id,
+          error: result.errorMessage,
+        })
+        this.runs.delete(sessionId)
+        await this.announceSessions()
+        return
+      }
+
+      if (result.completed && this.options.onTurnSettled) {
+        try {
+          await this.options.onTurnSettled(
+            sessionId,
+            automationEvent,
+          )
+        } catch (error) {
+          this.options.onError(error)
+        }
+      }
       this.options.broadcast({
         type: "chatRun",
         sessionId,
         runId: run.runId,
-        status: "failed",
+        status: result.aborted ? "aborted" : "done",
         promptMessageId: asked.id,
-        error: result.errorMessage,
       })
+      this.runs.delete(sessionId)
       await this.announceSessions()
-      return
+    } finally {
+      this.runs.delete(sessionId)
     }
-
-    this.options.broadcast({
-      type: "chatRun",
-      sessionId,
-      runId: run.runId,
-      status: result.aborted ? "aborted" : "done",
-      promptMessageId: asked.id,
-    })
-    if (result.completed && this.options.onTurnSettled) {
-      try {
-        await this.options.onTurnSettled(
-          sessionId,
-          asked.role === "APP_EVENT" ? { label: asked.toolName, referenceId: asked.toolCallId } : null,
-        )
-      } catch (error) {
-        this.options.onError(error)
-      }
-    }
-    await this.announceSessions()
   }
 
   /**

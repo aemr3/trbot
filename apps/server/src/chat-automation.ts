@@ -15,6 +15,8 @@ import { ProtocolError } from "@trbot/protocol/error.ts"
 import type { ChatTurnModel } from "@trbot/ai/chat.ts"
 
 const LOOP_POLL_MS = 15_000
+const GOAL_FAILURE_INITIAL_DELAY_MS = 60_000
+const GOAL_FAILURE_LIMIT = 5
 const EVIDENCE_MESSAGES = 16
 const MAX_SCHEDULED_TASKS = 50
 const RECURRING_EXPIRY_MS = 7 * 24 * 60 * 60_000
@@ -29,7 +31,8 @@ export const DEFAULT_LOOP_PROMPT = [
 export interface ChatAutomationControllerOptions {
   store: ChatAutomationStore
   detail: (sessionId: string) => Promise<ChatSessionDetail>
-  enqueueEvent: (sessionId: string, event: ChatApplicationEvent) => Promise<void>
+  enqueueEvent: (sessionId: string, event: ChatApplicationEvent) => Promise<boolean>
+  resumeQueue?: (sessionId: string) => void
   cancelQueuedEvents?: (sessionId: string, label: string, referenceId: string) => Promise<void>
   resolveModel: (detail: ChatSessionDetail) => Promise<ChatTurnModel>
   evaluator: ChatGoalEvaluatorRunner
@@ -45,6 +48,7 @@ export class ChatAutomationController {
   private readonly now: () => number
   private readonly pollMs: number
   private timer: ReturnType<typeof setInterval> | null = null
+  private readonly goalMutations = new Map<string, Promise<void>>()
   private ticking = false
   private destroyed = false
 
@@ -75,53 +79,61 @@ export class ChatAutomationController {
 
   async createGoal(sessionId: string, input: CreateChatGoal): Promise<ChatGoal> {
     const root = await this.rootSessionId(sessionId)
-    const now = this.now()
-    const previous = await this.options.store.getGoal(root)
-    const detail = await this.options.detail(root)
-    const goal: ChatGoal = {
-      id: crypto.randomUUID(),
-      sessionId: root,
-      objective: input.objective.trim(),
-      status: "ACTIVE",
-      turnCount: 0,
-      maxTurns: input.maxTurns ?? null,
-      tokenBudget: input.tokenBudget ?? null,
-      startedTokens: totalTokens(detail),
-      usedTokens: 0,
-      lastEvaluation: null,
-      pendingEventKey: null,
-      createdAt: now,
-      updatedAt: now,
-    }
-    await this.options.store.putGoal(goal)
-    if (previous) await this.options.cancelQueuedEvents?.(root, "goal", previous.id)
-    await this.queueGoalContinuation(goal, "The goal was created.")
-    return (await this.options.store.getGoal(root)) ?? goal
+    return await this.mutateGoal(root, async () => {
+      const now = this.now()
+      const previous = await this.options.store.getGoal(root)
+      const detail = await this.options.detail(root)
+      const goal: ChatGoal = {
+        id: crypto.randomUUID(),
+        sessionId: root,
+        objective: input.objective.trim(),
+        status: "ACTIVE",
+        turnCount: 0,
+        maxTurns: input.maxTurns ?? null,
+        tokenBudget: input.tokenBudget ?? null,
+        startedTokens: totalTokens(detail),
+        usedTokens: 0,
+        lastEvaluation: null,
+        pendingEventKey: null,
+        failureCount: 0,
+        retryAt: null,
+        createdAt: now,
+        updatedAt: now,
+      }
+      await this.options.store.putGoal(goal)
+      if (previous) await this.options.cancelQueuedEvents?.(root, "goal", previous.id)
+      await this.queueGoalContinuation(goal, "The goal was created.")
+      return (await this.options.store.getGoal(root)) ?? goal
+    })
   }
 
   async updateGoal(sessionId: string, input: UpdateChatGoal): Promise<ChatGoal | null> {
     const root = await this.rootSessionId(sessionId)
-    const goal = await this.options.store.getGoal(root)
-    if (!goal) {
-      if (input.action === "CLEAR") return null
-      throw new ProtocolError("not_found", "This chat has no goal")
-    }
-    if (input.action === "CLEAR") {
-      await this.options.cancelQueuedEvents?.(root, "goal", goal.id)
-      await this.options.store.removeGoal(root)
-      return null
-    }
-    const updated: ChatGoal = {
-      ...goal,
-      status: input.action === "PAUSE" ? "PAUSED" : "ACTIVE",
-      updatedAt: this.now(),
-    }
-    await this.options.store.putGoal(updated)
-    if (input.action === "PAUSE") await this.options.cancelQueuedEvents?.(root, "goal", goal.id)
-    if (input.action === "RESUME" && goal.status !== "ACTIVE") {
-      await this.queueGoalContinuation(updated, "The user resumed this goal.")
-    }
-    return await this.options.store.getGoal(root)
+    return await this.mutateGoal(root, async () => {
+      const goal = await this.options.store.getGoal(root)
+      if (!goal) {
+        if (input.action === "CLEAR") return null
+        throw new ProtocolError("not_found", "This chat has no goal")
+      }
+      if (input.action === "CLEAR") {
+        await this.options.cancelQueuedEvents?.(root, "goal", goal.id)
+        await this.options.store.removeGoal(root)
+        return null
+      }
+      const updated: ChatGoal = {
+        ...goal,
+        status: input.action === "PAUSE" ? "PAUSED" : "ACTIVE",
+        failureCount: input.action === "RESUME" ? 0 : goal.failureCount,
+        retryAt: null,
+        updatedAt: this.now(),
+      }
+      await this.options.store.putGoal(updated)
+      if (input.action === "PAUSE") await this.options.cancelQueuedEvents?.(root, "goal", goal.id)
+      if (input.action === "RESUME" && (goal.status !== "ACTIVE" || goal.retryAt !== null)) {
+        await this.queueGoalContinuation(updated, "The user resumed this goal.")
+      }
+      return await this.options.store.getGoal(root)
+    })
   }
 
   /** The agent may finish its own goal, but cannot pause, resume, or clear it. */
@@ -134,11 +146,31 @@ export class ChatAutomationController {
     sessionId: string,
     status: "COMPLETE" | "BLOCKED",
     reason: string,
+    expectedGoalId?: string | null,
   ): Promise<{ goal: ChatGoal; notification: ChatNotification | null }> {
     const root = await this.rootSessionId(sessionId)
-    const goal = await this.options.store.getGoal(root)
+    return await this.mutateGoal(root, () => this.finishGoalNow(root, status, reason, expectedGoalId))
+  }
+
+  private async finishGoalNow(
+    sessionId: string,
+    status: "COMPLETE" | "BLOCKED",
+    reason: string,
+    expectedGoalId?: string | null,
+  ): Promise<{ goal: ChatGoal; notification: ChatNotification | null }> {
+    const goal = await this.options.store.getGoal(sessionId)
     if (!goal) throw new ProtocolError("not_found", "This chat has no goal")
-    const updated = { ...goal, status, lastEvaluation: reason.trim(), pendingEventKey: null, updatedAt: this.now() }
+    if (expectedGoalId !== undefined && (goal.id !== expectedGoalId || goal.status !== "ACTIVE")) {
+      throw new ProtocolError("invalid_request", "The goal changed before this turn could finish it")
+    }
+    const updated = {
+      ...goal,
+      status,
+      lastEvaluation: reason.trim(),
+      pendingEventKey: null,
+      retryAt: null,
+      updatedAt: this.now(),
+    }
     await this.options.store.putGoal(updated)
     const notification = await this.noticeGoal(updated)
     return { goal: updated, notification }
@@ -208,11 +240,13 @@ export class ChatAutomationController {
   /** Restores an exact goal snapshot after a conversation rewind. */
   async restoreGoal(sessionId: string, goal: ChatGoal | null): Promise<void> {
     const root = await this.rootSessionId(sessionId)
-    if (goal && goal.sessionId !== root) throw new Error("The restored goal belongs to another chat")
-    const current = await this.options.store.getGoal(root)
-    if (current) await this.options.cancelQueuedEvents?.(root, "goal", current.id)
-    if (goal) await this.options.store.putGoal(goal)
-    else await this.options.store.removeGoal(root)
+    await this.mutateGoal(root, async () => {
+      if (goal && goal.sessionId !== root) throw new Error("The restored goal belongs to another chat")
+      const current = await this.options.store.getGoal(root)
+      if (current) await this.options.cancelQueuedEvents?.(root, "goal", current.id)
+      if (goal) await this.options.store.putGoal(goal)
+      else await this.options.store.removeGoal(root)
+    })
   }
 
   /** Restores or removes one exact scheduled-task snapshot after rewind. */
@@ -230,6 +264,13 @@ export class ChatAutomationController {
     sessionId: string,
     event: { label: string | null; referenceId: string | null } | null = null,
   ): Promise<void> {
+    await this.mutateGoal(sessionId, () => this.settleTurn(sessionId, event))
+  }
+
+  private async settleTurn(
+    sessionId: string,
+    event: { label: string | null; referenceId: string | null } | null,
+  ): Promise<void> {
     if (event?.label === "loop" && event.referenceId) {
       const loop = (await this.options.store.listLoops(sessionId)).find((entry) => entry.id === event.referenceId)
       if (loop?.status === "COMPLETE") await this.options.store.removeLoop(loop.id)
@@ -241,14 +282,21 @@ export class ChatAutomationController {
 
     const usedTokens = Math.max(0, totalTokens(detail) - goal.startedTokens)
     if (goal.tokenBudget !== null && usedTokens >= goal.tokenBudget) {
-      await this.finishGoal(sessionId, "BLOCKED", `Token budget reached (${usedTokens}/${goal.tokenBudget}).`)
+      await this.finishGoalNow(sessionId, "BLOCKED", `Token budget reached (${usedTokens}/${goal.tokenBudget}).`)
       return
     }
     if (goal.maxTurns !== null && goal.turnCount >= goal.maxTurns) {
-      await this.finishGoal(sessionId, "BLOCKED", turnLimitReason(goal.maxTurns))
+      await this.finishGoalNow(sessionId, "BLOCKED", turnLimitReason(goal.maxTurns))
       return
     }
-    const model = await this.options.resolveModel(detail)
+    let model
+    try {
+      model = await this.options.resolveModel(detail)
+    } catch (error) {
+      await this.recordGoalFailureNow(goal)
+      this.options.onError(error)
+      return
+    }
     let evaluation
     try {
       evaluation = await this.options.evaluator.evaluate({
@@ -264,14 +312,21 @@ export class ChatAutomationController {
         })),
       })
     } catch (error) {
+      await this.finishGoalNow(sessionId, "BLOCKED", "The goal evaluator failed; resume the goal to try again.")
       this.options.onError(error)
-      await this.finishGoal(sessionId, "BLOCKED", "The goal evaluator failed; resume the goal to try again.")
       return
     }
 
     const current = await this.options.store.getGoal(sessionId)
     if (!current || current.id !== goal.id || current.status !== "ACTIVE") return
-    const evaluated = { ...current, usedTokens, lastEvaluation: evaluation.reason, updatedAt: this.now() }
+    const evaluated = {
+      ...current,
+      usedTokens,
+      lastEvaluation: evaluation.reason,
+      failureCount: 0,
+      retryAt: null,
+      updatedAt: this.now(),
+    }
     if (evaluation.verdict === "COMPLETE" || evaluation.verdict === "IMPOSSIBLE") {
       await this.options.store.putGoal({
         ...evaluated,
@@ -288,12 +343,67 @@ export class ChatAutomationController {
     await this.queueGoalContinuation(evaluated, evaluation.reason)
   }
 
-  private async resumeGoals(): Promise<void> {
+  /** Replaces a failed goal wake-up so an active goal cannot become stranded. */
+  async onTurnFailed(
+    sessionId: string,
+    event: { label: string | null; referenceId: string | null },
+  ): Promise<void> {
+    if (event.label !== "goal" || !event.referenceId) return
+    await this.mutateGoal(sessionId, async () => {
+      const goal = await this.options.store.getGoal(sessionId)
+      if (!goal || goal.id !== event.referenceId || goal.status !== "ACTIVE") return
+      await this.recordGoalFailureNow(goal)
+    })
+  }
+
+  private async recordGoalFailureNow(goal: ChatGoal): Promise<void> {
+    const failureCount = goal.failureCount + 1
+    if (failureCount >= GOAL_FAILURE_LIMIT) {
+      await this.options.store.putGoal({
+        ...goal,
+        failureCount,
+        retryAt: null,
+        pendingEventKey: null,
+        updatedAt: this.now(),
+      })
+      await this.finishGoalNow(
+        goal.sessionId,
+        "BLOCKED",
+        `Agent wake-up failed ${GOAL_FAILURE_LIMIT} times; resume the goal to try again.`,
+      )
+      return
+    }
+    const retryAt = this.now() + goalFailureDelay(failureCount)
+    await this.options.store.putGoal({
+      ...goal,
+      failureCount,
+      retryAt,
+      pendingEventKey: null,
+      lastEvaluation: "Agent wake-up failed; retrying automatically.",
+      updatedAt: this.now(),
+    })
+  }
+
+  private async resumeGoals(now = this.now()): Promise<void> {
     for (const goal of await this.options.store.listActiveGoals()) {
       try {
-        const detail = await this.options.detail(goal.sessionId)
-        if (detail.session.running || detail.session.queued > 0) continue
-        await this.queueGoalContinuation(goal, "Continue the active goal after server startup.")
+        await this.mutateGoal(goal.sessionId, async () => {
+          const current = await this.options.store.getGoal(goal.sessionId)
+          if (!current || current.id !== goal.id || current.status !== "ACTIVE") return
+          const detail = await this.options.detail(goal.sessionId)
+          if (detail.session.running) return
+          if (detail.session.queued > 0) {
+            this.options.resumeQueue?.(goal.sessionId)
+            return
+          }
+          if (current.retryAt !== null && current.retryAt > now) return
+          await this.queueGoalContinuation(
+            current,
+            current.retryAt === null
+              ? "Continue the active goal after server startup."
+              : "Retry the active goal after its previous wake-up failed.",
+          )
+        })
       } catch (error) {
         this.options.onError(error)
       }
@@ -304,13 +414,13 @@ export class ChatAutomationController {
     if (goal.status !== "ACTIVE") return
     const turn = goal.pendingEventKey ? goal.turnCount : goal.turnCount + 1
     if (goal.maxTurns !== null && turn > goal.maxTurns) {
-      await this.finishGoal(goal.sessionId, "BLOCKED", turnLimitReason(goal.maxTurns))
+      await this.finishGoalNow(goal.sessionId, "BLOCKED", turnLimitReason(goal.maxTurns))
       return
     }
     const key = goal.pendingEventKey ?? `chat-goal:${goal.id}:${turn}`
-    const pending = { ...goal, turnCount: turn, pendingEventKey: key, updatedAt: this.now() }
+    const pending = { ...goal, turnCount: turn, pendingEventKey: key, retryAt: null, updatedAt: this.now() }
     await this.options.store.putGoal(pending)
-    await this.options.enqueueEvent(goal.sessionId, {
+    const enqueued = await this.options.enqueueEvent(goal.sessionId, {
       key,
       label: "goal",
       referenceId: goal.id,
@@ -324,7 +434,14 @@ export class ChatAutomationController {
     })
     const current = await this.options.store.getGoal(goal.sessionId)
     if (current?.id === goal.id && current.pendingEventKey === key) {
-      await this.options.store.putGoal({ ...current, pendingEventKey: null, updatedAt: this.now() })
+      const handedOff = { ...current, pendingEventKey: null, updatedAt: this.now() }
+      await this.options.store.putGoal(handedOff)
+      if (!enqueued) {
+        const detail = await this.options.detail(goal.sessionId)
+        if (!detail.session.running && detail.session.queued === 0) {
+          await this.queueGoalContinuation(handedOff, reason)
+        }
+      }
     }
   }
 
@@ -340,6 +457,7 @@ export class ChatAutomationController {
           this.options.onError(error)
         }
       }
+      await this.resumeGoals(now)
     } catch (error) {
       this.options.onError(error)
     } finally {
@@ -393,6 +511,21 @@ export class ChatAutomationController {
     return detail.session.id
   }
 
+  /** Serializes goal state transitions so pause, replacement, evaluation, and retry cannot overwrite each other. */
+  private async mutateGoal<T>(sessionId: string, mutation: () => Promise<T>): Promise<T> {
+    const previous = this.goalMutations.get(sessionId) ?? Promise.resolve()
+    let release = (): void => {}
+    const current = new Promise<void>((resolve) => { release = resolve })
+    this.goalMutations.set(sessionId, current)
+    await previous
+    try {
+      return await mutation()
+    } finally {
+      release()
+      if (this.goalMutations.get(sessionId) === current) this.goalMutations.delete(sessionId)
+    }
+  }
+
   private async noticeGoal(goal: ChatGoal): Promise<ChatNotification | null> {
     if (!this.options.notify) return null
     try {
@@ -406,6 +539,10 @@ export class ChatAutomationController {
       return null
     }
   }
+}
+
+function goalFailureDelay(failureCount: number): number {
+  return GOAL_FAILURE_INITIAL_DELAY_MS * 2 ** (failureCount - 1)
 }
 
 function scheduleFields(input: CreateChatLoop, now: number, id: string): {

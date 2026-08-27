@@ -56,7 +56,7 @@ const RescheduleLoopParameters = Type.Object({
 export interface ChatAutomationToolsClient {
   state(sessionId: string): Promise<ChatAutomationState>
   createGoal(sessionId: string, input: CreateChatGoal): Promise<ChatGoal>
-  finishGoal(sessionId: string, status: "COMPLETE" | "BLOCKED", reason: string): Promise<{
+  finishGoal(sessionId: string, status: "COMPLETE" | "BLOCKED", reason: string, expectedGoalId: string | null): Promise<{
     goal: ChatGoal
     notification: ChatNotification | null
   }>
@@ -128,7 +128,15 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
       run: async ({ status, reason }, options) => {
         const sessionId = requireSession(options.chatSessionId)
         const before = (await client.state(sessionId)).goal
-        const { goal, notification } = await client.finishGoal(sessionId, status, reason)
+        const eventGoalId = options.automationEvent?.label === "goal"
+          ? options.automationEvent.referenceId
+          : null
+        const { goal, notification } = await client.finishGoal(
+          sessionId,
+          status,
+          reason,
+          eventGoalId ?? before?.id ?? null,
+        )
         return outcome(
           `Goal ${status.toLowerCase()}: ${reason}`,
           { goal },

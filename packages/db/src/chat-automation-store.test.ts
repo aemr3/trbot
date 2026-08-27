@@ -38,6 +38,8 @@ test("round trips a goal", async () => {
     usedTokens: 900,
     lastEvaluation: "More work remains.",
     pendingEventKey: null,
+    failureCount: 2,
+    retryAt: 60_000,
     createdAt: 1_000,
     updatedAt: 2_000,
   }

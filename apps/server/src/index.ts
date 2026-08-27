@@ -315,7 +315,9 @@ async function startTrbotServer(): Promise<void> {
     automations: {
       state: (sessionId) => automations.state(sessionId),
       createGoal: (sessionId, input) => automations.createGoal(sessionId, input),
-      finishGoal: (sessionId, status, reason) => automations.finishGoalWithNotice(sessionId, status, reason),
+      finishGoal: (sessionId, status, reason, expectedGoalId) => (
+        automations.finishGoalWithNotice(sessionId, status, reason, expectedGoalId)
+      ),
       createLoop: (sessionId, input) => automations.createLoop(sessionId, input),
       rescheduleLoop: (sessionId, loopId, intervalMs) => automations.rescheduleLoop(sessionId, loopId, intervalMs),
       cancelLoop: (sessionId, loopId) => automations.cancelLoop(sessionId, loopId),
@@ -342,6 +344,7 @@ async function startTrbotServer(): Promise<void> {
     }),
     requireModel: (choice) => ai.requireModel(choice?.providerId, choice?.modelId),
     onTurnSettled: (sessionId, event) => automations.onTurnSettled(sessionId, event),
+    onTurnFailed: (sessionId, event) => automations.onTurnFailed(sessionId, event),
     rewindEffects: {
       preview: (effects) => rewindEffects.preview(effects),
       revert: (sessionId, effects) => rewindEffects.revert(sessionId, effects),
@@ -353,8 +356,9 @@ async function startTrbotServer(): Promise<void> {
     store: chatAutomationStore,
     detail: (sessionId) => chat.detail(sessionId),
     enqueueEvent: async (sessionId, event) => {
-      await chat.enqueueEvent(sessionId, event)
+      return await chat.enqueueEvent(sessionId, event) !== null
     },
+    resumeQueue: (sessionId) => chat.resumeQueue(sessionId),
     cancelQueuedEvents: async (sessionId, label, referenceId) => {
       const detail = await chat.detail(sessionId)
       for (const message of detail.messages) {
