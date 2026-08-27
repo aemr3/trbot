@@ -3655,7 +3655,7 @@ test("prioritizes active loop counts over usage in a narrow embedded footer", as
 })
 
 test("shows what a model thought, and folds every thought with /thoughts", async () => {
-  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const { renderer, mockInput, mockMouse, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const session = await chats.create()
   const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
@@ -3677,6 +3677,19 @@ test("shows what a model thought, and folds every thought with /thoughts", async
   const expanded = await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
   expect(expanded).toContain("− thought: 1.8s")
 
+  const expandedLines = expanded.split("\n")
+  const thoughtLine = expandedLines.findIndex((line) => line.includes("− thought: 1.8s"))
+  const thoughtColumn = expandedLines[thoughtLine]?.indexOf("− thought: 1.8s") ?? -1
+  await mockMouse.click(thoughtColumn + 2, thoughtLine)
+  const clickedFolded = await waitForFrame((frame) => frame.includes("+ thought: 1.8s"))
+  expect(clickedFolded).not.toContain("buyers stepped in at 318 twice")
+
+  const foldedLines = clickedFolded.split("\n")
+  const foldedLine = foldedLines.findIndex((line) => line.includes("+ thought: 1.8s"))
+  const foldedColumn = foldedLines[foldedLine]?.indexOf("+ thought: 1.8s") ?? -1
+  await mockMouse.click(foldedColumn + 2, foldedLine)
+  await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
+
   await mockInput.typeText("/thoughts")
   mockInput.pressEnter()
   const folded = await waitForFrame((frame) => frame.includes("+ thought: 1.8s"))
@@ -3685,6 +3698,45 @@ test("shows what a model thought, and folds every thought with /thoughts", async
   await mockInput.typeText("/thoughts")
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("hides reasoning content throughout a folded stream", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    initialShowThoughts: false,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptRun(session.id, "run-1", "running")
+  screen.acceptDelta(session.id, "run-1", { reasoning: "checking the higher timeframe" })
+  const folded = await waitForFrame((frame) => frame.includes("+ thinking"))
+  expect(folded).not.toContain("checking the higher timeframe")
+
+  screen.acceptDelta(session.id, "run-1", { text: "The trend is intact." })
+  const answering = await waitForFrame((frame) => frame.includes("The trend is intact."))
+  expect(answering).toContain("+ thought")
+  expect(answering).not.toContain("checking the higher timeframe")
+
+  const reply = replyMessage("The trend is intact.")
+  screen.acceptMessage(session.id, {
+    ...reply,
+    blocks: [
+      { kind: "THINKING", text: "checking the higher timeframe", toolName: null, toolCallId: null, toolArguments: null },
+      ...reply.blocks,
+    ],
+  })
+  const stored = await waitForFrame((frame) => frame.includes("+ thought") && frame.includes("The trend is intact."))
+  expect(stored).not.toContain("checking the higher timeframe")
 
   screen.destroy()
   renderer.destroy()

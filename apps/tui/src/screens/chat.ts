@@ -251,6 +251,8 @@ export class ChatScreen {
   private promptSendsBySession = new Map<string, Set<Promise<ChatMessage>>>()
   private compactionBySession = new Map<string, ChatCompaction>()
   private streamingBySession = new Map<string, Streaming>()
+  /** Per-turn disclosure choices that override the global `/thoughts` preference. */
+  private thoughtVisibilityByBlock = new Map<string, boolean>()
   private runStartedAtBySession = new Map<string, number | null>()
   private completedSubagents = new Map<string, CompletedSubagent>()
   private loadedSubagentUpdatedAt = new Map<string, number>()
@@ -336,6 +338,7 @@ export class ChatScreen {
       resolveContractSymbol: (mention) => this.contractByMention.get(mention) ?? null,
       onContractSelect: options.onContractSelect,
       onBlockSelect: (blockId) => this.selectTranscriptBlock(blockId),
+      onHeaderSelect: (blockId) => this.toggleThought(blockId),
       canDoubleClick: () => Boolean(this.selectedSession()?.parentSessionId),
       onDoubleClick: () => { this.openParentFromTranscript() },
       onBottomChange: (atBottom) => { this.jumpToBottomBar.visible = !atBottom },
@@ -550,6 +553,7 @@ export class ChatScreen {
   setShowThoughts(showThoughts: boolean): void {
     if (this.destroyed || this.showThoughts === showThoughts) return
     this.showThoughts = showThoughts
+    this.thoughtVisibilityByBlock.clear()
     this.render.schedule()
   }
 
@@ -822,7 +826,16 @@ export class ChatScreen {
     }
     this.messagesBySession.set(sessionId, recentChatTimeline(messages, CHAT_TIMELINE_LIMIT))
     // A stored reply replaces what was streaming, so the words are not shown twice.
-    if (message.role === "ASSISTANT") this.streamingBySession.delete(sessionId)
+    if (message.role === "ASSISTANT") {
+      const streaming = this.streamingBySession.get(sessionId)
+      const streamingBlockId = streaming ? `streaming-${streaming.runId}` : null
+      const visible = streamingBlockId ? this.thoughtVisibilityByBlock.get(streamingBlockId) : undefined
+      if (streamingBlockId !== null && visible !== undefined) {
+        this.thoughtVisibilityByBlock.delete(streamingBlockId)
+        this.thoughtVisibilityByBlock.set(message.id, visible)
+      }
+      this.streamingBySession.delete(sessionId)
+    }
     // A tool result is also its completion signal. Keep only calls still in flight in
     // the live status list; the stored result remains visible in the transcript.
     else if (existing < 0 && message.role === "TOOL_RESULT" && message.toolName) {
@@ -855,6 +868,7 @@ export class ChatScreen {
     const messages = this.messagesBySession.get(sessionId)
     if (!messages) return
     this.messagesBySession.set(sessionId, messages.filter((message) => message.id !== messageId))
+    this.thoughtVisibilityByBlock.delete(messageId)
     this.render.schedule()
   }
 
@@ -2220,6 +2234,12 @@ export class ChatScreen {
     this.openUndo(blockId)
   }
 
+  private toggleThought(blockId: string): void {
+    const visible = this.thoughtVisibilityByBlock.get(blockId) ?? this.showThoughts
+    this.thoughtVisibilityByBlock.set(blockId, !visible)
+    this.render.schedule()
+  }
+
   private openParentFromTranscript(): void {
     const parentSessionId = this.selectedSession()?.parentSessionId
     if (!parentSessionId) return
@@ -2283,6 +2303,7 @@ export class ChatScreen {
 
   private toggleThoughts(): void {
     this.showThoughts = !this.showThoughts
+    this.thoughtVisibilityByBlock.clear()
     this.options.onShowThoughtsChange?.(this.showThoughts)
     this.render.schedule()
   }
@@ -2843,7 +2864,7 @@ export class ChatScreen {
       blocks.push(messageBlock(
         message,
         current,
-        this.showThoughts,
+        this.thoughtVisibilityByBlock.get(message.id) ?? this.showThoughts,
         this.promptBackground(),
         this.options.embedded === true,
         message.id !== activeQueuedPrompt,
@@ -2865,7 +2886,7 @@ export class ChatScreen {
       blocks.push(streamingBlock(visibleStreaming, current, {
         spinner: SPINNER_FRAMES[this.spinner] ?? SPINNER_FRAMES[0]!,
         elapsedMs: streaming.startedAt === null ? null : Date.now() - streaming.startedAt,
-        showThoughts: this.showThoughts,
+        showThoughts: this.thoughtVisibilityByBlock.get(`streaming-${streaming.runId}`) ?? this.showThoughts,
       }))
     }
     appendLegacyPromptSubagents()
@@ -3048,19 +3069,24 @@ function messageBlock(
   }
   if (message.status === "PARTIAL") chunks.push(fg(MUTED_COLOR)(`${chunks.length > 0 ? "\n" : ""}stopped`))
   if (message.errorMessage) chunks.push(fg(ERROR_COLOR)(`${chunks.length > 0 ? "\n" : ""}${message.errorMessage}`))
-  const thought = thoughtHeader(reasoningText(message), {
+  const reasoning = reasoningText(message)
+  const thought = thoughtHeader(reasoning, {
     showThoughts,
     thinkingMs: message.thinkingMs,
   })
   const header = thought ? { header: thought } : {}
-  return {
+  const detail = thoughtDetail(reasoning, showThoughts)
+  const block: ChatTranscriptBlock = {
     id: message.id,
     marker: new StyledText([fg(TURN_MARKER_COLOR)("•")]),
     ...header,
+    headerSelectable: thought !== null,
     bodyVisible: chunks.length > 0,
     content: new StyledText(chunks),
     footer: signature(message, current),
   }
+  if (detail) block.detail = detail
+  return block
 }
 
 /**
@@ -3075,8 +3101,7 @@ function streamingBlock(
   current: StyledText,
   live: { spinner: string; elapsedMs: number | null; showThoughts: boolean },
 ): ChatTranscriptBlock {
-  // Still thinking: the count runs on, and the tail of the thought is the only thing
-  // there is to read while it does.
+  // Still thinking: the count runs on until the first answer text arrives.
   const thinking = !streaming.text
   const thinkingMs = thinking && streaming.startedAt !== null && live.elapsedMs !== null
     ? live.elapsedMs
@@ -3091,13 +3116,9 @@ function streamingBlock(
     )
   }
   else if (streaming.text) chunks.push(fg(TEXT_COLOR)(streaming.text), fg(MUTED_COLOR)("▌"))
-  // The tail is all a folded thought shows while it is the only thing happening.
-  // Expanded reasoning already lives in the header, so repeating "thinking…" below
-  // it would add noise without adding state.
-  else if (streaming.reasoning) {
-    if (!live.showThoughts) chunks.push(fg(REASONING_COLOR)(lastLine(streaming.reasoning)))
-  }
-  else chunks.push(fg(MUTED_COLOR)("thinking…"))
+  // Expanded reasoning has its own detail region. Folded reasoning stays hidden
+  // throughout instead of flashing its latest line before answer text arrives.
+  else if (!streaming.reasoning) chunks.push(fg(MUTED_COLOR)("thinking…"))
   for (const tool of streaming.tools) {
     chunks.push(fg(MUTED_COLOR)(`${chunks.length > 0 ? "\n" : ""}⚙ ${tool}`))
   }
@@ -3109,14 +3130,18 @@ function streamingBlock(
   const footer: TextChunk[] = [fg(MODEL_COLOR)(`${live.spinner} `), ...current.chunks]
   if (live.elapsedMs !== null) footer.push(fg(FAINT_COLOR)(` · ${formatDuration(live.elapsedMs)}`))
   const header = thought ? { header: thought } : {}
-  return {
+  const detail = thoughtDetail(streaming.retry ? "" : streaming.reasoning, live.showThoughts)
+  const block: ChatTranscriptBlock = {
     id: `streaming-${streaming.runId}`,
     marker: new StyledText([fg(TURN_MARKER_COLOR)("•")]),
     ...header,
+    headerSelectable: thought !== null,
     bodyVisible: chunks.length > 0,
     content: new StyledText(chunks),
     footer: new StyledText(footer),
   }
+  if (detail) block.detail = detail
+  return block
 }
 
 /** One worker in its parent turn; clicking it opens the full child chat. */
@@ -3221,8 +3246,12 @@ function thoughtHeader(
   if (!text) return null
   const label = options.live ? "thinking" : "thought"
   const spent = options.thinkingMs === null ? "" : `: ${formatDuration(options.thinkingMs)}`
-  if (!options.showThoughts) return new StyledText([fg(THOUGHT_COLOR)(`+ ${label}${spent}`)])
-  return new StyledText([fg(THOUGHT_COLOR)(`− ${label}${spent}\n`), fg(REASONING_COLOR)(text)])
+  return new StyledText([fg(THOUGHT_COLOR)(`${options.showThoughts ? "−" : "+"} ${label}${spent}`)])
+}
+
+function thoughtDetail(reasoning: string, showThoughts: boolean): StyledText | null {
+  const text = reasoning.trim()
+  return showThoughts && text ? new StyledText([fg(REASONING_COLOR)(text)]) : null
 }
 
 /** What a stored reply thought, gathered from the blocks that hold it. */
@@ -3270,12 +3299,6 @@ function compactionBlock(): ChatTranscriptBlock {
     padded: true,
     content: new StyledText([fg(MUTED_COLOR)("────────── context compacted ──────────")]),
   }
-}
-
-/** Reasoning is long and only its tail is worth the room while it streams. */
-function lastLine(reasoning: string): string {
-  const lines = reasoning.split("\n").filter((line) => line.trim().length > 0)
-  return lines[lines.length - 1] ?? ""
 }
 
 /** Converts a server deadline to the local clock without changing its remaining delay. */

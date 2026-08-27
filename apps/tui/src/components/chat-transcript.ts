@@ -34,6 +34,10 @@ export interface ChatTranscriptBlock {
   padded?: boolean
   /** Above the content: what the model thought, or which tool answered. */
   header?: StyledText
+  /** Whether the header acts as a screen-owned disclosure control. */
+  headerSelectable?: boolean
+  /** Expanded detail directly below the header, before the spoken answer. */
+  detail?: StyledText
   /** False for a tool-call turn that has reasoning and provenance but no spoken text. */
   bodyVisible?: boolean
   /** Whether clicking this turn's body may open a screen-owned action. */
@@ -48,6 +52,7 @@ export interface ChatTranscriptOptions {
   resolveContractSymbol?: (mention: string) => string | null
   onContractSelect?: (symbol: string) => void
   onBlockSelect?: (id: string) => void
+  onHeaderSelect?: (id: string) => void
   canDoubleClick?: () => boolean
   onDoubleClick?: () => void
   onBottomChange?: (atBottom: boolean) => void
@@ -81,10 +86,12 @@ export class ChatTranscript {
     box: BoxRenderable
     marker: TextRenderable
     header: TextRenderable
+    detail: TextRenderable
     body: TextRenderable
     footer: TextRenderable
     contracts: ContractLink[]
     selectable: boolean
+    headerSelectable: boolean
     blockId: string
   }[] = []
   private lastClickAt = 0
@@ -157,11 +164,14 @@ export class ChatTranscript {
       row.box.paddingBottom = block.padded ? 1 : 0
       row.header.visible = block.header !== undefined
       if (block.header !== undefined) row.header.content = block.header
+      row.headerSelectable = block.headerSelectable ?? false
+      row.detail.visible = block.detail !== undefined
+      if (block.detail !== undefined) row.detail.content = block.detail
       const bodyVisible = block.bodyVisible !== false
       // A thought or tool label introduces the body; it is not the first line of it.
       // Likewise, provenance belongs to the reply without running into its last line.
       row.body.visible = bodyVisible
-      row.body.marginTop = bodyVisible && block.header !== undefined ? 1 : 0
+      row.body.marginTop = bodyVisible && (block.header !== undefined || block.detail !== undefined) ? 1 : 0
       const linked = contractLinks(block.content, this.options.resolveContractSymbol)
       row.body.content = linked.content
       row.contracts = linked.contracts
@@ -269,10 +279,23 @@ export class ChatTranscript {
         wrapMode: "none",
       })
       box.add(marker)
-      // Reasoning can be paragraph-long; clipping its first line makes the rest
-      // impossible to reach even when thoughts are expanded.
-      const header = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "word" })
+      // Thought labels act as disclosure buttons; expanded reasoning is rendered
+      // separately below so clicking its body does not collapse it.
+      const header = new TextRenderable(this.renderer, {
+        content: "",
+        width: "100%",
+        wrapMode: "word",
+        onMouseDown: (event) => {
+          const row = this.rows[index]
+          if (event.button !== 0 || !row?.headerSelectable) return
+          event.preventDefault()
+          event.stopPropagation()
+          this.options.onHeaderSelect?.(row.blockId)
+        },
+      })
       box.add(header)
+      const detail = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "word" })
+      box.add(detail)
       const body = new TextRenderable(this.renderer, {
         content: "",
         width: "100%",
@@ -322,7 +345,18 @@ export class ChatTranscript {
       const footer = new TextRenderable(this.renderer, { content: "", width: "100%", wrapMode: "none" })
       box.add(footer)
       this.root.add(box)
-      return { box, marker, header, body, footer, contracts: [], selectable: false, blockId: "" }
+      return {
+        box,
+        marker,
+        header,
+        detail,
+        body,
+        footer,
+        contracts: [],
+        selectable: false,
+        headerSelectable: false,
+        blockId: "",
+      }
     } catch (error) {
       if (!box.isDestroyed) box.destroyRecursively()
       throw error
