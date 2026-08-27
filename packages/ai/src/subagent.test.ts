@@ -22,6 +22,22 @@ function harness(responseCount: number, response: Parameters<ReturnType<typeof f
   return { faux, models }
 }
 
+test("describes the subagent modes as mutually exclusive", () => {
+  const { models } = harness(0, fauxAssistantMessage("Unused."))
+  const definition = subagentTool(models, new ChatTools()).definition
+  const parameters = z.object({
+    properties: z.object({
+      agent: z.object({ description: z.string() }),
+      chain: z.object({ description: z.string() }),
+    }),
+  }).parse(definition.parameters)
+
+  expect(definition.description).toContain("never mix fields from different modes")
+  expect(definition.description).toContain("omit top-level agent, task, and chain")
+  expect(parameters.properties.agent.description).toContain("omit when using tasks or chain")
+  expect(parameters.properties.chain.description).toContain("Omit top-level agent, task, and tasks")
+})
+
 test("runs a single worker with every non-delegation parent tool", async () => {
   const { faux, models } = harness(1, (context) => {
     expect(context.systemPrompt).toContain("general-purpose subagent")

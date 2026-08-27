@@ -31,10 +31,20 @@ const ChainItem = Type.Object({
 })
 
 const SubagentParameters = Type.Object({
-  agent: Type.Optional(Type.String({ description: 'Agent to invoke in single mode. Available agent: "worker".' })),
-  task: Type.Optional(Type.String({ description: "Task to delegate in single mode", minLength: 1, maxLength: 10_000 })),
-  tasks: Type.Optional(Type.Array(TaskItem, { description: "Tasks for parallel execution" })),
-  chain: Type.Optional(Type.Array(ChainItem, { description: "Tasks for sequential execution" })),
+  agent: Type.Optional(Type.String({
+    description: 'Single mode only. Set to "worker"; omit when using tasks or chain.',
+  })),
+  task: Type.Optional(Type.String({
+    description: "Single mode only. Omit when using tasks or chain.",
+    minLength: 1,
+    maxLength: 10_000,
+  })),
+  tasks: Type.Optional(Type.Array(TaskItem, {
+    description: "Parallel mode only. Omit top-level agent, task, and chain.",
+  })),
+  chain: Type.Optional(Type.Array(ChainItem, {
+    description: "Chain mode only. Omit top-level agent, task, and tasks.",
+  })),
 })
 
 const WORKER_PROMPT = [
@@ -95,7 +105,10 @@ export function subagentTool(
       name: "subagent",
       description: [
         "Delegate work to a full-capability worker in an isolated context.",
-        "Provide exactly one mode: single (agent + task), parallel (tasks), or chain (sequential tasks using {previous}).",
+        "Choose exactly one mode; never mix fields from different modes.",
+        'Single: use only {"agent":"worker","task":"..."}; omit tasks and chain.',
+        'Parallel: use only {"tasks":[{"agent":"worker","task":"..."}]}; omit top-level agent, task, and chain.',
+        'Chain: use only {"chain":[{"agent":"worker","task":"..."}]}; omit top-level agent, task, and tasks. Use {previous} to include the prior step\'s output.',
         `Parallel mode accepts at most ${MAX_PARALLEL_TASKS} tasks and runs ${MAX_CONCURRENCY} at once.`,
         `One chat turn can create at most ${MAX_SUBAGENTS_PER_TURN} workers. Only the user-facing agent can delegate; workers cannot create further subagents.`,
         "If a limit is reached, the tool reports it so you can continue without delegating; the worker budget resets on the next user or application turn.",
