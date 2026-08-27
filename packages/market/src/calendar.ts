@@ -36,6 +36,12 @@ function dayParts(timestamp: number): DayParts {
   return { year: read("year"), month: read("month"), day: read("day"), weekday: read("weekday") }
 }
 
+/** Exchange-local calendar date, used to keep session-derived values aligned. */
+export function marketDayKey(timestamp: number): string {
+  const parts = dayParts(timestamp)
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
+
 const WEEKDAY_INDEX = new Map([["Mon", 0], ["Tue", 1], ["Wed", 2], ["Thu", 3], ["Fri", 4], ["Sat", 5], ["Sun", 6]])
 
 const DAY_MS = 24 * 60 * 60 * 1000

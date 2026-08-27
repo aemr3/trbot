@@ -3,6 +3,7 @@
 // a chart can slice it the same way it slices the candles; a value is null
 // wherever the indicator has nothing to say yet.
 import { averageTrueRangeSeries, type Candle } from "./candle.ts"
+import { MARKET_TIME_ZONE, marketDayKey } from "./calendar.ts"
 
 export const CANDLE_INDICATORS = [
   "EMA_20",
@@ -13,9 +14,21 @@ export const CANDLE_INDICATORS = [
   "ATR_14",
   "RSI_14",
   "MACD",
-  "PIVOT_CLASSIC",
+  "PIVOT_DAILY_CLASSIC",
 ] as const
 export type CandleIndicator = (typeof CANDLE_INDICATORS)[number]
+
+export const CANDLE_INDICATOR_DESCRIPTIONS = {
+  EMA_20: "20-bar exponential moving average of closes",
+  EMA_50: "50-bar exponential moving average of closes",
+  EMA_100: "100-bar exponential moving average of closes; prefer it for higher-timeframe context",
+  VWAP: `Intraday-only bar-estimated HLC3 VWAP weighted by candle volume and reset each ${MARKET_TIME_ZONE} calendar date`,
+  BOLLINGER: "20-bar close SMA with upper and lower bands at two population standard deviations",
+  ATR_14: "14-change Wilder average true range; use completed bars for risk decisions",
+  RSI_14: "14-change Wilder relative strength index of closes",
+  MACD: "12/26-bar EMA difference with a 9-bar EMA signal and histogram",
+  PIVOT_DAILY_CLASSIC: `Classic floor pivots from the previous observed ${MARKET_TIME_ZONE} trading date, projected across the current date; requires a range containing at least two dates`,
+} as const satisfies Record<CandleIndicator, string>
 
 // Keep the terminal chart's compact overlay controls separate from the larger
 // indicator set available to agents.
@@ -70,7 +83,13 @@ export interface IndicatorLine {
 /** Named, index-aligned lines returned for one requested candle indicator. */
 export interface CandleIndicatorSeries {
   indicator: CandleIndicator
+  semantics: string
   lines: Record<string, (number | null)[]>
+  /** Full-series indexes where every line for this indicator has a value. */
+  availability: {
+    firstAvailableIndex: number | null
+    latestAvailableIndex: number | null
+  }
 }
 
 /**
@@ -94,19 +113,19 @@ export function exponentialMovingAverage(candles: Candle[], period: number): (nu
 }
 
 /**
- * Volume-weighted average price, restarted each session: VWAP measures where
- * the day's volume actually traded, so carrying it across days would average
- * away the very thing it is read for. Null while a session has no volume.
+ * Bar-estimated volume-weighted average price, restarted each exchange-local
+ * calendar date. All sessions on that date share the same VWAP; null while the
+ * date has no reported volume.
  */
 export function volumeWeightedAveragePrice(candles: Candle[]): (number | null)[] {
   const values: (number | null)[] = []
-  let session: string | null = null
+  let currentDay: string | null = null
   let priceVolume = 0
   let volume = 0
   for (const candle of candles) {
-    const day = sessionDay(candle.timestamp)
-    if (day !== session) {
-      session = day
+    const day = marketDayKey(candle.timestamp)
+    if (day !== currentDay) {
+      currentDay = day
       priceVolume = 0
       volume = 0
     }
@@ -226,7 +245,7 @@ export function movingAverageConvergenceDivergence(
   return { macd, signal, histogram }
 }
 
-export interface ClassicPivotSeries {
+export interface DailyClassicPivotSeries {
   pivot: (number | null)[]
   r1: (number | null)[]
   r2: (number | null)[]
@@ -236,9 +255,9 @@ export interface ClassicPivotSeries {
   s3: (number | null)[]
 }
 
-/** Classic floor pivots derived only from the previous candle at this timeframe. */
-export function classicPivotLevels(candles: Candle[]): ClassicPivotSeries {
-  const series: ClassicPivotSeries = {
+/** Classic floor pivots from the previous observed exchange-local trading date. */
+export function dailyClassicPivotLevels(candles: Candle[]): DailyClassicPivotSeries {
+  const series: DailyClassicPivotSeries = {
     pivot: candles.map(() => null),
     r1: candles.map(() => null),
     r2: candles.map(() => null),
@@ -247,18 +266,33 @@ export function classicPivotLevels(candles: Candle[]): ClassicPivotSeries {
     s2: candles.map(() => null),
     s3: candles.map(() => null),
   }
-  for (let index = 1; index < candles.length; index++) {
-    const previous = candles[index - 1]!
-    const pivot = (previous.high + previous.low + previous.close) / 3
-    const width = previous.high - previous.low
-    if (!Number.isFinite(pivot) || !Number.isFinite(width)) continue
-    series.pivot[index] = pivot
-    series.r1[index] = 2 * pivot - previous.low
-    series.s1[index] = 2 * pivot - previous.high
-    series.r2[index] = pivot + width
-    series.s2[index] = pivot - width
-    series.r3[index] = previous.high + 2 * (pivot - previous.low)
-    series.s3[index] = previous.low - 2 * (previous.high - pivot)
+  let currentDay: string | null = null
+  let currentSession: Candle | null = null
+  let active: Record<keyof DailyClassicPivotSeries, number> | null = null
+
+  for (let index = 0; index < candles.length; index++) {
+    const candle = candles[index]!
+    const day = marketDayKey(candle.timestamp)
+    if (day !== currentDay) {
+      active = currentSession === null ? null : classicPivotSnapshot(currentSession)
+      currentDay = day
+      currentSession = { ...candle }
+    } else if (currentSession !== null) {
+      currentSession.high = Math.max(currentSession.high, candle.high)
+      currentSession.low = Math.min(currentSession.low, candle.low)
+      currentSession.close = candle.close
+      currentSession.volume = currentSession.volume === null || candle.volume === null
+        ? null
+        : currentSession.volume + candle.volume
+    }
+    if (!active) continue
+    series.pivot[index] = active.pivot
+    series.r1[index] = active.r1
+    series.r2[index] = active.r2
+    series.r3[index] = active.r3
+    series.s1[index] = active.s1
+    series.s2[index] = active.s2
+    series.s3[index] = active.s3
   }
   return series
 }
@@ -273,22 +307,25 @@ export function candleIndicatorSeries(
   for (const indicator of CANDLE_INDICATORS) {
     if (!active.includes(indicator)) continue
     if (indicator === "BOLLINGER") {
-      result.push({ indicator, lines: { ...bollingerBands(candles) } })
+      result.push(buildIndicatorSeries(indicator, { ...bollingerBands(candles) }))
     } else if (indicator === "VWAP") {
-      result.push({
-        indicator,
-        lines: { vwap: grainMs !== null && grainMs >= DAY_MS ? candles.map(() => null) : volumeWeightedAveragePrice(candles) },
-      })
+      result.push(buildIndicatorSeries(indicator, {
+        vwap: grainMs !== null && grainMs >= DAY_MS
+          ? candles.map(() => null)
+          : volumeWeightedAveragePrice(candles),
+      }))
     } else if (indicator === "ATR_14") {
-      result.push({ indicator, lines: { atr: averageTrueRangeSeries(candles, 14) } })
+      result.push(buildIndicatorSeries(indicator, { atr: averageTrueRangeSeries(candles, 14) }))
     } else if (indicator === "RSI_14") {
-      result.push({ indicator, lines: { rsi: relativeStrengthIndex(candles, 14) } })
+      result.push(buildIndicatorSeries(indicator, { rsi: relativeStrengthIndex(candles, 14) }))
     } else if (indicator === "MACD") {
-      result.push({ indicator, lines: { ...movingAverageConvergenceDivergence(candles) } })
-    } else if (indicator === "PIVOT_CLASSIC") {
-      result.push({ indicator, lines: { ...classicPivotLevels(candles) } })
+      result.push(buildIndicatorSeries(indicator, { ...movingAverageConvergenceDivergence(candles) }))
+    } else if (indicator === "PIVOT_DAILY_CLASSIC") {
+      result.push(buildIndicatorSeries(indicator, { ...dailyClassicPivotLevels(candles) }))
     } else {
-      result.push({ indicator, lines: { ema: exponentialMovingAverage(candles, EMA_PERIODS[indicator]) } })
+      result.push(buildIndicatorSeries(indicator, {
+        ema: exponentialMovingAverage(candles, EMA_PERIODS[indicator]),
+      }))
     }
   }
   return result
@@ -328,9 +365,44 @@ export function indicatorLines(
   return lines
 }
 
-function sessionDay(timestamp: number): string {
-  return new Intl.DateTimeFormat("en", { dateStyle: "short", timeZone: "Europe/Istanbul" })
-    .format(new Date(timestamp))
+function classicPivotSnapshot(previous: Candle): Record<keyof DailyClassicPivotSeries, number> | null {
+  const pivot = (previous.high + previous.low + previous.close) / 3
+  const width = previous.high - previous.low
+  if (!Number.isFinite(pivot) || !Number.isFinite(width)) return null
+  return {
+    pivot,
+    r1: 2 * pivot - previous.low,
+    s1: 2 * pivot - previous.high,
+    r2: pivot + width,
+    s2: pivot - width,
+    r3: previous.high + 2 * (pivot - previous.low),
+    s3: previous.low - 2 * (previous.high - pivot),
+  }
+}
+
+function buildIndicatorSeries(
+  indicator: CandleIndicator,
+  lines: CandleIndicatorSeries["lines"],
+): CandleIndicatorSeries {
+  return {
+    indicator,
+    semantics: CANDLE_INDICATOR_DESCRIPTIONS[indicator],
+    lines,
+    availability: lineAvailability(lines),
+  }
+}
+
+function lineAvailability(lines: Record<string, (number | null)[]>): CandleIndicatorSeries["availability"] {
+  const values = Object.values(lines)
+  const length = values[0]?.length ?? 0
+  let firstAvailableIndex: number | null = null
+  let latestAvailableIndex: number | null = null
+  for (let index = 0; index < length; index++) {
+    if (!values.every((line) => line[index] !== null)) continue
+    firstAvailableIndex ??= index
+    latestAvailableIndex = index
+  }
+  return { firstAvailableIndex, latestAvailableIndex }
 }
 
 function exponentialMovingAverageValues(source: number[], period: number): (number | null)[] {

@@ -5,7 +5,7 @@ import {
   CHART_INDICATORS,
   bollingerBands,
   candleIndicatorSeries,
-  classicPivotLevels,
+  dailyClassicPivotLevels,
   exponentialMovingAverage,
   indicatorLines,
   movingAverageConvergenceDivergence,
@@ -41,7 +41,7 @@ test("an average says nothing until it has a full window behind it", () => {
   expect(exponentialMovingAverage(bars([10, 11]), 3)).toEqual([null, null])
 })
 
-test("VWAP restarts each session instead of averaging across days", () => {
+test("VWAP restarts each exchange-local date instead of averaging across days", () => {
   // Two candles a day apart: the second day must not inherit the first.
   const candles = bars([100, 200], DAY_MS)
   const values = volumeWeightedAveragePrice(candles)
@@ -114,32 +114,43 @@ test("aligns MACD and its signal after both warm-up windows", () => {
   expect(histogram[33]).toBeCloseTo(0, 10)
 })
 
-test("uses only the prior candle for classic pivot levels", () => {
-  const candles = bars([100, 500])
-  candles[0] = { ...candles[0]!, high: 110, low: 90, close: 100 }
-  const levels = classicPivotLevels(candles)
+test("projects the prior trading date across every candle in the current date", () => {
+  const previous = bars([100], DAY_MS)
+  previous[0] = { ...previous[0]!, high: 110, low: 90, close: 100 }
+  const current = bars([500, 505]).map((candle, index) => ({
+    ...candle,
+    timestamp: candle.timestamp + DAY_MS + index * HOUR_MS,
+  }))
+  const levels = dailyClassicPivotLevels([...previous, ...current])
 
-  expect(levels.pivot).toEqual([null, 100])
-  expect(levels.r1[1]).toBe(110)
-  expect(levels.r2[1]).toBe(120)
-  expect(levels.r3[1]).toBe(130)
-  expect(levels.s1[1]).toBe(90)
-  expect(levels.s2[1]).toBe(80)
-  expect(levels.s3[1]).toBe(70)
+  expect(levels.pivot).toEqual([null, 100, 100])
+  expect(levels.r1.slice(1)).toEqual([110, 110])
+  expect(levels.r2.slice(1)).toEqual([120, 120])
+  expect(levels.r3.slice(1)).toEqual([130, 130])
+  expect(levels.s1.slice(1)).toEqual([90, 90])
+  expect(levels.s2.slice(1)).toEqual([80, 80])
+  expect(levels.s3.slice(1)).toEqual([70, 70])
 })
 
 test("keeps agent-only indicators outside the chart indicator set", () => {
   const candles = bars(Array.from({ length: 40 }, (_, index) => 100 + index))
-  const result = candleIndicatorSeries(candles, ["EMA_20", "ATR_14", "RSI_14", "MACD", "PIVOT_CLASSIC"], HOUR_MS)
+  const result = candleIndicatorSeries(candles, ["EMA_20", "ATR_14", "RSI_14", "MACD", "PIVOT_DAILY_CLASSIC"], HOUR_MS)
 
   expect(result.map((indicator) => indicator.indicator)).toEqual([
     "EMA_20",
     "ATR_14",
     "RSI_14",
     "MACD",
-    "PIVOT_CLASSIC",
+    "PIVOT_DAILY_CLASSIC",
   ])
   expect(result.find((indicator) => indicator.indicator === "ATR_14")?.lines.atr).toHaveLength(candles.length)
+  expect(result.find((indicator) => indicator.indicator === "MACD")?.availability.firstAvailableIndex).toBe(33)
   expect(CHART_INDICATORS).toEqual(["EMA_20", "EMA_50", "EMA_100", "VWAP", "BOLLINGER"])
-  expect(CANDLE_INDICATORS).toContain("PIVOT_CLASSIC")
+  expect(CANDLE_INDICATORS).toContain("PIVOT_DAILY_CLASSIC")
+})
+
+test("reports when an indicator has not received enough bars", () => {
+  const [indicator] = candleIndicatorSeries(bars(Array.from({ length: 30 }, () => 100)), ["EMA_100"], HOUR_MS)
+
+  expect(indicator?.availability).toEqual({ firstAvailableIndex: null, latestAvailableIndex: null })
 })

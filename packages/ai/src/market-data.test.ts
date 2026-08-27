@@ -26,16 +26,35 @@ const CandleResultSchema = z.object({
   totalCandles: z.number(),
   candles: z.array(z.object({ close: z.number() })),
 })
+const IndicatorSnapshotSchema = z.object({
+  available: z.boolean(),
+  values: z.record(z.string(), z.number().nullable()),
+})
 const CandleIndicatorResultSchema = z.object({
   candles: z.array(z.object({ close: z.number() })),
+  candleState: z.object({
+    asOf: z.number(),
+    lastCompletedIndex: z.number().nullable(),
+    lastCompletedTimestamp: z.number().nullable(),
+    formingIndex: z.number().nullable(),
+    formingTimestamp: z.number().nullable(),
+  }),
   indicators: z.array(z.object({
     indicator: z.string(),
+    semantics: z.string(),
+    availability: z.object({
+      firstAvailableIndex: z.number().nullable(),
+      latestAvailableIndex: z.number().nullable(),
+    }),
     lines: z.record(z.string(), z.array(z.number().nullable())),
+    latestCompleted: IndicatorSnapshotSchema.nullable(),
+    forming: IndicatorSnapshotSchema.nullable(),
   })),
 })
 const InstrumentResultSchema = z.object({ instruments: z.array(ViopInstrumentSchema) })
 
 const NOW = 1_786_000_000_000
+const DAY_MS = 86_400_000
 const ASELS: ViopInstrument = {
   uid: "instrument-1",
   symbol: "F_ASELS0826",
@@ -549,6 +568,7 @@ function harness(
       },
     },
     stops: { list: async () => [] },
+    now: () => NOW + 3 * 60_000 + 30_000,
   }
   return { clients, calls, depthLookups, equity }
 }
@@ -561,6 +581,7 @@ test("offers the complete read-only market toolset", () => {
     "get_viop_quote",
     "get_contract_details",
     "get_candles",
+    "get_intraday_context",
     "get_index_impact",
     "list_short_sales",
     "get_viop_margin_calls",
@@ -1044,13 +1065,25 @@ test("returns every candle by default and optionally limits the result", async (
 
 test("calculates requested indicators before slicing the candle page", async () => {
   const testHarness = harness()
+  const candleSource = testHarness.clients.candleData.candles
+  testHarness.clients.candleData.candles = {
+    loadCandles: async (...args) => {
+      const series = await candleSource.loadCandles(...args)
+      series.candles = series.candles.map((candle, index) => ({
+        ...candle,
+        timestamp: NOW - (3 - index) * DAY_MS,
+      }))
+      series.intervalMs = DAY_MS
+      return series
+    },
+  }
   const tools = new ChatTools(marketDataTools(testHarness.clients))
   const request = {
     symbol: "ASELS",
     range: "WEEK",
     interval: "HOUR_1",
     target: "UNDERLYING",
-    indicators: ["EMA_20", "PIVOT_CLASSIC"],
+    indicators: ["EMA_20", "PIVOT_DAILY_CLASSIC"],
     limit: 2,
   } as const
   const result = CandleIndicatorResultSchema.parse(modelData(await call(tools, "get_candles", request)))
@@ -1060,10 +1093,10 @@ test("calculates requested indicators before slicing the candle page", async () 
   })))
 
   expect(result.candles.map((candle) => candle.close)).toEqual([402, 403])
-  expect(result.indicators).toEqual([
+  expect(result.indicators.map(({ indicator, lines }) => ({ indicator, lines }))).toEqual([
     { indicator: "EMA_20", lines: { ema: [null, null] } },
     {
-      indicator: "PIVOT_CLASSIC",
+      indicator: "PIVOT_DAILY_CLASSIC",
       lines: {
         pivot: [401, 402],
         r1: [402, 403],
@@ -1075,9 +1108,203 @@ test("calculates requested indicators before slicing the candle page", async () 
       },
     },
   ])
+  expect(result.candleState).toEqual({
+    asOf: NOW + 3 * 60_000 + 30_000,
+    lastCompletedIndex: 2,
+    lastCompletedTimestamp: NOW - DAY_MS,
+    formingIndex: 3,
+    formingTimestamp: NOW,
+  })
+  expect(result.indicators[0]).toMatchObject({
+    availability: { firstAvailableIndex: null, latestAvailableIndex: null },
+    latestCompleted: { available: false, values: { ema: null } },
+    forming: { available: false, values: { ema: null } },
+  })
+  expect(result.indicators[1]).toMatchObject({
+    availability: { firstAvailableIndex: 1, latestAvailableIndex: 3 },
+    latestCompleted: { available: true, values: { pivot: 401 } },
+    forming: { available: true, values: { pivot: 402 } },
+  })
+  expect(result.indicators[1]?.semantics).toContain("previous observed Europe/Istanbul trading date")
   expect(older.candles.map((candle) => candle.close)).toEqual([400, 401])
-  expect(older.indicators.find((indicator) => indicator.indicator === "PIVOT_CLASSIC")?.lines.pivot)
+  expect(older.indicators.find((indicator) => indicator.indicator === "PIVOT_DAILY_CLASSIC")?.lines.pivot)
     .toEqual([null, 400])
+})
+
+test("bounds the default indicator page while preserving full-series warm-up", async () => {
+  const testHarness = harness()
+  const candleSource = testHarness.clients.candleData.candles
+  testHarness.clients.candleData.candles = {
+    loadCandles: async (...args) => {
+      const series = await candleSource.loadCandles(...args)
+      series.candles = Array.from({ length: 140 }, (_, index) => ({
+        timestamp: NOW - (139 - index) * 60_000,
+        open: 400 + index,
+        high: 401 + index,
+        low: 399 + index,
+        close: 400 + index,
+        volume: 1_000 + index,
+      }))
+      return series
+    },
+  }
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+  const result = modelData(await call(tools, "get_candles", {
+    symbol: "ASELS",
+    range: "INTRADAY",
+    interval: "MIN_1",
+    target: "UNDERLYING",
+    indicators: ["EMA_100"],
+  }))
+
+  const parsed = z.object({
+    totalCandles: z.number(),
+    recommendedRange: z.string(),
+    candles: z.array(z.unknown()),
+    page: z.object({ returned: z.number(), hasMore: z.boolean(), nextOffset: z.number().nullable() }),
+    indicators: z.array(z.object({
+      availability: z.object({ firstAvailableIndex: z.number().nullable() }),
+      lines: z.object({ ema: z.array(z.number().nullable()) }),
+    })),
+  }).parse(result)
+  expect(parsed).toMatchObject({
+    totalCandles: 140,
+    recommendedRange: "INTRADAY",
+    page: { returned: 120, hasMore: true, nextOffset: 120 },
+  })
+  expect(parsed.candles).toHaveLength(120)
+  expect(parsed.indicators[0]?.lines.ema).toHaveLength(120)
+  expect(parsed.indicators[0]?.availability.firstAvailableIndex).toBe(99)
+
+  const pivot = z.object({
+    recommendedRange: z.string(),
+    indicators: z.array(z.object({
+      availability: z.object({ firstAvailableIndex: z.number().nullable() }),
+    })),
+  }).parse(modelData(await call(tools, "get_candles", {
+    symbol: "ASELS",
+    range: "INTRADAY",
+    interval: "MIN_1",
+    target: "UNDERLYING",
+    indicators: ["PIVOT_DAILY_CLASSIC"],
+  })))
+  expect(pivot.recommendedRange).toBe("WEEK")
+  expect(pivot.indicators[0]?.availability.firstAvailableIndex).toBeNull()
+})
+
+test("builds compact point-in-time intraday context from contract, cash, benchmark, and depth data", async () => {
+  const currentSession = Date.parse("2026-08-26T07:00:00Z")
+  const asOf = currentSession + 22.5 * 60_000
+  const testHarness = harness()
+  testHarness.clients.now = () => asOf
+  testHarness.clients.candleData.candles = {
+    loadCandles: async (symbol, range, interval) => {
+      const role = symbol === ASELS.symbol ? "CONTRACT" : symbol === "ASELS" ? "UNDERLYING" : "BENCHMARK"
+      return intradaySeries(symbol, role, range, interval, currentSession)
+    },
+  }
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const result = modelData(await call(tools, "get_intraday_context", {
+    symbol: "ASELS",
+    benchmark: "BIST_30",
+  }))
+
+  expect(result).toMatchObject({
+    readAt: asOf,
+    instrument: {
+      symbol: ASELS.symbol,
+      displayName: "ASELS",
+      underlyingSymbol: "ASELS",
+    },
+    source: { range: "MONTH", interval: "MIN_5", intervalMs: 300_000, currency: "TRY" },
+    status: {
+      lastCompletedTimestamp: currentSession + 15 * 60_000,
+      formingTimestamp: currentSession + 20 * 60_000,
+    },
+    levels: {
+      previousSession: { candleCount: 20, volume: 2_000 },
+      currentSession: {
+        confirmed: { candleCount: 4, volume: 800 },
+        provisional: { candleCount: 5, volume: 1_000 },
+      },
+      openingRanges: {
+        minutes15: { status: "CONFIRMED", confirmed: { candleCount: 3 } },
+        minutes30: { status: "FORMING", provisional: { candleCount: 5 } },
+      },
+      dailyClassicPivots: {
+        status: "CONFIRMED",
+        values: { available: true },
+      },
+    },
+    relativeVolume: {
+      confirmed: { ratio: 2, comparisonBars: 4, baselineSessions: 3 },
+      provisional: { ratio: 2, comparisonBars: 5, baselineSessions: 3 },
+    },
+    technicals: {
+      confirmed: { candleTimestamp: currentSession + 15 * 60_000 },
+      provisional: { candleTimestamp: currentSession + 20 * 60_000 },
+    },
+    basis: {
+      available: true,
+      futuresPrice: 400,
+      spotPrice: 398,
+      absolute: 2,
+    },
+    liquidity: {
+      available: true,
+      bestBid: 400,
+      bestAsk: 402,
+      spread: 2,
+      topBidLots: 30,
+      topAskLots: 34,
+    },
+    relativeStrength: {
+      target: "UNDERLYING",
+      benchmark: "BIST_30",
+      reading: { date: "2026-08-26", throughTimestamp: currentSession + 15 * 60_000 },
+    },
+  })
+  const parsed = z.object({
+    technicals: z.object({
+      confirmed: z.object({
+        ema20: z.number(),
+        ema50: z.number(),
+        vwap: z.number(),
+        atr14: z.number(),
+        priceVsVwap: z.object({ atrUnits: z.number() }),
+      }),
+    }),
+  }).parse(result)
+  expect(parsed.technicals.confirmed.priceVsVwap.atrUnits).toBeFinite()
+  expect(testHarness.calls.marginRequirements).toBe(1)
+  expect(testHarness.depthLookups).toEqual([ASELS.symbol])
+})
+
+test("keeps candle context when optional live basis and depth are unavailable", async () => {
+  const testHarness = harness({
+    depthBooks: {
+      loadDepthBookSnapshot: async () => { throw new Error("Contract depth is unavailable") },
+    },
+  })
+  testHarness.clients.viopMargins = {
+    ...testHarness.clients.viopMargins,
+    listMarginRequirements: async () => ({
+      updatedAt: "2026-08-21T18:00:00Z",
+      requirements: [],
+    }),
+  }
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const outcome = await call(tools, "get_intraday_context", { symbol: "ASELS" })
+
+  expect(outcome.isError).toBe(false)
+  expect(modelData(outcome)).toMatchObject({
+    levels: { currentSession: { date: "2026-08-06" } },
+    basis: { available: false, reason: "No futures-versus-spot basis is available for F_ASELS0826" },
+    liquidity: { available: false, reason: "Contract depth is unavailable" },
+    relativeStrength: { benchmark: "BIST_100" },
+  })
 })
 
 test("reads BIST index candles without requiring an active VIOP contract", async () => {
@@ -1336,5 +1563,36 @@ function depthBook(): DepthBook {
       { id: "trade-2", price: 400, lots: 1, timestamp: NOW - 1_000, side: "SELL", buyer: "C", seller: "D" },
     ],
     marketClosed: false,
+  }
+}
+
+function intradaySeries(
+  symbol: string,
+  role: "CONTRACT" | "UNDERLYING" | "BENCHMARK",
+  range: CandleSeries["range"],
+  interval: CandleSeries["interval"],
+  currentSession: number,
+): CandleSeries {
+  const starts = [-3, -2, -1, 0].map((days) => currentSession + days * DAY_MS)
+  const base = role === "CONTRACT" ? 400 : role === "UNDERLYING" ? 100 : 200
+  const step = role === "BENCHMARK" ? 0.1 : 0.2
+  return {
+    instrumentUid: symbol,
+    range,
+    interval,
+    candles: starts.flatMap((start, sessionIndex) => Array.from({ length: 20 }, (_, index) => {
+      const price = base + sessionIndex * 2 + index * step
+      return {
+        timestamp: start + index * 5 * 60_000,
+        open: price,
+        high: price + 1,
+        low: price - 1,
+        close: price + step / 2,
+        volume: role === "CONTRACT" && sessionIndex === starts.length - 1 ? 200 : 100,
+      }
+    })),
+    availableIntervalsByRange: DEFAULT_INTERVALS_BY_RANGE,
+    intervalMs: 5 * 60_000,
+    currency: "TRY",
   }
 }

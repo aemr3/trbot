@@ -165,6 +165,7 @@ test("adds every read-only market tool when the server provides its clients", ()
     "get_viop_quote",
     "get_contract_details",
     "get_candles",
+    "get_intraday_context",
     "get_index_impact",
     "list_short_sales",
     "get_viop_margin_calls",
