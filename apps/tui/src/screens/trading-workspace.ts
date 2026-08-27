@@ -23,15 +23,6 @@ interface WorkspacePanel {
   deactivate?(): void
   handleKey(key: KeyEvent): boolean | void
   clearInputOnInterrupt?(): boolean
-  /**
-   * Whether this panel is taking typed text right now — a composer, a search, a
-   * modal with a field in it.
-   *
-   * The workspace reads the tab shortcuts before the panel sees a key, so without
-   * this a trader typing "Tomorrow" into the chat composer, or "L" into the ticker
-   * search, would find the tab changing under them.
-   */
-  capturesInput?(): boolean
   openQuestion?(sessionId: string): void
   openPermission?(sessionId: string): void
   openSession?(sessionId: string): void
@@ -50,12 +41,16 @@ interface TradingWorkspaceScreenOptions {
   sound?: SoundPlayer
 }
 
-// Each tab answers to its own initial, so the shortcut is the label.
-const TABS: { id: TradingWorkspaceTab; label: string; key: string }[] = [
-  { id: "trade", label: "TRADE", key: "t" },
-  { id: "chat", label: "CHAT", key: "c" },
-  { id: "logs", label: "LOGS", key: "l" },
+const TABS: { id: TradingWorkspaceTab; label: string }[] = [
+  { id: "trade", label: "TRADE" },
+  { id: "chat", label: "CHAT" },
+  { id: "logs", label: "LOGS" },
 ]
+const OPTION_TAB_BY_KEY = {
+  "1": "trade",
+  "2": "chat",
+  "3": "logs",
+} satisfies Record<"1" | "2" | "3", TradingWorkspaceTab>
 
 const BACKGROUND = TUI_THEME.appBackground
 const ACTIVE_COLOR = WORKSPACE_CHROME_TEXT
@@ -90,9 +85,7 @@ export class TradingWorkspaceScreen {
       return
     }
     const panel = this.options[this.activeTab]
-    // Direct control shortcuts remain available while a field has focus. Plain tab
-    // initials are only shortcuts when the active panel is not taking text.
-    const tab = controlTabShortcut(key) ?? (panel.capturesInput?.() ? null : tabShortcut(key))
+    const tab = optionTabShortcut(key)
     if (tab) {
       key.preventDefault()
       key.stopPropagation()
@@ -378,18 +371,8 @@ export class TradingWorkspaceScreen {
   }
 }
 
-function tabShortcut(key: KeyEvent): TradingWorkspaceTab | null {
-  if (key.ctrl || key.meta || key.option) return null
-  const value = key.sequence || (key.shift ? key.name.toUpperCase() : key.name)
-  const tab = TABS.find((candidate) => value === candidate.key.toUpperCase())
-  return tab?.id ?? null
-}
-
-/** Direct tab selection does not depend on terminals distinguishing Ctrl from Ctrl+Shift. */
-function controlTabShortcut(key: KeyEvent): TradingWorkspaceTab | null {
-  if (!key.ctrl || key.meta || key.option) return null
-  if (key.name === "a") return "chat"
-  if (key.name === "t") return "trade"
-  if (key.name === "g") return "logs"
-  return null
+function optionTabShortcut(key: KeyEvent): TradingWorkspaceTab | null {
+  if (!(key.meta || key.option) || key.ctrl || key.shift || key.super || key.hyper) return null
+  if (key.name !== "1" && key.name !== "2" && key.name !== "3") return null
+  return OPTION_TAB_BY_KEY[key.name]
 }

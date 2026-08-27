@@ -77,15 +77,13 @@ const COMPOSER_COLOR = TUI_THEME.composer
  * switch between. They are listed in the help modal rather than along the bottom, and
  * `/help` is the only one the screen names for itself.
  *
- * The model picker is ^O rather than the ^M its name asks for, because Ctrl+M and
- * Return are the same byte and only a terminal that disambiguates them can tell them
- * apart — where one does not, ^M sends the message instead of opening the picker.
- * ^O is also clear of the field's own editing keys, which take ^A ^E ^F ^B ^W ^K ^U ^D.
+ * The model picker is ^M. Terminals that support keyboard disambiguation report it
+ * separately from Return; legacy terminals encode both as the same byte.
  */
 const CHAT_HINT = "/help keys"
 const RUNNING_HINT = "Esc interrupt · /help keys"
 const CONNECT_HINT = "No model provider connected · ^P to connect one"
-const NO_MODEL_HINT = "No model chosen for this chat · ^O to choose one"
+const NO_MODEL_HINT = "No model chosen for this chat · ^M to choose one"
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const SPINNER_INTERVAL_MS = 120
@@ -117,7 +115,7 @@ const COMPOSER_MAX_ROWS = 8
 const DOUBLE_ESCAPE_MS = 600
 
 const CHAT_COMMANDS: readonly ChatCommand[] = [
-  { name: "/model", description: "choose which model answers this chat" },
+  { name: "/models", description: "choose which model answers this chat" },
   { name: "/permissions", description: "choose how sensitive tools are approved" },
   { name: "/reasoning", description: "choose the model's reasoning effort" },
   { name: "/thoughts", description: "show or hide model reasoning" },
@@ -558,18 +556,6 @@ export class ChatScreen {
     this.render.schedule()
   }
 
-  /**
-   * The composer takes letters, so while it holds focus the tab shortcuts must
-   * not: typing "Tomorrow" would otherwise leave the tab.
-   */
-  capturesInput(): boolean {
-    return this.typing()
-      || this.undoPanel !== null
-      || this.focus === "question"
-      || this.focus === "permission"
-      || this.modal !== null
-  }
-
   /** Ctrl+C clears a focused draft before the application arms its quit shortcut. */
   clearInputOnInterrupt(): boolean {
     if (this.destroyed || this.modal || !this.typing() || this.composer.plainText.length === 0) return false
@@ -664,7 +650,7 @@ export class ChatScreen {
       this.startNewChat()
       return
     }
-    if (isControl(key, "o")) {
+    if (isControl(key, "m")) {
       void this.openModelPicker("model")
       return
     }
@@ -1410,7 +1396,8 @@ export class ChatScreen {
   /** Slash commands invoke application controls without becoming user messages or consuming model tokens. */
   private async runCommand(text: string): Promise<boolean> {
     const [head = "", ...words] = text.trim().split(/\s+/u)
-    const command = head.toLowerCase()
+    const enteredCommand = head.toLowerCase()
+    const command = enteredCommand === "/model" ? "/models" : enteredCommand
     if (!CHAT_COMMANDS.some((entry) => entry.name === command)) return false
 
     this.composer.setText("")
@@ -1418,7 +1405,7 @@ export class ChatScreen {
     this.render.schedule()
 
     switch (command) {
-      case "/model":
+      case "/models":
         await this.openModelPicker("model")
         break
       case "/permissions":
@@ -1891,7 +1878,7 @@ export class ChatScreen {
     }
   }
 
-  /** Every key, on ^G: the status line names this instead of listing them. */
+  /** Opens the full shortcut list without crowding the status line. */
   private openHelp(): void {
     if (this.modal || this.destroyed) return
     this.showModal(new ChatHelpModal(this.renderer, { onClose: () => this.closeModal() }))
@@ -2619,7 +2606,7 @@ export class ChatScreen {
     const model = session?.model || this.defaultChoice?.modelId
     const reasoning = session?.model ? session.reasoning : this.defaultChoice?.reasoning
     const permission = permissionModeIcon(this.permissionMode(session))
-    if (!model) return new StyledText([...permission, fg(QUEUED_COLOR)("no model · ^O chooses one")])
+    if (!model) return new StyledText([...permission, fg(QUEUED_COLOR)("no model · ^M chooses one")])
     const label = session?.parentSessionId
       ? new StyledText([
         fg(MODEL_COLOR)(session.agent ?? "worker"),
@@ -2767,7 +2754,7 @@ export class ChatScreen {
     }
     if (!session) return []
     if (!this.selectedHasModel()) {
-      return [note("No model chosen for this chat.\n\nPress ^O to choose which model answers it.")]
+      return [note("No model chosen for this chat.\n\nPress ^M to choose which model answers it.")]
     }
 
     const current = transcriptModelLabel(session.model || "model", session.reasoning)

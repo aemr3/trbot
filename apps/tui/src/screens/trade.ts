@@ -132,13 +132,13 @@ const NEWS_FEEDS = ["instrument", "index"] as const
 type NewsFeed = (typeof NEWS_FEEDS)[number]
 type DestructiveAction = "cancel-orders" | "exit-positions" | "delete-stop" | "delete-alert"
 const NEWS_FEED_LABELS = { instrument: "Stock", index: "Indices" } satisfies Record<NewsFeed, string>
-const TRADE_HINT = "B/S trade · C chat · L logs · / ticker · ? help · Ctrl+C quit"
+const TRADE_HINT = "B/S trade · ⌥1/2/3 screens · / ticker · ? help · Ctrl+C quit"
 const TRADE_SHORTCUTS: ShortcutHelpSection[] = [
   {
     title: "Global",
     bindings: [
       { keys: "?", description: "Toggle this help" },
-      { keys: "T / A / L", description: "Switch tab: trade, AI chat, logs" },
+      { keys: "⌥1 / ⌥2 / ⌥3", description: "Switch screen: trade, chat, logs" },
       { keys: "/", description: "Search and switch ticker" },
       { keys: "B / S", description: "Open buy / sell ticket" },
       { keys: "c c", description: "Cancel all pending VIOP orders" },
@@ -315,7 +315,6 @@ export interface TradeChatPanel {
   hasOpenModal?(): boolean
   activate(): void
   deactivate(): void
-  capturesInput(): boolean
   clearInputOnInterrupt?(): boolean
   canReleaseFocus(): boolean
   openUndo?(): void
@@ -1051,24 +1050,6 @@ export class TradeScreen {
     for (const renderable of this.temporarilyNonSelectable.splice(0)) {
       if (!renderable.isDestroyed) renderable.selectable = true
     }
-  }
-
-  /**
-   * Whether a key typed now belongs to something on this screen rather than to
-   * the tab bar. True while anything with a field or a confirmation is up: the
-   * ticker search takes letters, and a modal in front of the panels owns Escape.
-   */
-  capturesInput(): boolean {
-    return (this.rightView === "chat" && this.focus === "news" && (this.options.chat?.capturesInput() ?? false))
-      || this.tickerSearchModal !== null
-      || this.orderTicket !== null
-      || this.shortcutHelp !== null
-      || this.brokerageDateModal !== null
-      || this.stopRuleEditor !== null
-      || this.stopTrigger !== null
-      || this.alertEditor !== null
-      || this.alertPopup !== null
-      || this.articleOpen
   }
 
   clearInputOnInterrupt(): boolean {

@@ -93,6 +93,9 @@ interface AppOptions {
 // sign-in screen is up. Short enough that a server restart is barely noticed.
 const SESSION_POLL_MS = 2_000
 const QUIT_CONFIRMATION_MS = 1_500
+const TMUX_CAPABILITY_SETTLE_MS = 250
+const XTERM_MODIFY_OTHER_KEYS_LEVEL_2 = "\x1b[>4;2m"
+const XTERM_MODIFY_OTHER_KEYS_RESET = "\x1b[>4;0m"
 
 const EXIT_SIGNALS: NodeJS.Signals[] = [
   "SIGTERM",
@@ -106,6 +109,8 @@ const EXIT_SIGNALS: NodeJS.Signals[] = [
 export async function startApp(): Promise<void> {
   const initialState = await resolveInitialState()
   let app: App | null = null
+  let renderer: CliRenderer | null = null
+  let restoreTmuxKeyboard = (): void => {}
 
   try {
     const http = initialState.session.http
@@ -115,14 +120,19 @@ export async function startApp(): Promise<void> {
     // on the login screen otherwise starts on defaults and writes them over
     // what was saved as soon as anything is changed.
     const preferences = await preferencesStore.load().catch(() => undefined)
-    const renderer = await createCliRenderer({
+    const createdRenderer = await createCliRenderer({
       consoleMode: "disabled",
       exitOnCtrlC: false,
       exitSignals: EXIT_SIGNALS,
       openConsoleOnError: false,
-      onDestroy: () => app?.dispose(),
+      onDestroy: () => {
+        restoreTmuxKeyboard()
+        app?.dispose()
+      },
     })
-    app = new App(renderer, initialState, {
+    renderer = createdRenderer
+    restoreTmuxKeyboard = configureTmuxKeyboard(createdRenderer)
+    app = new App(createdRenderer, initialState, {
       preferences,
       loadPreferences: () => preferencesStore.load(),
       savePreferences: (next) => preferencesStore.save(next),
@@ -132,14 +142,71 @@ export async function startApp(): Promise<void> {
       aiAccount: new HttpAiAccount(http),
       // Cues are written through the renderer so a bell never races a frame.
       sound: new SystemSoundPlayer({
-        write: (data) => rendererOutput(renderer).writeOut(data),
+        write: (data) => rendererOutput(createdRenderer).writeOut(data),
       }),
     })
     app.mount()
   } catch (error) {
-    if (app) app.dispose()
-    else initialState.session.close()
+    renderer?.destroy()
+    app?.dispose()
+    if (!app) initialState.session.close()
     throw error
+  }
+}
+
+/**
+ * tmux's level 1 extended-key mode still encodes Ctrl+M as Return. Level 2
+ * distinguishes them. Wait until OpenTUI's startup replies have gone quiet:
+ * switching sooner makes tmux reinterpret graphics replies as typed text.
+ * OpenTUI restores its own terminal modes when focus returns, so reapply ours
+ * after that event. Undo only this extra mode after OpenTUI cleans up.
+ */
+interface TmuxKeyboardOptions {
+  inTmux?: boolean
+  settleMs?: number
+  write?: (data: string) => void
+  restore?: (data: string) => void
+}
+
+export function configureTmuxKeyboard(renderer: CliRenderer, options: TmuxKeyboardOptions = {}): () => void {
+  const settleMs = options.settleMs ?? TMUX_CAPABILITY_SETTLE_MS
+  const write = options.write ?? ((data: string) => rendererOutput(renderer).writeOut(data))
+  const restore = options.restore ?? ((data: string) => void process.stdout.write(data))
+  let tmux = options.inTmux ?? (process.env.TMUX !== undefined || renderer.capabilities?.multiplexer === "tmux")
+  let enabled = false
+  let settleTimer: ReturnType<typeof setTimeout> | null = null
+  const enable = (): void => {
+    renderer.off(CliRenderEvents.CAPABILITIES, observeCapabilities)
+    settleTimer = null
+    enabled = true
+    write(XTERM_MODIFY_OTHER_KEYS_LEVEL_2)
+  }
+  const scheduleEnable = (): void => {
+    if (!tmux || enabled) return
+    if (settleTimer) clearTimeout(settleTimer)
+    settleTimer = setTimeout(enable, settleMs)
+  }
+  const observeCapabilities = (capabilities: NonNullable<CliRenderer["capabilities"]>): void => {
+    if (capabilities.multiplexer !== "tmux") return
+    tmux = true
+    scheduleEnable()
+  }
+  const reapplyOnFocus = (): void => {
+    if (tmux && enabled) write(XTERM_MODIFY_OTHER_KEYS_LEVEL_2)
+  }
+  renderer.once(CliRenderEvents.FRAME, scheduleEnable)
+  renderer.on(CliRenderEvents.CAPABILITIES, observeCapabilities)
+  renderer.on(CliRenderEvents.FOCUS, reapplyOnFocus)
+
+  return () => {
+    renderer.off(CliRenderEvents.FRAME, scheduleEnable)
+    renderer.off(CliRenderEvents.CAPABILITIES, observeCapabilities)
+    renderer.off(CliRenderEvents.FOCUS, reapplyOnFocus)
+    if (settleTimer) clearTimeout(settleTimer)
+    if (!enabled) return
+    // onDestroy runs after OpenTUI restores stdout, so this becomes the final
+    // mode change seen by tmux and cannot leak extended input into the shell.
+    restore(XTERM_MODIFY_OTHER_KEYS_RESET)
   }
 }
 

@@ -960,7 +960,7 @@ test("dismisses a question notification on trade and answers it later in chat", 
   const stayed = await waitForFrame((frame) => frame.includes("TRADE PANEL") && !frame.includes("Agent needs your answer"))
   expect(stayed).not.toContain("Should I keep watching this position?")
 
-  mockInput.pressKey("a", { ctrl: true })
+  mockInput.pressKey("2", { meta: true })
   await waitForFrame((frame) => frame.includes("Should I keep watching this position?") && frame.includes("Agent asks · Risk"))
   mockInput.pressEnter()
   await waitForFrame((frame) => !frame.includes("Should I keep watching this position?"))
@@ -1171,7 +1171,7 @@ test("opens a filtered slash-command menu below the composer", async () => {
   await waitForFrame((frame) => frame.includes("ask something"))
 
   await mockInput.typeText("/")
-  const menu = await waitForFrame((frame) => frame.includes("/model") && frame.includes("/sessions"))
+  const menu = await waitForFrame((frame) => frame.includes("/models") && frame.includes("/sessions"))
   expect(menu).toContain("/clear")
   expect(menu).toContain("/undo")
   expect(menu).not.toContain("/rewind")
@@ -1179,12 +1179,12 @@ test("opens a filtered slash-command menu below the composer", async () => {
   expect(menu).not.toContain("/chats")
   const lines = menu.split("\n")
   const composerRow = lines.findIndex((line) => line.includes("› /"))
-  const firstCommand = lines.findIndex((line) => line.includes("/model"))
+  const firstCommand = lines.findIndex((line) => line.includes("/models"))
   expect(composerRow).toBeGreaterThanOrEqual(0)
   expect(firstCommand).toBeGreaterThan(composerRow)
 
   await mockInput.typeText("sub")
-  const filtered = await waitForFrame((frame) => frame.includes("/subagents") && !frame.includes("/model"))
+  const filtered = await waitForFrame((frame) => frame.includes("/subagents") && !frame.includes("/models"))
   expect(filtered).toContain("open this chat's worker sessions")
 
   mockInput.pressEnter()
@@ -3184,19 +3184,17 @@ test("typing in the composer never changes tab", async () => {
   workspace.mount()
   await waitForFrame((frame) => frame.includes("TRADE PANEL"))
 
-  mockInput.pressKey("a", { ctrl: true })
+  mockInput.pressKey("2", { meta: true })
   await waitForFrame((frame) => frame.includes("ask something"))
 
-  // "Tomorrow" holds a T and an L: without the composer claiming its keys, typing
-  // it would walk the trader through every tab.
+  // Former tab initials are ordinary composer text now.
   await mockInput.typeText("Tomorrow, ASELS?")
   const frame = await waitForFrame((content) => content.includes("Tomorrow, ASELS?"))
   expect(frame).not.toContain("TRADE PANEL")
   expect(frame).not.toContain("LOG PANEL")
 
-  // Leaving the field gives the keys back to the tab bar.
-  mockInput.pressTab()
-  mockInput.pressKey("t", { shift: true })
+  // Screen navigation remains available while the composer is focused.
+  mockInput.pressKey("1", { meta: true })
   await waitForFrame((content) => content.includes("TRADE PANEL"))
 
   workspace.destroy()
@@ -3214,18 +3212,18 @@ test("a hidden chat releases its input focus and cannot receive another panel's 
   workspace.mount()
   await waitForFrame((frame) => frame.includes("TRADE PANEL"))
 
-  mockInput.pressKey("a", { ctrl: true })
+  mockInput.pressKey("2", { meta: true })
   await waitForFrame((frame) => frame.includes("ask something"))
   expect(renderer.currentFocusedRenderable).not.toBeNull()
 
   // The textarea used to remain the renderer's global focus here, drawing its cursor
   // over the chart and accepting these letters.
-  mockInput.pressKey("t", { ctrl: true })
+  mockInput.pressKey("1", { meta: true })
   await waitForFrame((frame) => frame.includes("TRADE PANEL"))
   expect(renderer.currentFocusedRenderable).toBeNull()
   await mockInput.typeText("not chat text")
 
-  mockInput.pressKey("a", { ctrl: true })
+  mockInput.pressKey("2", { meta: true })
   const returned = await waitForFrame((frame) => frame.includes("ask something"))
   expect(returned).not.toContain("not chat text")
 
@@ -3277,7 +3275,7 @@ test("types one character per keypress once the field has really taken focus", a
   renderer.destroy()
 })
 
-test("^O and ^S reach the pickers mid-sentence, without disturbing what is typed", async () => {
+test("extended keyboard input keeps ^M distinct from Enter while ^O remains unbound", async () => {
   // One spelling for every shortcut, and it works while the field holds the letters —
   // which is the whole reason they are control keys.
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
@@ -3292,10 +3290,14 @@ test("^O and ^S reach the pickers mid-sentence, without disturbing what is typed
   await mockInput.typeText("half a question")
   await waitForFrame((frame) => frame.includes("half a question"))
 
-  mockInput.pressKey("o", { ctrl: true })
+  await mockInput.pressKeys(["\x1b[27;5;109~"])
   await waitForFrame((frame) => frame.includes("Model for this chat"))
+  expect(chats.sent).toEqual([])
   mockInput.pressEscape()
   await waitForFrame((frame) => !frame.includes("Model for this chat"))
+
+  mockInput.pressKey("o", { ctrl: true })
+  expect(screen.hasOpenModal()).toBe(false)
 
   mockInput.pressKey("s", { ctrl: true })
   await waitForFrame((frame) => frame.includes("Sessions"))
@@ -3305,11 +3307,15 @@ test("^O and ^S reach the pickers mid-sentence, without disturbing what is typed
   const back = await waitForFrame((frame) => !frame.includes("Sessions"))
   expect(back).toContain("half a question")
 
+  await mockInput.pressKeys(["\r"])
+  await waitForFrame((frame) => frame.includes("half a question"))
+  expect(chats.sent).toEqual(["half a question"])
+
   screen.destroy()
   renderer.destroy()
 })
 
-test("/model refreshes dynamic provider catalogues before opening the picker", async () => {
+test("/models refreshes dynamic provider catalogues before opening the picker", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const refreshes: Array<boolean | undefined> = []
   const screen = new ChatScreen(renderer, {
@@ -3322,7 +3328,7 @@ test("/model refreshes dynamic provider catalogues before opening the picker", a
   routeKeys(renderer, screen)
   await waitForFrame((frame) => frame.includes("ask something"))
 
-  await mockInput.typeText("/model")
+  await mockInput.typeText("/models")
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("Model for new chats"))
 
@@ -3350,7 +3356,7 @@ test("a chosen model and reasoning become the default for new chats", async () =
   routeKeys(renderer, screen)
   await waitForFrame((frame) => frame.includes("ask something"))
 
-  mockInput.pressKey("o", { ctrl: true })
+  await mockInput.pressKeys(["\x1b[27;5;109~"])
   await waitForFrame((frame) => frame.includes("Model for this chat"))
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("Test Model — reasoning") && frame.includes("low") && frame.includes("high"))
@@ -3693,11 +3699,13 @@ test("shows what a model thought, and folds every thought with /thoughts", async
   await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
 
   await mockInput.typeText("/thoughts")
+  await waitForFrame((frame) => frame.includes("› /thoughts"))
   mockInput.pressEnter()
   const folded = await waitForFrame((frame) => frame.includes("+ thought: 1.8s"))
   expect(folded).not.toContain("buyers stepped in at 318 twice")
 
   await mockInput.typeText("/thoughts")
+  await waitForFrame((frame) => frame.includes("› /thoughts"))
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("buyers stepped in at 318 twice"))
 
@@ -3925,7 +3933,7 @@ test("counts the thinking while it happens, and stops counting at the first word
 })
 
 test("names the model under the field, and the help modal instead of a row of keys", async () => {
-  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 34, kittyKeyboard: true })
   const chats = fakeChats()
   await chats.create()
   const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
@@ -3948,6 +3956,14 @@ test("names the model under the field, and the help modal instead of a row of ke
   await mockInput.typeText("/help")
   mockInput.pressEnter()
   const help = await waitForFrame((frame) => frame.includes("Keys"))
+  expect(help).toContain("^M /models")
+  expect(help).not.toContain("^O")
+  expect(help).toContain("⌥1")
+  expect(help).toContain("⌥2")
+  expect(help).toContain("⌥3")
+  expect(help).not.toContain("^A")
+  expect(help).not.toContain("^T")
+  expect(help).not.toContain("^G")
   expect(help).toContain("which model answers this chat")
   expect(help).toContain("take back the last queued message")
 

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { CliRenderEvents, MouseEvent } from "@opentui/core"
-import { createTestRenderer } from "@opentui/core/testing"
-import { App } from "./app.ts"
+import { createTestRenderer, setRendererCapabilities } from "@opentui/core/testing"
+import { App, configureTmuxKeyboard } from "./app.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
 import { DEFAULT_APP_PREFERENCES } from "@trbot/preferences/app.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
@@ -12,6 +12,29 @@ import { createServerSession, type ServerSession } from "./server-session.ts"
 function offlineSession(): ServerSession {
   return createServerSession({ config: { url: "http://127.0.0.1:1", token: "test-token", caPath: null } })
 }
+
+test("restores tmux keyboard disambiguation after delayed capabilities and refocus", async () => {
+  const { renderer } = await createTestRenderer({ width: 80, height: 20 })
+  const enabled: string[] = []
+  const restored: string[] = []
+  const restore = configureTmuxKeyboard(renderer, {
+    inTmux: false,
+    settleMs: 0,
+    write: (data) => enabled.push(data),
+    restore: (data) => restored.push(data),
+  })
+
+  const capabilities = setRendererCapabilities(renderer, { multiplexer: "tmux" })
+  renderer.emit(CliRenderEvents.CAPABILITIES, capabilities)
+  await Bun.sleep(1)
+
+  expect(enabled).toEqual(["\x1b[>4;2m"])
+  renderer.emit(CliRenderEvents.FOCUS)
+  expect(enabled).toEqual(["\x1b[>4;2m", "\x1b[>4;2m"])
+  restore()
+  expect(restored).toEqual(["\x1b[>4;0m"])
+  renderer.destroy()
+})
 
 test("restores the terminal synchronously after Ctrl+C is confirmed", async () => {
   const { renderer, mockInput } = await createTestRenderer({

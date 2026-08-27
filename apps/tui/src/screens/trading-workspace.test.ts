@@ -21,7 +21,6 @@ interface TestPanel {
   marketStates: Array<boolean | null>
   interrupts: string[]
   handleKey(key: KeyEvent): void
-  capturesInput(): boolean
   clearInputOnInterrupt(): boolean
   openQuestion(sessionId: string): void
   openPermission(sessionId: string): void
@@ -36,13 +35,13 @@ interface TestPanel {
 /**
  * A panel, near enough for the workspace to be driven against.
  *
- * `capturesInput` is the only thing the workspace asks of a panel beyond drawing
- * itself, so a fake that answers it exercises the tab shortcuts without a real screen.
+ * It records keys and lifecycle calls so the workspace can be exercised without
+ * constructing its three full screens.
  */
 function panel(
   renderer: RenderContext,
   label: string,
-  options: { capturesInput?: boolean; clearsInput?: boolean; showingSession?: string; embeddedChat?: boolean } = {},
+  options: { clearsInput?: boolean; showingSession?: string; embeddedChat?: boolean } = {},
 ): TestPanel {
   const root = new BoxRenderable(renderer, { width: "100%", height: "100%" })
   root.add(new TextRenderable(renderer, { content: label }))
@@ -66,7 +65,6 @@ function panel(
     handleKey: (key) => {
       keys.push(key)
     },
-    capturesInput: () => options.capturesInput ?? false,
     clearInputOnInterrupt: () => {
       interrupts.push(label)
       return options.clearsInput ?? false
@@ -139,15 +137,13 @@ function permission(id: string): ChatPermissionRequest {
   }
 }
 
-async function mountWorkspace(options: { capturesInput?: boolean; clearsInput?: boolean; showingSession?: string } = {}) {
+async function mountWorkspace(options: { clearsInput?: boolean; showingSession?: string } = {}) {
   const harness = await createTestRenderer({ width: 80, height: 20, kittyKeyboard: true })
   const trade = panel(harness.renderer, "TRADE PANEL", {
-    capturesInput: options.capturesInput,
     clearsInput: options.clearsInput,
   })
   const chat = panel(harness.renderer, "CHAT PANEL", options)
   const logs = panel(harness.renderer, "LOG PANEL", {
-    capturesInput: options.capturesInput,
     clearsInput: options.clearsInput,
   })
   const workspace = new TradingWorkspaceScreen(harness.renderer, { trade, chat, logs })
@@ -193,44 +189,34 @@ test("switches tabs on click without selecting their labels", async () => {
   renderer.destroy()
 })
 
-test("^A, ^T, and ^G select their tabs while a panel is taking text", async () => {
-  const { renderer, mockInput, waitForFrame, workspace } = await mountWorkspace({ capturesInput: true })
+test("Option+1, Option+2, and Option+3 select their screens through tmux extended input", async () => {
+  const { renderer, mockInput, waitForFrame, workspace } = await mountWorkspace()
+  await waitForFrame((frame) => frame.includes("TRADE PANEL"))
+
+  await mockInput.pressKeys(["\x1b[27;3;51~"])
+  await waitForFrame((frame) => frame.includes("LOG PANEL"))
+  await mockInput.pressKeys(["\x1b[27;3;50~"])
+  await waitForFrame((frame) => frame.includes("CHAT PANEL"))
+  await mockInput.pressKeys(["\x1b[27;3;49~"])
+  await waitForFrame((frame) => frame.includes("TRADE PANEL"))
+
+  workspace.destroy()
+  renderer.destroy()
+})
+
+test("the former control and initial shortcuts remain with the active screen", async () => {
+  const { renderer, mockInput, waitForFrame, workspace, trade } = await mountWorkspace()
   await waitForFrame((frame) => frame.includes("TRADE PANEL"))
 
   mockInput.pressKey("g", { ctrl: true })
-  await waitForFrame((frame) => frame.includes("LOG PANEL"))
   mockInput.pressKey("a", { ctrl: true })
-  await waitForFrame((frame) => frame.includes("CHAT PANEL"))
   mockInput.pressKey("t", { ctrl: true })
-  await waitForFrame((frame) => frame.includes("TRADE PANEL"))
-
-  workspace.destroy()
-  renderer.destroy()
-})
-
-test("shift does not change which tab a control shortcut selects", async () => {
-  const { renderer, mockInput, waitForFrame, workspace } = await mountWorkspace()
-  await waitForFrame((frame) => frame.includes("TRADE PANEL"))
-
-  mockInput.pressKey("a", { ctrl: true, shift: true })
-  await waitForFrame((frame) => frame.includes("CHAT PANEL"))
-  mockInput.pressKey("g", { ctrl: true, shift: true })
-  await waitForFrame((frame) => frame.includes("LOG PANEL"))
-  mockInput.pressKey("t", { ctrl: true, shift: true })
-  await waitForFrame((frame) => frame.includes("TRADE PANEL"))
-
-  workspace.destroy()
-  renderer.destroy()
-})
-
-test("each tab answers to its own initial while no panel is taking text", async () => {
-  const { renderer, mockInput, waitForFrame, workspace } = await mountWorkspace()
-  await waitForFrame((frame) => frame.includes("TRADE PANEL"))
-
   mockInput.pressKey("l", { shift: true })
-  await waitForFrame((frame) => frame.includes("LOG PANEL"))
   mockInput.pressKey("c", { shift: true })
-  await waitForFrame((frame) => frame.includes("CHAT PANEL"))
+  mockInput.pressKey("t", { shift: true })
+  await Bun.sleep(5)
+
+  expect(trade.keys.map((key) => key.name)).toEqual(["g", "a", "t", "l", "c", "t"])
 
   workspace.destroy()
   renderer.destroy()
@@ -253,23 +239,16 @@ test("dims the workspace chrome and every panel footer when the market closes", 
   renderer.destroy()
 })
 
-test("a panel taking text keeps the letters, and the workspace keeps the control keys", async () => {
-  const { renderer, mockInput, waitForFrame, workspace, trade } = await mountWorkspace({ capturesInput: true })
+test("ordinary letters stay with the active screen before an Option shortcut changes it", async () => {
+  const { renderer, mockInput, waitForFrame, workspace, trade } = await mountWorkspace()
   await waitForFrame((frame) => frame.includes("TRADE PANEL"))
 
-  // A tab initial typed into a field is text, and reaches the panel rather than the
-  // tab bar: a trader typing "Logs" would otherwise leave the screen mid-word.
   mockInput.pressKey("l", { shift: true })
   await Bun.sleep(5)
   expect(trade.keys.map((key) => key.name)).toEqual(["l"])
 
-  mockInput.pressKey("g", { ctrl: true })
+  await mockInput.pressKeys(["\x1b[27;3;51~"])
   await waitForFrame((frame) => frame.includes("LOG PANEL"))
-  expect(trade.keys.map((key) => key.name)).toEqual(["l"])
-
-  mockInput.pressKey("a", { ctrl: true })
-  await waitForFrame((frame) => frame.includes("CHAT PANEL"))
-  // The workspace took both control keys, so the panel never saw them.
   expect(trade.keys.map((key) => key.name)).toEqual(["l"])
 
   workspace.destroy()

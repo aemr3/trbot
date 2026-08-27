@@ -21,7 +21,7 @@ test("renders, scrolls, clears, and closes application logs", async () => {
   expect(frame).toContain("Bad Request")
   const lines = frame.split("\n")
   expect(lines[0]?.indexOf("APPLICATION LOGS")).toBe(1)
-  expect(lines.at(-2)).toContain("T / Esc trade")
+  expect(lines.at(-2)).toContain("⌥1 / Esc trade")
 
   await mockInput.typeText("c")
   await waitForFrame((value) => value.includes("No logs yet."))

@@ -13,7 +13,7 @@ type Entry = [key: string, meaning: string]
 const ENTRIES: Entry[] = [
   ["Enter", "send"],
   ["⇧Enter", "new line"],
-  ["^O", "which model answers this chat"],
+  ["^M /models", "which model answers this chat"],
   ["^R", "how hard it thinks"],
   ["⇧Tab /permissions", "switch Manual / Auto permissions"],
   ["/thoughts", "show or hide what it thought"],
@@ -32,9 +32,9 @@ const ENTRIES: Entry[] = [
   ["^P /providers", "model providers"],
   ["Tab", "move between the conversation and the field"],
   ["PgUp/PgDn", "read back through the conversation"],
-  ["^A", "chat"],
-  ["^T", "trade"],
-  ["^G", "logs"],
+  ["⌥1", "trade"],
+  ["⌥2", "chat"],
+  ["⌥3", "logs"],
   ["/help", "open this list"],
 ]
 

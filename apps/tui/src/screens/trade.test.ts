@@ -99,9 +99,6 @@ class FakeTradeChatPanel implements TradeChatPanel {
     this.deactivations += 1
     this.composerTarget.blur()
   }
-  capturesInput(): boolean {
-    return true
-  }
   clearInputOnInterrupt(): boolean {
     this.interruptCount += 1
     return true
@@ -476,7 +473,6 @@ test("switches the news panel to its embedded chat and releases input for ticker
   expect(chat.modalHost).toBe(screen.root)
   expect(chat.activations).toBeGreaterThan(0)
   expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
-  expect(screen.capturesInput()).toBe(true)
   expect(screen.clearInputOnInterrupt()).toBe(true)
   expect(chat.interruptCount).toBe(1)
   expect(screen.isShowingSession("side-session")).toBe(true)
@@ -512,7 +508,6 @@ test("switches the news panel to its embedded chat and releases input for ticker
   expect(renderer.currentFocusedRenderable).toBe(chat.composerTarget)
   await mockInput.typeText("/")
   expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello/")
-  expect(screen.capturesInput()).toBe(true)
   const focusedChat = await waitForFrame((frame) => frame.includes("SIDE CHAT"))
   expect(focusedChat).not.toContain("Ticker search")
 
@@ -610,11 +605,11 @@ test("opens application logs and returns to the watchlist", async () => {
   workspace.mount()
   await waitForFrame((frame) => frame.includes("XU030 stock"))
 
-  mockInput.pressKey("l", { shift: true })
+  mockInput.pressKey("3", { meta: true })
   const logFrame = await waitForFrame((frame) => frame.includes("APPLICATION LOGS") && frame.includes("Unknown parameter"))
   expect(logFrame).toContain("Market data")
   expect(logFrame).toContain("statusCode")
-  mockInput.pressKey("t", { shift: true })
+  mockInput.pressKey("1", { meta: true })
   await waitForFrame((frame) => frame.includes("XU030 stock") && !frame.includes("APPLICATION LOGS"))
 
   workspace.destroy()

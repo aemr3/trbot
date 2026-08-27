@@ -79,7 +79,7 @@ export class LogsScreen {
       backgroundColor: workspaceChromeBackground(null),
     })
     this.footer.add(new TextRenderable(renderer, {
-      content: "T / Esc trade · ↑/↓ scroll · PgUp/PgDn · Home/End jump · c clear",
+      content: "⌥1 / Esc trade · ↑/↓ scroll · PgUp/PgDn · Home/End jump · c clear",
       fg: WORKSPACE_CHROME_MUTED,
       width: "100%",
     }))
