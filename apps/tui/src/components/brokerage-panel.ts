@@ -167,6 +167,7 @@ export class BrokeragePanel {
     this.rangeLabel = new TextRenderable(renderer, {
       content: "",
       fg: MUTED_COLOR,
+      selectable: false,
       onMouseDown: (event) => {
         if (event.button !== 0) return
         this.options.onFocusRequest?.()
@@ -193,7 +194,7 @@ export class BrokeragePanel {
           this.selectView(view)
         },
       })
-      const label = new TextRenderable(renderer, { content: VIEW_LABELS[view] })
+      const label = new TextRenderable(renderer, { content: VIEW_LABELS[view], selectable: false })
       button.add(label)
       tabs.add(button)
       this.viewButtons.set(view, button)

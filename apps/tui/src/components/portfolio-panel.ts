@@ -141,7 +141,11 @@ export class PortfolioPanel {
           this.selectRange(range)
         },
       })
-      const label = new TextRenderable(renderer, { content: PORTFOLIO_RANGE_LABELS[range], wrapMode: "none" })
+      const label = new TextRenderable(renderer, {
+        content: PORTFOLIO_RANGE_LABELS[range],
+        wrapMode: "none",
+        selectable: false,
+      })
       button.add(label)
       header.add(button)
       this.rangeButtons.set(range, button)

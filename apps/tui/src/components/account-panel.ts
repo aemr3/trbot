@@ -150,7 +150,7 @@ export class AccountPanel {
           this.selectTab(tab)
         },
       })
-      const label = new TextRenderable(renderer, { content: TAB_LABELS[tab], wrapMode: "none" })
+      const label = new TextRenderable(renderer, { content: TAB_LABELS[tab], wrapMode: "none", selectable: false })
       button.add(label)
       tabs.add(button)
       this.tabButtons.set(tab, button)
@@ -522,6 +522,7 @@ export class AccountPanel {
           content: new StyledText(chunks(item)),
           width: "100%",
           wrapMode: "none",
+          selectable: false,
         }),
       }
       entry.row.add(entry.text)

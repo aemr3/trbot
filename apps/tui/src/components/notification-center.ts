@@ -187,7 +187,7 @@ export class NotificationCenter {
           this.activateSelected()
         },
       })
-      box.add(new TextRenderable(this.renderer, { content: action.label, fg: TEXT_COLOR }))
+      box.add(new TextRenderable(this.renderer, { content: action.label, fg: TEXT_COLOR, selectable: false }))
       actionRow.add(box)
       actionBoxes.push(box)
     }

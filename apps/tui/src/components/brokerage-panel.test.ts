@@ -154,11 +154,13 @@ test("switches views on a click and opens the popup from the range label", async
   expect(views).toEqual(["GAINED"])
   expect(panel.activeView).toBe("GAINED")
   expect(focusRequests).toBeGreaterThan(0)
+  expect(renderer.getSelection()).toBeNull()
 
   // The range keeps its own row above the tabs.
   const rangeY = lines.findIndex((line) => line.includes("Today"))
   await mockMouse.click((lines[rangeY] ?? "").indexOf("Today"), rangeY)
   expect(opened).toBe(1)
+  expect(renderer.getSelection()).toBeNull()
 
   renderer.destroy()
 })

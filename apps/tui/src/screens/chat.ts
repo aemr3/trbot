@@ -366,6 +366,7 @@ export class ChatScreen {
       content: " Jump to bottom (click) ↓ ",
       fg: TEXT_COLOR,
       wrapMode: "none",
+      selectable: false,
     }))
     this.jumpToBottomBar.add(jumpToBottom)
     this.emptyState = new BoxRenderable(renderer, {

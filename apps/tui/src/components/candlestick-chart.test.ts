@@ -759,6 +759,11 @@ test("shows independent range and timeframe controls", async () => {
   expect(frame).toContain("5Y")
   expect(frame).toContain("5m")
 
+  const lines = frame.split("\n")
+  const rangeY = lines.findIndex((line) => line.includes("Range") && line.includes("5Y"))
+  await setup.mockMouse.click(lines[rangeY]?.indexOf("5Y") ?? -1, rangeY)
+  expect(setup.renderer.getSelection()).toBeNull()
+
   chart.destroy()
   setup.renderer.destroy()
 })

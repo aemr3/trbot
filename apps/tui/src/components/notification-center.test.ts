@@ -9,7 +9,7 @@ function key(name: string): KeyEvent {
 }
 
 test("stacks notifications and runs the selected action", async () => {
-  const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 100, height: 28 })
+  const { renderer, renderOnce, captureCharFrame, mockMouse } = await createTestRenderer({ width: 100, height: 28 })
   const events: string[] = []
   const center = new NotificationCenter(renderer)
   renderer.root.add(center.root)
@@ -35,10 +35,12 @@ test("stacks notifications and runs the selected action", async () => {
   expect(frame).toContain("Second question")
   expect(center.count).toBe(2)
 
-  center.handleKey(key("right"))
-  center.handleKey(key("enter"))
+  const lines = frame.split("\n")
+  const actionsY = lines.findLastIndex((line) => line.includes("Open chat") && line.includes("Stay here"))
+  await mockMouse.click(lines[actionsY]?.indexOf("Stay here") ?? -1, actionsY)
   expect(events).toEqual(["stay-two"])
   expect(center.count).toBe(1)
+  expect(renderer.getSelection()).toBeNull()
 
   center.destroy()
   renderer.destroy()

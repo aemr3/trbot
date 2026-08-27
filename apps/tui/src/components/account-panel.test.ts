@@ -240,6 +240,40 @@ test("shows the levels protecting a position on its own row", async () => {
   renderer.destroy()
 })
 
+test("does not select text when clicking a tab or actionable row", async () => {
+  const positions: AccountPosition[] = [{
+    uid: "instrument-1",
+    symbol: "F_ASELS0826",
+    displayName: "ASELS",
+    quantity: 2,
+    averageCost: 400,
+    currentPrice: 405,
+    unrealizedProfitLoss: 500,
+    currency: "TRY",
+    multiplier: 1,
+  }]
+  const selected: string[] = []
+  const { renderer, renderOnce, captureCharFrame, mockMouse, panel } = await mountPanel({
+    source: { loadAccount: async () => snapshot(positions) },
+    onPositionSelect: (position) => selected.push(position.uid),
+  }, 80)
+
+  await panel.refresh()
+  await renderOnce()
+  const lines = captureCharFrame().split("\n")
+  const positionY = lines.findIndex((line) => line.includes("ASELS"))
+  await mockMouse.click(lines[positionY]?.indexOf("ASELS") ?? -1, positionY)
+  expect(selected).toEqual(["instrument-1"])
+  expect(renderer.getSelection()).toBeNull()
+
+  const tabsY = lines.findIndex((line) => line.includes("Positions") && line.includes("Stops"))
+  await mockMouse.click(lines[tabsY]?.indexOf("Stops") ?? -1, tabsY)
+  expect(renderer.getSelection()).toBeNull()
+
+  panel.destroy()
+  renderer.destroy()
+})
+
 function alertView(overrides: Partial<PriceAlertView> = {}): PriceAlertView {
   const alert = createPriceAlert(
     {

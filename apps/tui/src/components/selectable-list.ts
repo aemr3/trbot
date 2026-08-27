@@ -132,12 +132,14 @@ export class SelectableList {
         width: 2,
         flexShrink: 0,
         wrapMode: "none",
+        selectable: false,
       })
       const content = new TextRenderable(this.renderer, {
         content: row.content,
         fg: row.color,
         flexGrow: 1,
         wrapMode: this.options.wrapContent ? "word" : "none",
+        selectable: false,
       })
       rowBox.add(indicator)
       rowBox.add(content)

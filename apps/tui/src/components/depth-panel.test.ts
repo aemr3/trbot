@@ -252,7 +252,7 @@ test("leaves other keys to the screen behind it", async () => {
  */
 test("switches book when the button is clicked", async () => {
   const targets: string[] = []
-  const { renderOnce, captureCharFrame, mockMouse, panel } = await mountPanel(30, {
+  const { renderer, renderOnce, captureCharFrame, mockMouse, panel } = await mountPanel(30, {
     onTargetChange: (target) => targets.push(target),
   })
   panel.setEntitled(true)
@@ -266,6 +266,7 @@ test("switches book when the button is clicked", async () => {
   await mockMouse.click(column, 0)
   expect(panel.activeSymbol()).toBe("F_ASELS0826")
   expect(targets).toEqual(["INSTRUMENT"])
+  expect(renderer.getSelection()).toBeNull()
 })
 
 test("marks the selected book the way the chart marks its own", async () => {

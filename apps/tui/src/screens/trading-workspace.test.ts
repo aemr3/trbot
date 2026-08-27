@@ -178,6 +178,21 @@ test("delegates interrupt clearing to the active panel and shows quit confirmati
   renderer.destroy()
 })
 
+test("switches tabs on click without selecting their labels", async () => {
+  const { renderer, mockMouse, waitForFrame, workspace } = await mountWorkspace()
+  const frame = await waitForFrame((value) => value.includes("TRADE PANEL"))
+  const lines = frame.split("\n")
+  const tabsY = lines.findIndex((line) => line.includes("TRADE") && line.includes("CHAT"))
+  const chatX = lines[tabsY]?.indexOf("CHAT") ?? -1
+
+  await mockMouse.click(chatX, tabsY)
+  await waitForFrame((value) => value.includes("CHAT PANEL"))
+  expect(renderer.getSelection()).toBeNull()
+
+  workspace.destroy()
+  renderer.destroy()
+})
+
 test("^A, ^T, and ^G select their tabs while a panel is taking text", async () => {
   const { renderer, mockInput, waitForFrame, workspace } = await mountWorkspace({ capturesInput: true })
   await waitForFrame((frame) => frame.includes("TRADE PANEL"))

@@ -664,7 +664,7 @@ export class TradeScreen {
           this.selectInstrumentSort(sort)
         },
       })
-      const label = new TextRenderable(renderer, { content: SORT_LABELS[sort] })
+      const label = new TextRenderable(renderer, { content: SORT_LABELS[sort], selectable: false })
       button.add(label)
       sortToolbar.add(button)
       this.sortButtons.set(sort, button)
@@ -830,7 +830,11 @@ export class TradeScreen {
           this.selectRightView(view)
         },
       })
-      const label = new TextRenderable(renderer, { content: RIGHT_VIEW_LABELS[view], wrapMode: "none" })
+      const label = new TextRenderable(renderer, {
+        content: RIGHT_VIEW_LABELS[view],
+        wrapMode: "none",
+        selectable: false,
+      })
       button.add(label)
       this.rightViewToolbar.add(button)
       this.rightViewButtons.set(view, button)
@@ -863,7 +867,7 @@ export class TradeScreen {
           this.selectNewsFeed(feed)
         },
       })
-      const label = new TextRenderable(renderer, { content: NEWS_FEED_LABELS[feed] })
+      const label = new TextRenderable(renderer, { content: NEWS_FEED_LABELS[feed], selectable: false })
       button.add(label)
       newsFeedToolbar.add(button)
       this.newsFeedButtons.set(feed, button)

@@ -130,7 +130,7 @@ export class TradingWorkspaceScreen {
           if (event.button === 0) this.selectTab(tab.id)
         },
       })
-      const label = new TextRenderable(renderer, { content: tab.label })
+      const label = new TextRenderable(renderer, { content: tab.label, selectable: false })
       box.add(label)
       this.tabs.add(box)
       this.tabBoxes.set(tab.id, box)

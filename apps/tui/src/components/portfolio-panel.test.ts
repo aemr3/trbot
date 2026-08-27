@@ -183,16 +183,19 @@ test("says so rather than drawing an empty field", async () => {
 
 test("reports a range change instead of loading it", async () => {
   const ranges: PortfolioRange[] = []
-  const { renderer, renderOnce, captureCharFrame, panel } = await mountPanel((range) => ranges.push(range))
+  const { renderer, renderOnce, captureCharFrame, mockMouse, panel } = await mountPanel((range) => ranges.push(range))
 
   panel.showPortfolio(portfolio)
   panel.showPerformance(performance())
   await Bun.sleep(0)
   await renderOnce()
 
-  expect(panel.handleKey(key("right"))).toBeTrue()
+  const initial = captureCharFrame().split("\n")
+  const headerY = initial.findIndex((line) => line.includes("1W") && line.includes("1M"))
+  await mockMouse.click(initial[headerY]?.indexOf("1M") ?? -1, headerY)
   expect(ranges).toEqual(["MONTH"])
   expect(panel.activeRange).toBe("MONTH")
+  expect(renderer.getSelection()).toBeNull()
 
   await renderOnce()
   const frame = captureCharFrame()

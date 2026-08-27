@@ -337,7 +337,7 @@ function fakeOrderSource(placed: PlaceViopOrderRequest[] = []): ViopOrderSource 
 }
 
 test("renders the VIOP, chart, and news panels with instrument data", async () => {
-  const { renderer, renderOnce, waitForFrame, captureCharFrame } = await createTestRenderer({
+  const { renderer, renderOnce, waitForFrame, captureCharFrame, mockMouse } = await createTestRenderer({
     width: 120,
     height: 30,
   })
@@ -356,6 +356,11 @@ test("renders the VIOP, chart, and news panels with instrument data", async () =
   expect(frame).toContain("Chart")
   expect(frame).toContain("News")
   expect(frame).toContain("XU030")
+
+  const lines = frame.split("\n")
+  const sortY = lines.findIndex((line) => line.includes("Volume ↓"))
+  await mockMouse.click(lines[sortY]?.indexOf("Volume") ?? -1, sortY)
+  expect(renderer.getSelection()).toBeNull()
 
   screen.destroy()
   renderer.destroy()
@@ -391,7 +396,7 @@ test("aligns prices and changes for the longer XAUTRY contract symbol", async ()
 })
 
 test("switches between selected-stock and index news feeds", async () => {
-  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
+  const { renderer, mockInput, mockMouse, waitForFrame } = await createTestRenderer({ width: 120, height: 30 })
   const requests: Array<string | null> = []
   const scopedNews: NewsSource = {
     async listNews(options = {}) {
@@ -422,10 +427,11 @@ test("switches between selected-stock and index news feeds", async () => {
   expect(stockLines.some((line) => line.includes("News") && line.includes("Stock"))).toBe(false)
   expect(requests.at(-1)).toBe("u1")
 
-  focusPanel(mockInput, "news")
-  mockInput.pressArrow("right")
+  const feedY = stockLines.findIndex((line) => line.includes("Feed") && line.includes("Indices"))
+  await mockMouse.click(stockLines[feedY]?.indexOf("Indices") ?? -1, feedY)
   await waitForFrame((frame) => frame.includes("BIST 100 closes higher"))
   expect(requests.at(-1)).toBeNull()
+  expect(renderer.getSelection()).toBeNull()
 
   mockInput.pressArrow("left")
   await waitForFrame((frame) => frame.includes("Selected stock announces results"))
@@ -452,10 +458,13 @@ test("switches the news panel to its embedded chat and releases input for ticker
   })
   renderer.root.add(screen.root)
   screen.mount()
-  await waitForFrame((frame) => frame.includes("BIST 30 güne yükselişle başladı"))
+  const newsToolbarFrame = await waitForFrame((frame) => frame.includes("BIST 30 güne yükselişle başladı"))
 
-  mockInput.pressKey("c", { meta: true })
+  const newsToolbarLines = newsToolbarFrame.split("\n")
+  const rightViewY = newsToolbarLines.findIndex((line) => line.includes("News") && line.includes("Chat"))
+  await mockMouse.click(newsToolbarLines[rightViewY]?.indexOf("Chat") ?? -1, rightViewY)
   const chatFrame = await waitForFrame((frame) => frame.includes("SIDE CHAT"))
+  expect(renderer.getSelection()).toBeNull()
   await mockInput.typeText("hello")
 
   const chatLines = chatFrame.split("\n")

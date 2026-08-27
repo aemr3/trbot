@@ -157,6 +157,7 @@ test("selects a row when it is clicked", async () => {
   expect(list.selectedIndex).toBe(2)
   expect(selected).toEqual([2])
   expect(focusRequests).toBe(1)
+  expect(renderer.getSelection()).toBeNull()
 
   list.destroy()
   renderer.destroy()

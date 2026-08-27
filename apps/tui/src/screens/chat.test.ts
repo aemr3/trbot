@@ -2332,6 +2332,7 @@ test("offers a clickable jump to the newest message after scrolling up", async (
 
   await mockMouse.click(jumpColumn, jumpLine)
   await waitForFrame((frame) => frame.includes("Reply 15") && !frame.includes("Jump to bottom"))
+  expect(renderer.getSelection()).toBeNull()
 
   screen.destroy()
   renderer.destroy()
@@ -3683,6 +3684,7 @@ test("shows what a model thought, and folds every thought with /thoughts", async
   await mockMouse.click(thoughtColumn + 2, thoughtLine)
   const clickedFolded = await waitForFrame((frame) => frame.includes("+ thought: 1.8s"))
   expect(clickedFolded).not.toContain("buyers stepped in at 318 twice")
+  expect(renderer.getSelection()).toBeNull()
 
   const foldedLines = clickedFolded.split("\n")
   const foldedLine = foldedLines.findIndex((line) => line.includes("+ thought: 1.8s"))

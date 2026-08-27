@@ -165,6 +165,7 @@ export class ChatTranscript {
       row.header.visible = block.header !== undefined
       if (block.header !== undefined) row.header.content = block.header
       row.headerSelectable = block.headerSelectable ?? false
+      row.header.selectable = !row.headerSelectable
       row.detail.visible = block.detail !== undefined
       if (block.detail !== undefined) row.detail.content = block.detail
       const bodyVisible = block.bodyVisible !== false
