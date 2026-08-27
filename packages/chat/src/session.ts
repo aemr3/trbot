@@ -118,6 +118,16 @@ export interface ChatSession {
   running: boolean
 }
 
+/** A transient model failure waiting for its next automatic attempt. */
+export interface ChatRetryStatus {
+  attempt: number
+  maxAttempts: number
+  message: string
+  /** Server clock paired with nextAt so remote clients can correct clock skew. */
+  reportedAt: number
+  nextAt: number
+}
+
 /** A reply as it is being generated, for a client that arrives mid-run. */
 export interface ChatPartial {
   runId: string
@@ -125,6 +135,7 @@ export interface ChatPartial {
   seq: number
   text: string
   reasoning: string
+  retry: ChatRetryStatus | null
 }
 
 export interface ChatSessionDetail {
@@ -245,11 +256,20 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   running: z.boolean(),
 })
 
+export const ChatRetryStatusSchema: z.ZodType<ChatRetryStatus> = z.object({
+  attempt: z.number().int().positive(),
+  maxAttempts: z.number().int().positive(),
+  message: z.string().min(1),
+  reportedAt: z.number(),
+  nextAt: z.number(),
+})
+
 const ChatPartialSchema: z.ZodType<ChatPartial> = z.object({
   runId: z.string(),
   seq: z.number(),
   text: z.string(),
   reasoning: z.string(),
+  retry: ChatRetryStatusSchema.nullable().default(null),
 })
 
 export const ChatSessionDetailSchema: z.ZodType<ChatSessionDetail> = z.object({

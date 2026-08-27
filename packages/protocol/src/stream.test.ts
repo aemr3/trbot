@@ -197,6 +197,14 @@ describe("server frames the terminal will act on", () => {
       { type: "chatMessageRemoved", sessionId: "chat-1", messageId: "message-1" },
       { type: "chatDelta", sessionId: "chat-1", runId: "run-1", seq: 1, text: "Ready" },
       {
+        type: "chatDelta",
+        sessionId: "chat-1",
+        runId: "run-1",
+        seq: 2,
+        retry: { attempt: 1, maxAttempts: 5, message: "Provider is overloaded", reportedAt: 1_000, nextAt: 3_000 },
+      },
+      { type: "chatDelta", sessionId: "chat-1", runId: "run-1", seq: 3, retry: null },
+      {
         type: "chatRun",
         sessionId: "chat-1",
         runId: "run-1",
@@ -273,6 +281,7 @@ describe("server frames the terminal will act on", () => {
       { type: "chatPermissionModeChanged", state: { sessionId: "chat-1", mode: "ALWAYS" } },
       { type: "chatNotification", notification: {} },
       { type: "chatNotificationDismissed" },
+      { type: "chatDelta", sessionId: "chat-1", runId: "run-1", seq: 1, retry: { attempt: 0 } },
       { type: "error" },
       { type: "chatter", message: "hello" },
       {},

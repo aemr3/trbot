@@ -102,6 +102,26 @@ test("delivers the prompt that owns a chat run", () => {
   expect(runs).toEqual([{ status: "running", promptMessageId: "message-1" }])
 })
 
+test("delivers retry status and its explicit clear", () => {
+  const connection = new FakeChatStream()
+  const retries: unknown[] = []
+  new ChatClient(connection, {
+    onDelta: (_sessionId, _runId, delta) => { retries.push(delta.retry) },
+  })
+  const retry = {
+    attempt: 1,
+    maxAttempts: 5,
+    message: "Provider is overloaded",
+    reportedAt: 1_000,
+    nextAt: 3_000,
+  }
+
+  connection.emit({ type: "chatDelta", sessionId: "chat-1", runId: "run-1", seq: 1, retry })
+  connection.emit({ type: "chatDelta", sessionId: "chat-1", runId: "run-1", seq: 2, retry: null })
+
+  expect(retries).toEqual([retry, null])
+})
+
 test("requests only the bounded timeline used by the TUI", async () => {
   let requestedUrl = ""
   const http = new HttpClient({

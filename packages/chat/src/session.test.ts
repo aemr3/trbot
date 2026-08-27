@@ -2,12 +2,44 @@ import { describe, expect, test } from "bun:test"
 import {
   chatBlockText,
   chatMessageText,
+  ChatRetryStatusSchema,
+  ChatSessionDetailSchema,
   ChatSessionSchema,
   chatSessionTitle,
   defaultChatSessionTitle,
   isDefaultChatSessionTitle,
   recentChatTimeline,
 } from "./session.ts"
+
+test("validates transient retry status", () => {
+  const retry = { attempt: 2, maxAttempts: 5, message: "Provider is overloaded", reportedAt: 1_000, nextAt: 5_000 }
+  expect(ChatRetryStatusSchema.parse(retry)).toEqual(retry)
+  expect(ChatRetryStatusSchema.safeParse({ ...retry, attempt: 0 }).success).toBe(false)
+  expect(ChatRetryStatusSchema.safeParse({ ...retry, message: "" }).success).toBe(false)
+})
+
+test("defaults retry state when reading an older partial response", () => {
+  const detail = ChatSessionDetailSchema.parse({
+    session: {
+      id: "chat-1",
+      title: "Running chat",
+      parentSessionId: null,
+      agent: null,
+      model: "test-model",
+      provider: "test-provider",
+      reasoning: null,
+      createdAt: 1,
+      updatedAt: 1,
+      messageCount: 0,
+      queued: 0,
+      running: true,
+    },
+    messages: [],
+    partial: { runId: "run-1", seq: 1, text: "", reasoning: "thinking" },
+  })
+
+  expect(detail.partial?.retry).toBeNull()
+})
 
 test("defaults a legacy session's missing parent prompt association to null", () => {
   const session = ChatSessionSchema.parse({

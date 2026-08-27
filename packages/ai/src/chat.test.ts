@@ -20,6 +20,8 @@ function scripted(options: { reasoning?: boolean } = {}) {
   return { faux, models }
 }
 
+const ignoreRetry = (): void => {}
+
 test("tells the agent to check live app data before claiming it has none", () => {
   expect(CHAT_SYSTEM_PROMPT).toContain("do not claim live data is unavailable before checking")
   expect(CHAT_SYSTEM_PROMPT).toContain("Never infer or assume prices")
@@ -64,6 +66,7 @@ test("streams a reply and hands over the message it produced", async () => {
       onText: (delta) => text.push(delta),
       onReasoning: (delta) => reasoning.push(delta),
       onToolCall: () => {},
+      onRetry: ignoreRetry,
       onMessage: async (draft) => {
         drafts.push(draft)
       },
@@ -110,7 +113,7 @@ test("replays the stored history rather than only the new question", async () =>
     model: faux.getModel(),
     history,
     prompt: "Are you sure?",
-    events: { onText: () => {}, onReasoning: () => {}, onToolCall: () => {}, onMessage: async () => {} },
+    events: { onText: () => {}, onReasoning: () => {}, onToolCall: () => {}, onRetry: ignoreRetry, onMessage: async () => {} },
   })
 })
 
@@ -162,6 +165,7 @@ test("runs the tools a reply asks for and answers with their results", async () 
       onText: () => {},
       onReasoning: () => {},
       onToolCall: (name) => { called.push(name) },
+      onRetry: ignoreRetry,
       onMessage: async (draft) => {
         drafts.push(draft)
       },
@@ -211,6 +215,7 @@ test("waits for tool-start delivery before running the tool", async () => {
         startObserved.resolve()
         await startDelivered.promise
       },
+      onRetry: ignoreRetry,
       onMessage: async () => {},
     },
   })
@@ -315,6 +320,7 @@ test("keeps a reply that failed part way and reports why", async () => {
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: ignoreRetry,
       onMessage: async (draft) => {
         drafts.push(draft)
       },
@@ -342,8 +348,14 @@ test("retries provider overloads with bounded backoff", async () => {
     fauxAssistantMessage("Recovered answer."),
   ])
   const drafts: ChatMessageDraft[] = []
+  const retries: unknown[] = []
 
-  const result = await new ChatAgent({ models }).run({
+  const result = await new ChatAgent({
+    models,
+    now: () => 1_000,
+    random: () => 0,
+    retryWait: async () => true,
+  }).run({
     model: faux.getModel(),
     history: [],
     prompt: "Capital of Turkey?",
@@ -351,6 +363,7 @@ test("retries provider overloads with bounded backoff", async () => {
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: (status) => { retries.push(status) },
       onMessage: async (draft) => { drafts.push(draft) },
     },
   })
@@ -358,6 +371,195 @@ test("retries provider overloads with bounded backoff", async () => {
   expect(result).toEqual({ completed: true, aborted: false, errorMessage: null })
   expect(faux.state.callCount).toBe(3)
   expect(drafts.map((draft) => draft.message.text)).toEqual(["Recovered answer."])
+  expect(retries).toEqual([
+    { attempt: 1, maxAttempts: 5, message: "Provider is overloaded", reportedAt: 1_000, nextAt: 3_000 },
+    null,
+    { attempt: 2, maxAttempts: 5, message: "Provider is overloaded", reportedAt: 1_000, nextAt: 5_000 },
+    null,
+  ])
+})
+
+test("retries an empty text block that never emitted user-visible text", async () => {
+  const { faux, models } = scripted()
+  faux.setResponses([
+    fauxAssistantMessage([fauxText("")], { stopReason: "error", errorMessage: "Service unavailable" }),
+    fauxAssistantMessage("Recovered answer."),
+  ])
+  const drafts: ChatMessageDraft[] = []
+
+  const result = await new ChatAgent({ models, retryWait: async () => true }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "What changed?",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onRetry: ignoreRetry,
+      onMessage: async (draft) => { drafts.push(draft) },
+    },
+  })
+
+  expect(result.completed).toBe(true)
+  expect(faux.state.callCount).toBe(2)
+  expect(drafts.map((draft) => draft.message.text)).toEqual(["Recovered answer."])
+})
+
+test("honors provider retry timing headers", async () => {
+  const cases: Array<{ headers: Record<string, string>; expected: number }> = [
+    { headers: { "retry-after-ms": "750" }, expected: 750 },
+    { headers: { "retry-after-ms": "999999999999" }, expected: 2_147_483_647 },
+    { headers: { "Retry-After": "3.5" }, expected: 3_500 },
+    { headers: { "retry-after": new Date(6_000).toUTCString() }, expected: 5_000 },
+  ]
+
+  for (const { headers, expected } of cases) {
+    const { faux, models } = scripted()
+    faux.setResponses([
+      async (_context, options, _state, model) => {
+        expect(options?.maxRetries).toBe(0)
+        await options?.onResponse?.({ status: 429, headers }, model)
+        return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Service unavailable" })
+      },
+      fauxAssistantMessage("Recovered answer."),
+    ])
+    const delays: number[] = []
+
+    const result = await new ChatAgent({
+      models,
+      now: () => 1_000,
+      random: () => 1,
+      retryWait: async (delayMs) => {
+        delays.push(delayMs)
+        return true
+      },
+    }).run({
+      model: faux.getModel(),
+      history: [],
+      prompt: "What changed?",
+      events: {
+        onText: () => {},
+        onReasoning: () => {},
+        onToolCall: () => {},
+        onRetry: ignoreRetry,
+        onMessage: async () => {},
+      },
+    })
+
+    expect(result.completed).toBe(true)
+    expect(delays).toEqual([expected])
+  }
+})
+
+test("captures retry headers from failed provider fetches", async () => {
+  const faux = fauxProvider({ api: "openai-responses", models: [{ id: "chat-model" }] })
+  const models = createModels()
+  models.setProvider(faux.provider)
+  faux.setResponses([
+    async (_context, options) => {
+      await options?.fetch?.("https://provider.test/responses")
+      return fauxAssistantMessage([], { stopReason: "error", errorMessage: "429: Too many requests" })
+    },
+    fauxAssistantMessage("Recovered answer."),
+  ])
+  const delays: number[] = []
+
+  const result = await new ChatAgent({
+    models,
+    fetch: async () => new Response("rate limited", {
+      status: 429,
+      headers: { "Retry-After": "17" },
+    }),
+    retryWait: async (delayMs) => {
+      delays.push(delayMs)
+      return true
+    },
+  }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "What changed?",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onRetry: ignoreRetry,
+      onMessage: async () => {},
+    },
+  })
+
+  expect(result.completed).toBe(true)
+  expect(delays).toEqual([17_000])
+})
+
+test("adds jitter, caps unscheduled delays, and stops after five retries", async () => {
+  const { faux, models } = scripted()
+  faux.setResponses(Array.from({ length: 6 }, () => (
+    fauxAssistantMessage([], { stopReason: "error", errorMessage: "Service unavailable" })
+  )))
+  const delays: number[] = []
+  const attempts: number[] = []
+  const drafts: ChatMessageDraft[] = []
+
+  const result = await new ChatAgent({
+    models,
+    random: () => 1,
+    retryWait: async (delayMs) => {
+      delays.push(delayMs)
+      return true
+    },
+  }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Keep trying?",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onRetry: (status) => {
+        if (status) attempts.push(status.attempt)
+      },
+      onMessage: async (draft) => { drafts.push(draft) },
+    },
+  })
+
+  expect(result).toEqual({ completed: false, aborted: false, errorMessage: "Service unavailable" })
+  expect(faux.state.callCount).toBe(6)
+  expect(attempts).toEqual([1, 2, 3, 4, 5])
+  expect(delays).toEqual([2_500, 5_000, 10_000, 20_000, 30_000])
+  expect(drafts).toHaveLength(1)
+  expect(drafts[0]?.message.isError).toBe(true)
+})
+
+test("cancels immediately while waiting to retry", async () => {
+  const { faux, models } = scripted()
+  faux.setResponses([
+    fauxAssistantMessage([], { stopReason: "error", errorMessage: "Service unavailable" }),
+    fauxAssistantMessage("Should not run."),
+  ])
+  const controller = new AbortController()
+  const retries: unknown[] = []
+
+  const result = await new ChatAgent({ models }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Stop during backoff",
+    signal: controller.signal,
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onRetry: (status) => {
+        retries.push(status)
+        if (status) controller.abort()
+      },
+      onMessage: async () => {},
+    },
+  })
+
+  expect(result).toEqual({ completed: false, aborted: true, errorMessage: null })
+  expect(faux.state.callCount).toBe(1)
+  expect(retries).toHaveLength(2)
+  expect(retries.at(-1)).toBeNull()
 })
 
 test("retries an abnormal provider disconnect without running completed tools again", async () => {
@@ -395,7 +597,11 @@ test("retries an abnormal provider disconnect without running completed tools ag
   ])
   const drafts: ChatMessageDraft[] = []
 
-  const result = await new ChatAgent({ models, tools: new ChatTools([tool]) }).run({
+  const result = await new ChatAgent({
+    models,
+    tools: new ChatTools([tool]),
+    retryWait: async () => true,
+  }).run({
     model: faux.getModel(),
     history: [],
     prompt: "Read the market",
@@ -404,6 +610,7 @@ test("retries an abnormal provider disconnect without running completed tools ag
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: ignoreRetry,
       onMessage: async (draft) => { drafts.push(draft) },
     },
   })
@@ -415,12 +622,71 @@ test("retries an abnormal provider disconnect without running completed tools ag
   expect(drafts.at(-1)?.message.text).toBe("Recovered answer.")
 })
 
+test("keeps retrying a provider overload after a completed tool without running it again", async () => {
+  let toolCalls = 0
+  const tool: ChatTool = {
+    definition: {
+      name: "read_market",
+      description: "Read current market data",
+      parameters: Type.Object({}),
+    },
+    run: async () => {
+      toolCalls += 1
+      return { blocks: [toolText("Market read.")], details: null, isError: false }
+    },
+  }
+  const overload = {
+    stopReason: "error" as const,
+    errorMessage: "Codex error: Our servers are currently overloaded. Please try again later.",
+  }
+  const { faux, models } = scripted()
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("read_market", {})], { stopReason: "toolUse" }),
+    fauxAssistantMessage([], overload),
+    fauxAssistantMessage([], overload),
+    fauxAssistantMessage([], overload),
+    (context) => {
+      expect(context.messages.map((message) => message.role)).toEqual([
+        "user",
+        "assistant",
+        "toolResult",
+      ])
+      return fauxAssistantMessage("Recovered after sustained overload.")
+    },
+  ])
+  const drafts: ChatMessageDraft[] = []
+
+  const result = await new ChatAgent({
+    models,
+    tools: new ChatTools([tool]),
+    retryWait: async () => true,
+  }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Read the market",
+    chatSessionId: "worker-1",
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onRetry: ignoreRetry,
+      onMessage: async (draft) => { drafts.push(draft) },
+    },
+  })
+
+  expect(result).toEqual({ completed: true, aborted: false, errorMessage: null })
+  expect(faux.state.callCount).toBe(5)
+  expect(toolCalls).toBe(1)
+  expect(drafts.map((draft) => draft.message.role)).toEqual(["ASSISTANT", "TOOL_RESULT", "ASSISTANT"])
+  expect(drafts.at(-1)?.message.text).toBe("Recovered after sustained overload.")
+})
+
 test("reports a clean context overflow without persisting a disposable error reply", async () => {
   const { faux, models } = scripted()
   faux.setResponses([
     fauxAssistantMessage([], {
       stopReason: "error",
-      errorMessage: "Your input exceeds the context window of this model",
+      errorMessage: "500: Your input exceeds the context window of this model",
     }),
   ])
   const drafts: ChatMessageDraft[] = []
@@ -432,11 +698,13 @@ test("reports a clean context overflow without persisting a disposable error rep
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: ignoreRetry,
       onMessage: async (draft) => { drafts.push(draft) },
     },
   })
 
   expect(result.overflowed).toBe(true)
+  expect(faux.state.callCount).toBe(1)
   expect(drafts).toEqual([])
 })
 
@@ -453,6 +721,7 @@ test("reports a recoverable partial response for compaction instead of persistin
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: ignoreRetry,
       onMessage: async (draft) => { drafts.push(draft) },
     },
   })
@@ -474,6 +743,7 @@ test("preserves a successful response even when provider usage exceeds the windo
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: ignoreRetry,
       onMessage: async (draft) => { drafts.push(draft) },
     },
   })
@@ -524,6 +794,7 @@ test("does not retry an overflow after a tool has produced a durable side effect
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: ignoreRetry,
       onMessage: async (draft) => { drafts.push(draft) },
     },
   })
@@ -552,6 +823,7 @@ test("stamps a reply with what answered it and the effort it was asked for", asy
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: ignoreRetry,
       onMessage: async (draft) => {
         drafts.push(draft)
       },
@@ -581,6 +853,7 @@ test("times each reply around the stream, not around the queue", async () => {
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: ignoreRetry,
       onMessage: async (draft) => {
         drafts.push(draft)
       },
@@ -610,6 +883,7 @@ test("reports how much of a reply went on thinking, up to its first word", async
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: ignoreRetry,
       onMessage: async (draft) => {
         drafts.push(draft)
       },

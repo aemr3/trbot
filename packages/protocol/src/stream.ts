@@ -1,10 +1,12 @@
 import {
   ChatMessageSchema,
   ChatCompactionSchema,
+  ChatRetryStatusSchema,
   ChatSessionSchema,
   type ChatMessage,
   type ChatCompaction,
   type ChatRunStatus,
+  type ChatRetryStatus,
   type ChatSession,
 } from "@trbot/chat/session.ts"
 import { ChatQuestionRequestSchema, type ChatQuestionRequest } from "@trbot/chat/question.ts"
@@ -102,7 +104,16 @@ export type ChatFrame =
   | { type: "chatMessage"; sessionId: string; message: ChatMessage }
   | { type: "chatMessageRemoved"; sessionId: string; messageId: string }
   | { type: "chatCompacted"; sessionId: string; compaction: ChatCompaction }
-  | { type: "chatDelta"; sessionId: string; runId: string; seq: number; text?: string; reasoning?: string; toolName?: string }
+  | {
+      type: "chatDelta"
+      sessionId: string
+      runId: string
+      seq: number
+      text?: string
+      reasoning?: string
+      toolName?: string
+      retry?: ChatRetryStatus | null
+    }
   | {
       type: "chatRun"
       sessionId: string
@@ -170,6 +181,7 @@ export const ServerFrameSchema: z.ZodType<ServerFrame> = z.discriminatedUnion("t
     text: z.string().optional(),
     reasoning: z.string().optional(),
     toolName: z.string().optional(),
+    retry: ChatRetryStatusSchema.nullable().optional(),
   }),
   z.object({
     type: z.literal("chatRun"),

@@ -12,6 +12,7 @@ import {
   type ChatMessage,
   type ChatMessageDraft,
   type ChatPartial,
+  type ChatRetryStatus,
   type ChatSession,
   type ChatSessionDetail,
   type ChatSessionStore,
@@ -80,6 +81,7 @@ interface ChatRun {
   seq: number
   text: string
   reasoning: string
+  retry: ChatRetryStatus | null
   /** Child runs inherit their parent's signal and have no independent controller. */
   controller?: AbortController
 }
@@ -504,7 +506,7 @@ export class ChatController {
       createdAt: now,
     }
     const runId = crypto.randomUUID()
-    const run: ChatRun = { runId, promptMessageId: task.id, seq: 0, text: "", reasoning: "" }
+    const run: ChatRun = { runId, promptMessageId: task.id, seq: 0, text: "", reasoning: "", retry: null }
 
     await this.options.store.create(session)
     await this.options.store.append(session.id, { message: task, record: userRecord(task) })
@@ -523,6 +525,7 @@ export class ChatController {
       onText: (delta) => this.recordSubagentDelta(session.id, runId, { text: delta }),
       onReasoning: (delta) => this.recordSubagentDelta(session.id, runId, { reasoning: delta }),
       onToolCall: (toolName) => this.recordSubagentDelta(session.id, runId, { toolName }),
+      onRetry: (retry) => this.recordSubagentDelta(session.id, runId, { retry }),
       onMessage: (draft) => this.persist(session.id, draft),
       finish: async (error) => {
         if (this.runs.get(session.id)?.runId === runId) this.runs.delete(session.id)
@@ -542,12 +545,16 @@ export class ChatController {
   private recordSubagentDelta(
     sessionId: string,
     runId: string,
-    delta: { text?: string; reasoning?: string; toolName?: string },
+    delta: { text?: string; reasoning?: string; toolName?: string; retry?: ChatRetryStatus | null },
   ): void {
     const run = this.runs.get(sessionId)
     if (!run || run.runId !== runId) return
     if (delta.text) run.text += delta.text
     if (delta.reasoning) run.reasoning += delta.reasoning
+    if (delta.retry !== undefined) {
+      run.retry = delta.retry
+      if (delta.retry === null) run.reasoning = ""
+    }
     run.seq += 1
     this.options.broadcast({
       type: "chatDelta",
@@ -626,6 +633,7 @@ export class ChatController {
       seq: 0,
       text: "",
       reasoning: "",
+      retry: null,
       controller: new AbortController(),
     }
     this.runs.set(sessionId, run)
@@ -727,6 +735,18 @@ export class ChatController {
                 runId: run.runId,
                 seq: run.seq,
                 toolName: name,
+              })
+            },
+            onRetry: (retry) => {
+              run.retry = retry
+              if (retry === null) run.reasoning = ""
+              run.seq += 1
+              this.options.broadcast({
+                type: "chatDelta",
+                sessionId,
+                runId: run.runId,
+                seq: run.seq,
+                retry,
               })
             },
             onMessage: (draft) => this.persist(sessionId, draft),
@@ -870,7 +890,8 @@ export class ChatController {
   private partialOf(sessionId: string): ChatPartial | null {
     const run = this.runs.get(sessionId)
     if (!run) return null
-    return { runId: run.runId, seq: run.seq, text: run.text, reasoning: run.reasoning }
+    const retry = run.retry ? { ...run.retry, reportedAt: this.now() } : null
+    return { runId: run.runId, seq: run.seq, text: run.text, reasoning: run.reasoning, retry }
   }
 
   private withRunState(session: ChatSession): ChatSession {

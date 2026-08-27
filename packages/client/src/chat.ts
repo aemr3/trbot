@@ -11,6 +11,7 @@ import {
   type ChatCompactionReport,
   type ChatModelChoice,
   type ChatRunStatus,
+  type ChatRetryStatus,
   type ChatSession,
   type ChatSessionDetail,
   type ChatUndoPreview,
@@ -199,6 +200,7 @@ export interface ChatDelta {
   text?: string
   reasoning?: string
   toolName?: string
+  retry?: ChatRetryStatus | null
 }
 
 /**
@@ -238,6 +240,7 @@ export class ChatClient {
           if (frame.text !== undefined) delta.text = frame.text
           if (frame.reasoning !== undefined) delta.reasoning = frame.reasoning
           if (frame.toolName !== undefined) delta.toolName = frame.toolName
+          if (frame.retry !== undefined) delta.retry = frame.retry
           events.onDelta?.(frame.sessionId, frame.runId, delta)
           return
         }

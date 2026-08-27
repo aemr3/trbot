@@ -1,5 +1,5 @@
 import { Type, type Api, type Model, type Models } from "@earendil-works/pi-ai"
-import type { ChatMessageDraft, ChatUsage } from "@trbot/chat/session.ts"
+import type { ChatMessageDraft, ChatRetryStatus, ChatUsage } from "@trbot/chat/session.ts"
 import { ChatAgent } from "./chat.ts"
 import {
   createChatDelegationContext,
@@ -66,6 +66,7 @@ export interface SubagentSessionRun {
   onText(delta: string): void
   onReasoning(delta: string): void
   onToolCall(name: string): void
+  onRetry(status: ChatRetryStatus | null): void
   onMessage(draft: ChatMessageDraft): Promise<void>
   finish(error: string | null): Promise<void>
 }
@@ -301,6 +302,7 @@ async function runTask(
         onText: (delta) => session?.onText(delta),
         onReasoning: (delta) => session?.onReasoning(delta),
         onToolCall: (name) => session?.onToolCall(name),
+        onRetry: (status) => session?.onRetry(status),
         onMessage: async (draft) => {
           drafts.push(draft)
           await session?.onMessage(draft)

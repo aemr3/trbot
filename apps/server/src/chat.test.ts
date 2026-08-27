@@ -193,6 +193,39 @@ test("claims the prompt before delivering the running state and starting the mod
   expect(turns).toHaveLength(1)
 })
 
+test("streams retry status and preserves it for run resync", async () => {
+  const { chat, turns, frames, finish } = await harness({ auto: false })
+  const session = await chat.create()
+  await chat.send(session.id, "wait through overload")
+  await settle()
+  const retry = {
+    attempt: 1,
+    maxAttempts: 5,
+    message: "Provider is overloaded",
+    reportedAt: 1_000,
+    nextAt: 5_000,
+  }
+
+  turns[0]?.events.onReasoning("discarded attempt")
+  turns[0]?.events.onRetry(retry)
+  expect(frames.at(-1)).toMatchObject({
+    type: "chatDelta",
+    sessionId: session.id,
+    seq: 2,
+    retry,
+  })
+  expect((await chat.detail(session.id)).partial).toMatchObject({
+    reasoning: "discarded attempt",
+    retry: { ...retry, reportedAt: expect.any(Number) },
+  })
+
+  turns[0]?.events.onRetry(null)
+  expect(frames.at(-1)).toMatchObject({ type: "chatDelta", seq: 3, retry: null })
+  expect((await chat.detail(session.id)).partial).toMatchObject({ reasoning: "", retry: null })
+  finish()
+  await settle()
+})
+
 test("the second question sees the first exchange as history", async () => {
   const { chat, turns } = await harness()
   const session = await chat.create()
@@ -804,6 +837,14 @@ test("records subagents as live child sessions with their complete transcript", 
   worker.onToolCall("get_candles")
   worker.onText("Trend is constructive.")
   await worker.onMessage(reply("Trend is constructive."))
+  const retry = {
+    attempt: 1,
+    maxAttempts: 5,
+    message: "Provider is overloaded",
+    reportedAt: 1_000,
+    nextAt: 5_000,
+  }
+  worker.onRetry(retry)
 
   const running = await chat.children(parent.id)
   expect(running).toMatchObject([{
@@ -819,7 +860,14 @@ test("records subagents as live child sessions with their complete transcript", 
     "USER:Inspect the XU100 trend",
     "ASSISTANT:Trend is constructive.",
   ])
-  expect(detail.partial).toMatchObject({ text: "Trend is constructive.", reasoning: "Reading candles." })
+  expect(detail.partial).toMatchObject({
+    text: "Trend is constructive.",
+    reasoning: "Reading candles.",
+    retry: { ...retry, reportedAt: expect.any(Number) },
+  })
+
+  worker.onRetry(null)
+  expect((await chat.detail(worker.sessionId)).partial).toMatchObject({ reasoning: "", retry: null })
 
   await worker.finish(null)
   expect((await chat.children(parent.id))[0]?.running).toBe(false)
@@ -827,6 +875,11 @@ test("records subagents as live child sessions with their complete transcript", 
     type: "chatDelta",
     sessionId: worker.sessionId,
     toolName: "get_candles",
+  }))
+  expect(frames).toContainEqual(expect.objectContaining({
+    type: "chatDelta",
+    sessionId: worker.sessionId,
+    retry,
   }))
 
   const failure = await chat.send(worker.sessionId, "continue").then(

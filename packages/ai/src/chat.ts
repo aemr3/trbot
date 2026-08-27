@@ -5,9 +5,11 @@ import {
   type Api,
   type AssistantMessage,
   type Context,
+  type FetchFunction,
   type Message,
   type Model,
   type Models,
+  type ProviderResponse,
   type ToolCall,
 } from "@earendil-works/pi-ai"
 import {
@@ -15,6 +17,7 @@ import {
   type ChatBlock,
   type ChatMessage,
   type ChatMessageDraft,
+  type ChatRetryStatus,
   type ChatUsage,
 } from "@trbot/chat/session.ts"
 import { createChatDelegationContext, type ChatDelegationContext, type ChatToolRegistry } from "./tool.ts"
@@ -66,6 +69,8 @@ export const CHAT_SYSTEM_PROMPT = [
 /** The harness message shape a store keeps so a later turn replays exactly. */
 export type ChatRecord = Message
 
+type ChatFetch = (...args: Parameters<FetchFunction>) => ReturnType<FetchFunction>
+
 export interface ChatAgentOptions {
   /**
    * The harness, which resolves and refreshes the credential per request. Nothing
@@ -76,6 +81,10 @@ export interface ChatAgentOptions {
   tools?: ChatToolRegistry
   systemPrompt?: string
   now?: () => number
+  /** Deterministic seams for policy tests; production uses real jitter and timers. */
+  random?: () => number
+  retryWait?: (delayMs: number, signal?: AbortSignal) => Promise<boolean>
+  fetch?: ChatFetch
 }
 
 export interface ChatTurnEvents {
@@ -83,6 +92,7 @@ export interface ChatTurnEvents {
   onReasoning(delta: string): void
   /** Completes after attached clients have received the tool-start event. */
   onToolCall(name: string): Promise<void> | void
+  onRetry(status: ChatRetryStatus | null): void
   /**
    * A message the turn produced, as soon as it is complete.
    *
@@ -136,12 +146,17 @@ export interface ChatTurnResult {
   overflowed?: boolean
 }
 
-// A provider's own transport may already retry before returning an error message.
-// These outer retries also recover failures reported after a stream has opened.
-const TRANSIENT_STREAM_RETRY_DELAYS_MS = [500, 1_000] as const
+const RETRY_MAX_ATTEMPTS = 5
+const RETRY_INITIAL_DELAY_MS = 2_000
+const RETRY_BACKOFF_FACTOR = 2
+const RETRY_JITTER_FACTOR = 0.25
+const RETRY_MAX_DELAY_WITHOUT_HEADERS_MS = 30_000
+const RETRY_MAX_DELAY_MS = 2_147_483_647
 
 function hasUserVisibleReply(reply: AssistantMessage): boolean {
-  return reply.content.some((block) => block.type !== "thinking")
+  return reply.content.some((block) => (
+    block.type === "toolCall" || (block.type === "text" && block.text.length > 0)
+  ))
 }
 
 /**
@@ -153,9 +168,15 @@ function hasUserVisibleReply(reply: AssistantMessage): boolean {
  */
 export class ChatAgent {
   private readonly now: () => number
+  private readonly random: () => number
+  private readonly retryWait: (delayMs: number, signal?: AbortSignal) => Promise<boolean>
+  private readonly fetch: ChatFetch
 
   constructor(private readonly options: ChatAgentOptions) {
     this.now = options.now ?? Date.now
+    this.random = options.random ?? Math.random
+    this.retryWait = options.retryWait ?? waitForRetry
+    this.fetch = options.fetch ?? globalThis.fetch
   }
 
   async run(turn: ChatTurnOptions): Promise<ChatTurnResult> {
@@ -175,25 +196,37 @@ export class ChatAgent {
     let transientRetries = 0
 
     for (;;) {
-      const { reply, timing } = await this.streamReply(context, turn)
+      const { reply, timing, retryAfterMs, streamedText } = await this.streamReply(context, turn)
+      const contextOverflow = (reply.stopReason !== "stop" && isContextOverflow(reply, turn.model.contextWindow))
+        || isRecoverableLength(reply, turn.model.maxTokens)
       if (
-        transientRetries < TRANSIENT_STREAM_RETRY_DELAYS_MS.length
+        transientRetries < RETRY_MAX_ATTEMPTS
         && !turn.signal?.aborted
+        && !streamedText
         && !hasUserVisibleReply(reply)
+        && !contextOverflow
         && isRetryableAssistantError(reply)
       ) {
-        const delayMs = TRANSIENT_STREAM_RETRY_DELAYS_MS[transientRetries]
+        const attempt = transientRetries + 1
+        const delayMs = retryDelayMs(attempt, retryAfterMs, this.random())
+        const reportedAt = this.now()
         transientRetries += 1
-        if (!(await waitForRetry(delayMs, turn.signal))) {
+        turn.events.onRetry({
+          attempt,
+          maxAttempts: RETRY_MAX_ATTEMPTS,
+          message: retryMessage(reply.errorMessage),
+          reportedAt,
+          nextAt: reportedAt + delayMs,
+        })
+        const shouldRetry = await this.retryWait(delayMs, turn.signal)
+        turn.events.onRetry(null)
+        if (!shouldRetry) {
           return { completed: false, aborted: true, errorMessage: null }
         }
         continue
       }
       transientRetries = 0
-      const retryableOverflow = !toolExecuted && (
-        (reply.stopReason !== "stop" && isContextOverflow(reply, turn.model.contextWindow))
-        || isRecoverableLength(reply, turn.model.maxTokens)
-      )
+      const retryableOverflow = !toolExecuted && contextOverflow
       if (retryableOverflow) {
         return {
           completed: false,
@@ -265,16 +298,25 @@ export class ChatAgent {
   private async streamReply(
     context: Context,
     turn: ChatTurnOptions,
-  ): Promise<{ reply: AssistantMessage; timing: ReplyTiming }> {
+  ): Promise<{ reply: AssistantMessage; timing: ReplyTiming; retryAfterMs: number | null; streamedText: boolean }> {
     const started = this.now()
     let thought = false
+    let streamedText = false
     let thinkingMs: number | null = null
+    let retryAfterMs: number | null = null
+    const onResponse = (response: ProviderResponse): void => {
+      retryAfterMs = providerRetryAfterMs(response, this.now)
+    }
+    const fetch = supportsCustomFetch(turn.model.api)
+      ? captureResponse(this.fetch, onResponse)
+      : undefined
     const streamOptions = turn.reasoningEffort
-      ? { signal: turn.signal, reasoningEffort: turn.reasoningEffort, sessionId: turn.chatSessionId }
-      : { signal: turn.signal, sessionId: turn.chatSessionId }
+      ? { signal: turn.signal, reasoningEffort: turn.reasoningEffort, sessionId: turn.chatSessionId, maxRetries: 0, onResponse, fetch }
+      : { signal: turn.signal, sessionId: turn.chatSessionId, maxRetries: 0, onResponse, fetch }
     const events = this.options.models.stream(turn.model, context, streamOptions)
     for await (const event of events) {
       if (event.type === "text_delta") {
+        if (event.delta.length > 0) streamedText = true
         // The first word is where thinking ended, whatever the model does afterwards.
         if (thought && thinkingMs === null) thinkingMs = this.now() - started
         turn.events.onText(event.delta)
@@ -289,8 +331,60 @@ export class ChatAgent {
     const elapsedMs = this.now() - started
     // A reply that thought and then said nothing — a tool call, or a run that was
     // stopped — spent the whole call thinking.
-    return { reply, timing: { elapsedMs, thinkingMs: thought ? thinkingMs ?? elapsedMs : null } }
+    return {
+      reply,
+      timing: { elapsedMs, thinkingMs: thought ? thinkingMs ?? elapsedMs : null },
+      retryAfterMs,
+      streamedText,
+    }
   }
+}
+
+function retryDelayMs(attempt: number, retryAfterMs: number | null, random: number): number {
+  if (retryAfterMs !== null) return Math.min(retryAfterMs, RETRY_MAX_DELAY_MS)
+  const base = RETRY_INITIAL_DELAY_MS * RETRY_BACKOFF_FACTOR ** (attempt - 1)
+  return Math.min(Math.ceil(base + base * RETRY_JITTER_FACTOR * random), RETRY_MAX_DELAY_WITHOUT_HEADERS_MS)
+}
+
+function providerRetryAfterMs(response: ProviderResponse, now: () => number): number | null {
+  const headers = new Map(Object.entries(response.headers).map(([key, value]) => [key.toLowerCase(), value]))
+  const retryAfterMs = Number.parseFloat(headers.get("retry-after-ms") ?? "")
+  if (Number.isFinite(retryAfterMs) && retryAfterMs >= 0) return retryAfterMs
+  const retryAfter = headers.get("retry-after")
+  if (!retryAfter) return null
+  const seconds = Number.parseFloat(retryAfter)
+  const delayMs = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(retryAfter) - now()
+  return Number.isFinite(delayMs) && delayMs >= 0 ? Math.ceil(delayMs) : null
+}
+
+const CUSTOM_FETCH_APIS = new Set<Api>([
+  "anthropic-messages",
+  "azure-openai-responses",
+  "mistral-conversations",
+  "openai-codex-responses",
+  "openai-completions",
+  "openai-responses",
+  "pi-messages",
+])
+
+function supportsCustomFetch(api: Api): boolean {
+  return CUSTOM_FETCH_APIS.has(api)
+}
+
+function captureResponse(fetch: ChatFetch, onResponse: (response: ProviderResponse) => void): FetchFunction {
+  const wrapped = async (input: Parameters<FetchFunction>[0], init?: Parameters<FetchFunction>[1]) => {
+    const response = await fetch(input, init)
+    onResponse({ status: response.status, headers: Object.fromEntries(response.headers.entries()) })
+    return response
+  }
+  return Object.assign(wrapped, { preconnect: globalThis.fetch.preconnect })
+}
+
+function retryMessage(errorMessage: string | undefined): string {
+  const message = errorMessage ?? "The model provider failed transiently"
+  return /overloaded|resource.?exhausted|service.?unavailable|currently at capacity/i.test(message)
+    ? "Provider is overloaded"
+    : message
 }
 
 /** Keeps provider backoff interruptible so stopping a run remains immediate. */

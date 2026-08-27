@@ -67,6 +67,7 @@ test("records a worker's complete isolated session when a parent chat is availab
         onText: (delta) => { deltas.text += delta },
         onReasoning: (delta) => { deltas.reasoning += delta },
         onToolCall: (name) => { deltas.tools.push(name) },
+        onRetry: () => {},
         onMessage: async (draft) => { messages.push(draft) },
         finish: async (error) => { finishes.push(error) },
       }
@@ -96,6 +97,57 @@ test("records a worker's complete isolated session when a parent chat is availab
   const details = z.object({ results: z.array(z.object({ sessionId: z.string().nullable() })) }).parse(outcome.details)
   expect(details.results[0]?.sessionId).toBe("child-1")
   expect(finishes).toEqual([null])
+})
+
+test("reports a worker retry without rerunning its completed tool", async () => {
+  const faux = fauxProvider({ models: [{ id: "worker-model", reasoning: true }] })
+  const models = createModels()
+  models.setProvider(faux.provider)
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("read_market", {})], { stopReason: "toolUse" }),
+    async (_context, options, _state, model) => {
+      await options?.onResponse?.({ status: 503, headers: { "retry-after-ms": "0" } }, model)
+      return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Service unavailable" })
+    },
+    fauxAssistantMessage("Worker recovered."),
+  ])
+  let toolCalls = 0
+  const readMarket: ChatTool = {
+    definition: { name: "read_market", description: "Read market data", parameters: Type.Object({}) },
+    run: async () => {
+      toolCalls += 1
+      return { blocks: [toolText("Market read.")], details: null, isError: false }
+    },
+  }
+  const retries: unknown[] = []
+  const recorder: SubagentSessionRecorder = {
+    start: async () => ({
+      sessionId: "child-retry",
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onRetry: (status) => { retries.push(status) },
+      onMessage: async () => {},
+      finish: async () => {},
+    }),
+  }
+  const tools = new ChatTools([readMarket])
+  tools.register(subagentTool(models, tools, recorder))
+
+  const outcome = await tools.call({
+    type: "toolCall",
+    id: "subagent-retry",
+    name: "subagent",
+    arguments: { agent: "worker", task: "Read the market" },
+  }, { model: faux.getModel(), chatSessionId: "parent-1" })
+
+  expect(outcome.isError).toBe(false)
+  expect(outcome.modelBlocks?.[0]?.text).toBe("Worker recovered.")
+  expect(faux.state.callCount).toBe(3)
+  expect(toolCalls).toBe(1)
+  expect(retries).toHaveLength(2)
+  expect(retries[0]).toMatchObject({ attempt: 1, maxAttempts: 5, message: "Provider is overloaded" })
+  expect(retries[1]).toBeNull()
 })
 
 test("runs at most four of eight parallel workers at once", async () => {
@@ -187,6 +239,7 @@ test("reports the shared turn limit and lets the parent agent continue", async (
       onText: () => {},
       onReasoning: () => {},
       onToolCall: () => {},
+      onRetry: () => {},
       onMessage: async (draft) => { messages.push(draft) },
     },
   })

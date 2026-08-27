@@ -668,6 +668,76 @@ test("renders a reply as it streams and replaces it with the stored message", as
   renderer.destroy()
 })
 
+test("shows provider retry timing until the next attempt starts", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  screen.acceptDelta(session.id, "run-1", { reasoning: "discarded attempt" })
+  screen.acceptDelta(session.id, "run-1", {
+    retry: {
+      attempt: 1,
+      maxAttempts: 5,
+      message: "Provider is overloaded",
+      reportedAt: Date.now(),
+      nextAt: Date.now() + 5_000,
+    },
+  })
+  const retrying = await waitForFrame((frame) => frame.includes("Provider is overloaded"))
+  expect(retrying).toContain("retry 1/5 in")
+
+  screen.acceptDelta(session.id, "run-1", { retry: null })
+  await waitForFrame((frame) => (
+    frame.includes("thinking…")
+    && !frame.includes("Provider is overloaded")
+    && !frame.includes("discarded attempt")
+  ))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("restores retry status when joining a running chat", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const get = chats.get.bind(chats)
+  chats.get = async (sessionId) => {
+    const detail = await get(sessionId)
+    if (sessionId !== session.id) return detail
+    return {
+      ...detail,
+      session: { ...detail.session, running: true },
+      partial: {
+        runId: "run-retry",
+        seq: 3,
+        text: "",
+        reasoning: "",
+        retry: {
+          attempt: 2,
+          maxAttempts: 5,
+          message: "Provider is overloaded",
+          reportedAt: 1_000_000_000,
+          nextAt: 1_000_010_000,
+        },
+      },
+    }
+  }
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  const retrying = await waitForFrame((frame) => frame.includes("Provider is overloaded"))
+  expect(retrying).toContain("retry 2/5 in")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("keeps only the newest 100 top-level events in the live transcript", async () => {
   const { renderer, waitForFrame, waitFor } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
@@ -1962,9 +2032,25 @@ test("shows only the current subagent tool and opens the worker when clicked", a
   const childLine = activeLines.find((value) => value.includes(child.title)) ?? ""
   expect(childLine.search(/\S/u)).toBe(thinkingLine.indexOf("thinking"))
 
+  screen.acceptDelta(child.id, "worker-run", {
+    retry: {
+      attempt: 1,
+      maxAttempts: 5,
+      message: "Provider is overloaded",
+      reportedAt: Date.now(),
+      nextAt: Date.now() + 5_000,
+    },
+  })
+  const retrying = await waitForFrame((frame) => frame.includes(child.title) && frame.includes("↳ retry 1/5 in"))
+  expect(retrying).not.toContain("↳ get_quote")
+  screen.acceptDelta(child.id, "worker-run", { retry: null })
+  await Bun.sleep(0)
+  await waitForFrame((frame) => frame.includes(child.title) && frame.includes("↳ get_quote"))
+
   screen.acceptMessage(child.id, toolResultMessage("get_quote", "Read quote."))
   screen.acceptMessage(child.id, toolResultMessage("get_candles", "Read candles."))
   screen.acceptMessage(parent.id, toolResultMessage("subagent", "Subagent worker completed."))
+  await Bun.sleep(0)
   const betweenTools = await waitForFrame((frame) => (
     frame.includes(child.title) && !frame.includes("↳ get_quote") && !frame.includes("↳ get_candles")
   ))

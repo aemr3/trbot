@@ -14,6 +14,7 @@ import {
   recentChatTimeline,
   type ChatCompaction,
   type ChatMessage,
+  type ChatRetryStatus,
   type ChatRunStatus,
   type ChatSession,
   type ChatSessionDetail,
@@ -203,6 +204,7 @@ interface Streaming {
   text: string
   reasoning: string
   tools: string[]
+  retry: ChatRetryStatus | null
 }
 
 interface CompletedSubagent {
@@ -836,12 +838,16 @@ export class ChatScreen {
     this.render.schedule()
   }
 
-  acceptDelta(sessionId: string, runId: string, delta: { text?: string; reasoning?: string; toolName?: string }): void {
+  acceptDelta(
+    sessionId: string,
+    runId: string,
+    delta: { text?: string; reasoning?: string; toolName?: string; retry?: ChatRetryStatus | null },
+  ): void {
     if (this.destroyed) return
     const current = this.streamingBySession.get(sessionId)
     const streaming: Streaming = current?.runId === runId
       ? current
-      : { runId, startedAt: Date.now(), thinkingMs: null, text: "", reasoning: "", tools: [] }
+      : { runId, startedAt: Date.now(), thinkingMs: null, text: "", reasoning: "", tools: [], retry: null }
     if (delta.text) {
       // The first word is where thinking ended, so that is where the count stops.
       if (streaming.reasoning && !streaming.text && streaming.startedAt !== null) {
@@ -851,6 +857,10 @@ export class ChatScreen {
     }
     if (delta.reasoning) streaming.reasoning += delta.reasoning
     if (delta.toolName) streaming.tools.push(delta.toolName)
+    if (delta.retry !== undefined) {
+      if (delta.retry === null && streaming.retry !== null) streaming.reasoning = ""
+      streaming.retry = delta.retry ? localRetryStatus(delta.retry) : null
+    }
     this.streamingBySession.set(sessionId, streaming)
     this.render.schedule()
   }
@@ -899,7 +909,15 @@ export class ChatScreen {
     // while before that one arrives: holding the run from here is what makes the
     // spinner turn from the moment the question went rather than from the answer.
     else if (this.streamingBySession.get(sessionId)?.runId !== runId) {
-      this.streamingBySession.set(sessionId, { runId, startedAt: Date.now(), thinkingMs: null, text: "", reasoning: "", tools: [] })
+      this.streamingBySession.set(sessionId, {
+        runId,
+        startedAt: Date.now(),
+        thinkingMs: null,
+        text: "",
+        reasoning: "",
+        tools: [],
+        retry: null,
+      })
     }
     if (status === "running") this.runIdBySession.set(sessionId, runId)
     else if (wasRunning) this.runIdBySession.delete(sessionId)
@@ -1056,7 +1074,9 @@ export class ChatScreen {
         const known = this.streamingBySession.get(sessionId)
         // A partial that already carries words is a run this terminal did not watch
         // start, so it keeps no start time: see `Streaming.startedAt`.
-        const joined = detail.partial.text.length > 0 || detail.partial.reasoning.length > 0
+        const joined = detail.partial.text.length > 0
+          || detail.partial.reasoning.length > 0
+          || detail.partial.retry !== null
         const startedAt = joined ? null : (known?.runId === detail.partial.runId ? known.startedAt : Date.now())
         this.runStartedAtBySession.set(sessionId, startedAt)
         this.streamingBySession.set(sessionId, {
@@ -1066,6 +1086,7 @@ export class ChatScreen {
           text: detail.partial.text,
           reasoning: detail.partial.reasoning,
           tools: activeToolCalls(detail.messages),
+          retry: detail.partial.retry ? localRetryStatus(detail.partial.retry) : null,
         })
       } else if (!expectedRunId) {
         this.runIdBySession.delete(sessionId)
@@ -2648,6 +2669,7 @@ export class ChatScreen {
         blocks.push(subagentActivityBlock(
           child,
           childStreaming?.tools.at(-1) ?? activeToolCalls(this.messagesBySession.get(child.id) ?? []).at(-1) ?? null,
+          childStreaming?.retry ?? null,
           SPINNER_FRAMES[this.spinner] ?? SPINNER_FRAMES[0]!,
           this.completedSubagents.get(child.id),
         ))
@@ -2916,7 +2938,15 @@ function streamingBlock(
     ? live.elapsedMs
     : streaming.thinkingMs
   const chunks: TextChunk[] = []
-  if (streaming.text) chunks.push(fg(TEXT_COLOR)(streaming.text), fg(MUTED_COLOR)("▌"))
+  if (streaming.retry) {
+    chunks.push(
+      fg(LOOP_COLOR)(streaming.retry.message),
+      fg(MUTED_COLOR)(`\nretry ${streaming.retry.attempt}/${streaming.retry.maxAttempts} in ${formatDuration(
+        Math.max(0, streaming.retry.nextAt - Date.now()),
+      )}`),
+    )
+  }
+  else if (streaming.text) chunks.push(fg(TEXT_COLOR)(streaming.text), fg(MUTED_COLOR)("▌"))
   // The tail is all a folded thought shows while it is the only thing happening.
   // Expanded reasoning already lives in the header, so repeating "thinking…" below
   // it would add noise without adding state.
@@ -2927,7 +2957,7 @@ function streamingBlock(
   for (const tool of streaming.tools) {
     chunks.push(fg(MUTED_COLOR)(`${chunks.length > 0 ? "\n" : ""}⚙ ${tool}`))
   }
-  const thought = thoughtHeader(streaming.reasoning, {
+  const thought = thoughtHeader(streaming.retry ? "" : streaming.reasoning, {
     showThoughts: live.showThoughts,
     thinkingMs,
     live: thinking,
@@ -2949,6 +2979,7 @@ function streamingBlock(
 function subagentActivityBlock(
   session: ChatSession,
   toolName: string | null,
+  retry: ChatRetryStatus | null,
   spinner: string,
   completed?: CompletedSubagent,
 ): ChatTranscriptBlock {
@@ -2956,6 +2987,10 @@ function subagentActivityBlock(
   if (completed?.toolCalls !== null && completed?.toolCalls !== undefined) {
     const calls = `${completed.toolCalls} toolcall${completed.toolCalls === 1 ? "" : "s"}`
     chunks.push(fg(MUTED_COLOR)(`\n↳ ${calls} · ${formatDuration(completed.durationMs)}`))
+  } else if (retry) {
+    chunks.push(fg(MUTED_COLOR)(`\n↳ retry ${retry.attempt}/${retry.maxAttempts} in ${formatDuration(
+      Math.max(0, retry.nextAt - Date.now()),
+    )}`))
   } else if (toolName) {
     chunks.push(fg(MUTED_COLOR)(`\n↳ ${toolName}`))
   }
@@ -3097,6 +3132,16 @@ function compactionBlock(): ChatTranscriptBlock {
 function lastLine(reasoning: string): string {
   const lines = reasoning.split("\n").filter((line) => line.trim().length > 0)
   return lines[lines.length - 1] ?? ""
+}
+
+/** Converts a server deadline to the local clock without changing its remaining delay. */
+function localRetryStatus(retry: ChatRetryStatus): ChatRetryStatus {
+  const reportedAt = Date.now()
+  return {
+    ...retry,
+    reportedAt,
+    nextAt: reportedAt + Math.max(0, retry.nextAt - retry.reportedAt),
+  }
 }
 
 /** Rounded to what a trader would say out loud: "half a second", "four seconds", "a minute". */
