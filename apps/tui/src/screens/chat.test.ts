@@ -1995,7 +1995,7 @@ test("opens and cancels only the current chat's agent monitors", async () => {
   renderer.destroy()
 })
 
-test("opens durable worker transcripts with /subagents and returns with /parent", async () => {
+test("opens read-only worker transcripts with /subagents and returns with ⌥ up", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const parent = await chats.create()
@@ -2023,11 +2023,14 @@ test("opens durable worker transcripts with /subagents and returns with /parent"
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("Subagents") && frame.includes("Inspect the XU100 trend"))
   mockInput.pressEnter()
-  await waitForFrame((frame) => frame.includes("Subagent transcript") && frame.includes("worker · ○ test-model"))
+  const worker = await waitForFrame((frame) => frame.includes("Read-only · Subagent transcript") && frame.includes("worker · ○ test-model"))
+  expect(worker).not.toContain("ask something")
+  expect(renderer.currentFocusedRenderable).toBeNull()
 
-  await mockInput.typeText("/parent")
-  mockInput.pressEnter()
-  await waitForFrame((frame) => frame.includes("/help keys") && !frame.includes("Subagent transcript"))
+  await mockInput.typeText("cannot type here")
+  mockInput.pressArrow("up", { meta: true })
+  const returned = await waitForFrame((frame) => frame.includes("/help keys") && !frame.includes("Subagent transcript"))
+  expect(returned).not.toContain("cannot type here")
   expect(chats.sent).toEqual([])
 
   screen.destroy()
@@ -2818,7 +2821,28 @@ test("keeps the subagent model label intact beside a narrow running hint", async
   renderer.destroy()
 })
 
-test("⌥ arrows cycle worker transcripts directly and return to their parent", async () => {
+test("⌥ left and right navigate words in a root chat", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("draft stays here")
+  mockInput.pressArrow("left", { meta: true })
+  await mockInput.typeText("new ")
+  mockInput.pressArrow("right", { meta: true })
+  await mockInput.typeText("!")
+
+  await waitForFrame((frame) => frame.includes("draft stays new here!"))
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("⌥ arrows cycle worker transcripts only while viewing one and return to their parent", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const parent = await chats.create()
@@ -2852,7 +2876,7 @@ test("⌥ arrows cycle worker transcripts directly and return to their parent", 
   await waitForFrame((frame) => frame.includes("ask something"))
 
   await mockInput.typeText("draft stays here")
-  mockInput.pressArrow("right", { meta: true })
+  screen.openSession(first.id)
   await waitForFrame((frame) => frame.includes("Subagent transcript") && frame.includes("⌥←/→ workers"))
   expect(selected.at(-1)).toBe(first.id)
 

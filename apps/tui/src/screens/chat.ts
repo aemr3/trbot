@@ -124,7 +124,6 @@ const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/goal", description: "<objective> · pause · resume · clear" },
   { name: "/loop", description: "[interval] [task] · list · cancel <id>" },
   { name: "/subagents", description: "open this chat's worker sessions" },
-  { name: "/parent", description: "return from a worker transcript" },
   { name: "/sessions", description: "open another session" },
   { name: "/undo", description: "return to an earlier prompt" },
   { name: "/clear", description: "start fresh; keep this session saved" },
@@ -628,13 +627,15 @@ export class ChatScreen {
     }
     if (key.name !== "escape" && key.name !== "esc") this.lastEscapeAt = 0
     if (this.typing() && this.handleCommandMenuKey(key)) return
-    if (isAltArrow(key, "right")) {
-      void this.cycleSubagent(1)
-      return
-    }
-    if (isAltArrow(key, "left")) {
-      void this.cycleSubagent(-1)
-      return
+    if (this.selectedSession()?.parentSessionId) {
+      if (isAltArrow(key, "right")) {
+        void this.cycleSubagent(1)
+        return
+      }
+      if (isAltArrow(key, "left")) {
+        void this.cycleSubagent(-1)
+        return
+      }
     }
     if (isAltArrow(key, "up")) {
       const parentId = this.selectedSession()?.parentSessionId
@@ -1432,11 +1433,6 @@ export class ChatScreen {
       case "/subagents":
         await this.openSubagents()
         break
-      case "/parent": {
-        const parentId = this.selectedSession()?.parentSessionId
-        if (parentId) this.selectSession(parentId)
-        break
-      }
       case "/sessions":
         this.openSessions()
         break
@@ -2278,6 +2274,7 @@ export class ChatScreen {
     this.closeUndo()
     this.transcript.scrollToBottom()
     this.selectedSessionId = sessionId
+    this.syncComposerFocus()
     this.resetPromptHistoryNavigation()
     this.commandNotice = null
     this.automationNotice = null
@@ -2452,8 +2449,7 @@ export class ChatScreen {
     if (focus === "composer") focus = this.blockingFocus() ?? focus
     if (this.focus === focus) return
     this.focus = focus
-    if (focus === "composer" && !this.undoPanel) this.composer.focus()
-    else this.composer.blur()
+    this.syncComposerFocus()
     this.questionPanel?.setActive(focus === "question")
     this.permissionPanel?.setActive(focus === "permission")
     this.render.schedule()
@@ -2464,9 +2460,15 @@ export class ChatScreen {
     return this.undoPanel === null && this.focus === "composer" && this.composerUsable()
   }
 
-  /** No provider or no model means there is nothing to type into yet. */
+  private syncComposerFocus(): void {
+    if (this.focus === "composer" && this.undoPanel === null && this.composerUsable()) this.composer.focus()
+    else this.composer.blur()
+  }
+
+  /** No provider, no model, or a read-only worker means there is nothing to type into. */
   private composerUsable(): boolean {
-    return this.connected !== false
+    return !this.selectedSession()?.parentSessionId
+      && this.connected !== false
       && this.selectedHasModel()
       && this.blockingFocus() === null
   }
@@ -2489,7 +2491,7 @@ export class ChatScreen {
     this.composerMarker.fg = this.typing() ? COMPOSER_COLOR : TURN_MARKER_COLOR
     const composerMeta = this.composerMetaText(session)
     this.composerMeta.content = composerMeta
-    this.composerMeta.visible = this.composerUsable()
+    this.composerMeta.visible = this.composerUsable() || Boolean(session?.parentSessionId)
     const statusWidth = Math.max(0, this.root.width - (CHAT_INSET * 2 + 2))
     const hintWidth = Math.max(0, statusWidth - styledTextWidth(composerMeta) - 2)
     const hint = this.hintText(session, hintWidth)
@@ -2695,13 +2697,14 @@ export class ChatScreen {
     if (session?.parentSessionId) {
       const candidates = this.streamingBySession.has(session.id)
         ? [
-            "Esc interrupt · Subagent running · ⌥←/→ workers · ⌥↑ parent",
-            "Esc interrupt · ⌥←/→ workers · ⌥↑ parent",
+            "Esc interrupt · Read-only · Subagent running · ⌥←/→ workers · ⌥↑ parent",
+            "Esc interrupt · Read-only · ⌥←/→ workers · ⌥↑ parent",
             "Esc interrupt · ⌥↑ parent",
             "Esc interrupt",
           ]
         : [
-            "Subagent transcript · ⌥←/→ workers · ⌥↑ parent",
+            "Read-only · Subagent transcript · ⌥←/→ workers · ⌥↑ parent",
+            "Read-only · ⌥←/→ workers · ⌥↑ parent",
             "⌥←/→ workers · ⌥↑ parent",
             "⌥↑ parent",
           ]
