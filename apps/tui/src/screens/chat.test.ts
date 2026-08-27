@@ -451,6 +451,33 @@ test("asks the trader to connect a provider before offering a composer", async (
   renderer.destroy()
 })
 
+test("clears a focused composer draft before Ctrl+C can quit", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const screen = new ChatScreen(renderer, {
+    chats: fakeChats(),
+    account: account(connected),
+    logs: new ApplicationLog(),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("unfinished trade idea")
+  await waitForFrame((frame) => frame.includes("unfinished trade idea"))
+
+  expect(screen.clearInputOnInterrupt()).toBe(true)
+  await waitForFrame((frame) => !frame.includes("unfinished trade idea"))
+  expect(screen.clearInputOnInterrupt()).toBe(false)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("shows only prompts waiting behind the active turn as queued", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()

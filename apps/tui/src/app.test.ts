@@ -13,7 +13,7 @@ function offlineSession(): ServerSession {
   return createServerSession({ config: { url: "http://127.0.0.1:1", token: "test-token", caPath: null } })
 }
 
-test("restores the terminal synchronously on Ctrl+C", async () => {
+test("restores the terminal synchronously after Ctrl+C is confirmed", async () => {
   const { renderer, mockInput } = await createTestRenderer({
     width: 80,
     height: 20,
@@ -38,9 +38,37 @@ test("restores the terminal synchronously on Ctrl+C", async () => {
 
   mockInput.pressCtrlC()
 
+  expect(renderer.isDestroyed).toBe(false)
+  expect(exitRequested).toBe(false)
+  expect(preferencesClosed).toBe(false)
+
+  mockInput.pressCtrlC()
+
   expect(renderer.isDestroyed).toBe(true)
   expect(exitRequested).toBe(true)
   expect(preferencesClosed).toBe(true)
+})
+
+test("typing between Ctrl+C presses cancels quit confirmation", async () => {
+  const { renderer, mockInput } = await createTestRenderer({ width: 80, height: 20, kittyKeyboard: true })
+  let exitRequested = false
+  const app = new App(
+    renderer,
+    { session: offlineSession(), authenticated: false },
+    { exit: () => { exitRequested = true } },
+  )
+  app.mount()
+
+  mockInput.pressCtrlC()
+  await mockInput.typeText("x")
+  mockInput.pressCtrlC()
+
+  expect(exitRequested).toBe(false)
+  expect(renderer.isDestroyed).toBe(false)
+
+  mockInput.pressCtrlC()
+  expect(exitRequested).toBe(true)
+  expect(renderer.isDestroyed).toBe(true)
 })
 
 test("copies selected text by keyboard or mouse without exiting", async () => {

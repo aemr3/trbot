@@ -19,8 +19,10 @@ interface TestPanel {
   openedSessions: string[]
   dismissedNotifications: string[]
   marketStates: Array<boolean | null>
+  interrupts: string[]
   handleKey(key: KeyEvent): void
   capturesInput(): boolean
+  clearInputOnInterrupt(): boolean
   openQuestion(sessionId: string): void
   openPermission(sessionId: string): void
   openSession(sessionId: string): void
@@ -40,7 +42,7 @@ interface TestPanel {
 function panel(
   renderer: RenderContext,
   label: string,
-  options: { capturesInput?: boolean; showingSession?: string; embeddedChat?: boolean } = {},
+  options: { capturesInput?: boolean; clearsInput?: boolean; showingSession?: string; embeddedChat?: boolean } = {},
 ): TestPanel {
   const root = new BoxRenderable(renderer, { width: "100%", height: "100%" })
   root.add(new TextRenderable(renderer, { content: label }))
@@ -50,6 +52,7 @@ function panel(
   const openedSessions: string[] = []
   const dismissedNotifications: string[] = []
   const marketStates: Array<boolean | null> = []
+  const interrupts: string[] = []
   let showingSession = options.showingSession
   return {
     root,
@@ -59,10 +62,15 @@ function panel(
     openedSessions,
     dismissedNotifications,
     marketStates,
+    interrupts,
     handleKey: (key) => {
       keys.push(key)
     },
     capturesInput: () => options.capturesInput ?? false,
+    clearInputOnInterrupt: () => {
+      interrupts.push(label)
+      return options.clearsInput ?? false
+    },
     openQuestion: (sessionId) => {
       openedQuestions.push(sessionId)
       showingSession = sessionId
@@ -131,16 +139,44 @@ function permission(id: string): ChatPermissionRequest {
   }
 }
 
-async function mountWorkspace(options: { capturesInput?: boolean; showingSession?: string } = {}) {
+async function mountWorkspace(options: { capturesInput?: boolean; clearsInput?: boolean; showingSession?: string } = {}) {
   const harness = await createTestRenderer({ width: 80, height: 20, kittyKeyboard: true })
-  const trade = panel(harness.renderer, "TRADE PANEL", { capturesInput: options.capturesInput })
+  const trade = panel(harness.renderer, "TRADE PANEL", {
+    capturesInput: options.capturesInput,
+    clearsInput: options.clearsInput,
+  })
   const chat = panel(harness.renderer, "CHAT PANEL", options)
-  const logs = panel(harness.renderer, "LOG PANEL", { capturesInput: options.capturesInput })
+  const logs = panel(harness.renderer, "LOG PANEL", {
+    capturesInput: options.capturesInput,
+    clearsInput: options.clearsInput,
+  })
   const workspace = new TradingWorkspaceScreen(harness.renderer, { trade, chat, logs })
   harness.renderer.root.add(workspace.root)
   workspace.mount()
   return { ...harness, workspace, trade, chat, logs }
 }
+
+test("delegates interrupt clearing to the active panel and shows quit confirmation", async () => {
+  const { renderer, renderOnce, captureCharFrame, workspace, trade, chat } = await mountWorkspace({ clearsInput: true })
+
+  expect(workspace.clearInputOnInterrupt()).toBe(true)
+  expect(trade.interrupts).toEqual(["TRADE PANEL"])
+  expect(chat.interrupts).toBeEmpty()
+
+  workspace.setQuitConfirmation(true)
+  await renderOnce()
+  expect(captureCharFrame()).toContain("Press Ctrl+C again to quit.")
+  workspace.setQuitConfirmation(false)
+  await renderOnce()
+  expect(captureCharFrame()).not.toContain("Press Ctrl+C again to quit.")
+
+  workspace.selectTab("chat")
+  expect(workspace.clearInputOnInterrupt()).toBe(true)
+  expect(chat.interrupts).toEqual(["CHAT PANEL"])
+
+  workspace.destroy()
+  renderer.destroy()
+})
 
 test("^A, ^T, and ^G select their tabs while a panel is taking text", async () => {
   const { renderer, mockInput, waitForFrame, workspace } = await mountWorkspace({ capturesInput: true })

@@ -22,6 +22,7 @@ interface WorkspacePanel {
   /** Releases focused controls before the panel root is removed. */
   deactivate?(): void
   handleKey(key: KeyEvent): boolean | void
+  clearInputOnInterrupt?(): boolean
   /**
    * Whether this panel is taking typed text right now — a composer, a search, a
    * modal with a field in it.
@@ -185,6 +186,17 @@ export class TradingWorkspaceScreen {
     if (this.destroyed) return
     this.status.content = content
     this.status.fg = color
+  }
+
+  /** Lets a focused panel clear its draft before the application considers quitting. */
+  clearInputOnInterrupt(): boolean {
+    if (this.notifications.count > 0) return false
+    return this.options[this.activeTab].clearInputOnInterrupt?.() ?? false
+  }
+
+  setQuitConfirmation(visible: boolean): void {
+    this.setStatus(visible ? "Press Ctrl+C again to quit." : "", visible ? TUI_THEME.warning : INACTIVE_COLOR)
+    this.renderer.requestRender()
   }
 
   setMarketOpen(open: boolean | null): void {

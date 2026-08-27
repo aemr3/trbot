@@ -316,6 +316,7 @@ export interface TradeChatPanel {
   activate(): void
   deactivate(): void
   capturesInput(): boolean
+  clearInputOnInterrupt?(): boolean
   canReleaseFocus(): boolean
   openUndo?(): void
   handleKey(key: KeyEvent): void
@@ -1064,6 +1065,11 @@ export class TradeScreen {
       || this.alertEditor !== null
       || this.alertPopup !== null
       || this.articleOpen
+  }
+
+  clearInputOnInterrupt(): boolean {
+    if (this.rightView !== "chat" || this.focus !== "news") return false
+    return this.options.chat?.clearInputOnInterrupt?.() ?? false
   }
 
   handleKey(key: KeyEvent): void {

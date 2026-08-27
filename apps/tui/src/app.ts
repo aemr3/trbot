@@ -47,6 +47,10 @@ import { DEFAULT_APP_PREFERENCES, type AppPreferences } from "@trbot/preferences
 interface Screen {
   readonly root: BoxRenderable
   mount?(): void
+  /** Clears focused text that should take precedence over quitting. */
+  clearInputOnInterrupt?(): boolean
+  /** Shows or hides the brief confirmation for a second Ctrl+C. */
+  setQuitConfirmation?(visible: boolean): void
   destroy(): void
 }
 
@@ -88,6 +92,7 @@ interface AppOptions {
 // How often the terminal re-asks whether the server has a session, while the
 // sign-in screen is up. Short enough that a server restart is barely noticed.
 const SESSION_POLL_MS = 2_000
+const QUIT_CONFIRMATION_MS = 1_500
 
 const EXIT_SIGNALS: NodeJS.Signals[] = [
   "SIGTERM",
@@ -178,19 +183,38 @@ export class App {
   private adapters: { destroy(): void }[] = []
   /** Runs while the sign-in screen is up; see watchForSession. */
   private sessionWatch: ReturnType<typeof setInterval> | null = null
+  private quitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
+  private quitConfirmationAt: number | null = null
   private readonly sessionPollMs: number
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     const copyShortcut = key.name === "c" && (key.ctrl || key.meta || key.super)
     if (copyShortcut && this.copySelection()) {
+      this.resetQuitConfirmation()
       key.preventDefault()
       key.stopPropagation()
       return
     }
-    if (!key.ctrl || key.name !== "c") return
+    if (!key.ctrl || key.name !== "c") {
+      this.resetQuitConfirmation()
+      return
+    }
     key.preventDefault()
     key.stopPropagation()
     if (this.shuttingDown) return
+    if (this.screen?.clearInputOnInterrupt?.()) {
+      this.resetQuitConfirmation()
+      return
+    }
+    if (key.repeated) return
+
+    const now = Date.now()
+    if (this.quitConfirmationAt === null || now - this.quitConfirmationAt > QUIT_CONFIRMATION_MS) {
+      this.armQuitConfirmation(now)
+      return
+    }
+
+    this.resetQuitConfirmation()
     this.shuttingDown = true
     this.shutdown()
   }
@@ -268,6 +292,7 @@ export class App {
     this.disposed = true
     this.renderer.off(CliRenderEvents.RENDER_ERROR, this.handleRendererError)
     this.renderer.keyInput.off("keypress", this.handleKeypress)
+    this.resetQuitConfirmation()
     this.stopWatchingForSession()
     for (const adapter of this.adapters.splice(0)) adapter.destroy()
 
@@ -565,6 +590,21 @@ export class App {
     this.dispose()
     this.renderer.destroy()
     this.exit()
+  }
+
+  private armQuitConfirmation(now: number): void {
+    this.resetQuitConfirmation()
+    this.quitConfirmationAt = now
+    this.screen?.setQuitConfirmation?.(true)
+    this.quitConfirmationTimer = setTimeout(() => this.resetQuitConfirmation(), QUIT_CONFIRMATION_MS)
+  }
+
+  private resetQuitConfirmation(): void {
+    if (this.quitConfirmationAt === null && this.quitConfirmationTimer === null) return
+    this.quitConfirmationAt = null
+    if (this.quitConfirmationTimer) clearTimeout(this.quitConfirmationTimer)
+    this.quitConfirmationTimer = null
+    this.screen?.setQuitConfirmation?.(false)
   }
 
   private copySelection(): boolean {

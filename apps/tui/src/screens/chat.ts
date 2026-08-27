@@ -565,6 +565,17 @@ export class ChatScreen {
       || this.modal !== null
   }
 
+  /** Ctrl+C clears a focused draft before the application arms its quit shortcut. */
+  clearInputOnInterrupt(): boolean {
+    if (this.destroyed || this.modal || !this.typing() || this.composer.plainText.length === 0) return false
+    this.resetPromptHistoryNavigation()
+    this.composerIsServerPrompt = false
+    this.composer.setText("")
+    this.commandMenu.close()
+    this.render.schedule()
+    return true
+  }
+
   /** Whether an embedded composer can hand Escape back to its host panel. */
   canReleaseFocus(): boolean {
     const session = this.selectedSession()

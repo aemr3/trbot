@@ -69,6 +69,7 @@ class FakeTradeChatPanel implements TradeChatPanel {
   openedPermissions: string[] = []
   openedSessions: string[] = []
   undoOpenCount = 0
+  interruptCount = 0
   selectedSessionId = "side-session"
 
   constructor(renderer: RenderContext) {
@@ -99,6 +100,10 @@ class FakeTradeChatPanel implements TradeChatPanel {
     this.composerTarget.blur()
   }
   capturesInput(): boolean {
+    return true
+  }
+  clearInputOnInterrupt(): boolean {
+    this.interruptCount += 1
     return true
   }
   canReleaseFocus(): boolean {
@@ -463,6 +468,8 @@ test("switches the news panel to its embedded chat and releases input for ticker
   expect(chat.activations).toBeGreaterThan(0)
   expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
   expect(screen.capturesInput()).toBe(true)
+  expect(screen.clearInputOnInterrupt()).toBe(true)
+  expect(chat.interruptCount).toBe(1)
   expect(screen.isShowingSession("side-session")).toBe(true)
   expect(screen.hasEmbeddedChat()).toBe(true)
   expect(preferenceChanges.at(-1)?.selectedTradeRightView).toBe("chat")
@@ -515,6 +522,8 @@ test("switches the news panel to its embedded chat and releases input for ticker
   expect(newsFrame).not.toContain("SIDE CHAT")
   expect(screen.isShowingSession("another-session")).toBe(false)
   expect(screen.hasEmbeddedChat()).toBe(true)
+  expect(screen.clearInputOnInterrupt()).toBe(false)
+  expect(chat.interruptCount).toBe(1)
   expect(preferenceChanges.at(-1)?.selectedTradeRightView).toBe("news")
 
   screen.openSession("notification-session")
