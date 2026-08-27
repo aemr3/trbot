@@ -9,6 +9,10 @@ function key(name: string): KeyEvent {
   return keyEvent(name)
 }
 
+function typeText(modal: AiModelModal, text: string): void {
+  for (const character of text) modal.handleKey(keyEvent(character, { sequence: character }))
+}
+
 function model(overrides: Partial<AiModelSummary> = {}): AiModelSummary {
   return {
     providerId: "groq",
@@ -61,6 +65,54 @@ test("lists what is usable, named by provider so the same model twice is telling
   expect(frame).toContain("Llama 4")
   expect(frame).toContain("OpenAI")
   expect(frame).toContain("GPT-5.6")
+
+  modal.destroy()
+  renderer.destroy()
+})
+
+test("filters models as text is typed and chooses the visible match", async () => {
+  const { modal, chosen, renderOnce, captureCharFrame, renderer } = await mountModal({
+    models: [
+      model({ providerId: "groq", providerName: "Groq", modelId: "llama-4", name: "Llama 4" }),
+      model({ providerId: "anthropic", providerName: "Anthropic", modelId: "claude-fable-5", name: "Fable 5" }),
+      model({ providerId: "openai", providerName: "OpenAI", modelId: "gpt-5.6", name: "GPT-5.6" }),
+    ],
+  })
+  await renderOnce()
+
+  typeText(modal, "open gpt")
+  await renderOnce()
+  const filtered = captureCharFrame()
+  expect(filtered).toContain("1 matching · 3 available")
+  expect(filtered).toContain("OpenAI")
+  expect(filtered).toContain("GPT-5.6")
+  expect(filtered).not.toContain("Llama 4")
+  expect(filtered).not.toContain("Fable 5")
+
+  modal.handleKey(key("return"))
+  await Bun.sleep(5)
+  expect(chosen).toEqual([{ providerId: "openai", modelId: "gpt-5.6", reasoning: "off" }])
+
+  modal.destroy()
+  renderer.destroy()
+})
+
+test("shows an empty state when no models match the search", async () => {
+  const { modal, chosen, renderOnce, captureCharFrame, renderer } = await mountModal({
+    models: [model()],
+  })
+  await renderOnce()
+
+  typeText(modal, "missing")
+  await renderOnce()
+  const filtered = captureCharFrame()
+  expect(filtered).toContain("0 matching · 1 available")
+  expect(filtered).toContain("No matching models")
+  expect(filtered).not.toContain("Llama 4")
+
+  modal.handleKey(key("return"))
+  await Bun.sleep(5)
+  expect(chosen).toEqual([])
 
   modal.destroy()
   renderer.destroy()
