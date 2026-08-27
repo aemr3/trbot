@@ -3,6 +3,7 @@ import { SettlementRequestSchema } from "@trbot/market/settlement.ts"
 import { PriceAlertStatusRequestSchema } from "@trbot/market/alert.ts"
 import {
   ChatMessageInputSchema,
+  ChatPromptHistoryQuerySchema,
   ChatTimelineQuerySchema,
   ChatUndoInputSchema,
   ChatUndoPreviewInputSchema,
@@ -11,7 +12,7 @@ import { ChatQuestionReplySchema } from "@trbot/chat/question.ts"
 import { ChatPermissionReplySchema, SetChatPermissionModeSchema } from "@trbot/chat/permission.ts"
 import { CreateChatGoalSchema, CreateChatLoopSchema, UpdateChatGoalSchema } from "@trbot/chat/automation.ts"
 import type { AppPreferences } from "@trbot/preferences/app.ts"
-import { AiCredentialsSchema } from "@trbot/protocol/ai.ts"
+import { AiCredentialsSchema, AiModelListQuerySchema } from "@trbot/protocol/ai.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import {
   CLIENT_INSTANCE_HEADER,
@@ -268,7 +269,15 @@ export const HANDLERS: HandlerRegistry = {
   },
 
   [ROUTES.aiModels]: {
-    GET: async (_request, { ai }) => json(await ai.models()),
+    GET: async (request, { ai }) => {
+      const params = new URL(request.url).searchParams
+      const query = check.payload(
+        { refresh: params.get("refresh") ?? undefined },
+        AiModelListQuerySchema,
+        "model list query",
+      )
+      return json(await ai.models({ refresh: query.refresh === "true" }))
+    },
   },
 
   [ROUTES.aiPreferences]: {
@@ -574,6 +583,15 @@ export const PARAMETERIZED: {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/children$/,
     method: "GET",
     handle: async (match, _request, { chat }) => json(await chat.children(decodeURIComponent(match[1] ?? ""))),
+  },
+  {
+    pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/prompts$/,
+    method: "GET",
+    handle: async (match, request, { chat }) => {
+      const params = new URL(request.url).searchParams
+      const query = check.payload({ index: params.get("index") ?? undefined }, ChatPromptHistoryQuerySchema, "prompt history query")
+      return json(await chat.promptHistory(decodeURIComponent(match[1] ?? ""), query.index))
+    },
   },
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)$/,

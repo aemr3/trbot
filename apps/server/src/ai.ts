@@ -3,6 +3,7 @@ import type { AiHarness } from "@trbot/ai/harness.ts"
 import type { AiCredentialStore, AiPreferencesStore } from "@trbot/ai/credential-store.ts"
 import type {
   AiCredentials,
+  AiModelListOptions,
   AiModelSummary,
   AiPreferences,
   AiProviderSummary,
@@ -38,8 +39,8 @@ export class AiService {
     return this.connections.providers()
   }
 
-  models(): Promise<AiModelSummary[]> {
-    return this.connections.models()
+  models(options?: AiModelListOptions): Promise<AiModelSummary[]> {
+    return this.connections.models(options)
   }
 
   /** Takes on the credential a terminal's login produced. */

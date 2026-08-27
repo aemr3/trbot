@@ -248,6 +248,7 @@ export class ChatScreen {
 
   private sessions: ChatSession[] = []
   private messagesBySession = new Map<string, ChatMessage[]>()
+  private promptSendsBySession = new Map<string, Set<Promise<ChatMessage>>>()
   private compactionBySession = new Map<string, ChatCompaction>()
   private streamingBySession = new Map<string, Streaming>()
   private runStartedAtBySession = new Map<string, number | null>()
@@ -288,6 +289,14 @@ export class ChatScreen {
   private modalHost: BoxRenderable
   /** Prevents session-list refreshes from reopening the chat the user just left. */
   private awaitingFirstPrompt = false
+  private promptHistoryIndex: number | null = null
+  private promptHistoryDraft = ""
+  private promptHistoryDraftIsServerPrompt = false
+  private composerIsServerPrompt = false
+  private promptHistoryRevision = 0
+  private promptHistoryPending = 0
+  private promptHistorySubmitPending = false
+  private promptHistoryNavigation = Promise.resolve()
   private lastEscapeAt = 0
   private destroyed = false
 
@@ -1066,7 +1075,8 @@ export class ChatScreen {
       if (expectedRunId && detail.session.parentSessionId) this.trackSubagent(detail.session)
       // Keep this guard even though the HTTP client requests the same window. It
       // protects the renderer while a newer TUI is connected to an older server.
-      this.messagesBySession.set(sessionId, recentChatTimeline(detail.messages, CHAT_TIMELINE_LIMIT))
+      const messages = recentChatTimeline(detail.messages, CHAT_TIMELINE_LIMIT)
+      this.messagesBySession.set(sessionId, messages)
       if (detail.compaction) this.compactionBySession.set(sessionId, detail.compaction)
       else this.compactionBySession.delete(sessionId)
       if (detail.partial) {
@@ -1273,14 +1283,23 @@ export class ChatScreen {
   }
 
   private handleComposerKey(key: KeyEvent): void {
+    if (this.handlePromptHistoryKey(key)) {
+      this.commandMenu.setQuery(this.composer.plainText)
+      this.render.schedule()
+      return
+    }
     // Return sends, so a new line is Shift+Return — the field is several lines tall and
     // a long question wants paragraphs.
     if (isEnter(key)) {
-      if (key.shift) this.composer.insertText("\n")
+      if (key.shift) {
+        this.resetPromptHistoryNavigation()
+        this.composer.insertText("\n")
+      } else if (this.promptHistoryPending > 0) this.queuePromptHistorySubmit()
       else void this.sendComposed()
       this.render.schedule()
       return
     }
+    this.resetPromptHistoryNavigation()
     this.composer.handleKeyPress(key)
     this.commandMenu.setQuery(this.composer.plainText)
     if (this.composer.plainText === "/" && this.selectedSessionId) {
@@ -1301,6 +1320,8 @@ export class ChatScreen {
     if (key.name === "tab") {
       const command = this.commandMenu.selectedCommand()
       if (!command) return false
+      this.resetPromptHistoryNavigation()
+      this.composerIsServerPrompt = false
       this.composer.setText(command.name)
       this.commandMenu.setQuery(command.name)
       this.render.schedule()
@@ -1325,10 +1346,18 @@ export class ChatScreen {
   private async sendComposed(): Promise<void> {
     const text = this.composer.plainText.trim()
     if (!text) return
-    if (await this.runCommand(text)) return
+    const serverPrompt = this.composerIsServerPrompt
+    this.resetPromptHistoryNavigation()
+    this.composerIsServerPrompt = false
+    const command = text.split(/\s+/u, 1)[0]?.toLowerCase()
+    if (!serverPrompt && CHAT_COMMANDS.some((entry) => entry.name === command) && await this.runCommand(text)) return
     if (this.selectedSession()?.parentSessionId) return
     const session = this.selectedSession() ?? await this.startSession()
     if (!session || this.destroyed) return
+    const send = this.options.chats.send(session.id, text)
+    const pendingSends = this.promptSendsBySession.get(session.id) ?? new Set<Promise<ChatMessage>>()
+    pendingSends.add(send)
+    this.promptSendsBySession.set(session.id, pendingSends)
     try {
       this.commandNotice = null
       this.automationNotice = null
@@ -1338,12 +1367,17 @@ export class ChatScreen {
       // Shown from what the server answered rather than waiting for the frame that
       // announces it: the message is already stored by the time this returns, and a
       // transcript that lagged behind the field would look like nothing happened.
-      this.acceptMessage(session.id, await this.options.chats.send(session.id, text))
+      this.acceptMessage(session.id, await send)
     } catch (error) {
       this.options.logs.error("Chat", error)
       // Handing the text back rather than losing it: the trader can send again.
+      this.resetPromptHistoryNavigation()
+      this.composerIsServerPrompt = serverPrompt
       this.composer.setText(text)
       this.render.schedule()
+    } finally {
+      pendingSends.delete(send)
+      if (pendingSends.size === 0) this.promptSendsBySession.delete(session.id)
     }
   }
 
@@ -1523,6 +1557,7 @@ export class ChatScreen {
   private startNewChat(): void {
     if (this.modal) this.closeModal()
     this.awaitingFirstPrompt = true
+    this.composerIsServerPrompt = false
     this.composer.setText("")
     this.commandMenu.close()
     this.setSelectedSession(null)
@@ -1684,6 +1719,7 @@ export class ChatScreen {
   }
 
   private async undoTo(sessionId: string, messageId: string, revertEffects: boolean): Promise<void> {
+    this.resetPromptHistoryNavigation()
     try {
       const result = await this.options.chats.undo(sessionId, messageId, revertEffects)
       const removed = new Set(result.removedMessageIds)
@@ -1691,6 +1727,7 @@ export class ChatScreen {
       this.messagesBySession.set(sessionId, messages.filter((message) => !removed.has(message.id)))
       await this.loadSession(sessionId)
       if (this.destroyed || this.selectedSessionId !== sessionId) return
+      this.composerIsServerPrompt = true
       this.composer.setText(result.prompt)
       this.commandMenu.setQuery(result.prompt)
       const reverted = result.revertedEffects.length
@@ -1903,7 +1940,7 @@ export class ChatScreen {
       ? { providerId: session.provider, modelId: session.model, reasoning: session.reasoning }
       : this.defaultChoice
     this.showModal(new AiModelModal(this.renderer, {
-      load: () => account.models(),
+      load: () => initial === "model" ? account.models({ refresh: true }) : account.models(),
       current,
       initial,
       title: session ? "Model for this chat" : "Model for new chats",
@@ -2222,6 +2259,7 @@ export class ChatScreen {
     this.closeUndo()
     this.transcript.scrollToBottom()
     this.selectedSessionId = sessionId
+    this.resetPromptHistoryNavigation()
     this.commandNotice = null
     this.automationNotice = null
     this.options.onSessionChange?.(sessionId)
@@ -2240,6 +2278,101 @@ export class ChatScreen {
 
   private selectedSession(): ChatSession | null {
     return this.sessions.find((session) => session.id === this.selectedSessionId) ?? null
+  }
+
+  private handlePromptHistoryKey(key: KeyEvent): boolean {
+    if (
+      (key.name !== "up" && key.name !== "down")
+      || key.ctrl
+      || key.shift
+      || key.meta
+      || key.option
+      || key.super
+      || key.hyper
+    ) return false
+
+    if (key.name === "up") {
+      const offset = this.composer.cursorOffset
+      this.composer.moveCursorUp()
+      if (this.composer.cursorOffset !== offset) return true
+      return this.queuePromptHistoryNavigation(-1)
+    }
+    if (this.promptHistoryIndex === null && this.promptHistoryPending === 0) return false
+    const offset = this.composer.cursorOffset
+    this.composer.moveCursorDown()
+    if (this.composer.cursorOffset !== offset) return true
+    return this.queuePromptHistoryNavigation(1)
+  }
+
+  private queuePromptHistoryNavigation(direction: -1 | 1): boolean {
+    const sessionId = this.selectedSessionId
+    if (!sessionId) return false
+    const revision = this.promptHistoryRevision
+    this.promptHistoryPending++
+    this.promptHistoryNavigation = this.promptHistoryNavigation.then(async () => {
+      try {
+        if (this.destroyed || this.selectedSessionId !== sessionId || this.promptHistoryRevision !== revision) return
+        const pendingSends = this.promptSendsBySession.get(sessionId)
+        if (pendingSends) await Promise.allSettled(pendingSends)
+        if (this.destroyed || this.selectedSessionId !== sessionId || this.promptHistoryRevision !== revision) return
+        if (direction < 0 && this.promptHistoryIndex === 0) return
+        const index = this.promptHistoryIndex === null
+          ? undefined
+          : this.promptHistoryIndex + (direction < 0 ? -1 : 1)
+        const history = await this.options.chats.promptHistory(sessionId, index)
+        if (this.destroyed || this.selectedSessionId !== sessionId || this.promptHistoryRevision !== revision) return
+        if (history.prompt === null) {
+          if (direction < 0 || this.promptHistoryIndex === null) return
+          this.composer.setText(this.promptHistoryDraft)
+          this.composer.gotoBufferEnd()
+          this.composerIsServerPrompt = this.promptHistoryDraftIsServerPrompt
+          this.promptHistoryIndex = null
+          this.promptHistoryDraft = ""
+          this.promptHistoryDraftIsServerPrompt = false
+          this.commandMenu.setQuery(this.composer.plainText)
+          this.render.schedule()
+          return
+        }
+        if (this.promptHistoryIndex === null) {
+          this.promptHistoryDraft = this.composer.plainText
+          this.promptHistoryDraftIsServerPrompt = this.composerIsServerPrompt
+        }
+        this.promptHistoryIndex = history.index
+        this.composerIsServerPrompt = true
+        this.composer.setText(history.prompt)
+        this.composer.gotoBufferEnd()
+        this.commandMenu.setQuery(this.composer.plainText)
+        this.render.schedule()
+      } catch (error) {
+        if (this.promptHistoryRevision === revision) this.promptHistorySubmitPending = false
+        this.options.logs.error("Prompt history", error)
+      } finally {
+        if (this.promptHistoryRevision === revision) this.promptHistoryPending--
+      }
+    })
+    return true
+  }
+
+  private queuePromptHistorySubmit(): void {
+    if (this.promptHistorySubmitPending) return
+    this.promptHistorySubmitPending = true
+    const revision = this.promptHistoryRevision
+    const navigation = this.promptHistoryNavigation
+    void navigation.then(() => {
+      if (this.destroyed || this.promptHistoryRevision !== revision || !this.promptHistorySubmitPending) return
+      this.promptHistorySubmitPending = false
+      void this.sendComposed()
+    })
+  }
+
+  private resetPromptHistoryNavigation(): void {
+    this.promptHistoryIndex = null
+    this.promptHistoryDraft = ""
+    this.promptHistoryDraftIsServerPrompt = false
+    this.promptHistoryRevision++
+    this.promptHistoryPending = 0
+    this.promptHistorySubmitPending = false
+    this.promptHistoryNavigation = Promise.resolve()
   }
 
   private async refreshMobileConnection(sessionId: string): Promise<void> {

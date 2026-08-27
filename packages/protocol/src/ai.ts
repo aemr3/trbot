@@ -64,6 +64,15 @@ export const AiModelSummarySchema: z.ZodType<AiModelSummary> = z.object({
   contextWindow: z.number(),
 })
 
+export interface AiModelListOptions {
+  /** Fetch configured dynamic provider catalogues before returning the list. */
+  refresh?: boolean
+}
+
+export const AiModelListQuerySchema = z.object({
+  refresh: z.enum(["true", "false"]).optional(),
+})
+
 /** Which model answers, and how hard it thinks. */
 export interface AiModelChoice {
   providerId: string
@@ -162,7 +171,7 @@ export interface AiLoginOptions {
 export interface AiAccount {
   providers(): Promise<AiProviderSummary[]>
   /** Models usable now, across every connected provider. */
-  models(): Promise<AiModelSummary[]>
+  models(options?: AiModelListOptions): Promise<AiModelSummary[]>
   connect(providerId: string, authType: AiAuthType, options?: AiLoginOptions): Promise<AiProviderSummary>
   disconnect(providerId: string): Promise<void>
   preferences(): Promise<AiPreferences>

@@ -284,6 +284,30 @@ describe("chat session store", () => {
     expect(detail?.session.messageCount).toBe(records.length)
   })
 
+  test("loads every user prompt independently of the display timeline", async () => {
+    const chats = await store()
+    await chats.create(session())
+    const records: Array<z.input<typeof DraftRecordInputSchema>> = [
+      { role: "user", content: "old prompt", timestamp: 1_000 },
+      { role: "assistant", content: "old reply", model: "test", timestamp: 2_000 },
+      { role: "user", content: "/literal prompt", timestamp: 3_000 },
+      { role: "user", content: "/literal prompt", timestamp: 4_000 },
+    ]
+    for (const record of records) await chats.append("chat-1", draftFor(record))
+
+    expect((await chats.get("chat-1", 1))?.messages).toHaveLength(1)
+    expect(await chats.promptHistory("chat-1")).toEqual({ index: 2, prompt: "/literal prompt" })
+    expect(await chats.promptHistory("chat-1", 0)).toEqual({ index: 0, prompt: "old prompt" })
+    expect(await chats.promptHistory("chat-1", 1)).toEqual({ index: 1, prompt: "/literal prompt" })
+    expect(await chats.promptHistory("chat-1", 2)).toEqual({ index: 2, prompt: "/literal prompt" })
+    expect(await chats.promptHistory("chat-1", 3)).toEqual({ index: null, prompt: null })
+    expect(await chats.promptHistory("missing", 0)).toBeNull()
+
+    await chats.append("chat-1", draftFor({ role: "user", content: "new prompt", timestamp: 5_000 }))
+    expect(await chats.promptHistory("chat-1", 1)).toEqual({ index: 1, prompt: "/literal prompt" })
+    expect(await chats.promptHistory("chat-1")).toEqual({ index: 3, prompt: "new prompt" })
+  })
+
   test("keeps a field this build does not model, so an older row still replays whole", async () => {
     // A harness upgrade that adds a field must not quietly drop it from every
     // message written before this build learned about it — that is the difference

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { AiProviderSummary } from "@trbot/protocol/ai.ts"
+import type { AiModelSummary, AiProviderSummary } from "@trbot/protocol/ai.ts"
 import { HttpAiAccount } from "./ai.ts"
 import { HttpClient } from "./http.ts"
 
@@ -184,4 +184,28 @@ describe("connecting a provider", () => {
       .then(() => null, (cause: unknown) => cause instanceof Error ? cause : new Error(String(cause)))
     expect(failure?.name).toBe("AbortError")
   })
+})
+
+test("requests a fresh provider catalogue when listing models for a picker", async () => {
+  const requested: URL[] = []
+  const model: AiModelSummary = {
+    providerId: "test-provider",
+    providerName: "Test Provider",
+    modelId: "test-model",
+    name: "Test Model",
+    reasoning: false,
+    thinkingLevels: ["none"],
+    contextWindow: 128_000,
+  }
+  const account = new HttpAiAccount(new HttpClient({
+    url: "http://ai.test",
+    token: "test",
+    fetch: (input) => {
+      requested.push(new URL(input instanceof Request ? input.url : input))
+      return Promise.resolve(Response.json([model]))
+    },
+  }))
+
+  expect(await account.models({ refresh: true })).toEqual([model])
+  expect(requested[0]?.searchParams.get("refresh")).toBe("true")
 })

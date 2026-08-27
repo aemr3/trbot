@@ -318,6 +318,10 @@ export const ChatTimelineQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(CHAT_TIMELINE_LIMIT).optional(),
 })
 
+export const ChatPromptHistoryQuerySchema = z.object({
+  index: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+})
+
 export const ChatMessageInputSchema = z.object({
   text: z.string().refine((value) => value.trim().length > 0),
 })
@@ -398,11 +402,20 @@ export interface ChatModelContext {
   records: ChatContextRecord[]
 }
 
+export type ChatPromptHistory = { index: number; prompt: string } | { index: null; prompt: null }
+
+export const ChatPromptHistorySchema: z.ZodType<ChatPromptHistory> = z.union([
+  z.object({ index: z.number().int().min(0), prompt: z.string() }),
+  z.object({ index: z.null(), prompt: z.null() }),
+])
+
 export interface ChatSessionStore {
   /** Trader-owned root conversations only; child sessions have their own picker. */
   list(): Promise<ChatSession[]>
   listChildren(parentSessionId: string): Promise<ChatSession[]>
   get(sessionId: string, topLevelLimit?: number): Promise<ChatSessionDetail | null>
+  /** One trader prompt by stable position, or the latest when the position is omitted. */
+  promptHistory(sessionId: string, index?: number): Promise<ChatPromptHistory | null>
   /** The harness records of a session's messages, in order, for replay. */
   records(sessionId: string): Promise<unknown[]>
   /** The rolling summary and verbatim tail currently used for model replay. */

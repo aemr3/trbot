@@ -69,6 +69,7 @@ describe("server and client over the wire", () => {
   let notifications: ChatNotificationController
   const compactedChats: string[] = []
   const detailedChats: Array<{ sessionId: string; topLevelLimit?: number }> = []
+  const promptHistoryChats: Array<{ sessionId: string; index?: number }> = []
   const permissionModeChanges: Array<{ sessionId: string; mode: ChatPermissionMode }> = []
   let permissionMode: ChatPermissionMode = "MANUAL"
 
@@ -124,6 +125,10 @@ describe("server and client over the wire", () => {
               messages: [],
               partial: null,
             }
+          },
+          async promptHistory(sessionId: string, index?: number) {
+            promptHistoryChats.push({ sessionId, index })
+            return { index: index ?? 1, prompt: index === 0 ? "/literal prompt" : "old prompt" }
           },
           async compact(sessionId: string) {
             compactedChats.push(sessionId)
@@ -210,6 +215,19 @@ describe("server and client over the wire", () => {
 
     const error = await client
       .get(ROUTES.chatSession("chat/one"), z.unknown(), { query: { limit: "101" } })
+      .catch((cause: unknown) => cause)
+    expect(isProtocolError(error) && error.code).toBe("invalid_request")
+  })
+
+  test("loads prompt history over its dedicated route", async () => {
+    promptHistoryChats.length = 0
+    const chats = new HttpChatSessions(client)
+
+    expect(await chats.promptHistory("chat/one", 1)).toEqual({ index: 1, prompt: "old prompt" })
+    expect(promptHistoryChats).toEqual([{ sessionId: "chat/one", index: 1 }])
+
+    const error = await client
+      .get(ROUTES.chatPromptHistory("chat/one"), z.unknown(), { query: { index: "-1" } })
       .catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("invalid_request")
   })

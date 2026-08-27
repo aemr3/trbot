@@ -11,7 +11,14 @@ import type {
 } from "@trbot/chat/permission.ts"
 import { ChatLoopSchema, type ChatAutomationState } from "@trbot/chat/automation.ts"
 import { createMarketMonitor } from "@trbot/market/market-monitor.ts"
-import type { AiAccount, AiModelChoice, AiModelSummary, AiPreferences, AiProviderSummary } from "@trbot/protocol/ai.ts"
+import type {
+  AiAccount,
+  AiModelChoice,
+  AiModelListOptions,
+  AiModelSummary,
+  AiPreferences,
+  AiProviderSummary,
+} from "@trbot/protocol/ai.ts"
 import type { ChatSessions } from "@trbot/protocol/chat.ts"
 import type { SoundCue } from "../components/sound.ts"
 import { ApplicationLog } from "../logging/application-log.ts"
@@ -23,6 +30,7 @@ function fakeChats(): ChatSessions & {
   sessions: ChatSession[]
   messages: Map<string, ChatMessage[]>
   sent: string[]
+  promptHistoryRequests: Array<{ sessionId: string; index?: number }>
   cancelled: string[]
   aborted: string[]
   compacted: string[]
@@ -40,6 +48,7 @@ function fakeChats(): ChatSessions & {
   const sessions: ChatSession[] = []
   const messages = new Map<string, ChatMessage[]>()
   const sent: string[] = []
+  const promptHistoryRequests: Array<{ sessionId: string; index?: number }> = []
   const cancelled: string[] = []
   const aborted: string[] = []
   const compacted: string[] = []
@@ -59,6 +68,7 @@ function fakeChats(): ChatSessions & {
     sessions,
     messages,
     sent,
+    promptHistoryRequests,
     cancelled,
     aborted,
     compacted,
@@ -113,6 +123,15 @@ function fakeChats(): ChatSessions & {
       const session = sessions.find((entry) => entry.id === sessionId)
       if (!session) throw new Error("no such chat")
       return { session, messages: messages.get(sessionId) ?? [], partial: null }
+    },
+    async promptHistory(sessionId, index) {
+      promptHistoryRequests.push({ sessionId, index })
+      const prompts = (messages.get(sessionId) ?? [])
+        .filter((message) => message.role === "USER")
+        .map((message) => message.text)
+      const target = index ?? prompts.length - 1
+      const prompt = prompts[target]
+      return prompt === undefined ? { index: null, prompt: null } : { index: target, prompt }
     },
     async delete(sessionId) {
       const index = sessions.findIndex((entry) => entry.id === sessionId)
@@ -338,6 +357,7 @@ function account(options: {
   connected?: boolean
   models?: AiModelSummary[]
   preferences?: AiPreferences
+  onModels?: (options?: AiModelListOptions) => void
   onSetPreferences?: (preferences: AiPreferences) => void
 } = {}): AiAccount {
   let joined = options.connected ?? false
@@ -357,7 +377,8 @@ function account(options: {
     async providers() {
       return [summary()]
     },
-    async models() {
+    async models(modelOptions) {
+      options.onModels?.(modelOptions)
       return options.models ?? [{
         providerId: "test-provider",
         providerName: "Test Provider",
@@ -457,6 +478,316 @@ test("shows only prompts waiting behind the active turn as queued", async () => 
   const queued = await waitForFrame((frame) => frame.includes("and what about THYAO?") && frame.includes("queued"))
   expect(queued).toContain("^X cancels it")
   expect(queued.match(/queued/gu)).toHaveLength(1)
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("recalls submitted prompts with up and restores the current draft with down", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("first prompt")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 1)
+  await mockInput.typeText("second prompt")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 2)
+
+  await mockInput.typeText("unsent draft")
+  mockInput.pressArrow("up")
+  await waitForFrame((frame) => frame.includes("second prompt"))
+  mockInput.pressArrow("up")
+  await waitForFrame((frame) => frame.includes("first prompt"))
+  mockInput.pressArrow("down")
+  await waitForFrame((frame) => frame.includes("second prompt"))
+  mockInput.pressArrow("down")
+  await waitForFrame((frame) => frame.includes("unsent draft"))
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 3)
+
+  expect(chats.sent).toEqual(["first prompt", "second prompt", "unsent draft"])
+  expect(chats.promptHistoryRequests).toEqual([
+    { sessionId: "chat-1", index: undefined },
+    { sessionId: "chat-1", index: 0 },
+    { sessionId: "chat-1", index: 1 },
+    { sessionId: "chat-1", index: 2 },
+  ])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("keeps arrow navigation inside a multiline draft before opening prompt history", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("previous prompt")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 1)
+  await mockInput.typeText("first line")
+  mockInput.pressEnter({ shift: true })
+  await mockInput.typeText("second line")
+  mockInput.pressArrow("up")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 2)
+
+  expect(chats.sent[1]).toBe("first line\nsecond line")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("does not let a delayed history request overwrite a multiline edit", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("previous prompt")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 1)
+  const pending = Promise.withResolvers<{ index: number; prompt: string } | { index: null; prompt: null }>()
+  let requested = false
+  chats.promptHistory = async () => {
+    requested = true
+    return pending.promise
+  }
+
+  await mockInput.typeText("draft")
+  mockInput.pressArrow("up")
+  await waitForFrame(() => requested)
+  mockInput.pressEnter({ shift: true })
+  pending.resolve({ index: 0, prompt: "previous prompt" })
+  await Bun.sleep(0)
+  await mockInput.typeText("continued")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 2)
+
+  expect(chats.sent[1]).toBe("draft\ncontinued")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("does not let a delayed history request block another session", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const first = await chats.create()
+  const second = await chats.create()
+  chats.messages.set(first.id, [userMessage("first history", "COMPLETE")])
+  chats.messages.set(second.id, [userMessage("second history", "COMPLETE")])
+  const firstPending = Promise.withResolvers<{ index: number; prompt: string } | { index: null; prompt: null }>()
+  const secondPending = Promise.withResolvers<{ index: number; prompt: string } | { index: null; prompt: null }>()
+  let firstRequested = false
+  let secondRequested = false
+  chats.promptHistory = async (sessionId) => {
+    if (sessionId === first.id) {
+      firstRequested = true
+      return firstPending.promise
+    }
+    secondRequested = true
+    return secondPending.promise
+  }
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    initialSessionId: first.id,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("draft")
+  mockInput.pressArrow("up")
+  await waitForFrame(() => firstRequested)
+  screen.openSession(second.id)
+  mockInput.pressArrow("up")
+  await waitForFrame(() => secondRequested)
+  mockInput.pressEnter()
+  firstPending.reject(new Error("old history unavailable"))
+  await Bun.sleep(0)
+  secondPending.resolve({ index: 0, prompt: "second history" })
+  await waitForFrame(() => chats.sent.length === 1)
+
+  expect(chats.sent).toEqual(["second history"])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("waits for prompt history before submitting on enter", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("previous prompt")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 1)
+  const pending = Promise.withResolvers<{ index: number; prompt: string }>()
+  chats.promptHistory = async () => pending.promise
+
+  mockInput.pressArrow("up")
+  mockInput.pressEnter()
+  expect(chats.sent).toEqual(["previous prompt"])
+  pending.resolve({ index: 0, prompt: "previous prompt" })
+  await waitForFrame(() => chats.sent.length === 2)
+
+  expect(chats.sent).toEqual(["previous prompt", "previous prompt"])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("waits for history to restore the draft before submitting on enter", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("previous prompt")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 1)
+  await mockInput.typeText("draft")
+  mockInput.pressArrow("up")
+  await waitForFrame(() => chats.promptHistoryRequests.length === 1)
+  await Bun.sleep(0)
+  const pending = Promise.withResolvers<{ index: null; prompt: null }>()
+  chats.promptHistory = async () => pending.promise
+
+  mockInput.pressArrow("down")
+  mockInput.pressEnter()
+  expect(chats.sent).toEqual(["previous prompt"])
+  pending.resolve({ index: null, prompt: null })
+  await waitForFrame(() => chats.sent.length === 2)
+
+  expect(chats.sent).toEqual(["previous prompt", "draft"])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("does not submit the draft when a queued history lookup fails", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("previous prompt")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 1)
+  chats.promptHistory = async () => { throw new Error("history unavailable") }
+  await mockInput.typeText("draft")
+
+  mockInput.pressArrow("up")
+  mockInput.pressEnter()
+  await Bun.sleep(0)
+  expect(chats.sent).toEqual(["previous prompt"])
+
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 2)
+  expect(chats.sent).toEqual(["previous prompt", "draft"])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("waits for a submitted prompt to persist before recalling it", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const originalSend = chats.send.bind(chats)
+  const pending = Promise.withResolvers<void>()
+  let sendStarted = false
+  let delaySend = true
+  chats.send = async (sessionId, text) => {
+    if (delaySend) {
+      delaySend = false
+      sendStarted = true
+      await pending.promise
+    }
+    return originalSend(sessionId, text)
+  }
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("newest prompt")
+  mockInput.pressEnter()
+  await waitForFrame(() => sendStarted)
+  mockInput.pressArrow("up")
+  mockInput.pressEnter()
+  await Bun.sleep(0)
+  expect(chats.promptHistoryRequests).toEqual([])
+
+  pending.resolve()
+  await waitForFrame(() => chats.sent.length === 2)
+  expect(chats.sent).toEqual(["newest prompt", "newest prompt"])
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("resubmits a recalled slash prompt instead of running a local command", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  chats.messages.set(session.id, [userMessage("/compact", "COMPLETE")])
+  const screen = new ChatScreen(renderer, {
+    chats,
+    account: account(connected),
+    logs: new ApplicationLog(),
+    initialSessionId: session.id,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  mockInput.pressArrow("up")
+  await waitForFrame(() => chats.promptHistoryRequests.length === 1)
+  await Bun.sleep(0)
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 1)
+
+  expect(chats.sent).toEqual(["/compact"])
+  expect(chats.compacted).toEqual([])
+
+  mockInput.pressArrow("up")
+  await waitForFrame(() => chats.promptHistoryRequests.length === 2)
+  await Bun.sleep(0)
+  await mockInput.typeText(" now")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 2)
+
+  expect(chats.sent).toEqual(["/compact", "/compact now"])
+  expect(chats.compacted).toEqual([])
 
   screen.destroy()
   renderer.destroy()
@@ -2946,6 +3277,28 @@ test("^O and ^S reach the pickers mid-sentence, without disturbing what is typed
   const back = await waitForFrame((frame) => !frame.includes("Sessions"))
   expect(back).toContain("half a question")
 
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("/model refreshes dynamic provider catalogues before opening the picker", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const refreshes: Array<boolean | undefined> = []
+  const screen = new ChatScreen(renderer, {
+    chats: fakeChats(),
+    account: account({ connected: true, onModels: (options) => refreshes.push(options?.refresh) }),
+    logs: new ApplicationLog(),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("/model")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Model for new chats"))
+
+  expect(refreshes).toContain(true)
   screen.destroy()
   renderer.destroy()
 })

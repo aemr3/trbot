@@ -2,6 +2,7 @@ import type {
   ChatCompactionReport,
   ChatMessage,
   ChatModelChoice,
+  ChatPromptHistory,
   ChatSession,
   ChatSessionDetail,
   ChatUndoPreview,
@@ -43,6 +44,8 @@ export interface ChatSessions {
   configure(sessionId: string, choice: ChatModelChoice): Promise<ChatSession>
   /** The recent display window; complete model history remains server-owned. */
   get(sessionId: string): Promise<ChatSessionDetail>
+  /** One prompt by stable position, or the latest when the position is omitted. */
+  promptHistory(sessionId: string, index?: number): Promise<ChatPromptHistory>
   delete(sessionId: string): Promise<void>
   send(sessionId: string, text: string): Promise<ChatMessage>
   /** Takes back a message that has not had its turn yet. */

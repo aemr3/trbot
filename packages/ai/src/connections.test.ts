@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { fauxProvider } from "@earendil-works/pi-ai"
 import { AiConnections } from "./connections.ts"
 import type {
   AiCredentialRecord,
@@ -33,6 +34,31 @@ describe("model providers", () => {
   test("nothing is usable until something is connected", async () => {
     const connections = build()
     expect(await connections.models()).toEqual([])
+  })
+
+  test("forces dynamic provider refresh before returning a requested fresh list", async () => {
+    const credentials = memoryCredentials()
+    const harness = createHarness(credentials)
+    const faux = fauxProvider({ provider: "dynamic", models: [{ id: "dynamic-model" }] })
+    let networkRefreshes = 0
+    let forced = false
+    harness.setProvider({
+      ...faux.provider,
+      refreshModels: async (context) => {
+        if (!context.allowNetwork) return
+        networkRefreshes += 1
+        forced = context.force === true
+      },
+    })
+    const connections = new AiConnections(harness, credentials, memoryPreferences())
+
+    await connections.models()
+    expect(networkRefreshes).toBe(0)
+
+    const models = await connections.models({ refresh: true })
+    expect(networkRefreshes).toBe(1)
+    expect(forced).toBe(true)
+    expect(models.some((model) => model.providerId === "dynamic")).toBe(true)
   })
 
   test("connecting an API key makes that provider's models usable", async () => {

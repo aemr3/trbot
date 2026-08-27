@@ -1,6 +1,7 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import type {
   AiAuthType,
+  AiModelListOptions,
   AiModelSummary,
   AiPreferences,
   AiProviderSummary,
@@ -95,7 +96,8 @@ export class AiConnections {
    * The harness filters by whether each provider's auth is complete, so a picker
    * built from this cannot offer a model that would fail on send.
    */
-  async models(): Promise<AiModelSummary[]> {
+  async models(options: AiModelListOptions = {}): Promise<AiModelSummary[]> {
+    if (options.refresh) await this.harness.refresh({ force: true })
     const available = await this.harness.getAvailable()
     return available
       .map((model) => ({

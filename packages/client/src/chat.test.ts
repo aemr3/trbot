@@ -157,6 +157,22 @@ test("requests only the bounded timeline used by the TUI", async () => {
   expect(new URL(requestedUrl).searchParams.get("limit")).toBe("100")
 })
 
+test("loads prompt history through its dedicated route", async () => {
+  let requestedUrl = ""
+  const http = new HttpClient({
+    url: "http://localhost:3000",
+    token: "test",
+    fetch: async (input) => {
+      requestedUrl = String(input)
+      return Response.json({ index: 12, prompt: "/literal prompt" })
+    },
+  })
+
+  expect(await new HttpChatSessions(http).promptHistory("chat/one", 12)).toEqual({ index: 12, prompt: "/literal prompt" })
+  expect(new URL(requestedUrl).pathname).toBe("/v1/ai/chat/sessions/chat%2Fone/prompts")
+  expect(new URL(requestedUrl).searchParams.get("index")).toBe("12")
+})
+
 test("posts the selected prompt when undoing a chat", async () => {
   let requestedPath = ""
   let requestedBody = ""

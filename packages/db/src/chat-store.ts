@@ -12,6 +12,7 @@ import {
   type ChatMessageStatus,
   type ChatModelContext,
   type ChatModelChoice,
+  type ChatPromptHistory,
   type ChatSession,
   type ChatSessionDetail,
   type ChatSessionStore,
@@ -182,6 +183,33 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
       partial: null,
       compaction: compaction ?? null,
     }
+  }
+
+  async promptHistory(sessionId: string, index?: number): Promise<ChatPromptHistory | null> {
+    const session = this.db
+      .select({ id: chatSessions.id })
+      .from(chatSessions)
+      .where(eq(chatSessions.id, sessionId))
+      .limit(1)
+      .get()
+    if (!session) return null
+    let target = index
+    if (target === undefined) {
+      const [count] = await this.db
+        .select({ value: sql<number>`count(*)` })
+        .from(chatMessages)
+        .where(and(eq(chatMessages.sessionId, sessionId), eq(chatMessages.role, "USER")))
+      target = Number(count?.value ?? 0) - 1
+    }
+    if (target < 0) return { index: null, prompt: null }
+    const [row] = await this.db
+      .select({ text: chatMessages.text })
+      .from(chatMessages)
+      .where(and(eq(chatMessages.sessionId, sessionId), eq(chatMessages.role, "USER")))
+      .orderBy(asc(sql`case when ${chatMessages.status} = 'QUEUED' then 1 else 0 end`), asc(chatMessages.seq))
+      .limit(1)
+      .offset(target)
+    return row ? { index: target, prompt: row.text } : { index: null, prompt: null }
   }
 
   /**

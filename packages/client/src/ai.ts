@@ -10,6 +10,7 @@ import type {
   AiAuthType,
   AiCredentials,
   AiLoginOptions,
+  AiModelListOptions,
   AiModelSummary,
   AiPreferences,
   AiProviderSummary,
@@ -89,8 +90,10 @@ export class HttpAiAccount implements AiAccount {
     return this.http.get(ROUTES.aiProviders, z.array(AiProviderSummarySchema))
   }
 
-  models(): Promise<AiModelSummary[]> {
-    return this.http.get(ROUTES.aiModels, z.array(AiModelSummarySchema))
+  models(options: AiModelListOptions = {}): Promise<AiModelSummary[]> {
+    return this.http.get(ROUTES.aiModels, z.array(AiModelSummarySchema), {
+      query: { refresh: options.refresh === undefined ? undefined : String(options.refresh) },
+    })
   }
 
   preferences(): Promise<AiPreferences> {

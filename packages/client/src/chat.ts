@@ -2,6 +2,7 @@ import {
   ChatCompactionReportSchema,
   CHAT_TIMELINE_LIMIT,
   ChatMessageSchema,
+  ChatPromptHistorySchema,
   ChatSessionDetailSchema,
   ChatSessionSchema,
   ChatUndoPreviewSchema,
@@ -10,6 +11,7 @@ import {
   type ChatMessage,
   type ChatCompactionReport,
   type ChatModelChoice,
+  type ChatPromptHistory,
   type ChatRunStatus,
   type ChatRetryStatus,
   type ChatSession,
@@ -72,6 +74,12 @@ export class HttpChatSessions implements ChatSessions {
   get(sessionId: string): Promise<ChatSessionDetail> {
     return this.http.get(ROUTES.chatSession(sessionId), ChatSessionDetailSchema, {
       query: { limit: String(CHAT_TIMELINE_LIMIT) },
+    })
+  }
+
+  promptHistory(sessionId: string, index?: number): Promise<ChatPromptHistory> {
+    return this.http.get(ROUTES.chatPromptHistory(sessionId), ChatPromptHistorySchema, {
+      query: index === undefined ? {} : { index: String(index) },
     })
   }
 

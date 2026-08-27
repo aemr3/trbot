@@ -12,6 +12,7 @@ import {
   type ChatMessage,
   type ChatMessageDraft,
   type ChatPartial,
+  type ChatPromptHistory,
   type ChatRetryStatus,
   type ChatSession,
   type ChatSessionDetail,
@@ -215,6 +216,12 @@ export class ChatController {
       session: this.withRunState(detail.session),
       partial: this.partialOf(sessionId),
     }
+  }
+
+  async promptHistory(sessionId: string, index?: number): Promise<ChatPromptHistory> {
+    const history = await this.options.store.promptHistory(sessionId, index)
+    if (!history) throw new ProtocolError("not_found", "No such chat")
+    return history
   }
 
   async remove(sessionId: string): Promise<void> {
