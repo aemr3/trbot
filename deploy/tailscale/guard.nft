@@ -17,8 +17,7 @@ table inet trbot_ts_guard {
     ct state established,related accept
     oifname "tailscale0" accept
 
-    # tailscaled runs as root and alone may use the bootstrap route directly.
-    # The unprivileged Bun process cannot fall back to the VPS connection.
-    oifname "trbot-net" meta skuid 0 accept
+    # Internet traffic leaves through the VPS when no Tailscale exit node is selected.
+    oifname "trbot-net" accept
   }
 }
