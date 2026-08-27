@@ -50,6 +50,13 @@ test("teaches the agent VIOP exposure and the difference between limits and circ
   expect(CHAT_SYSTEM_PROMPT).not.toContain("permission")
 })
 
+test("separates immediate goals from scheduled and event-driven monitoring", () => {
+  expect(CHAT_SYSTEM_PROMPT).toContain("finite work with a verifiable end state")
+  expect(CHAT_SYSTEM_PROMPT).toContain("never use one to wait, poll, monitor until a time")
+  expect(CHAT_SYSTEM_PROMPT).toContain("Use one dynamic loop for autonomous time-based monitoring")
+  expect(CHAT_SYSTEM_PROMPT).toContain("never combine an active goal and active loop in the same chat")
+})
+
 test("streams a reply and hands over the message it produced", async () => {
   const { faux, models } = scripted({ reasoning: true })
   faux.setResponses([fauxAssistantMessage([fauxThinking("thinking it over"), fauxText("Ankara.")])])

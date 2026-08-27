@@ -55,6 +55,44 @@ test("a dynamic loop can choose its next delay only from its own wake-up turn", 
   expect(calls).toEqual([{ sessionId: "chat-1", loopId: "loop-1", intervalMs: 720_000 }])
 })
 
+test("subagents cannot mutate root chat automation", async () => {
+  const clientCalls: string[] = []
+  const unavailable = (name: string) => async (): Promise<never> => {
+    clientCalls.push(name)
+    throw new Error("A worker reached the automation client")
+  }
+  const tools = new ChatTools(automationTools({
+    state: unavailable("state"),
+    createGoal: unavailable("createGoal"),
+    finishGoal: unavailable("finishGoal"),
+    createLoop: unavailable("createLoop"),
+    rescheduleLoop: unavailable("rescheduleLoop"),
+    cancelLoop: unavailable("cancelLoop"),
+  }))
+  const calls = [
+    { id: "goal", name: "create_goal", arguments: { objective: "Keep working" } },
+    { id: "finish", name: "update_goal", arguments: { status: "COMPLETE", reason: "Done" } },
+    { id: "loop", name: "create_loop", arguments: { schedule: "DYNAMIC", prompt: "Check again" } },
+    { id: "cancel", name: "cancel_loop", arguments: { loop_id: "loop-1" } },
+    {
+      id: "reschedule",
+      name: "reschedule_loop",
+      arguments: { loop_id: "loop-1", next_interval_minutes: 5 },
+    },
+  ] as const
+
+  for (const call of calls) {
+    const result = await tools.call({ type: "toolCall", ...call }, {
+      chatSessionId: "chat-1",
+      delegation: { depth: 1, budget: { created: 0 } },
+      automationEvent: { label: "loop", referenceId: "loop-1" },
+    })
+    expect(result.isError).toBe(true)
+    expect(result.blocks[0]?.text).toContain("Only the user-facing root agent")
+  }
+  expect(clientCalls).toEqual([])
+})
+
 test("a goal wake-up can finish only the goal that created it", async () => {
   const current = ChatGoalSchema.parse({
     id: "goal-new",

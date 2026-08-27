@@ -8,7 +8,7 @@ import type {
 } from "@trbot/chat/automation.ts"
 import type { ChatToolEffect } from "@trbot/chat/session.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
-import { reversibleToolEffect, toolText, type ChatTool } from "./tool.ts"
+import { reversibleToolEffect, toolText, type ChatTool, type ChatToolRunOptions } from "./tool.ts"
 
 const GetGoalParameters = Type.Object({})
 const CreateGoalParameters = Type.Object({
@@ -70,7 +70,7 @@ interface CreateLoopCommonInput {
   maxRuns?: number
 }
 
-/** Goal and schedule tools share the originating root chat, including when called by a subagent. */
+/** Workers may inspect root automation state, but only the root agent may change it. */
 export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
   return [
     {
@@ -88,13 +88,18 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
       definition: {
         name: "create_goal",
         description: [
-          "Create or replace the persistent goal for this chat so work can continue across settled turns.",
+          "Create or replace the persistent goal for finite work with a verifiable end state.",
+          "A goal immediately continues after each settled turn, so every next turn must be able to make concrete progress now.",
+          "Never use a goal for waiting, recurring monitoring, work that lasts until a time, or work already driven by a scheduled loop.",
+          "This chat cannot run an active goal and active scheduled tasks at the same time.",
+          "Only the user-facing root agent can create goals; subagents cannot manage chat automation.",
           "Use only when the user explicitly asks for autonomous goal pursuit.",
           "Set token_budget only when the user explicitly provides a token budget.",
         ].join(" "),
         parameters: CreateGoalParameters,
       },
       run: async ({ objective, max_turns, token_budget }, options) => {
+        requireRootAgent(options)
         const sessionId = requireSession(options.chatSessionId)
         const before = (await client.state(sessionId)).goal
         const input: CreateChatGoal = { objective }
@@ -121,11 +126,13 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
           "Mark this chat's current goal COMPLETE or BLOCKED.",
           "Use COMPLETE only when the objective is achieved with no required work left.",
           "Use BLOCKED only when progress genuinely requires user input or an external change.",
+          "Only the user-facing root agent can update goals.",
           "The user controls pause, resume, and clear.",
         ].join(" "),
         parameters: UpdateGoalParameters,
       },
       run: async ({ status, reason }, options) => {
+        requireRootAgent(options)
         const sessionId = requireSession(options.chatSessionId)
         const before = (await client.state(sessionId)).goal
         const eventGoalId = options.automationEvent?.label === "goal"
@@ -164,7 +171,10 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         name: "create_loop",
         description: [
           "Schedule a recurring or one-time prompt in this chat.",
-          "Use only when the user explicitly asks for scheduled work or a reminder; use market monitors for price or candle conditions.",
+          "Use only when the user explicitly asks for scheduled work, recurring monitoring, work that lasts until a time, or a reminder; use market monitors for price or candle conditions.",
+          "Use DYNAMIC when current observations should determine the next 1-60 minute delay, and cancel it when its stopping condition is met.",
+          "Never use a loop to pace an active goal; this chat cannot run both at the same time.",
+          "Only the user-facing root agent can create scheduled tasks; subagents cannot manage chat automation.",
           "INTERVAL needs interval_minutes. DYNAMIC lets the agent choose 1-60 minutes after each run.",
           "CRON needs a five-field local-time cron_expression. ONCE needs an ISO 8601 run_at.",
           "Omit prompt for the configured or built-in maintenance task.",
@@ -174,6 +184,7 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         parameters: CreateLoopParameters,
       },
       run: async ({ prompt, schedule, interval_minutes, cron_expression, run_at, max_runs }, options) => {
+        requireRootAgent(options)
         const sessionId = requireSession(options.chatSessionId)
         const common: CreateLoopCommonInput = {}
         if (prompt !== undefined) common.prompt = prompt
@@ -235,6 +246,7 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         parameters: CancelLoopParameters,
       },
       run: async ({ loop_id }, options) => {
+        requireRootAgent(options)
         const sessionId = requireSession(options.chatSessionId)
         const before = (await client.state(sessionId)).loops.find((loop) => loop.id === loop_id) ?? null
         await client.cancelLoop(sessionId, loop_id)
@@ -262,6 +274,7 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         parameters: RescheduleLoopParameters,
       },
       run: async ({ loop_id, next_interval_minutes }, options) => {
+        requireRootAgent(options)
         if (options.automationEvent?.label !== "loop" || options.automationEvent.referenceId !== loop_id) {
           throw new Error("reschedule_loop is only available to the dynamic loop currently running")
         }
@@ -286,6 +299,12 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
       },
     },
   ]
+}
+
+function requireRootAgent(options: ChatToolRunOptions): void {
+  if ((options.delegation?.depth ?? 0) > 0) {
+    throw new Error("Only the user-facing root agent can manage chat goals and scheduled tasks")
+  }
 }
 
 function requireSession(sessionId: string | undefined): string {

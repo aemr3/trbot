@@ -448,6 +448,7 @@ async function startTrbotServer(): Promise<void> {
   await notifications.load()
   await questions.load()
   await permissions.load()
+  await automations.prepare()
   await chat.start()
   await permissions.reconcileModes()
   await mobile.start()

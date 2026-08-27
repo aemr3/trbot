@@ -41,6 +41,7 @@ const WORKER_PROMPT = [
   "You are a general-purpose subagent working in an isolated context.",
   "Complete only the delegated task and return a clear, self-contained result to the parent agent.",
   "Use any available tool when it helps. Do not delegate or create further subagents.",
+  "Do not create or manage chat goals or scheduled loops; the parent agent owns chat-level automation.",
   "When using web sources, include the URLs you relied on.",
 ].join(" ")
 

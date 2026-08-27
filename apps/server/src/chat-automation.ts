@@ -21,6 +21,7 @@ const EVIDENCE_MESSAGES = 16
 const MAX_SCHEDULED_TASKS = 50
 const RECURRING_EXPIRY_MS = 7 * 24 * 60 * 60_000
 const DEFAULT_DYNAMIC_DELAY_MS = 60_000
+const CADENCE_CONFLICT_REASON = "Paused because this chat also has active scheduled tasks. Cancel them before resuming the goal."
 
 export const DEFAULT_LOOP_PROMPT = [
   "Continue unfinished work from this conversation.",
@@ -48,7 +49,7 @@ export class ChatAutomationController {
   private readonly now: () => number
   private readonly pollMs: number
   private timer: ReturnType<typeof setInterval> | null = null
-  private readonly goalMutations = new Map<string, Promise<void>>()
+  private readonly automationMutations = new Map<string, Promise<void>>()
   private ticking = false
   private destroyed = false
 
@@ -57,7 +58,13 @@ export class ChatAutomationController {
     this.pollMs = options.pollMs ?? LOOP_POLL_MS
   }
 
+  /** Reconciles persisted automation state before the chat queue begins draining. */
+  async prepare(): Promise<void> {
+    await this.reconcileCadenceConflicts()
+  }
+
   async start(): Promise<void> {
+    await this.prepare()
     await this.tick()
     await this.resumeGoals()
     if (!this.destroyed) this.timer = setInterval(() => void this.tick(), this.pollMs)
@@ -71,15 +78,22 @@ export class ChatAutomationController {
 
   async state(sessionId: string): Promise<ChatAutomationState> {
     const root = await this.rootSessionId(sessionId)
-    return {
+    return await this.mutateAutomation(root, async () => ({
       goal: await this.options.store.getGoal(root),
       loops: await this.options.store.listLoops(root),
-    }
+    }))
   }
 
   async createGoal(sessionId: string, input: CreateChatGoal): Promise<ChatGoal> {
     const root = await this.rootSessionId(sessionId)
-    return await this.mutateGoal(root, async () => {
+    return await this.mutateAutomation(root, async () => {
+      const loops = await this.options.store.listLoops(root)
+      if (loops.some((loop) => loop.status === "ACTIVE")) {
+        throw new ProtocolError(
+          "invalid_request",
+          "Cancel this chat's active scheduled tasks before starting a goal; combining them duplicates autonomous work",
+        )
+      }
       const now = this.now()
       const previous = await this.options.store.getGoal(root)
       const detail = await this.options.detail(root)
@@ -109,7 +123,7 @@ export class ChatAutomationController {
 
   async updateGoal(sessionId: string, input: UpdateChatGoal): Promise<ChatGoal | null> {
     const root = await this.rootSessionId(sessionId)
-    return await this.mutateGoal(root, async () => {
+    return await this.mutateAutomation(root, async () => {
       const goal = await this.options.store.getGoal(root)
       if (!goal) {
         if (input.action === "CLEAR") return null
@@ -119,6 +133,15 @@ export class ChatAutomationController {
         await this.options.cancelQueuedEvents?.(root, "goal", goal.id)
         await this.options.store.removeGoal(root)
         return null
+      }
+      if (input.action === "RESUME") {
+        const loops = await this.options.store.listLoops(root)
+        if (loops.some((loop) => loop.status === "ACTIVE")) {
+          throw new ProtocolError(
+            "invalid_request",
+            "Cancel this chat's active scheduled tasks before resuming the goal; combining them duplicates autonomous work",
+          )
+        }
       }
       const updated: ChatGoal = {
         ...goal,
@@ -149,7 +172,7 @@ export class ChatAutomationController {
     expectedGoalId?: string | null,
   ): Promise<{ goal: ChatGoal; notification: ChatNotification | null }> {
     const root = await this.rootSessionId(sessionId)
-    return await this.mutateGoal(root, () => this.finishGoalNow(root, status, reason, expectedGoalId))
+    return await this.mutateAutomation(root, () => this.finishGoalNow(root, status, reason, expectedGoalId))
   }
 
   private async finishGoalNow(
@@ -178,70 +201,89 @@ export class ChatAutomationController {
 
   async createLoop(sessionId: string, input: CreateChatLoop): Promise<ChatLoop> {
     const root = await this.rootSessionId(sessionId)
-    const now = this.now()
-    const existing = await this.options.store.listLoops(root)
-    if (existing.filter((loop) => loop.status !== "COMPLETE").length >= MAX_SCHEDULED_TASKS) {
-      throw new ProtocolError("invalid_request", `This chat already has ${MAX_SCHEDULED_TASKS} scheduled tasks`)
-    }
-    const usesDefaultPrompt = input.prompt === undefined
-    const prompt = input.prompt ?? await this.defaultLoopPrompt()
-    if (input.expiresAt !== undefined && input.expiresAt <= now) {
-      throw new ProtocolError("invalid_request", "Scheduled task expiry must be in the future")
-    }
-    const expiresAt = input.expiresAt ?? (input.schedule === "ONCE" ? null : now + RECURRING_EXPIRY_MS)
-    const id = crypto.randomUUID()
-    const schedule = scheduleFields(input, now, id)
-    if (expiresAt !== null && schedule.nextRunAt > expiresAt) schedule.nextRunAt = expiresAt
-    const loop: ChatLoop = {
-      id,
-      sessionId: root,
-      prompt: prompt.trim(),
-      usesDefaultPrompt,
-      ...schedule,
-      status: "ACTIVE",
-      lastRunAt: null,
-      runCount: 0,
-      maxRuns: input.maxRuns ?? null,
-      expiresAt,
-      createdAt: now,
-      updatedAt: now,
-    }
-    await this.options.store.putLoop(loop)
-    return loop
+    return await this.mutateAutomation(root, async () => {
+      const goal = await this.options.store.getGoal(root)
+      if (goal?.status === "ACTIVE") {
+        throw new ProtocolError(
+          "invalid_request",
+          "Pause or clear this chat's active goal before scheduling a task; combining them duplicates autonomous work",
+        )
+      }
+      const now = this.now()
+      const existing = await this.options.store.listLoops(root)
+      if (existing.filter((loop) => loop.status !== "COMPLETE").length >= MAX_SCHEDULED_TASKS) {
+        throw new ProtocolError("invalid_request", `This chat already has ${MAX_SCHEDULED_TASKS} scheduled tasks`)
+      }
+      const usesDefaultPrompt = input.prompt === undefined
+      const prompt = input.prompt ?? await this.defaultLoopPrompt()
+      if (input.expiresAt !== undefined && input.expiresAt <= now) {
+        throw new ProtocolError("invalid_request", "Scheduled task expiry must be in the future")
+      }
+      const expiresAt = input.expiresAt ?? (input.schedule === "ONCE" ? null : now + RECURRING_EXPIRY_MS)
+      const id = crypto.randomUUID()
+      const schedule = scheduleFields(input, now, id)
+      if (expiresAt !== null && schedule.nextRunAt > expiresAt) schedule.nextRunAt = expiresAt
+      const loop: ChatLoop = {
+        id,
+        sessionId: root,
+        prompt: prompt.trim(),
+        usesDefaultPrompt,
+        ...schedule,
+        status: "ACTIVE",
+        lastRunAt: null,
+        runCount: 0,
+        maxRuns: input.maxRuns ?? null,
+        expiresAt,
+        createdAt: now,
+        updatedAt: now,
+      }
+      await this.options.store.putLoop(loop)
+      return loop
+    })
   }
 
   async rescheduleLoop(sessionId: string, loopId: string, intervalMs: number): Promise<ChatLoop> {
     const root = await this.rootSessionId(sessionId)
-    const loop = (await this.options.store.listLoops(root)).find((entry) => entry.id === loopId)
-    if (!loop) throw new ProtocolError("not_found", "No such loop in this chat")
-    if (loop.schedule !== "DYNAMIC") {
-      throw new ProtocolError("invalid_request", "Only a dynamic loop chooses its next interval")
-    }
-    if (loop.status !== "ACTIVE") throw new ProtocolError("invalid_request", "That dynamic loop is no longer active")
-    if (intervalMs < 60_000 || intervalMs > 3_600_000) {
-      throw new ProtocolError("invalid_request", "A dynamic loop interval must be between 1 and 60 minutes")
-    }
-    const now = this.now()
-    const requestedRun = now + intervalMs
-    const nextRunAt = loop.expiresAt !== null ? Math.min(requestedRun, loop.expiresAt) : requestedRun
-    const updated = { ...loop, intervalMs, nextRunAt, updatedAt: now }
-    await this.options.store.putLoop(updated)
-    return updated
+    return await this.mutateAutomation(root, async () => {
+      const loop = (await this.options.store.listLoops(root)).find((entry) => entry.id === loopId)
+      if (!loop) throw new ProtocolError("not_found", "No such loop in this chat")
+      if (loop.schedule !== "DYNAMIC") {
+        throw new ProtocolError("invalid_request", "Only a dynamic loop chooses its next interval")
+      }
+      if (loop.status !== "ACTIVE") throw new ProtocolError("invalid_request", "That dynamic loop is no longer active")
+      if (intervalMs < 60_000 || intervalMs > 3_600_000) {
+        throw new ProtocolError("invalid_request", "A dynamic loop interval must be between 1 and 60 minutes")
+      }
+      const now = this.now()
+      const requestedRun = now + intervalMs
+      const nextRunAt = loop.expiresAt !== null ? Math.min(requestedRun, loop.expiresAt) : requestedRun
+      const updated = { ...loop, intervalMs, nextRunAt, updatedAt: now }
+      await this.options.store.putLoop(updated)
+      return updated
+    })
   }
 
   async cancelLoop(sessionId: string, loopId: string): Promise<void> {
     const root = await this.rootSessionId(sessionId)
-    const loop = (await this.options.store.listLoops(root)).find((entry) => entry.id === loopId)
-    if (!loop) throw new ProtocolError("not_found", "No such loop in this chat")
-    await this.options.cancelQueuedEvents?.(root, "loop", loop.id)
-    await this.options.store.removeLoop(loopId)
+    await this.mutateAutomation(root, async () => {
+      const loop = (await this.options.store.listLoops(root)).find((entry) => entry.id === loopId)
+      if (!loop) throw new ProtocolError("not_found", "No such loop in this chat")
+      await this.options.cancelQueuedEvents?.(root, "loop", loop.id)
+      await this.options.store.removeLoop(loopId)
+    })
   }
 
   /** Restores an exact goal snapshot after a conversation rewind. */
   async restoreGoal(sessionId: string, goal: ChatGoal | null): Promise<void> {
     const root = await this.rootSessionId(sessionId)
-    await this.mutateGoal(root, async () => {
+    await this.mutateAutomation(root, async () => {
       if (goal && goal.sessionId !== root) throw new Error("The restored goal belongs to another chat")
+      if (goal?.status === "ACTIVE") {
+        const loops = await this.options.store.listLoops(root)
+        if (loops.some((loop) => loop.status === "ACTIVE")) {
+          throw new ProtocolError("invalid_request", "Cannot restore an active goal while this chat has active scheduled tasks")
+        }
+      }
       const current = await this.options.store.getGoal(root)
       if (current) await this.options.cancelQueuedEvents?.(root, "goal", current.id)
       if (goal) await this.options.store.putGoal(goal)
@@ -252,11 +294,16 @@ export class ChatAutomationController {
   /** Restores or removes one exact scheduled-task snapshot after rewind. */
   async restoreLoop(sessionId: string, loopId: string, loop: ChatLoop | null): Promise<void> {
     const root = await this.rootSessionId(sessionId)
-    if (loop && loop.sessionId !== root) throw new Error("The restored scheduled task belongs to another chat")
-    const current = (await this.options.store.listLoops(root)).find((entry) => entry.id === loopId)
-    if (current) await this.options.cancelQueuedEvents?.(root, "loop", loopId)
-    if (loop) await this.options.store.putLoop(loop)
-    else await this.options.store.removeLoop(loopId)
+    await this.mutateAutomation(root, async () => {
+      if (loop && loop.sessionId !== root) throw new Error("The restored scheduled task belongs to another chat")
+      if (loop?.status === "ACTIVE" && (await this.options.store.getGoal(root))?.status === "ACTIVE") {
+        throw new ProtocolError("invalid_request", "Cannot restore an active scheduled task while this chat has an active goal")
+      }
+      const current = (await this.options.store.listLoops(root)).find((entry) => entry.id === loopId)
+      if (current) await this.options.cancelQueuedEvents?.(root, "loop", loopId)
+      if (loop) await this.options.store.putLoop(loop)
+      else await this.options.store.removeLoop(loopId)
+    })
   }
 
   /** Called only after a root turn, its tools, retries, and compaction have settled. */
@@ -264,7 +311,7 @@ export class ChatAutomationController {
     sessionId: string,
     event: { label: string | null; referenceId: string | null } | null = null,
   ): Promise<void> {
-    await this.mutateGoal(sessionId, () => this.settleTurn(sessionId, event))
+    await this.mutateAutomation(sessionId, () => this.settleTurn(sessionId, event))
   }
 
   private async settleTurn(
@@ -349,7 +396,7 @@ export class ChatAutomationController {
     event: { label: string | null; referenceId: string | null },
   ): Promise<void> {
     if (event.label !== "goal" || !event.referenceId) return
-    await this.mutateGoal(sessionId, async () => {
+    await this.mutateAutomation(sessionId, async () => {
       const goal = await this.options.store.getGoal(sessionId)
       if (!goal || goal.id !== event.referenceId || goal.status !== "ACTIVE") return
       await this.recordGoalFailureNow(goal)
@@ -387,7 +434,7 @@ export class ChatAutomationController {
   private async resumeGoals(now = this.now()): Promise<void> {
     for (const goal of await this.options.store.listActiveGoals()) {
       try {
-        await this.mutateGoal(goal.sessionId, async () => {
+        await this.mutateAutomation(goal.sessionId, async () => {
           const current = await this.options.store.getGoal(goal.sessionId)
           if (!current || current.id !== goal.id || current.status !== "ACTIVE") return
           const detail = await this.options.detail(goal.sessionId)
@@ -452,7 +499,13 @@ export class ChatAutomationController {
       const now = this.now()
       for (const loop of await this.options.store.listDueLoops(now)) {
         try {
-          await this.fireLoop(loop, now)
+          await this.mutateAutomation(loop.sessionId, async () => {
+            const current = (await this.options.store.listLoops(loop.sessionId))
+              .find((entry) => entry.id === loop.id)
+            if (!current || current.status !== "ACTIVE" || current.nextRunAt > now) return
+            await this.pauseGoalForCadenceConflict(loop.sessionId)
+            await this.fireLoop(current, now)
+          })
         } catch (error) {
           this.options.onError(error)
         }
@@ -500,6 +553,31 @@ export class ChatAutomationController {
     return await this.options.defaultLoopPrompt?.() ?? DEFAULT_LOOP_PROMPT
   }
 
+  private async reconcileCadenceConflicts(): Promise<void> {
+    for (const goal of await this.options.store.listActiveGoals()) {
+      await this.mutateAutomation(goal.sessionId, () => this.pauseGoalForCadenceConflict(goal.sessionId))
+    }
+  }
+
+  /** Active scheduled work wins over an older conflicting goal because it has an explicit cadence. */
+  private async pauseGoalForCadenceConflict(sessionId: string): Promise<void> {
+    const goal = await this.options.store.getGoal(sessionId)
+    if (!goal || goal.status !== "ACTIVE") return
+    const loops = await this.options.store.listLoops(sessionId)
+    if (!loops.some((loop) => loop.status === "ACTIVE")) return
+    const updated: ChatGoal = {
+      ...goal,
+      status: "PAUSED",
+      lastEvaluation: CADENCE_CONFLICT_REASON,
+      pendingEventKey: null,
+      retryAt: null,
+      updatedAt: this.now(),
+    }
+    await this.options.store.putGoal(updated)
+    await this.options.cancelQueuedEvents?.(sessionId, "goal", goal.id)
+    await this.noticeGoal(updated)
+  }
+
   private async rootSessionId(sessionId: string): Promise<string> {
     let detail = await this.options.detail(sessionId)
     const seen = new Set<string>()
@@ -511,18 +589,18 @@ export class ChatAutomationController {
     return detail.session.id
   }
 
-  /** Serializes goal state transitions so pause, replacement, evaluation, and retry cannot overwrite each other. */
-  private async mutateGoal<T>(sessionId: string, mutation: () => Promise<T>): Promise<T> {
-    const previous = this.goalMutations.get(sessionId) ?? Promise.resolve()
+  /** Serializes automation transitions so goal and schedule decisions cannot race each other. */
+  private async mutateAutomation<T>(sessionId: string, mutation: () => Promise<T>): Promise<T> {
+    const previous = this.automationMutations.get(sessionId) ?? Promise.resolve()
     let release = (): void => {}
     const current = new Promise<void>((resolve) => { release = resolve })
-    this.goalMutations.set(sessionId, current)
+    this.automationMutations.set(sessionId, current)
     await previous
     try {
       return await mutation()
     } finally {
       release()
-      if (this.goalMutations.get(sessionId) === current) this.goalMutations.delete(sessionId)
+      if (this.automationMutations.get(sessionId) === current) this.automationMutations.delete(sessionId)
     }
   }
 

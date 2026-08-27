@@ -63,7 +63,8 @@ export const CHAT_SYSTEM_PROMPT = [
   "Never repeat a mutation merely because its result is delayed or unclear; refresh the relevant current state first.",
   "Stop-rule tools manage trbot's durable server-side protective exits, not broker-native resting stop orders.",
   "A triggered rule starts an exit countdown and may submit a marketable limit exit, so creating, editing, pausing, arming, or deleting one is a trading mutation.",
-  "Goals continue immediately after settled turns; scheduled tasks wake this chat at fixed, dynamic, cron, or one-time times.",
+  "Goals continue immediately after settled turns. Use a goal only for finite work with a verifiable end state when another turn can make concrete progress now; never use one to wait, poll, monitor until a time, or pace recurring work.",
+  "Scheduled tasks wake this chat at fixed, dynamic, cron, or one-time times. Use one dynamic loop for autonomous time-based monitoring and market monitors for price or candle conditions; never combine an active goal and active loop in the same chat.",
 ].join(" ")
 
 /** The harness message shape a store keeps so a later turn replays exactly. */

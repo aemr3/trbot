@@ -102,7 +102,8 @@ test("adds persistent goal and loop tools to the shared registry", () => {
 
   const tools = createAgentTools({ models, automations })
 
-  expect(tools.list().map((tool) => tool.name)).toEqual([
+  const definitions = tools.list()
+  expect(definitions.map((tool) => tool.name)).toEqual([
     "web_search",
     "fetch_content",
     "get_goal",
@@ -114,6 +115,12 @@ test("adds persistent goal and loop tools to the shared registry", () => {
     "reschedule_loop",
     "subagent",
   ])
+  expect(definitions.find((tool) => tool.name === "create_goal")?.description).toContain(
+    "Never use a goal for waiting, recurring monitoring",
+  )
+  expect(definitions.find((tool) => tool.name === "create_loop")?.description).toContain(
+    "Never use a loop to pace an active goal",
+  )
 })
 
 test("adds every read-only market tool when the server provides its clients", () => {

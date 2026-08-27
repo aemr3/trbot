@@ -25,6 +25,7 @@ async function harness(options: {
   defaultLoopPrompt?: () => Promise<string | null>
   enqueueResults?: boolean[]
   resolveModel?: () => Promise<void>
+  beforeEnqueue?: (event: ChatApplicationEvent) => Promise<void>
 } = {}) {
   connection = await openDatabase(":memory:")
   await connection.db.insert(chatSessions).values({
@@ -68,6 +69,7 @@ async function harness(options: {
     store,
     detail: async () => detail(),
     enqueueEvent: async (_sessionId, event) => {
+      await options.beforeEnqueue?.(event)
       const enqueued = enqueueResults.shift() ?? true
       if (enqueued) {
         events.push(event)
@@ -348,6 +350,102 @@ test("supports dynamic, cron, one-time, and default-maintenance schedules", asyn
   expect((await automation.state("chat-1")).loops.find((loop) => loop.id === once.id)?.status).toBe("COMPLETE")
   await automation.onTurnSettled("chat-1", { label: "loop", referenceId: once.id })
   expect((await automation.state("chat-1")).loops.some((loop) => loop.id === once.id)).toBe(false)
+})
+
+test("prevents active goals and scheduled tasks from driving the same chat", async () => {
+  const { automation } = await harness({ now: () => 1_000 })
+  await automation.createGoal("chat-1", { objective: "Finish the rebalance" })
+
+  await expect(automation.createLoop("chat-1", {
+    schedule: "DYNAMIC",
+    prompt: "Check the portfolio",
+  })).rejects.toThrow("combining them duplicates autonomous work")
+
+  await automation.updateGoal("chat-1", { action: "PAUSE" })
+  const loop = await automation.createLoop("chat-1", {
+    schedule: "DYNAMIC",
+    prompt: "Check the portfolio until session close",
+  })
+  await expect(automation.updateGoal("chat-1", { action: "RESUME" })).rejects.toThrow(
+    "combining them duplicates autonomous work",
+  )
+  await expect(automation.createGoal("chat-1", { objective: "Replace the paused goal" })).rejects.toThrow(
+    "combining them duplicates autonomous work",
+  )
+
+  await automation.cancelLoop("chat-1", loop.id)
+  expect((await automation.updateGoal("chat-1", { action: "RESUME" }))?.status).toBe("ACTIVE")
+})
+
+test("serializes a due loop with cancellation and goal creation", async () => {
+  let now = 1_000
+  const loopStarted = Promise.withResolvers<void>()
+  const releaseLoop = Promise.withResolvers<void>()
+  const { automation } = await harness({
+    now: () => now,
+    beforeEnqueue: async (event) => {
+      if (event.label !== "loop") return
+      loopStarted.resolve()
+      await releaseLoop.promise
+    },
+  })
+  const loop = await automation.createLoop("chat-1", {
+    schedule: "DYNAMIC",
+    prompt: "Check the portfolio",
+  })
+  now = loop.nextRunAt
+
+  const starting = automation.start()
+  await loopStarted.promise
+  const cancelling = automation.cancelLoop("chat-1", loop.id)
+  const creatingGoal = automation.createGoal("chat-1", { objective: "Finish the rebalance" })
+  releaseLoop.resolve()
+  await Promise.all([starting, cancelling, creatingGoal])
+
+  const state = await automation.state("chat-1")
+  expect(state.loops).toEqual([])
+  expect(state.goal?.status).toBe("ACTIVE")
+})
+
+test("rejects rewind snapshots that restore conflicting active cadences", async () => {
+  const { automation } = await harness({ now: () => 1_000 })
+  const goal = await automation.createGoal("chat-1", { objective: "Finish the rebalance" })
+  await automation.updateGoal("chat-1", { action: "PAUSE" })
+  const loop = await automation.createLoop("chat-1", {
+    schedule: "DYNAMIC",
+    prompt: "Check the portfolio",
+  })
+
+  await expect(automation.restoreGoal("chat-1", goal)).rejects.toThrow(
+    "Cannot restore an active goal",
+  )
+  await automation.cancelLoop("chat-1", loop.id)
+  await automation.updateGoal("chat-1", { action: "RESUME" })
+  await expect(automation.restoreLoop("chat-1", loop.id, loop)).rejects.toThrow(
+    "Cannot restore an active scheduled task",
+  )
+})
+
+test("startup preparation pauses an older active goal when persisted scheduled work also exists", async () => {
+  const { automation, store, notices } = await harness({ now: () => 1_000 })
+  const goal = await automation.createGoal("chat-1", { objective: "Finish the rebalance" })
+  await automation.updateGoal("chat-1", { action: "PAUSE" })
+  const loop = await automation.createLoop("chat-1", {
+    schedule: "DYNAMIC",
+    prompt: "Check the portfolio",
+  })
+  await store.putGoal({ ...goal, status: "ACTIVE" })
+
+  await automation.prepare()
+
+  expect((await automation.state("chat-1")).goal).toMatchObject({
+    status: "PAUSED",
+    lastEvaluation: "Paused because this chat also has active scheduled tasks. Cancel them before resuming the goal.",
+  })
+  expect((await automation.state("chat-1")).loops.find((entry) => entry.id === loop.id)?.status).toBe("ACTIVE")
+  expect(notices).toEqual([
+    "Paused because this chat also has active scheduled tasks. Cancel them before resuming the goal.",
+  ])
 })
 
 test("an expiring recurring task gets one final run", async () => {
