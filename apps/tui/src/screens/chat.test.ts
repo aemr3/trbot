@@ -3263,6 +3263,36 @@ test("a hidden chat releases its input focus and cannot receive another panel's 
   renderer.destroy()
 })
 
+test("an inactive embedded chat does not present or accept an active composer", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 60, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  await chats.create()
+  const screen = new ChatScreen(renderer, {
+    chats,
+    embedded: true,
+    account: account(connected),
+    logs: new ApplicationLog(),
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  screen.activate()
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("active draft")
+  await waitForFrame((frame) => frame.includes("active draft"))
+  screen.deactivate()
+  await mockInput.typeText(" ignored")
+  await Bun.sleep(0)
+
+  screen.activate()
+  await mockInput.typeText(" restored")
+  await waitForFrame((frame) => frame.includes("active draft restored"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 interface LabelledPanel {
   root: BoxRenderable
   handleKey(): void

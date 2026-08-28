@@ -473,6 +473,9 @@ test("switches the news panel to its embedded chat and releases input for ticker
   expect(chat.modalHost).toBe(screen.root)
   expect(chat.activations).toBeGreaterThan(0)
   expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
+  expect(screen.selectContract("F_THYAO0826", { focusInstrument: false })).toBe(true)
+  await mockInput.typeText("!")
+  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello!")
   expect(screen.clearInputOnInterrupt()).toBe(true)
   expect(chat.interruptCount).toBe(1)
   expect(screen.isShowingSession("side-session")).toBe(true)
@@ -486,7 +489,7 @@ test("switches the news panel to its embedded chat and releases input for ticker
   await mockMouse.click(tickerColumn, tickerLine)
   await mockInput.typeText("/")
   await waitForFrame((frame) => frame.includes("Ticker search"))
-  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
+  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello!")
 
   await mockInput.typeText("thy")
   mockInput.pressEnter()
@@ -496,7 +499,7 @@ test("switches the news panel to its embedded chat and releases input for ticker
   mockInput.pressEscape()
   await mockInput.typeText("/")
   await waitForFrame((frame) => frame.includes("Ticker search"))
-  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello")
+  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello!")
   mockInput.pressEscape()
 
   const restoredChat = await waitForFrame((frame) => frame.includes("SIDE CHAT") && !frame.includes("Ticker search"))
@@ -507,7 +510,7 @@ test("switches the news panel to its embedded chat and releases input for ticker
   await mockMouse.click(sideChatColumn, sideChatLine)
   expect(renderer.currentFocusedRenderable).toBe(chat.composerTarget)
   await mockInput.typeText("/")
-  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello/")
+  expect(chat.keys.map((key) => key.sequence).join("")).toBe("hello!/")
   const focusedChat = await waitForFrame((frame) => frame.includes("SIDE CHAT"))
   expect(focusedChat).not.toContain("Ticker search")
 

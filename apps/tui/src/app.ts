@@ -420,10 +420,7 @@ export class App {
     let workspace: TradingWorkspaceScreen | null = null
     let mainChat: ChatScreen
     let tradePanelChat: ChatScreen
-    let selectContract = (_symbol: string): void => {}
-    const contractSelection = {
-      onContractSelect: (symbol: string) => selectContract(symbol),
-    }
+    let selectContract = (_symbol: string, _focusInstrument: boolean): void => {}
 
     const saveChatSelection = (
       key: "selectedMainChatSessionId" | "selectedTradePanelChatSessionId",
@@ -464,7 +461,7 @@ export class App {
       onPermissionResolved: (requestId) => workspace?.resolvePermission(requestId),
       onNotification: (notification) => workspace?.notifyAgent(notification),
       onNotificationDismissed: (notificationId) => workspace?.resolveAgentNotification(notificationId),
-      ...contractSelection,
+      onContractSelect: (symbol) => selectContract(symbol, true),
     })
     tradePanelChat = new ChatScreen(this.renderer, {
       chats,
@@ -476,7 +473,7 @@ export class App {
       initialShowThoughts: this.preferences?.showChatThoughts,
       onSessionChange: (sessionId) => saveChatSelection("selectedTradePanelChatSessionId", sessionId),
       onShowThoughtsChange: (showChatThoughts) => saveThoughtVisibility(tradePanelChat, showChatThoughts),
-      ...contractSelection,
+      onContractSelect: (symbol) => selectContract(symbol, false),
     })
 
     const chatViews = [mainChat, tradePanelChat]
@@ -528,9 +525,9 @@ export class App {
       ),
       chat: tradePanelChat,
     })
-    selectContract = (symbol) => {
+    selectContract = (symbol, focusInstrument) => {
       workspace?.selectTab("trade")
-      trade.selectContract(symbol)
+      trade.selectContract(symbol, { focusInstrument })
     }
     // Both views stay mounted and observe the same server-owned runs. Only the main
     // view owns global sounds and notifications, so one event has one side effect.

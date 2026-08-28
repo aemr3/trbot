@@ -157,6 +157,9 @@ export class TradingWorkspaceScreen {
     // Every panel is mounted, not only the one on screen: a chat reply keeps
     // arriving while the trader is watching the market, and a log keeps filling.
     for (const tab of TABS) this.options[tab.id].mount?.()
+    for (const tab of TABS) {
+      if (tab.id !== this.activeTab) this.options[tab.id].deactivate?.()
+    }
     this.options[this.activeTab].activate?.()
   }
 

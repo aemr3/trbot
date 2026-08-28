@@ -297,6 +297,8 @@ export class ChatScreen {
   private promptHistorySubmitPending = false
   private promptHistoryNavigation = Promise.resolve()
   private lastEscapeAt = 0
+  /** Whether the screen that contains this chat currently owns keyboard input. */
+  private hostActive = true
   private destroyed = false
 
   constructor(
@@ -507,14 +509,18 @@ export class ChatScreen {
 
   /** Restores the place the trader left focused when CHAT becomes visible again. */
   activate(): void {
+    this.hostActive = true
     this.syncComposerFocus()
     if (!this.selectedSessionId) void this.loadDefaultChoice()
     else void this.refreshMobileConnection(this.selectedSessionId)
+    this.render.schedule()
   }
 
   /** A hidden textarea must neither draw a cursor nor receive another panel's keys. */
   deactivate(): void {
+    this.hostActive = false
     this.composer.blur()
+    this.render.schedule()
   }
 
   setMarketOpen(open: boolean | null): void {
@@ -2468,11 +2474,14 @@ export class ChatScreen {
 
   /** Whether the field is taking letters, which decides whether they are shortcuts. */
   private typing(): boolean {
-    return this.undoPanel === null && this.focus === "composer" && this.composerUsable()
+    return this.hostActive
+      && this.undoPanel === null
+      && this.focus === "composer"
+      && this.composerUsable()
   }
 
   private syncComposerFocus(): void {
-    const focusComposer = this.focus === "composer" && this.undoPanel === null
+    const focusComposer = this.hostActive && this.focus === "composer" && this.undoPanel === null
     if (focusComposer && this.composerUsable()) this.composer.focus()
     else this.composer.blur()
   }
@@ -2502,6 +2511,9 @@ export class ChatScreen {
     // takes exactly the height the prompt needs. Only the active insertion marker is
     // warm; when the transcript has focus it recedes with the other turn markers.
     this.composerMarker.fg = this.typing() ? COMPOSER_COLOR : TURN_MARKER_COLOR
+    if (this.options.embedded) {
+      this.composerRow.borderColor = this.typing() ? COMPOSER_COLOR : TURN_MARKER_COLOR
+    }
     const composerMeta = this.composerMetaText(session)
     this.composerMeta.content = composerMeta
     this.composerMeta.visible = this.composerUsable() || Boolean(session?.parentSessionId)

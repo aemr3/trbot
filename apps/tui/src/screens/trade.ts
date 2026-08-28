@@ -1096,11 +1096,11 @@ export class TradeScreen {
   }
 
   /** Selects an active watchlist contract named elsewhere in the application. */
-  selectContract(symbol: string): boolean {
+  selectContract(symbol: string, options: { focusInstrument?: boolean } = {}): boolean {
     const wanted = symbol.trim().toUpperCase()
     const index = this.instruments.findIndex((instrument) => instrument.symbol.toUpperCase() === wanted)
     if (index < 0) return false
-    this.setFocus("instruments")
+    if (options.focusInstrument !== false) this.setFocus("instruments")
     return this.instrumentList.selectIndex(index)
   }
 
