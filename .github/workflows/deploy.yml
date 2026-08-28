@@ -1,6 +1,9 @@
 name: Deploy
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -37,8 +40,8 @@ jobs:
           chmod 600 "$RUNNER_TEMP/trbot-ssh/key" "$RUNNER_TEMP/trbot-ssh/known_hosts"
       - name: Deploy
         env:
-          TRBOT_DEPLOY_TARGET: debian@51.89.142.2
-          TRBOT_DEPLOY_PORT: "3422"
+          TRBOT_DEPLOY_TARGET: ${{ secrets.DEPLOY_TARGET }}
+          TRBOT_DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           TRBOT_DEPLOY_IDENTITY: ${{ runner.temp }}/trbot-ssh/key
           TRBOT_DEPLOY_KNOWN_HOSTS: ${{ runner.temp }}/trbot-ssh/known_hosts
           TRBOT_DEPLOY_REVISION: ${{ github.sha }}
