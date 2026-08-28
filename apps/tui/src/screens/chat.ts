@@ -14,6 +14,7 @@ import {
   recentChatTimeline,
   type ChatCompaction,
   type ChatMessage,
+  type ChatMessageDelivery,
   type ChatRetryStatus,
   type ChatRunStatus,
   type ChatSession,
@@ -1313,14 +1314,17 @@ export class ChatScreen {
       this.render.schedule()
       return
     }
-    // Return sends, so a new line is Shift+Return — the field is several lines tall and
-    // a long question wants paragraphs.
+    // Return sends or steers, Alt+Return waits for the active run to finish, and
+    // Shift+Return adds a line to the multi-line field.
     if (isEnter(key)) {
       if (key.shift) {
         this.resetPromptHistoryNavigation()
         this.composer.insertText("\n")
-      } else if (this.promptHistoryPending > 0) this.queuePromptHistorySubmit()
-      else void this.sendComposed()
+      } else {
+        const delivery = isAltEnter(key) ? "FOLLOW_UP" : "STEER"
+        if (this.promptHistoryPending > 0) this.queuePromptHistorySubmit(delivery)
+        else void this.sendComposed(delivery)
+      }
       this.render.schedule()
       return
     }
@@ -1363,12 +1367,12 @@ export class ChatScreen {
   }
 
   /**
-   * Sends what is typed, or queues it if a reply is already running.
+   * Sends what is typed with an explicit active-run delivery policy.
    *
    * The field is cleared immediately because the server has taken the message: a
    * trader whose text stayed put would not know whether it went.
    */
-  private async sendComposed(): Promise<void> {
+  private async sendComposed(delivery: ChatMessageDelivery = "STEER"): Promise<void> {
     const text = this.composer.plainText.trim()
     if (!text) return
     if (this.selectedSession()?.parentSessionId) {
@@ -1384,7 +1388,7 @@ export class ChatScreen {
     if (!serverPrompt && CHAT_COMMANDS.some((entry) => entry.name === command) && await this.runCommand(text)) return
     const session = this.selectedSession() ?? await this.startSession()
     if (!session || this.destroyed) return
-    const send = this.options.chats.send(session.id, text)
+    const send = this.options.chats.send(session.id, text, delivery)
     const pendingSends = this.promptSendsBySession.get(session.id) ?? new Set<Promise<ChatMessage>>()
     pendingSends.add(send)
     this.promptSendsBySession.set(session.id, pendingSends)
@@ -2387,7 +2391,7 @@ export class ChatScreen {
     return true
   }
 
-  private queuePromptHistorySubmit(): void {
+  private queuePromptHistorySubmit(delivery: ChatMessageDelivery): void {
     if (this.promptHistorySubmitPending) return
     this.promptHistorySubmitPending = true
     const revision = this.promptHistoryRevision
@@ -2395,7 +2399,7 @@ export class ChatScreen {
     void navigation.then(() => {
       if (this.destroyed || this.promptHistoryRevision !== revision || !this.promptHistorySubmitPending) return
       this.promptHistorySubmitPending = false
-      void this.sendComposed()
+      void this.sendComposed(delivery)
     })
   }
 
@@ -2884,7 +2888,7 @@ export class ChatScreen {
         this.promptBackground(),
         this.options.embedded === true,
         message.id !== activeQueuedPrompt,
-        session.running,
+        message.delivery === "FOLLOW_UP" ? "follow-up" : session.running ? "steering" : "queued",
         activeSubagentCalls.map(() => "subagent"),
       ))
       if (session.parentSessionId === null && message.role === "TOOL_RESULT" && message.toolName === "subagent") {
@@ -3036,7 +3040,7 @@ function messageBlock(
   promptBackground: string,
   embedded: boolean,
   showQueued: boolean,
-  steering: boolean,
+  queuedLabel: "queued" | "steering" | "follow-up",
   activeTools: readonly string[] = [],
 ): ChatTranscriptBlock {
   if (message.role === "APP_EVENT") {
@@ -3060,7 +3064,7 @@ function messageBlock(
       selectable: !queued,
       content: new StyledText([fg(queued ? QUEUED_COLOR : TEXT_COLOR)(message.text)]),
       ...(queued
-        ? { footer: new StyledText([fg(QUEUED_COLOR)(`${steering ? "steering" : "queued"} · ^X cancels it`)]) }
+        ? { footer: new StyledText([fg(QUEUED_COLOR)(`${queuedLabel} · ^X cancels it`)]) }
         : message.status === "FAILED"
           ? { footer: new StyledText([fg(ERROR_COLOR)("failed")]) }
           : {}),
@@ -3367,6 +3371,10 @@ function isControl(key: KeyEvent, letter: string): boolean {
 
 function isAltArrow(key: KeyEvent, direction: "left" | "right" | "up"): boolean {
   return Boolean(key.meta || key.option) && !key.ctrl && key.name === direction
+}
+
+function isAltEnter(key: KeyEvent): boolean {
+  return Boolean(key.meta || key.option) && !key.ctrl && !key.shift && isEnter(key)
 }
 
 function isEnter(key: KeyEvent): boolean {

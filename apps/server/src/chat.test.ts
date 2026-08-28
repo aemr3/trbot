@@ -229,6 +229,42 @@ test("steers an active run with all pending guidance instead of starting more tu
   })
 })
 
+test("keeps an explicit follow-up queued until the active run finishes", async () => {
+  const started = Promise.withResolvers<void>()
+  const continueRun = Promise.withResolvers<void>()
+  const injected: ChatRecord[] = []
+  const { chat, turns } = await harness({
+    run: async (turn, call) => {
+      if (call === 1) {
+        started.resolve()
+        await continueRun.promise
+        injected.push(...await turn.steering?.() ?? [])
+      }
+      await turn.events.onMessage(reply(`answer to ${turn.prompt}`))
+      return { completed: true, aborted: false, errorMessage: null }
+    },
+  })
+  const session = await chat.create()
+  await chat.send(session.id, "Manage the position")
+  await started.promise
+
+  const followUp = await chat.send(session.id, "summarize when done", "FOLLOW_UP")
+  expect(followUp.delivery).toBe("FOLLOW_UP")
+  expect((await chat.detail(session.id)).messages.at(-1)?.status).toBe("QUEUED")
+
+  continueRun.resolve()
+  await settle()
+
+  expect(injected).toEqual([])
+  expect(turns.map((turn) => turn.prompt)).toEqual(["Manage the position", "summarize when done"])
+  expect((await chat.detail(session.id)).messages.map((message) => message.text)).toEqual([
+    "Manage the position",
+    "answer to Manage the position",
+    "summarize when done",
+    "answer to summarize when done",
+  ])
+})
+
 test("claims the prompt before delivering the running state and starting the model", async () => {
   const running = Promise.withResolvers<void>()
   const delivered = Promise.withResolvers<void>()

@@ -12,10 +12,14 @@ export const CHAT_TIMELINE_LIMIT = 100
  * Where a message stands.
  *
  * `QUEUED` and `SENT` describe an input, whether it came from the trader or the
- * application: it waits its turn and is marked sent once that turn has run. The
- * rest describe a reply — `PARTIAL` is an answer that was stopped part way and kept.
+ * application: it waits for delivery and is marked sent once it enters a model
+ * context. The rest describe a reply — `PARTIAL` is an answer stopped part way.
  */
 export type ChatMessageStatus = "QUEUED" | "SENT" | "COMPLETE" | "PARTIAL" | "FAILED"
+
+export const CHAT_MESSAGE_DELIVERIES = ["STEER", "FOLLOW_UP"] as const
+export const ChatMessageDeliverySchema = z.enum(CHAT_MESSAGE_DELIVERIES)
+export type ChatMessageDelivery = z.infer<typeof ChatMessageDeliverySchema>
 
 export type ChatBlockKind = "TEXT" | "THINKING" | "TOOL_CALL" | "IMAGE"
 
@@ -48,6 +52,8 @@ export interface ChatMessage {
   seq?: number
   role: ChatRole
   status: ChatMessageStatus
+  /** How this input relates to a run that was active when it was submitted. */
+  delivery?: ChatMessageDelivery | null
   /** The readable text of the message, which is what a transcript shows. */
   text: string
   blocks: ChatBlock[]
@@ -225,6 +231,7 @@ export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
   seq: z.number().int().optional(),
   role: ChatRoleSchema,
   status: ChatMessageStatusSchema,
+  delivery: ChatMessageDeliverySchema.nullable().optional(),
   text: z.string(),
   blocks: z.array(ChatBlockSchema),
   toolName: z.string().nullable(),
@@ -324,6 +331,7 @@ export const ChatPromptHistoryQuerySchema = z.object({
 
 export const ChatMessageInputSchema = z.object({
   text: z.string().refine((value) => value.trim().length > 0),
+  delivery: ChatMessageDeliverySchema.default("STEER"),
 })
 
 export type ChatRunStatus = "running" | "done" | "failed" | "aborted"

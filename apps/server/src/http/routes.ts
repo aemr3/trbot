@@ -627,17 +627,16 @@ export const PARAMETERIZED: {
   /**
    * Asking the model something.
    *
-   * This never refuses for being busy: the message is queued and the server works
-   * through the queue, so what comes back is the queued message rather than a reply.
-   * The reply arrives on the socket, because the run belongs to the server and
-   * outlives this request.
+   * This never refuses for being busy: input either steers the active run at its
+   * next safe boundary or waits as a follow-up. What comes back is the durable input;
+   * replies arrive on the socket because the run outlives this request.
    */
   {
     pattern: /^\/v1\/ai\/chat\/sessions\/([^/]+)\/messages$/,
     method: "POST",
     handle: async (match, request, { chat }) => {
       const body = check.payload(await readJsonObject(request), ChatMessageInputSchema, "message")
-      return json(await chat.send(decodeURIComponent(match[1] ?? ""), body.text))
+      return json(await chat.send(decodeURIComponent(match[1] ?? ""), body.text, body.delivery))
     },
   },
   {

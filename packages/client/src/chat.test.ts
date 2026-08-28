@@ -173,6 +173,41 @@ test("loads prompt history through its dedicated route", async () => {
   expect(new URL(requestedUrl).searchParams.get("index")).toBe("12")
 })
 
+test("posts an explicit follow-up delivery mode", async () => {
+  let requestedBody = ""
+  const http = new HttpClient({
+    url: "http://localhost:3000",
+    token: "test",
+    fetch: async (input, init) => {
+      const request = new Request(input, init)
+      requestedBody = await request.text()
+      return Response.json({
+        id: "message-1",
+        role: "USER",
+        status: "QUEUED",
+        delivery: "FOLLOW_UP",
+        text: "summarize when done",
+        blocks: [],
+        toolName: null,
+        toolCallId: null,
+        isError: false,
+        errorMessage: null,
+        usage: null,
+        model: null,
+        reasoning: null,
+        elapsedMs: null,
+        thinkingMs: null,
+        createdAt: 1_000,
+      })
+    },
+  })
+
+  const message = await new HttpChatSessions(http).send("chat-1", "summarize when done", "FOLLOW_UP")
+
+  expect(requestedBody).toBe('{"text":"summarize when done","delivery":"FOLLOW_UP"}')
+  expect(message.delivery).toBe("FOLLOW_UP")
+})
+
 test("posts the selected prompt when undoing a chat", async () => {
   let requestedPath = ""
   let requestedBody = ""

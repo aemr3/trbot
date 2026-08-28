@@ -1,6 +1,7 @@
 import { and, asc, eq, gte, inArray, isNull, max, or, sql } from "drizzle-orm"
 import {
   ChatBlockKindSchema,
+  ChatMessageDeliverySchema,
   ChatMessageStatusSchema,
   ChatRoleSchema,
   ChatToolEffectSchema,
@@ -615,6 +616,7 @@ function toRows(
       seq,
       role: message.role,
       status: message.status,
+      delivery: message.delivery ?? null,
       text: message.text,
       modelContent: message.role === "APP_EVENT" && appEventContent.success
         ? appEventContent.data
@@ -780,6 +782,7 @@ function toMessage(row: MessageRow, blocks: BlockRow[]): ChatMessage {
     seq: row.seq,
     role: ChatRoleSchema.parse(row.role),
     status: ChatMessageStatusSchema.parse(row.status),
+    delivery: ChatMessageDeliverySchema.nullable().parse(row.delivery),
     text: row.text,
     blocks: blocks.map(toChatBlock),
     toolName: row.toolName,

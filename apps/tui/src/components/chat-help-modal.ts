@@ -11,7 +11,8 @@ const KEY_COLOR = TUI_THEME.accent
 type Entry = [key: string, meaning: string]
 
 const ENTRIES: Entry[] = [
-  ["Enter", "send"],
+  ["Enter", "send; steer active work"],
+  ["⌥Enter", "send after the agent finishes"],
   ["⇧Enter", "new line"],
   ["^M /models", "which model answers this chat"],
   ["^R", "how hard it thinks"],

@@ -1,5 +1,6 @@
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
 import { CHAT_PERMISSION_MODES } from "@trbot/chat/permission.ts"
+import { CHAT_MESSAGE_DELIVERIES } from "@trbot/chat/session.ts"
 import { TRADE_RIGHT_VIEWS } from "@trbot/preferences/app.ts"
 
 export const authState = sqliteTable("auth_state", {
@@ -366,6 +367,7 @@ export const chatMessages = sqliteTable(
     seq: integer("seq").notNull(),
     role: text("role").notNull(),
     status: text("status").notNull(),
+    delivery: text("delivery", { enum: CHAT_MESSAGE_DELIVERIES }),
     // The readable text of the message: what a transcript shows, and what makes a
     // conversation searchable in SQL. The blocks are what a turn is rebuilt from.
     text: text("text").notNull(),

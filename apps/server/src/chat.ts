@@ -11,6 +11,7 @@ import {
   type ChatCompactionReport,
   type ChatModelChoice,
   type ChatMessage,
+  type ChatMessageDelivery,
   type ChatMessageDraft,
   type ChatPartial,
   type ChatPromptHistory,
@@ -255,15 +256,21 @@ export class ChatController {
    * between the request and the model still has it, and the transcript shows what
    * was asked rather than losing it.
    */
-  async send(sessionId: string, text: string): Promise<ChatMessage> {
+  async send(
+    sessionId: string,
+    text: string,
+    delivery: ChatMessageDelivery = "STEER",
+  ): Promise<ChatMessage> {
     const detail = await this.detail(sessionId)
     if (detail.session.parentSessionId) {
       throw new ProtocolError("invalid_request", "Subagent sessions are read-only")
     }
+    const activeRun = this.runs.get(sessionId)
     const message: ChatMessage = {
       id: crypto.randomUUID(),
       role: "USER",
       status: "QUEUED",
+      delivery: activeRun ? delivery : null,
       text,
       blocks: [chatBlockText(text)],
       toolName: null,
@@ -277,12 +284,11 @@ export class ChatController {
       thinkingMs: null,
       createdAt: this.now(),
     }
-    const activeRun = this.runs.get(sessionId)
     await this.options.store.append(sessionId, {
       message,
-      record: activeRun ? steeringRecord(message) : userRecord(message),
+      record: activeRun && delivery === "STEER" ? steeringRecord(message) : userRecord(message),
     })
-    if (activeRun && this.runs.get(sessionId)?.runId === activeRun.runId) {
+    if (activeRun && delivery === "STEER" && this.runs.get(sessionId)?.runId === activeRun.runId) {
       const pending = this.steering.get(sessionId) ?? []
       pending.push({ runId: activeRun.runId, message })
       this.steering.set(sessionId, pending)

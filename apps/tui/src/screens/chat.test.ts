@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable, TextRenderable, type KeyEvent, type RenderContext } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { chatBlockText, type ChatMessage, type ChatSession, type ChatSessionDetail } from "@trbot/chat/session.ts"
+import {
+  chatBlockText,
+  type ChatMessage,
+  type ChatMessageDelivery,
+  type ChatSession,
+  type ChatSessionDetail,
+} from "@trbot/chat/session.ts"
 import type { ChatQuestionAnswer, ChatQuestionRequest } from "@trbot/chat/question.ts"
 import type { ChatNotification } from "@trbot/chat/notification.ts"
 import type {
@@ -30,6 +36,7 @@ function fakeChats(): ChatSessions & {
   sessions: ChatSession[]
   messages: Map<string, ChatMessage[]>
   sent: string[]
+  deliveries: ChatMessageDelivery[]
   promptHistoryRequests: Array<{ sessionId: string; index?: number }>
   cancelled: string[]
   aborted: string[]
@@ -48,6 +55,7 @@ function fakeChats(): ChatSessions & {
   const sessions: ChatSession[] = []
   const messages = new Map<string, ChatMessage[]>()
   const sent: string[] = []
+  const deliveries: ChatMessageDelivery[] = []
   const promptHistoryRequests: Array<{ sessionId: string; index?: number }> = []
   const cancelled: string[] = []
   const aborted: string[] = []
@@ -68,6 +76,7 @@ function fakeChats(): ChatSessions & {
     sessions,
     messages,
     sent,
+    deliveries,
     promptHistoryRequests,
     cancelled,
     aborted,
@@ -138,9 +147,11 @@ function fakeChats(): ChatSessions & {
       if (index >= 0) sessions.splice(index, 1)
       messages.delete(sessionId)
     },
-    async send(sessionId, text) {
+    async send(sessionId, text, delivery = "STEER") {
       sent.push(text)
+      deliveries.push(delivery)
       const message = userMessage(text, "QUEUED")
+      message.delivery = delivery
       messages.set(sessionId, [...(messages.get(sessionId) ?? []), message])
       return message
     },
@@ -505,6 +516,34 @@ test("shows steering input as cancellable until the active turn claims it", asyn
   // the model reaches a safe boundary and claims it.
   const steering = await waitForFrame((frame) => frame.includes("and what about THYAO?") && frame.includes("steering"))
   expect(steering).toContain("^X cancels it")
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("Alt+Enter queues a follow-up instead of steering the active run", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("ask something"))
+
+  await mockInput.typeText("manage the position")
+  mockInput.pressEnter()
+  await waitForFrame(() => chats.sent.length === 1)
+  screen.acceptRun(session.id, "run-1", "running", "message-manage the position")
+  await waitForFrame((frame) => frame.includes("thinking…"))
+
+  await mockInput.typeText("summarize when done")
+  mockInput.pressEnter({ meta: true })
+
+  const followUp = await waitForFrame((frame) => frame.includes("summarize when done") && frame.includes("follow-up"))
+  expect(followUp).toContain("^X cancels it")
+  expect(chats.sent).toEqual(["manage the position", "summarize when done"])
+  expect(chats.deliveries).toEqual(["STEER", "FOLLOW_UP"])
 
   screen.destroy()
   renderer.destroy()
@@ -4019,6 +4058,8 @@ test("names the model under the field, and the help modal instead of a row of ke
   mockInput.pressEnter()
   const help = await waitForFrame((frame) => frame.includes("Keys"))
   expect(help).toContain("^M /models")
+  expect(help).toContain("⌥Enter")
+  expect(help).toContain("send after the agent finishes")
   expect(help).not.toContain("^O")
   expect(help).toContain("⌥1")
   expect(help).toContain("⌥2")

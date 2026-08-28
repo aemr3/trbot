@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   chatBlockText,
   chatMessageText,
+  ChatMessageInputSchema,
   ChatRetryStatusSchema,
   ChatSessionDetailSchema,
   ChatSessionSchema,
@@ -16,6 +17,13 @@ test("validates transient retry status", () => {
   expect(ChatRetryStatusSchema.parse(retry)).toEqual(retry)
   expect(ChatRetryStatusSchema.safeParse({ ...retry, attempt: 0 }).success).toBe(false)
   expect(ChatRetryStatusSchema.safeParse({ ...retry, message: "" }).success).toBe(false)
+})
+
+test("defaults chat input to steering and accepts an explicit follow-up", () => {
+  expect(ChatMessageInputSchema.parse({ text: "adjust the stop" }).delivery).toBe("STEER")
+  expect(ChatMessageInputSchema.parse({ text: "summarize when done", delivery: "FOLLOW_UP" }).delivery)
+    .toBe("FOLLOW_UP")
+  expect(ChatMessageInputSchema.safeParse({ text: "later", delivery: "LATER" }).success).toBe(false)
 })
 
 test("defaults retry state when reading an older partial response", () => {

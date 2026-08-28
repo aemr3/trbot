@@ -1,5 +1,6 @@
 import type {
   ChatCompactionReport,
+  ChatMessageDelivery,
   ChatMessage,
   ChatModelChoice,
   ChatPromptHistory,
@@ -29,10 +30,8 @@ import type { ChatMobilePairing, ChatMobileState } from "@trbot/chat/mobile.ts"
 /**
  * The chat as a client drives it.
  *
- * Sending never fails for being busy: a message is queued and the server works
- * through the queue, so two messages in a row are two turns in order rather than
- * an error the trader has to notice and retry. What comes back is the queued
- * message itself, which is what the transcript shows until its turn runs.
+ * Sending never fails for being busy. Input can steer the active run at its next
+ * safe boundary or wait as a follow-up until that run finishes.
  */
 export interface ChatSessions {
   list(): Promise<ChatSession[]>
@@ -47,7 +46,7 @@ export interface ChatSessions {
   /** One prompt by stable position, or the latest when the position is omitted. */
   promptHistory(sessionId: string, index?: number): Promise<ChatPromptHistory>
   delete(sessionId: string): Promise<void>
-  send(sessionId: string, text: string): Promise<ChatMessage>
+  send(sessionId: string, text: string, delivery?: ChatMessageDelivery): Promise<ChatMessage>
   /** Takes back a message that has not had its turn yet. */
   cancel(sessionId: string, messageId: string): Promise<void>
   /** Returns to just before a completed user prompt and restores it for editing. */

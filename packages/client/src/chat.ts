@@ -8,6 +8,7 @@ import {
   ChatUndoPreviewSchema,
   ChatUndoResultSchema,
   type ChatCompaction,
+  type ChatMessageDelivery,
   type ChatMessage,
   type ChatCompactionReport,
   type ChatModelChoice,
@@ -87,8 +88,8 @@ export class HttpChatSessions implements ChatSessions {
     await this.http.delete(ROUTES.chatSession(sessionId), OkResponseSchema)
   }
 
-  send(sessionId: string, text: string): Promise<ChatMessage> {
-    return this.http.post(ROUTES.chatMessages(sessionId), ChatMessageSchema, { body: { text } })
+  send(sessionId: string, text: string, delivery: ChatMessageDelivery = "STEER"): Promise<ChatMessage> {
+    return this.http.post(ROUTES.chatMessages(sessionId), ChatMessageSchema, { body: { text, delivery } })
   }
 
   async cancel(sessionId: string, messageId: string): Promise<void> {

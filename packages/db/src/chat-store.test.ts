@@ -552,6 +552,17 @@ describe("chat session store", () => {
     expect(await chats.records("chat-1")).toEqual([{ role: "user", content: prompt, timestamp: 2_000 }])
   })
 
+  test("keeps an explicit follow-up delivery mode across a restart", async () => {
+    const chats = await store()
+    await chats.create(session())
+    const draft = draftFor({ role: "user", content: "summarize when done", timestamp: 2_000 }, "QUEUED")
+    draft.message.delivery = "FOLLOW_UP"
+
+    await chats.append("chat-1", draft)
+
+    expect((await chats.get("chat-1"))?.messages[0]?.delivery).toBe("FOLLOW_UP")
+  })
+
   test("a question queued behind another lands after that one's answer", async () => {
     // A message takes its place in the queue when written, but its place in the
     // conversation only when asked. Without the move, the model would be replayed
