@@ -1,7 +1,7 @@
 [Unit]
 Description=trbot server
-Requires=trbot-netns.service trbot-tailscaled.service
-After=trbot-netns.service trbot-tailscaled.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -10,8 +10,7 @@ Group=trbot
 WorkingDirectory=/home/trbot/current
 Environment=HOME=/home/trbot
 EnvironmentFile=/home/trbot/shared/server.env
-NetworkNamespacePath=/run/netns/trbot
-ExecStartPre=/home/linuxbrew/.linuxbrew/bin/bun run server:cert 127.0.0.1 trbot.tailb47e39.ts.net 100.83.199.91
+ExecStartPre=/home/linuxbrew/.linuxbrew/bin/bun run server:cert 127.0.0.1 localhost $TRBOT_SERVER_TLS_HOSTS
 ExecStartPre=/home/linuxbrew/.linuxbrew/bin/bun run db:migrate
 ExecStart=/home/linuxbrew/.linuxbrew/bin/bun run server
 ExecStartPost=/home/trbot/bin/healthcheck

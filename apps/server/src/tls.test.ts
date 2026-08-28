@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as x509 from "@peculiar/x509"
-import { RENEWAL_WARNING_DAYS, certificateExpiry } from "./tls.ts"
+import { RENEWAL_WARNING_DAYS, certificateExpiry, issueMutualTlsCertificates } from "./tls.ts"
 
 const KEY_ALGORITHM: EcKeyGenParams & { hash: string } = { name: "ECDSA", namedCurve: "P-256", hash: "SHA-256" }
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -63,4 +63,39 @@ describe("certificate expiry", () => {
     await writeFile(join(directory, "garbage.crt"), "not a certificate")
     expect(await certificateExpiry(join(directory, "garbage.crt"))).toBeNull()
   })
+})
+
+test("the generated server rejects clients without its issued identity", async () => {
+  const paths = await issueMutualTlsCertificates(["127.0.0.1"], join(directory, "mutual"))
+  const ca = await Bun.file(paths.caCert).text()
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    tls: {
+      cert: Bun.file(paths.serverCert),
+      key: Bun.file(paths.serverKey),
+      ca,
+      requestCert: true,
+      rejectUnauthorized: true,
+    },
+    fetch: () => Response.json({ ok: true }),
+  })
+
+  try {
+    const url = `https://127.0.0.1:${server.port}`
+    const rejected = await fetch(url, { tls: { ca } }).catch((cause: unknown) => cause)
+    expect(rejected).toBeInstanceOf(Error)
+
+    const response = await fetch(url, {
+      tls: {
+        ca,
+        cert: Bun.file(paths.clientCert),
+        key: Bun.file(paths.clientKey),
+      },
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true })
+  } finally {
+    await server.stop(true)
+  }
 })

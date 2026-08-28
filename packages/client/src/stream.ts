@@ -7,6 +7,7 @@ import { parseServerFrame, STREAM_CHANNELS } from "@trbot/protocol/stream.ts"
 import type { ClientFrame, ServerFrame, StopOutcome } from "@trbot/protocol/stream.ts"
 import type { AccountLiveUpdateListener, AccountStream } from "@trbot/trading/account.ts"
 import type { StopRuleView, StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
+import type { ClientTlsOptions } from "./tls.ts"
 
 const DEFAULT_RECONNECT_DELAYS_MS = [1000, 3000, 5000]
 
@@ -20,12 +21,8 @@ export interface StreamConnectionOptions {
   token: string
   /** Shared with HTTP requests so temporary grants follow this process across stream reconnects. */
   clientId?: string
-  /**
-   * Certificate authority to trust, for a server using a self-signed
-   * certificate. The socket needs its own copy: it does not go through the HTTP
-   * client, so trusting the authority there leaves this one retrying forever.
-   */
-  ca?: string | null
+  /** Mutual TLS identity; the socket does not share the HTTP client's handshake. */
+  tls?: ClientTlsOptions | null
   /**
    * Called on the first failure of an outage, not on every retry: the reconnect
    * loop never gives up, so reporting each attempt would fill the log with one
@@ -60,7 +57,7 @@ export class StreamConnection {
     if (this.closed || this.socket) return
 
     const url = this.options.url.replace(/^http/, "ws") + ROUTES.stream
-    const tls = this.options.ca ? { tls: { ca: this.options.ca } } : {}
+    const tls = this.options.tls ? { tls: this.options.tls } : {}
     const headers = new Headers({ Authorization: `Bearer ${this.options.token}` })
     if (this.options.clientId) headers.set(CLIENT_INSTANCE_HEADER, this.options.clientId)
     const socketOptions = {

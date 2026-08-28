@@ -67,7 +67,13 @@ export function startServer(config: ServerConfig, deps: ServerDeps): Server<Sock
     port: config.port,
     idleTimeout: IDLE_TIMEOUT_SECONDS,
     tls: config.tls
-      ? { cert: Bun.file(config.tls.certPath), key: Bun.file(config.tls.keyPath) }
+      ? {
+          cert: Bun.file(config.tls.certPath),
+          key: Bun.file(config.tls.keyPath),
+          ca: Bun.file(config.tls.clientCaPath),
+          requestCert: true,
+          rejectUnauthorized: true,
+        }
       : undefined,
 
     async fetch(request, server) {

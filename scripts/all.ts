@@ -73,13 +73,21 @@ shutdown(await terminal.exited)
 
 async function waitForServer(): Promise<boolean> {
   const deadline = Date.now() + READY_TIMEOUT_MS
-  const ca = config.caPath ? await Bun.file(config.caPath).text() : null
+  const tls = config.tls
+    ? {
+        tls: {
+          ca: config.tls.caPath ? await Bun.file(config.tls.caPath).text() : undefined,
+          cert: await Bun.file(config.tls.certPath).text(),
+          key: await Bun.file(config.tls.keyPath).text(),
+        },
+      }
+    : {}
 
   while (Date.now() < deadline) {
     if (shuttingDown) return false
     if (server.exitCode !== null) return false
     try {
-      const response = await fetch(`${config.url}/v1/health`, ca ? { tls: { ca } } : {})
+      const response = await fetch(`${config.url}/v1/health`, tls)
       if (response.ok) return true
     } catch {
       // Not listening yet.

@@ -10,10 +10,13 @@ The application reads configuration through `@trbot/config`, which overlays the 
 | `TRBOT_SERVER_HOST` | no | `127.0.0.1` | Interface the server binds |
 | `TRBOT_SERVER_PORT` | no | `7717` | Port the server binds |
 | `TRBOT_SERVER_TOKEN` | yes | none | Bearer token every client presents |
-| `TRBOT_SERVER_TLS_CERT` | no | none | Certificate path; required for a non-loopback host |
-| `TRBOT_SERVER_TLS_KEY` | no | none | Private key path; required for a non-loopback host |
+| `TRBOT_SERVER_TLS_CERT` | no | `data/tls/server.crt` for non-loopback | Server certificate override; setting it enables mTLS on loopback too |
+| `TRBOT_SERVER_TLS_KEY` | no | `data/tls/server.key` for non-loopback | Server private key override; set with the server certificate |
+| `TRBOT_SERVER_TLS_CLIENT_CA` | no | `data/tls/ca.crt` for non-loopback | Authority the server trusts for client certificates |
 | `TRBOT_SERVER_URL` | no | `http://127.0.0.1:7717` | Server address clients use |
-| `TRBOT_SERVER_CA` | no | none | Certificate authority a client trusts |
+| `TRBOT_CLIENT_TLS_SERVER_CA` | no | `data/tls/ca.crt` for HTTPS | Authority the client uses to verify the server certificate |
+| `TRBOT_CLIENT_TLS_CERT` | no | `data/tls/client.crt` for HTTPS | Client certificate presented to an mTLS server |
+| `TRBOT_CLIENT_TLS_KEY` | no | `data/tls/client.key` for HTTPS | Client private key presented to an mTLS server |
 | `TRBOT_TELEGRAM_BOT_TOKEN` | no | none | BotFather token enabling Telegram chat pairing |
 
 ## `DATABASE_URL`
@@ -44,10 +47,16 @@ process on the machine can reach a loopback port, and this one places orders.
 Generate one with `bun run server:token`. The server refuses to start while the
 value is still the example from `.env.example`.
 
-`TRBOT_SERVER_HOST` defaults to loopback. Binding anything else requires
-`TRBOT_SERVER_TLS_CERT` and `TRBOT_SERVER_TLS_KEY`, and is refused at startup
-without them. `bun run server:cert <host>` issues both and prints the authority
-path for `TRBOT_SERVER_CA` on each client.
+`TRBOT_SERVER_HOST` defaults to loopback and plain HTTP. Binding anything else
+automatically uses the mTLS bundle under `data/tls`; explicit path settings are
+only needed when that bundle lives elsewhere. TLS listeners verify every client
+certificate against the configured authority.
+
+`bun run server:cert <host>` creates the authority, server identity, and client
+identity together. Copy `ca.crt`, `client.crt`, and `client.key` into the TUI's
+`data/tls` directory; never copy `ca.key`. An HTTPS server URL loads that bundle
+automatically. The path settings remain available for a bundle stored elsewhere.
+Loopback development remains plain HTTP unless server TLS paths are explicit.
 
 ## Credentials
 

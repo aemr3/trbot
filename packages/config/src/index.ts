@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path"
+import { dirname, isAbsolute, resolve } from "node:path"
 import { environment, workspaceRoot } from "./workspace.ts"
 
 export { parseEnvFile, workspaceRoot } from "./workspace.ts"
@@ -20,6 +20,7 @@ const DEFAULT_DATABASE_URL = "./data/db.sqlite"
 const DEFAULT_SERVER_HOST = "127.0.0.1"
 const DEFAULT_SERVER_PORT = 7717
 const DEFAULT_SERVER_URL = `http://${DEFAULT_SERVER_HOST}:${DEFAULT_SERVER_PORT}`
+const DEFAULT_TLS_DIRECTORY = "data/tls"
 
 /** The placeholder shipped in .env.example. The server refuses to run with it. */
 export const EXAMPLE_SERVER_TOKEN = "example-token-replace-before-use"
@@ -29,6 +30,7 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:
 interface ServerTls {
   certPath: string
   keyPath: string
+  clientCaPath: string
 }
 
 export interface ServerConfig {
@@ -38,10 +40,16 @@ export interface ServerConfig {
   tls: ServerTls | null
 }
 
+export interface ClientTls {
+  caPath: string | null
+  certPath: string
+  keyPath: string
+}
+
 export interface ClientConfig {
   url: string
   token: string
-  caPath: string | null
+  tls: ClientTls | null
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -77,20 +85,33 @@ function resolveOptionalPath(value: string | undefined): string | null {
   return isAbsolute(value) ? value : resolve(workspaceRoot(), value)
 }
 
+function defaultTlsPath(filename: string): string {
+  return resolve(workspaceRoot(), DEFAULT_TLS_DIRECTORY, filename)
+}
+
 /**
  * How the server binds and authenticates callers.
  *
- * Serving a non-loopback interface without TLS is rejected here rather than at
- * the socket: this API places orders, so plaintext across a network must not be
- * reachable by forgetting a variable. Loopback needs no certificate.
+ * A non-loopback bind uses the conventional mTLS bundle automatically, so this
+ * API cannot become plaintext across a network by omitting path settings.
+ * Loopback stays plain HTTP unless TLS paths are explicitly configured.
  */
 export function loadServerConfig(env: Record<string, string | undefined> = environment()): ServerConfig {
   const host = env.TRBOT_SERVER_HOST?.trim() || DEFAULT_SERVER_HOST
   const port = parsePort(env.TRBOT_SERVER_PORT)
   const token = env.TRBOT_SERVER_TOKEN?.trim() ?? ""
-  const certPath = env.TRBOT_SERVER_TLS_CERT?.trim()
-  const keyPath = env.TRBOT_SERVER_TLS_KEY?.trim()
-  const tls = certPath && keyPath ? { certPath, keyPath } : null
+  const configuredCertPath = resolveOptionalPath(env.TRBOT_SERVER_TLS_CERT?.trim())
+  const configuredKeyPath = resolveOptionalPath(env.TRBOT_SERVER_TLS_KEY?.trim())
+  const configuredClientCaPath = resolveOptionalPath(env.TRBOT_SERVER_TLS_CLIENT_CA?.trim())
+  if (Boolean(configuredCertPath) !== Boolean(configuredKeyPath)) {
+    throw new Error("TRBOT_SERVER_TLS_CERT and TRBOT_SERVER_TLS_KEY must be set together")
+  }
+
+  const useTls = !isLoopbackHost(host) || configuredCertPath !== null || configuredClientCaPath !== null
+  const certPath = configuredCertPath ?? (useTls ? defaultTlsPath("server.crt") : null)
+  const keyPath = configuredKeyPath ?? (useTls ? defaultTlsPath("server.key") : null)
+  const clientCaPath = configuredClientCaPath ?? (certPath ? resolve(dirname(certPath), "ca.crt") : null)
+  const tls = certPath && keyPath && clientCaPath ? { certPath, keyPath, clientCaPath } : null
 
   if (!token) {
     throw new Error("TRBOT_SERVER_TOKEN is required. Generate one with: bun run server:token")
@@ -98,16 +119,6 @@ export function loadServerConfig(env: Record<string, string | undefined> = envir
   if (token === EXAMPLE_SERVER_TOKEN) {
     throw new Error("TRBOT_SERVER_TOKEN still holds the example value. Generate one with: bun run server:token")
   }
-  if (!tls && !isLoopbackHost(host)) {
-    throw new Error(
-      `Refusing to serve ${host} without TLS. Set TRBOT_SERVER_TLS_CERT and TRBOT_SERVER_TLS_KEY, ` +
-        "or bind a loopback address.",
-    )
-  }
-  if (Boolean(certPath) !== Boolean(keyPath)) {
-    throw new Error("TRBOT_SERVER_TLS_CERT and TRBOT_SERVER_TLS_KEY must be set together")
-  }
-
   return { host, port, token, tls }
 }
 
@@ -116,12 +127,23 @@ export function loadClientConfig(env: Record<string, string | undefined> = envir
   const token = env.TRBOT_SERVER_TOKEN?.trim() ?? ""
   if (!token) throw new Error("TRBOT_SERVER_TOKEN is required to reach the server")
 
+  const url = (env.TRBOT_SERVER_URL?.trim() || DEFAULT_SERVER_URL).replace(/\/+$/, "")
+  const configuredCaPath = resolveOptionalPath(env.TRBOT_CLIENT_TLS_SERVER_CA?.trim())
+  const configuredCertPath = resolveOptionalPath(env.TRBOT_CLIENT_TLS_CERT?.trim())
+  const configuredKeyPath = resolveOptionalPath(env.TRBOT_CLIENT_TLS_KEY?.trim())
+  if (Boolean(configuredCertPath) !== Boolean(configuredKeyPath)) {
+    throw new Error("TRBOT_CLIENT_TLS_CERT and TRBOT_CLIENT_TLS_KEY must be set together")
+  }
+
+  const useDefaultBundle = url.toLowerCase().startsWith("https://") && configuredCertPath === null
+  const caPath = configuredCaPath ?? (useDefaultBundle ? defaultTlsPath("ca.crt") : null)
+  const certPath = configuredCertPath ?? (caPath ? resolve(dirname(caPath), "client.crt") : null)
+  const keyPath = configuredKeyPath ?? (caPath ? resolve(dirname(caPath), "client.key") : null)
+
   return {
-    url: (env.TRBOT_SERVER_URL?.trim() || DEFAULT_SERVER_URL).replace(/\/+$/, ""),
+    url,
     token,
-    // Anchored like the database path, so a terminal started from any directory
-    // trusts the same authority.
-    caPath: resolveOptionalPath(env.TRBOT_SERVER_CA?.trim()),
+    tls: certPath && keyPath ? { caPath, certPath, keyPath } : null,
   }
 }
 

@@ -73,7 +73,7 @@ ln -s "$release" "$next"
 mv -Tf "$next" "$app_root/current"
 
 if /usr/bin/sudo -n /usr/bin/systemctl restart trbot-server.service; then
-  echo "Deployed $revision to https://trbot.tailb47e39.ts.net:7717"
+  echo "Deployed $revision"
   exit 0
 fi
 

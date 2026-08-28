@@ -1,21 +1,7 @@
 # Server operations
 
-The files in this directory reproduce the isolated Tailscale client and the Bun server service used on the VPS.
-They contain no credentials, private keys, certificates, Tailscale state, or database data.
-
-## Tailscale namespace
-
-Install or refresh the isolated namespace from a repository checkout on the VPS:
-
-```sh
-sudo deploy/tailscale/install
-```
-
-The default uninstall logs the node out and removes its state. Use `--keep-state` when reinstalling:
-
-```sh
-sudo trbot-tailscale-uninstall --keep-state
-```
+The files in this directory reproduce the Bun server service used on the VPS.
+They contain no credentials, private keys, certificates, or database data.
 
 ## Server
 
@@ -37,8 +23,25 @@ Deploy the current committed revision through the SSH target named `dev`:
 bun run deploy
 ```
 
-The server listens with HTTPS on port 7717 inside `/run/netns/trbot`. It runs as the no-login `trbot` user, uses the existing Linuxbrew Bun at `/home/linuxbrew/.linuxbrew/bin/bun`, and keeps releases plus persistent state under `/home/trbot`.
-The installer never invokes the system package manager or installs Bun. The existing system `curl` performs the local HTTPS health check.
+The server listens with mutual TLS on its public interface, port 7717. It runs as the no-login `trbot` user, uses the existing Linuxbrew Bun at `/home/linuxbrew/.linuxbrew/bin/bun`, and keeps releases plus persistent state under `/home/trbot`.
+The installer never invokes the system package manager or installs Bun. The existing system `curl` performs the local health check with the generated client certificate.
+
+Set `TRBOT_SERVER_TLS_HOSTS` in the protected server environment to the
+space-separated DNS names or IP addresses clients use. The systemd service adds
+those names to the server certificate without storing deployment-specific
+addresses in the repository.
+
+The service issues `ca.crt`, `server.crt`, `server.key`, `client.crt`, and
+`client.key` under `/home/trbot/shared/tls` before startup. Copy only `ca.crt`,
+`client.crt`, and `client.key` to the terminal through an authenticated
+administrator connection; never copy `ca.key`. Protect the copied client key
+with mode `0600` and place all three files under the terminal's `data/tls`
+directory. An HTTPS server URL loads them without additional path settings.
+
+When upgrading an existing installation from ordinary TLS to mutual TLS, rerun
+`sudo deploy/server/install --env-file /path/to/trbot.env` from the updated
+checkout before `bun run deploy`. This refreshes the installed health check and
+service environment before the mTLS server starts.
 
 The default server uninstall preserves configuration and runtime data:
 

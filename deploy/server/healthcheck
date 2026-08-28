@@ -5,6 +5,8 @@ attempt=0
 while [ "$attempt" -lt 60 ]; do
   if /usr/bin/curl --fail --silent --show-error \
     --cacert /home/trbot/shared/tls/ca.crt \
+    --cert /home/trbot/shared/tls/client.crt \
+    --key /home/trbot/shared/tls/client.key \
     https://127.0.0.1:7717/v1/health >/dev/null 2>&1; then
     exit 0
   fi

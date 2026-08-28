@@ -347,7 +347,7 @@ what it produced:
 
 This is the direction the wire already carries a credential: the trader's provider
 password travels terminal→server on `POST /v1/auth/login`, over the same
-bearer-authenticated, TLS-required connection. A model-provider credential going the
+bearer-authenticated, mutually authenticated TLS connection. A model-provider credential going the
 same way is the same trust — and an API key never had anywhere else to be typed. The
 rule that matters is the other direction, and it still holds absolutely: **the server
 stores every credential and no stored credential ever travels outward.**
@@ -377,10 +377,13 @@ up while anything reachable from another machine is encrypted.
 
 - **Loopback runs plain HTTP.** No certificate is needed for development or
   single-machine use, and the server starts with no TLS configuration at all.
-- **A non-loopback bind without TLS is refused at startup**, with no override. To
+- **A non-loopback bind without mutual TLS is refused at startup**, with no override. To
   terminate TLS at a reverse proxy instead, bind loopback and let the proxy hold
   the certificate.
-- **Bearer token on every request**, on loopback as well as over a network, and
+- **TLS listeners require a trusted client certificate** before an HTTP request
+  or WebSocket upgrade reaches the application. Plain loopback HTTP remains an
+  optional zero-certificate development path.
+- **Bearer token on every request as well**, on loopback as well as over a network, and
   compared with a timing-safe equality check. Any process on the machine can reach
   a loopback port, and this one can place orders.
 - **Sign-in attempts are throttled.** `/v1/auth/login` allows ten failures a
@@ -406,16 +409,17 @@ through WebCrypto; certificates are assembled with `@peculiar/x509`, which
 contains no native code.
 
 The first run creates an authority under `data/tls/` and reuses it afterwards, so
-clients that already trust it keep working. Private keys are written owner-only.
-The command prints the authority path, which clients trust through
-`TRBOT_SERVER_CA`, so no system trust store has to be modified.
+clients that already trust it keep working. It issues separate server and client
+certificates from that authority. Private keys are written owner-only. The
+authority private key stays on the server; clients receive only `ca.crt`, their
+certificate, and their private key.
 
-A client trusts it in both places it connects: the requests and the WebSocket
-each carry their own TLS settings, and trusting the authority for one only is
-worse than not trusting it at all — the terminal appears to connect and then
-never receives a quote.
+A client presents its identity and trusts the server authority in both places it
+connects: requests and the WebSocket each perform their own TLS handshake.
+Configuring one only is worse than configuring neither — the terminal appears to
+connect and then never receives a quote.
 
-The authority is valid for ten years and a server certificate for 397 days.
+The authority is valid for ten years and each server or client certificate for 397 days.
 Expiry is the awkward part: a certificate that has run out fails at connection
 time, in a process nobody is watching. So the server checks its own certificate at
 startup — the one moment there is an operator nearby — and warns when fewer than

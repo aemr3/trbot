@@ -1,8 +1,8 @@
-import { certificateExpiry, issueServerCertificate } from "./tls.ts"
+import { certificateExpiry, issueMutualTlsCertificates } from "./tls.ts"
 
 const USAGE = `Usage:
   bun run server:token            Generate a value for TRBOT_SERVER_TOKEN
-  bun run server:cert [host...]   Issue a server certificate, creating the authority on first use
+  bun run server:cert [host...]   Issue server and client certificates for mutual TLS
 `
 
 /** Generates a 256-bit token, the value TRBOT_SERVER_TOKEN expects. */
@@ -20,15 +20,15 @@ async function runCli(argv: string[]): Promise<number> {
 
   if (command === "cert") {
     const hosts = rest.length > 0 ? rest : ["127.0.0.1", "localhost"]
-    const paths = await issueServerCertificate(hosts)
+    const paths = await issueMutualTlsCertificates(hosts)
     const expiry = await certificateExpiry(paths.serverCert)
     const validity = expiry ? ` It is valid for ${expiry.daysRemaining} more day(s), until ${expiry.notAfter.toISOString()}.` : ""
     console.log(`Issued a certificate for ${hosts.join(", ")}.${validity}\n`)
-    console.log("Point the server at it:")
-    console.log(`  TRBOT_SERVER_TLS_CERT=${paths.serverCert}`)
-    console.log(`  TRBOT_SERVER_TLS_KEY=${paths.serverKey}\n`)
-    console.log("Point each client at the authority so it trusts the server:")
-    console.log(`  TRBOT_SERVER_CA=${paths.caCert}`)
+    console.log("The server reads this bundle from data/tls by default.\n")
+    console.log("Copy these three files into data/tls on each client:")
+    console.log(`  ${paths.caCert}`)
+    console.log(`  ${paths.clientCert}`)
+    console.log(`  ${paths.clientKey}`)
     return 0
   }
 

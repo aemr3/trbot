@@ -1,21 +1,22 @@
 import { ProtocolError, parseErrorBody } from "@trbot/protocol/error.ts"
 import { CLIENT_INSTANCE_HEADER, IDEMPOTENCY_HEADER } from "@trbot/protocol/routes.ts"
 import type { ZodType } from "zod"
+import type { ClientTlsOptions } from "./tls.ts"
 
 export interface HttpClientOptions {
   url: string
   token: string
   /** Shared with this process's stream so temporary grants can follow its lifetime. */
   clientId?: string
-  /** Certificate authority to trust, for a server using a self-signed certificate. */
-  ca?: string | null
+  /** Optional mutual TLS identity and server trust. */
+  tls?: ClientTlsOptions | null
   /** Request transport override for tests and embedded clients. */
   fetch?: HttpFetch
 }
 
 export type HttpFetch = (
   input: string | URL | Request,
-  init?: RequestInit & { tls?: { ca: string } },
+  init?: RequestInit & { tls?: ClientTlsOptions },
 ) => Promise<Response>
 
 export interface RequestOptions {
@@ -31,11 +32,11 @@ export interface RequestOptions {
  * callers read protocol codes rather than transport details.
  */
 export class HttpClient {
-  private readonly tls: { ca: string } | undefined
+  private readonly tls: ClientTlsOptions | undefined
   private readonly fetch: HttpFetch
 
   constructor(private readonly options: HttpClientOptions) {
-    this.tls = options.ca ? { ca: options.ca } : undefined
+    this.tls = options.tls ?? undefined
     this.fetch = options.fetch ?? fetch
   }
 

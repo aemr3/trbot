@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs"
 import { HttpClient, type HttpClientOptions } from "@trbot/client/http.ts"
 import { StreamConnection, type StreamConnectionOptions } from "@trbot/client/stream.ts"
-import type { ClientConfig } from "@trbot/config"
+import type { ClientTlsOptions } from "@trbot/client/tls.ts"
+import type { ClientConfig, ClientTls } from "@trbot/config"
 import { ROUTES, SessionStateSchema } from "@trbot/protocol/routes.ts"
 
 /**
@@ -25,8 +26,8 @@ export interface ServerSession {
 
 export interface ServerSessionOptions {
   config: ClientConfig
-  /** The authority itself, overriding the one `config.caPath` names. */
-  ca?: string | null
+  /** PEM material overriding the paths in `config.tls`. */
+  tls?: ClientTlsOptions | null
   transports?: ServerSessionTransports
 }
 
@@ -41,23 +42,23 @@ const defaultTransports: ServerSessionTransports = {
 }
 
 export function createServerSession(options: ServerSessionOptions): ServerSession {
-  // Both the requests and the socket need it: a remote server presents the same
-  // self-signed certificate to each, and nothing else trusts that authority.
-  const ca = options.ca ?? readAuthority(options.config.caPath)
+  // HTTP and WebSocket establish separate TLS connections, so both need the
+  // client identity as well as the authority that verifies the server.
+  const tls = options.tls === undefined ? readClientTls(options.config.tls) : options.tls
   const transports = options.transports ?? defaultTransports
   const clientId = crypto.randomUUID()
   const http = transports.http({
     url: options.config.url,
     token: options.config.token,
     clientId,
-    ca,
+    tls,
   })
   let report: ((cause: unknown) => void) | null = null
   const stream = transports.stream({
     url: options.config.url,
     token: options.config.token,
     clientId,
-    ca,
+    tls,
     onError: (error) => report?.(error),
   })
 
@@ -76,17 +77,26 @@ export function createServerSession(options: ServerSessionOptions): ServerSessio
 }
 
 /**
- * Reads the authority `bun run server:cert` created, which `TRBOT_SERVER_CA`
- * names. An unreadable one fails here rather than as a certificate error on
- * every request afterwards.
+ * Reads the mTLS material `bun run server:cert` created. An unreadable file
+ * fails here with its setting name rather than becoming a generic handshake
+ * failure on every request and reconnect.
  */
-function readAuthority(path: string | null): string | null {
-  if (!path) return null
+function readClientTls(paths: ClientTls | null): ClientTlsOptions | null {
+  if (!paths) return null
+  const tls: ClientTlsOptions = {
+    cert: readPem(paths.certPath, "TRBOT_CLIENT_TLS_CERT"),
+    key: readPem(paths.keyPath, "TRBOT_CLIENT_TLS_KEY"),
+  }
+  if (paths.caPath) tls.ca = readPem(paths.caPath, "TRBOT_CLIENT_TLS_SERVER_CA")
+  return tls
+}
+
+function readPem(path: string, setting: string): string {
   try {
     return readFileSync(path, "utf8")
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause)
-    throw new Error(`TRBOT_SERVER_CA names ${path}, which could not be read: ${message}`)
+    throw new Error(`${setting} names ${path}, which could not be read: ${message}`)
   }
 }
 

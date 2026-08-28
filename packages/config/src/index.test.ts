@@ -97,9 +97,13 @@ describe("loadServerConfig", () => {
     expect(loadServerConfig(token)).toEqual({ host: "127.0.0.1", port: 7717, token: "a-real-token", tls: null })
   })
 
-  test("refuses to serve a non-loopback interface without TLS", () => {
-    expect(() => loadServerConfig({ ...token, TRBOT_SERVER_HOST: "0.0.0.0" })).toThrow(/without TLS/)
-    expect(() => loadServerConfig({ ...token, TRBOT_SERVER_HOST: "192.168.1.10" })).toThrow(/without TLS/)
+  test("defaults a non-loopback server to the conventional mTLS bundle", () => {
+    const config = loadServerConfig({ ...token, TRBOT_SERVER_HOST: "0.0.0.0" })
+    expect(config.tls).toEqual({
+      certPath: resolve(workspaceRoot(), "data/tls/server.crt"),
+      keyPath: resolve(workspaceRoot(), "data/tls/server.key"),
+      clientCaPath: resolve(workspaceRoot(), "data/tls/ca.crt"),
+    })
   })
 
   test("serves a non-loopback interface once TLS is configured", () => {
@@ -109,7 +113,30 @@ describe("loadServerConfig", () => {
       TRBOT_SERVER_TLS_CERT: "/tls/server.crt",
       TRBOT_SERVER_TLS_KEY: "/tls/server.key",
     })
-    expect(config.tls).toEqual({ certPath: "/tls/server.crt", keyPath: "/tls/server.key" })
+    expect(config.tls).toEqual({
+      certPath: "/tls/server.crt",
+      keyPath: "/tls/server.key",
+      clientCaPath: "/tls/ca.crt",
+    })
+  })
+
+  test("allows a separate authority for client certificates", () => {
+    const config = loadServerConfig({
+      ...token,
+      TRBOT_SERVER_TLS_CERT: "/tls/server.crt",
+      TRBOT_SERVER_TLS_KEY: "/tls/server.key",
+      TRBOT_SERVER_TLS_CLIENT_CA: "/clients/ca.crt",
+    })
+    expect(config.tls?.clientCaPath).toBe("/clients/ca.crt")
+  })
+
+  test("a client authority alone enables the default server identity", () => {
+    const config = loadServerConfig({ ...token, TRBOT_SERVER_TLS_CLIENT_CA: "/clients/ca.crt" })
+    expect(config.tls).toEqual({
+      certPath: resolve(workspaceRoot(), "data/tls/server.crt"),
+      keyPath: resolve(workspaceRoot(), "data/tls/server.key"),
+      clientCaPath: "/clients/ca.crt",
+    })
   })
 
   test("rejects a half-configured certificate", () => {
@@ -129,21 +156,56 @@ describe("loadServerConfig", () => {
 
 describe("loadClientConfig", () => {
   test("defaults to the local server and trims a trailing slash", () => {
-    expect(loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_SERVER_URL: "https://host:8443/" })).toEqual({
-      url: "https://host:8443",
+    expect(loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_SERVER_URL: "http://host:8080/" })).toEqual({
+      url: "http://host:8080",
       token: "t",
-      caPath: null,
+      tls: null,
     })
     expect(loadClientConfig({ TRBOT_SERVER_TOKEN: "t" }).url).toBe("http://127.0.0.1:7717")
   })
 
-  // The terminal is started from wherever the trader happens to be, so a
-  // relative authority has to mean the same file regardless.
-  test("anchors a relative certificate authority to the workspace root", () => {
-    const relative = loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_SERVER_CA: "data/tls/ca.crt" })
-    expect(relative.caPath).toBe(resolve(workspaceRoot(), "data/tls/ca.crt"))
+  test("defaults an HTTPS client to the conventional mTLS bundle", () => {
+    expect(loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_SERVER_URL: "https://host:8443" }).tls).toEqual({
+      caPath: resolve(workspaceRoot(), "data/tls/ca.crt"),
+      certPath: resolve(workspaceRoot(), "data/tls/client.crt"),
+      keyPath: resolve(workspaceRoot(), "data/tls/client.key"),
+    })
+  })
 
-    const absolute = loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_SERVER_CA: "/etc/trbot/ca.crt" })
-    expect(absolute.caPath).toBe("/etc/trbot/ca.crt")
+  // The terminal is started from wherever the trader happens to be, so a
+  // relative certificate bundle has to mean the same files regardless.
+  test("anchors a relative mTLS bundle to the workspace root", () => {
+    const relative = loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_CLIENT_TLS_SERVER_CA: "data/tls/ca.crt" })
+    expect(relative.tls).toEqual({
+      caPath: resolve(workspaceRoot(), "data/tls/ca.crt"),
+      certPath: resolve(workspaceRoot(), "data/tls/client.crt"),
+      keyPath: resolve(workspaceRoot(), "data/tls/client.key"),
+    })
+
+    const absolute = loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_CLIENT_TLS_SERVER_CA: "/etc/trbot/ca.crt" })
+    expect(absolute.tls).toEqual({
+      caPath: "/etc/trbot/ca.crt",
+      certPath: "/etc/trbot/client.crt",
+      keyPath: "/etc/trbot/client.key",
+    })
+  })
+
+  test("supports a client identity with the system trust store", () => {
+    const config = loadClientConfig({
+      TRBOT_SERVER_TOKEN: "t",
+      TRBOT_CLIENT_TLS_CERT: "/tls/workstation.crt",
+      TRBOT_CLIENT_TLS_KEY: "/tls/workstation.key",
+    })
+    expect(config.tls).toEqual({
+      caPath: null,
+      certPath: "/tls/workstation.crt",
+      keyPath: "/tls/workstation.key",
+    })
+  })
+
+  test("rejects a half-configured client identity", () => {
+    expect(() => loadClientConfig({ TRBOT_SERVER_TOKEN: "t", TRBOT_CLIENT_TLS_CERT: "/tls/client.crt" })).toThrow(
+      /must be set together/,
+    )
   })
 })

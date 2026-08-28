@@ -10,7 +10,7 @@ import { createServerSession, type ServerSession } from "./server-session.ts"
 // The terminal reaches an unreachable address here: constructing the app makes
 // no requests, and these tests are about what it shows, not what it fetches.
 function offlineSession(): ServerSession {
-  return createServerSession({ config: { url: "http://127.0.0.1:1", token: "test-token", caPath: null } })
+  return createServerSession({ config: { url: "http://127.0.0.1:1", token: "test-token", tls: null } })
 }
 
 test("restores tmux keyboard disambiguation after delayed capabilities and refocus", async () => {
@@ -195,7 +195,7 @@ test("asks for a password once the server says there is no session", async () =>
     fetch: () => (reachable ? Response.json({ authenticated: false }) : Response.error()),
   })
   const session = createServerSession({
-    config: { url: `http://127.0.0.1:${server.port}`, token: "test-token", caPath: null },
+    config: { url: `http://127.0.0.1:${server.port}`, token: "test-token", tls: null },
   })
   const app = new App(renderer, { session, authenticated: null }, { exit: () => {}, sessionPollMs: 10 })
   app.mount()
@@ -229,7 +229,7 @@ test("leaves the sign-in screen on its own once the server has a session", async
     },
   })
   const session = createServerSession({
-    config: { url: `http://127.0.0.1:${server.port}`, token: "test-token", caPath: null },
+    config: { url: `http://127.0.0.1:${server.port}`, token: "test-token", tls: null },
   })
 
   // Started while the server was still coming up.

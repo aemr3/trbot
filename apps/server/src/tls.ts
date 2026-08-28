@@ -5,7 +5,7 @@ import * as x509 from "@peculiar/x509"
 import { workspaceRoot } from "@trbot/config"
 
 const CA_VALIDITY_DAYS = 3650
-const SERVER_VALIDITY_DAYS = 397
+const CERTIFICATE_VALIDITY_DAYS = 397
 const KEY_ALGORITHM: EcKeyGenParams & { hash: string } = { name: "ECDSA", namedCurve: "P-256", hash: "SHA-256" }
 
 export interface CertificatePaths {
@@ -13,54 +13,89 @@ export interface CertificatePaths {
   caKey: string
   serverCert: string
   serverKey: string
+  clientCert: string
+  clientKey: string
 }
 
-function certificatePaths(): CertificatePaths {
-  const directory = resolve(workspaceRoot(), "data/tls")
+function certificatePaths(directory = resolve(workspaceRoot(), "data/tls")): CertificatePaths {
   return {
     caCert: resolve(directory, "ca.crt"),
     caKey: resolve(directory, "ca.key"),
     serverCert: resolve(directory, "server.crt"),
     serverKey: resolve(directory, "server.key"),
+    clientCert: resolve(directory, "client.crt"),
+    clientKey: resolve(directory, "client.key"),
   }
 }
 
 /**
- * Issues a server certificate for `hosts`, creating the authority on first use
- * and reusing it afterwards so clients that already trust it keep working.
+ * Issues both sides of the mTLS connection, creating the authority on first
+ * use and reusing it afterwards so existing installations keep trusting it.
  *
  * Certificates are generated here rather than shelled out to an external tool,
  * so provisioning behaves the same on every machine.
  */
-export async function issueServerCertificate(hosts: string[]): Promise<CertificatePaths> {
+export async function issueMutualTlsCertificates(hosts: string[], directory?: string): Promise<CertificatePaths> {
   x509.cryptoProvider.set(crypto)
-  const paths = certificatePaths()
+  const paths = certificatePaths(directory)
   await mkdir(dirname(paths.caCert), { recursive: true, mode: 0o700 })
 
   const authority = await loadOrCreateAuthority(paths)
-  const keys = await crypto.subtle.generateKey(KEY_ALGORITHM, true, ["sign", "verify"])
   const names = hosts.length > 0 ? hosts : ["127.0.0.1", "localhost"]
+  await issueLeafCertificate({
+    authority,
+    subject: `CN=${names[0]}`,
+    usage: x509.ExtendedKeyUsage.serverAuth,
+    paths: { cert: paths.serverCert, key: paths.serverKey },
+    subjectAlternativeNames: names,
+  })
+  await issueLeafCertificate({
+    authority,
+    subject: "CN=trbot client",
+    usage: x509.ExtendedKeyUsage.clientAuth,
+    paths: { cert: paths.clientCert, key: paths.clientKey },
+  })
+  return paths
+}
+
+interface LeafCertificateOptions {
+  authority: Authority
+  subject: string
+  usage: string
+  paths: { cert: string; key: string }
+  subjectAlternativeNames?: string[]
+}
+
+async function issueLeafCertificate(options: LeafCertificateOptions): Promise<void> {
+  const keys = await crypto.subtle.generateKey(KEY_ALGORITHM, true, ["sign", "verify"])
+  const alternativeNames = options.subjectAlternativeNames
+  const extensions: x509.Extension[] = [
+    new x509.BasicConstraintsExtension(false, undefined, true),
+    new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature, true),
+    new x509.ExtendedKeyUsageExtension([options.usage]),
+  ]
+  if (alternativeNames) {
+    extensions.push(
+      new x509.SubjectAlternativeNameExtension(
+        alternativeNames.map((name) => ({ type: subjectType(name), value: name })),
+      ),
+    )
+  }
 
   const certificate = await x509.X509CertificateGenerator.create({
     serialNumber: serialNumber(),
-    subject: `CN=${names[0]}`,
-    issuer: authority.certificate.subject,
+    subject: options.subject,
+    issuer: options.authority.certificate.subject,
     notBefore: new Date(),
-    notAfter: daysFromNow(SERVER_VALIDITY_DAYS),
-    signingKey: authority.privateKey,
+    notAfter: daysFromNow(CERTIFICATE_VALIDITY_DAYS),
+    signingKey: options.authority.privateKey,
     publicKey: keys.publicKey,
     signingAlgorithm: KEY_ALGORITHM,
-    extensions: [
-      new x509.BasicConstraintsExtension(false, undefined, true),
-      new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature | x509.KeyUsageFlags.keyEncipherment, true),
-      new x509.ExtendedKeyUsageExtension([x509.ExtendedKeyUsage.serverAuth]),
-      new x509.SubjectAlternativeNameExtension(names.map((name) => ({ type: subjectType(name), value: name }))),
-    ],
+    extensions,
   })
 
-  await writeSecret(paths.serverKey, await privateKeyPem(keys.privateKey))
-  await writeFile(paths.serverCert, certificate.toString("pem"), { mode: 0o644 })
-  return paths
+  await writeSecret(options.paths.key, await privateKeyPem(keys.privateKey))
+  await writeFile(options.paths.cert, certificate.toString("pem"), { mode: 0o644 })
 }
 
 /**
