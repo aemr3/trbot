@@ -1,3 +1,4 @@
+import "reflect-metadata"
 import { chmod, mkdir, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import * as x509 from "@peculiar/x509"

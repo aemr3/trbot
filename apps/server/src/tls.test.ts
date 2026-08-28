@@ -1,3 +1,4 @@
+import "reflect-metadata"
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
