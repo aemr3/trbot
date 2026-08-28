@@ -81,7 +81,7 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
       },
       run: async (_args, options) => {
         const state = await client.state(requireSession(options.chatSessionId))
-        return outcome(state.goal ? goalText(state.goal) : "This chat has no goal.", { goal: state.goal })
+        return outcome(state.goal ? goalText(state.goal) : "This chat has no goal.")
       },
     },
     {
@@ -108,7 +108,6 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         const goal = await client.createGoal(sessionId, input)
         return outcome(
           `Created goal ${goal.id}: ${goal.objective}`,
-          { goal },
           [reversibleToolEffect(
             "CHAT_GOAL",
             goal.id,
@@ -146,7 +145,6 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         )
         return outcome(
           `Goal ${status.toLowerCase()}: ${reason}`,
-          { goal },
           [
             reversibleToolEffect(
               "CHAT_GOAL",
@@ -212,7 +210,6 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         const loop = await client.createLoop(sessionId, input)
         return outcome(
           `Created loop ${loop.id}; next run ${new Date(loop.nextRunAt).toISOString()}.`,
-          { loop },
           [reversibleToolEffect(
             "CHAT_LOOP",
             loop.id,
@@ -236,7 +233,7 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
           : loops.map((loop) => (
               `${loop.id}: ${loop.status.toLowerCase()} ${scheduleText(loop)}; next ${new Date(loop.nextRunAt).toISOString()} — ${loop.prompt}`
             )).join("\n")
-        return outcome(text, { loops })
+        return outcome(text)
       },
     },
     {
@@ -252,7 +249,6 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         await client.cancelLoop(sessionId, loop_id)
         return outcome(
           `Cancelled loop ${loop_id}.`,
-          { loopId: loop_id },
           before ? [reversibleToolEffect(
             "CHAT_LOOP",
             loop_id,
@@ -287,7 +283,6 @@ export function automationTools(client: ChatAutomationToolsClient): ChatTool[] {
         )
         return outcome(
           `Next run in ${next_interval_minutes} minutes.`,
-          { loop },
           before ? [reversibleToolEffect(
             "CHAT_LOOP",
             loop.id,
@@ -332,6 +327,6 @@ function scheduleText(loop: ChatLoop): string {
   return `every ${formatInterval(loop.intervalMs ?? 60_000)}`
 }
 
-function outcome<T>(text: string, details: T, effects?: ChatToolEffect[]) {
-  return { blocks: [toolText(text)], details, isError: false, effects }
+function outcome(text: string, effects?: ChatToolEffect[]) {
+  return { blocks: [toolText(text)], isError: false, effects }
 }

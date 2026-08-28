@@ -57,7 +57,6 @@ export function askQuestionTool(questions: ChatQuestionAsker): ChatTool<typeof A
       return {
         blocks: [toolText(`The user answered: ${formatted}.`)],
         modelBlocks: [toolText(`The user answered: ${formatted}. Continue with these answers in mind.`)],
-        details: { answers },
         isError: false,
       }
     },

@@ -11,6 +11,7 @@ import {
   type Models,
   type ProviderResponse,
   type ToolCall,
+  type ToolResultMessage,
 } from "@earendil-works/pi-ai"
 import {
   chatMessageText,
@@ -272,17 +273,17 @@ export class ChatAgent {
             notificationBudget,
             automationEvent: turn.automationEvent,
           })
-          const result: Message = {
+          const result: ToolResultMessage = {
             role: "toolResult",
             toolCallId: call.id,
             toolName: call.name,
             content: (outcome.modelBlocks ?? outcome.blocks)
               .filter((block) => block.kind === "TEXT")
               .map((block) => ({ type: "text" as const, text: block.text ?? "" })),
-            details: outcome.details,
             isError: outcome.isError,
             timestamp: this.now(),
           }
+          if (outcome.details !== undefined && outcome.details !== null) result.details = outcome.details
           if (outcome.usage) result.usage = harnessUsage(outcome.usage)
           context.messages.push(result)
           await turn.events.onMessage(toolResultDraft(

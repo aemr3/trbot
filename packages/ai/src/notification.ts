@@ -45,7 +45,6 @@ export function notifyUserTool(notifications: ChatNotifier): ChatTool<typeof Not
       if (budget.sent >= MAX_NOTIFICATIONS_PER_TURN) {
         return {
           blocks: [toolText(`Notification limit reached (${MAX_NOTIFICATIONS_PER_TURN} per turn). Continue without sending another notification; the allowance resets on the next user or application turn.`)],
-          details: null,
           isError: true,
         }
       }
@@ -64,7 +63,6 @@ export function notifyUserTool(notifications: ChatNotifier): ChatTool<typeof Not
       }
       return {
         blocks: [toolText(`Notified the user: ${notification.title}`)],
-        details: { notification },
         isError: false,
         effects: [reversibleToolEffect(
           "CHAT_NOTIFICATION",

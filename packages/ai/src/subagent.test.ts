@@ -116,8 +116,7 @@ test("records a worker's complete isolated session when a parent chat is availab
   }])
   expect(deltas).toEqual({ text: "Worker result.", reasoning: "Checking the market.", tools: [] })
   expect(messages.map((draft) => draft.message.role)).toEqual(["ASSISTANT"])
-  const details = z.object({ results: z.array(z.object({ sessionId: z.string().nullable() })) }).parse(outcome.details)
-  expect(details.results[0]?.sessionId).toBe("child-1")
+  expect(outcome.effects?.[0]?.description).toContain("transcript")
   expect(finishes).toEqual([null])
 })
 
@@ -138,7 +137,7 @@ test("reports a worker retry without rerunning its completed tool", async () => 
     definition: { name: "read_market", description: "Read market data", parameters: Type.Object({}) },
     run: async () => {
       toolCalls += 1
-      return { blocks: [toolText("Market read.")], details: null, isError: false }
+      return { blocks: [toolText("Market read.")], isError: false }
     },
   }
   const retries: unknown[] = []
@@ -183,7 +182,7 @@ test("runs at most four of eight parallel workers at once", async () => {
       maximumActive = Math.max(maximumActive, active)
       await Bun.sleep(10)
       active--
-      return { blocks: [toolText("continued")], details: null, isError: false }
+      return { blocks: [toolText("continued")], isError: false }
     },
   }
   const { faux, models } = harness(16, (context) => (
@@ -437,7 +436,7 @@ test("requires exactly one execution mode", async () => {
 function passthroughTool(name: string): ChatTool {
   return {
     definition: { name, description: name, parameters: Type.Object({}) },
-    run: async () => ({ blocks: [], details: null, isError: false }),
+    run: async () => ({ blocks: [], isError: false }),
   }
 }
 

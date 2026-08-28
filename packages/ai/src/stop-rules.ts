@@ -397,20 +397,19 @@ function ruleSummary(rule: StopRule): string {
 
 function ruleOutcome(
   text: string,
-  details: StopRule,
+  rule: StopRule,
   before: StopRule | null,
   after: StopRule | null,
 ): ChatToolOutcome {
   const action = before === null ? "created" : after === null ? "deleted" : "changed"
   return {
     blocks: [toolText(text)],
-    modelBlocks: [toolText(JSON.stringify(details))],
-    details,
+    modelBlocks: [toolText(JSON.stringify(rule))],
     isError: false,
     effects: [reversibleToolEffect(
       "STOP_RULE",
-      details.id,
-      `Stop rule ${details.id} for ${details.displayName} was ${action}`,
+      rule.id,
+      `Stop rule ${rule.id} for ${rule.displayName} was ${action}`,
       before,
       after,
     )],

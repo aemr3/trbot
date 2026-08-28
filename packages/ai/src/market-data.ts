@@ -1807,7 +1807,6 @@ function dataOutcome<T>(summary: string, data: T) {
   return {
     blocks: [toolText(summary)],
     modelBlocks: [toolText(JSON.stringify(data))],
-    details: data,
     isError: false,
   }
 }

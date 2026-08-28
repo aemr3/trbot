@@ -77,9 +77,7 @@ The official filing.`
   expect(outcome.blocks[0]?.text).not.toContain("example.com")
   expect(outcome.modelBlocks?.[0]?.text).toContain("https://example.com/news")
   expect(outcome.modelBlocks?.[0]?.text).toContain("The official filing.")
-  expect(outcome.details).toMatchObject({
-    page: { offset: 0, limit: 2, returned: 2, total: 2, hasMore: false, nextOffset: null },
-  })
+  expect(outcome.modelBlocks?.[0]?.text).toContain('"offset":0')
   expect(requested).toEqual([{ query: "ASELS latest", limit: 3 }])
 })
 
@@ -104,9 +102,7 @@ Summary ${index + 1}.`).join("\n\n---\n\n")
   expect(outcome.blocks[0]?.text).toContain("continue with offset 3")
   expect(outcome.modelBlocks?.[0]?.text).toContain("[2] Result 2")
   expect(outcome.modelBlocks?.[0]?.text).toContain("[3] Result 3")
-  expect(outcome.details).toMatchObject({
-    page: { offset: 1, limit: 2, returned: 2, total: null, hasMore: true, nextOffset: 3 },
-  })
+  expect(outcome.modelBlocks?.[0]?.text).toContain('"nextOffset":3')
   expect(requested).toEqual([4])
 })
 

@@ -122,7 +122,6 @@ function placeOrderTool(clients: TradingToolClients): ChatTool<typeof PlaceOrder
       })
       return success(
         `Placed ${action}. Order ${order.uid} is ${order.status}.`,
-        { instrument, order, price, orderKind },
         `VIOP order ${order.uid} was placed`,
       )
     },
@@ -153,7 +152,6 @@ function cancelOrdersTool(clients: TradingToolClients): ChatTool<typeof CancelOr
       const result = await sources.orders.cancelPendingOrders({ orderUids: uniqueIds, signal: options.signal })
       return success(
         `Cancelled ${result.cancelledOrderUids.length} pending order${result.cancelledOrderUids.length === 1 ? "" : "s"}; ${result.failures.length} failed.`,
-        result,
         `${result.cancelledOrderUids.length} pending VIOP order${result.cancelledOrderUids.length === 1 ? " was" : "s were"} cancelled`,
       )
     },
@@ -191,7 +189,6 @@ function exitPositionTool(clients: TradingToolClients): ChatTool<typeof ExitPosi
       })
       return success(
         `Submitted exit for ${submitted.quantity} ${submitted.symbol}. Order ${submitted.orderUid}.`,
-        submitted,
         `Position exit order ${submitted.orderUid} was submitted`,
       )
     },
@@ -221,13 +218,12 @@ function exitAllPositionsTool(clients: TradingToolClients): ChatTool<typeof Exit
       const result = await sources.orders.exitAllPositions({ signal: options.signal })
       return success(
         `Submitted ${result.submitted.length} position exit${result.submitted.length === 1 ? "" : "s"}; ${result.failures.length} failed.`,
-        result,
         `${result.submitted.length} position exit${result.submitted.length === 1 ? " was" : "s were"} submitted`,
       )
     },
   }
 }
 
-function success<TDetails>(text: string, details: TDetails, effect: string): ChatToolOutcome {
-  return { blocks: [toolText(text)], details, isError: false, effects: [externalToolEffect(effect)] }
+function success(text: string, effect: string): ChatToolOutcome {
+  return { blocks: [toolText(text)], isError: false, effects: [externalToolEffect(effect)] }
 }

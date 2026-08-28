@@ -142,7 +142,6 @@ test("runs the tools a reply asks for and answers with their results", async () 
       return {
         blocks: [toolText(`Fetched ${args.symbol} quote.`)],
         modelBlocks: [toolText(`${args.symbol} 390.00`)],
-        details: { last: 390 },
         isError: false,
         usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costTotal: 0.01 },
       }
@@ -155,6 +154,7 @@ test("runs the tools a reply asks for and answers with their results", async () 
       const result = context.messages.at(-1)
       expect(result?.role).toBe("toolResult")
       if (result?.role === "toolResult") {
+        expect("details" in result).toBe(false)
         const content = result.content[0]
         expect(content?.type).toBe("text")
         if (content?.type === "text") expect(content.text).toBe("ASELS 390.00")
@@ -194,6 +194,33 @@ test("runs the tools a reply asks for and answers with their results", async () 
   expect(drafts[2]?.message.text).toBe("ASELS last traded at 390.00.")
 })
 
+test("keeps optional tool metadata when a future consumer opts into it", async () => {
+  const inspect: ChatTool = {
+    definition: { name: "inspect", description: "Inspect data", parameters: Type.Object({}) },
+    run: async () => ({
+      blocks: [toolText("Inspected.")],
+      details: { source: "future-renderer" },
+      isError: false,
+    }),
+  }
+  const { faux, models } = scripted()
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("inspect", {})], { stopReason: "toolUse" }),
+    (context) => {
+      const result = context.messages.at(-1)
+      expect(result?.role === "toolResult" ? result.details : undefined).toEqual({ source: "future-renderer" })
+      return fauxAssistantMessage("Done.")
+    },
+  ])
+
+  await new ChatAgent({ models, tools: new ChatTools([inspect]) }).run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Inspect it",
+    events: { onText: () => {}, onReasoning: () => {}, onToolCall: () => {}, onRetry: ignoreRetry, onMessage: async () => {} },
+  })
+})
+
 test("applies steering after the current tool batch and before the next model call", async () => {
   const inspect: ChatTool = {
     definition: {
@@ -201,7 +228,7 @@ test("applies steering after the current tool batch and before the next model ca
       description: "Read the current stop",
       parameters: Type.Object({}),
     },
-    run: async () => ({ blocks: [toolText("Stop is 420.")], details: null, isError: false }),
+    run: async () => ({ blocks: [toolText("Stop is 420.")], isError: false }),
   }
   const { faux, models } = scripted()
   faux.setResponses([
@@ -255,7 +282,7 @@ test("waits for tool-start delivery before running the tool", async () => {
     },
     run: async () => {
       toolRan = true
-      return { blocks: [toolText("Fetched quote.")], details: null, isError: false }
+      return { blocks: [toolText("Fetched quote.")], isError: false }
     },
   }
   const { faux, models } = scripted()
@@ -301,7 +328,7 @@ test("a tool called with arguments it cannot use fails without running", async (
     },
     run: async (args) => {
       calls.push(args)
-      return { blocks: [], details: null, isError: false }
+      return { blocks: [], isError: false }
     },
   }
   const tools = new ChatTools([quote])
@@ -344,7 +371,7 @@ test("reports accepted enum values once when a tool argument is invalid", async 
     },
     run: async (args) => {
       calls.push(args)
-      return { blocks: [], details: null, isError: false }
+      return { blocks: [], isError: false }
     },
   }
 
@@ -633,7 +660,7 @@ test("retries an abnormal provider disconnect without running completed tools ag
     },
     run: async () => {
       toolCalls += 1
-      return { blocks: [toolText("Market read.")], details: null, isError: false }
+      return { blocks: [toolText("Market read.")], isError: false }
     },
   }
   const { faux, models } = scripted({ reasoning: true })
@@ -693,7 +720,7 @@ test("keeps retrying a provider overload after a completed tool without running 
     },
     run: async () => {
       toolCalls += 1
-      return { blocks: [toolText("Market read.")], details: null, isError: false }
+      return { blocks: [toolText("Market read.")], isError: false }
     },
   }
   const overload = {
@@ -825,7 +852,6 @@ test("does not retry an overflow after a tool has produced a durable side effect
       calls += 1
       return {
         blocks: [toolText("Recorded.")],
-        details: null,
         isError: false,
         effects: [{
           kind: "EXTERNAL",

@@ -400,11 +400,12 @@ export const chatMessages = sqliteTable(
     costCacheRead: real("cost_cache_read"),
     costCacheWrite: real("cost_cache_write"),
     costTotal: real("cost_total"),
-    // Set on a tool result, naming the call it answers. `details` is whatever
-    // structured result the tool returned, which is shapeless by contract.
+    // Set on a tool result, naming the call it answers.
     toolCallId: text("tool_call_id"),
     toolName: text("tool_name"),
     isError: integer("is_error"),
+    // Optional pi tool metadata. Current tools leave this null; future application
+    // consumers may use it without changing the persisted harness shape.
     details: text("details"),
     // Successful mutations are kept outside the harness record: they are for
     // application rewind and must never become model context.

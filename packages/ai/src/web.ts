@@ -78,7 +78,6 @@ export function webTools(options: WebToolsOptions = {}): ChatTool[] {
       return {
         blocks: [toolText(`Returned ${results.length} web result${results.length === 1 ? "" : "s"} for “${query}”.${paginationHint(search.page)}`)],
         modelBlocks: [toolText(modelText)],
-        details: { query, results, page: search.page },
         isError: false,
       }
     },
@@ -100,7 +99,6 @@ export function webTools(options: WebToolsOptions = {}): ChatTool[] {
           page.text,
           ...(page.truncated ? ["", "[Content truncated]"] : []),
         ].join("\n"))],
-        details: { url: page.url, title: page.title, truncated: page.truncated },
         isError: false,
       }
     },

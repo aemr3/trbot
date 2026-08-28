@@ -39,8 +39,8 @@ import { z } from "zod"
  * replays exactly instead of losing the part nobody thought to store.
  */
 
-/** Keys this build maps to columns. Anything else on a message goes to `extra`. */
-const MAPPED_MESSAGE_KEYS = new Set([
+/** Known message keys. Anything not handled here is preserved in `extra`. */
+const HANDLED_MESSAGE_KEYS = new Set([
   "role",
   "content",
   "api",
@@ -644,7 +644,7 @@ function toRows(
       toolCallId: stringOrNull(record?.toolCallId) ?? message.toolCallId,
       toolName: stringOrNull(record?.toolName) ?? message.toolName,
       isError: record?.isError === undefined ? null : record.isError === true ? 1 : 0,
-      details: record?.details === undefined ? null : JSON.stringify(record.details),
+      details: record?.details === undefined || record.details === null ? null : JSON.stringify(record.details),
       effects: serializedEffects(draft.effects),
       harnessVersion,
       extra: messageExtraJson(record, usage, cost),
@@ -851,7 +851,7 @@ function messageExtraJson(
   usage: JsonObject | null,
   cost: JsonObject | null,
 ): string | null {
-  const extra = unmappedEntries(record, MAPPED_MESSAGE_KEYS)
+  const extra = unmappedEntries(record, HANDLED_MESSAGE_KEYS)
   const usageExtra = unmappedEntries(usage, MAPPED_USAGE_KEYS)
   const costExtra = unmappedEntries(cost, MAPPED_COST_KEYS)
   if (Object.keys(costExtra).length > 0) usageExtra.cost = costExtra

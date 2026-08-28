@@ -98,7 +98,6 @@ describe("chat session store", () => {
         toolCallId: "call-1",
         toolName: "quote",
         content: [{ type: "text", text: "ASELS 390.00" }],
-        details: { last: 390, currency: "TRY" },
         isError: false,
         timestamp: 3_000,
       },
@@ -188,6 +187,24 @@ describe("chat session store", () => {
     }
 
     await chats.append("chat-1", draft)
+
+    expect(await chats.records("chat-1")).toEqual([record])
+  })
+
+  test("round-trips optional pi tool metadata when a tool opts into it", async () => {
+    const chats = await store()
+    await chats.create(session())
+    const record = {
+      role: "toolResult" as const,
+      toolCallId: "call-1",
+      toolName: "quote",
+      content: [{ type: "text" as const, text: "ASELS 390.00" }],
+      details: { duplicatePayload: "ASELS 390.00" },
+      isError: false,
+      timestamp: 1_000,
+    }
+
+    await chats.append("chat-1", draftFor(record))
 
     expect(await chats.records("chat-1")).toEqual([record])
   })

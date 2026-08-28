@@ -42,7 +42,6 @@ test("asks within the originating chat and returns the answers to the model", as
   expect(calls[0]?.sessionId).toBe("chat-1")
   expect(outcome.blocks[0]?.text).toContain('"Which setup should I watch?"="Breakout"')
   expect(outcome.modelBlocks?.[0]?.text).toContain('"Which setup should I watch?"="Breakout"')
-  expect(outcome.details).toEqual({ answers })
   expect(outcome.isError).toBe(false)
 })
 

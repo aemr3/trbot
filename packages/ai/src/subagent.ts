@@ -131,11 +131,6 @@ export interface SubagentJobsClient {
   stop(sessionId: string, jobId: string): Promise<SubagentJobDetail | null>
 }
 
-interface SubagentDetails {
-  mode: SubagentMode
-  results: SubagentResult[]
-}
-
 export interface SubagentSessionRun {
   sessionId: string
   onText(delta: string): void
@@ -257,7 +252,6 @@ export function subagentTool(
         const label = hasTasks ? "parallel tasks" : "chain steps"
         return {
           blocks: [toolText(`Too many ${label} (${itemCount}). Max is ${MAX_SUBAGENT_TASKS}.`)],
-          details: { mode: hasChain ? "chain" : hasTasks ? "parallel" : "single", results: [] } satisfies SubagentDetails,
           isError: true,
         }
       }
@@ -270,11 +264,11 @@ export function subagentTool(
           : 1
       const delegation = options.delegation ?? createChatDelegationContext()
       const limitError = reserveSubagents(delegation, requestedWorkers)
-      if (limitError) return limitOutcome(mode, limitError)
+      if (limitError) return limitOutcome(limitError)
 
       if (params.background) {
         if (!jobs || !options.chatSessionId) {
-          return limitOutcome(mode, "Background subagents are unavailable in this chat.")
+          return limitOutcome("Background subagents are unavailable in this chat.")
         }
         const tasks = mode === "chain"
           ? params.chain!
@@ -294,7 +288,6 @@ export function subagentTool(
         return {
           blocks: [toolText(`Background subagent job ${job.jobId} started (${job.total} task${job.total === 1 ? "" : "s"}).`)],
           modelBlocks: [toolText(`Background job ${job.jobId} is ${job.status}. Do not poll it; one application event will report its final result.`)],
-          details: job,
           isError: false,
           effects: [externalToolEffect(`Background subagent job ${job.jobId} and its worker transcripts remain`)],
         }
@@ -302,7 +295,6 @@ export function subagentTool(
 
       if (jobs && options.chatSessionId && !await jobs.checkCapacity(options.chatSessionId, requestedWorkers)) {
         return limitOutcome(
-          mode,
           `Subagent limit reached: at most ${MAX_OUTSTANDING_SUBAGENTS} queued or running workers are allowed per root chat.`,
         )
       }
@@ -350,7 +342,7 @@ export function subagentJobTools(jobs: SubagentJobsClient): ChatTool[] {
         const text = summaries.length === 0
           ? "No background subagent jobs in this chat."
           : summaries.map(formatJobSummary).join("\n")
-        return { blocks: [toolText(text)], details: summaries, isError: false }
+        return { blocks: [toolText(text)], isError: false }
       },
     },
     {
@@ -365,7 +357,6 @@ export function subagentJobTools(jobs: SubagentJobsClient): ChatTool[] {
         return {
           blocks: [toolText(formatJobSummary(job))],
           modelBlocks: [toolText(formatJobDetail(job))],
-          details: job,
           isError: false,
         }
       },
@@ -381,7 +372,6 @@ export function subagentJobTools(jobs: SubagentJobsClient): ChatTool[] {
         if (!job) return missingJob(jobId)
         return {
           blocks: [toolText(`Background subagent job ${jobId} is ${job.status}. Its transcripts were preserved.`)],
-          details: job,
           isError: false,
         }
       },
@@ -414,7 +404,6 @@ async function runSingle(
   return {
     blocks: [toolText(result.error ? text : `Subagent ${agentName} completed.`)],
     modelBlocks: [toolText(text)],
-    details: { mode: "single", results: [result] } satisfies SubagentDetails,
     isError: result.error !== null,
     usage: result.usage ?? undefined,
     ...delegatedEffects([result]),
@@ -440,7 +429,6 @@ async function runParallel(
   return {
     blocks: [toolText(`Parallel: ${successes}/${results.length} succeeded`)],
     modelBlocks: [toolText(`Parallel: ${successes}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}`)],
-    details: { mode: "parallel", results } satisfies SubagentDetails,
     isError: false,
     usage: combinedUsage(results),
     ...delegatedEffects(results),
@@ -467,7 +455,6 @@ async function runChain(
       return {
         blocks: [toolText(text)],
         modelBlocks: [toolText(text)],
-        details: { mode: "chain", results } satisfies SubagentDetails,
         isError: true,
         usage: combinedUsage(results),
         ...delegatedEffects(results),
@@ -479,7 +466,6 @@ async function runChain(
   return {
     blocks: [toolText(`Chain completed ${results.length} step${results.length === 1 ? "" : "s"}.`)],
     modelBlocks: [toolText(previous || "(no output)")],
-    details: { mode: "chain", results } satisfies SubagentDetails,
     isError: false,
     usage: combinedUsage(results),
     ...delegatedEffects(results),
@@ -611,17 +597,15 @@ function workerTools(tools: ChatToolRegistry): ChatToolRegistry {
       if (!SUBAGENT_TOOL_NAMES.has(call.name)) return tools.call(call, options)
       return Promise.resolve({
         blocks: [toolText("Workers cannot create further subagents or manage subagent jobs. Continue the delegated task using the available tools.")],
-        details: null,
         isError: true,
       })
     },
   }
 }
 
-function limitOutcome(mode: SubagentMode, message: string) {
+function limitOutcome(message: string) {
   return {
     blocks: [toolText(message)],
-    details: { mode, results: [] } satisfies SubagentDetails,
     isError: true,
   }
 }
@@ -649,13 +633,12 @@ function truncateOutput(output: string): string {
   const encoded = new TextEncoder().encode(output)
   if (encoded.byteLength <= PER_TASK_OUTPUT_CAP) return output
   const truncated = new TextDecoder().decode(encoded.slice(0, PER_TASK_OUTPUT_CAP))
-  return `${truncated}\n\n[Output truncated: ${encoded.byteLength - PER_TASK_OUTPUT_CAP} bytes omitted. Full output preserved in tool details.]`
+  return `${truncated}\n\n[Output truncated: ${encoded.byteLength - PER_TASK_OUTPUT_CAP} bytes omitted.]`
 }
 
 function invalidModeOutcome() {
   return {
     blocks: [toolText('Invalid parameters. Provide exactly one mode. Available agent: "worker".')],
-    details: { mode: "single", results: [] } satisfies SubagentDetails,
     isError: true,
   }
 }
@@ -699,7 +682,6 @@ function requireSessionId(sessionId: string | undefined): string {
 function missingJob(jobId: string) {
   return {
     blocks: [toolText(`No background subagent job ${jobId} exists in this chat.`)],
-    details: null,
     isError: true,
   }
 }

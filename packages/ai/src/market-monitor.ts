@@ -199,7 +199,6 @@ function listMarketMonitorsTool(
       return {
         blocks: [toolText(`Found ${monitors.length} market monitor${monitors.length === 1 ? "" : "s"}.`)],
         modelBlocks: [toolText(monitors.length === 0 ? "No matching market monitors." : monitors.map(fullMonitor).join("\n\n"))],
-        details: { monitors },
         isError: false,
       }
     },
@@ -299,7 +298,6 @@ function cancelMarketMonitorTool(
       return {
         blocks: [toolText(`Cancelled market monitor ${alert.id} for ${alert.displayName}.`)],
         modelBlocks: [toolText(`Cancelled:\n${fullMonitor(alert)}`)],
-        details: { monitor: alert },
         isError: false,
         effects: [reversibleToolEffect(
           "MARKET_MONITOR",
@@ -384,7 +382,6 @@ function monitorOutcome(text: string, alert: MarketMonitor, before: MarketMonito
   return {
     blocks: [toolText(text)],
     modelBlocks: [toolText(fullMonitor(alert))],
-    details: { monitor: alert },
     isError: false,
     effects: [reversibleToolEffect(
       "MARKET_MONITOR",

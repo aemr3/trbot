@@ -9,19 +9,14 @@ import {
 } from "@earendil-works/pi-ai"
 import type { ChatBlock, ChatToolEffect, ChatUsage } from "@trbot/chat/session.ts"
 
-/**
- * What a tool call produced: what the trader sees, what the model is told, and
- * whether it went wrong.
- *
- * `details` is whatever structured result the tool wants kept beside the blocks;
- * it is stored and never interpreted here.
- */
+/** What a tool call produced for the trader, the model, and application rewind. */
 export interface ChatToolOutcome {
   /** A compact account of the call for the transcript. */
   blocks: ChatBlock[]
   /** Full content for the model when the transcript should stay compact. */
   modelBlocks?: ChatBlock[]
-  details: unknown
+  /** Optional tool-specific metadata retained for future application consumers. */
+  details?: unknown
   isError: boolean
   /** Successful state changes journaled for optional conversation rewind. */
   effects?: ChatToolEffect[]
@@ -218,5 +213,5 @@ export function externalToolEffect(description: string): ChatToolEffect {
 }
 
 function toolFailure(message: string): ChatToolOutcome {
-  return { blocks: [toolText(message)], details: null, isError: true }
+  return { blocks: [toolText(message)], isError: true }
 }
