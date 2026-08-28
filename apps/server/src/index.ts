@@ -12,6 +12,7 @@ import { DrizzleAiPreferencesStore } from "@trbot/db/ai-preferences-store.ts"
 import { DrizzleStopRuleStore } from "@trbot/db/stop-rule-store.ts"
 import { DrizzleAppPreferencesStore } from "@trbot/db/app-preferences-store.ts"
 import { createAgentTools } from "@trbot/ai/agent-tools.ts"
+import { SubagentConcurrency, type SubagentJobsClient } from "@trbot/ai/subagent.ts"
 import { ChatAgent } from "@trbot/ai/chat.ts"
 import { ChatCompactor } from "@trbot/ai/compaction.ts"
 import { ChatTitleGenerator } from "@trbot/ai/title.ts"
@@ -29,6 +30,7 @@ import { DrizzleChatAutomationStore } from "@trbot/db/chat-automation-store.ts"
 import { DrizzleChatQuestionStore } from "@trbot/db/chat-question-store.ts"
 import { DrizzleChatPermissionStore } from "@trbot/db/chat-permission-store.ts"
 import { DrizzleChatMobileStore } from "@trbot/db/chat-mobile-store.ts"
+import { DrizzleChatSubagentStore } from "@trbot/db/chat-subagent-store.ts"
 import { TelegramBotApi } from "@trbot/api/telegram.ts"
 import type { ChatFrame } from "@trbot/protocol/stream.ts"
 import { AiService } from "./ai.ts"
@@ -39,6 +41,7 @@ import { ChatAutomationController } from "./chat-automation.ts"
 import { ChatPermissionController } from "./chat-permission.ts"
 import { ChatMobileController } from "./chat-mobile.ts"
 import { ChatRewindEffects } from "./chat-rewind.ts"
+import { ChatSubagentController } from "./chat-subagent.ts"
 import { loadDefaultLoopPrompt } from "./chat-loop-prompt.ts"
 import { marketMonitorApplicationEvent } from "./chat-market-monitor-event.ts"
 import { certificateExpiry } from "./tls.ts"
@@ -148,6 +151,8 @@ async function startTrbotServer(): Promise<void> {
   const chatQuestionStore = new DrizzleChatQuestionStore(connection.db)
   const chatPermissionStore = new DrizzleChatPermissionStore(connection.db)
   const chatMobileStore = new DrizzleChatMobileStore(connection.db)
+  const chatSubagentStore = new DrizzleChatSubagentStore(connection.db)
+  const chatSessionStore = new DrizzleChatSessionStore(connection.db, { harnessVersion: HARNESS_VERSION })
   const stopStore = new DrizzleStopRuleStore(connection.db)
   const idempotency = new IdempotencyStore(connection.db)
   await idempotency.sweep()
@@ -165,6 +170,7 @@ async function startTrbotServer(): Promise<void> {
   const ai = new AiService({ models, credentials, preferences: aiPreferences })
   let hub: StreamHub | null = null
   let chat!: ChatController
+  let subagents!: ChatSubagentController
   let mobile: ChatMobileController | null = null
   const broadcastChat = (frame: ChatFrame): Promise<void> | void => {
     hub?.broadcast(frame)
@@ -267,6 +273,7 @@ async function startTrbotServer(): Promise<void> {
   // has to survive the terminal that asked for it closing its tab or quitting.
   let automations!: ChatAutomationController
   let rewindEffects!: ChatRewindEffects
+  const subagentConcurrency = new SubagentConcurrency()
   const depthBookLoader = new LiveDepthBookLoader({
     openStream: () => session.require().openDepthStream({ requestSnapshot: true }),
   })
@@ -325,9 +332,17 @@ async function startTrbotServer(): Promise<void> {
     subagentSessions: {
       start: (input) => chat.subagentSessions.start(input),
     },
+    subagentJobs: {
+      checkCapacity: (sessionId, requested) => subagents.checkCapacity(sessionId, requested),
+      start: (input) => subagents.start(input),
+      list: (sessionId) => subagents.list(sessionId),
+      get: (sessionId, jobId) => subagents.get(sessionId, jobId),
+      stop: (sessionId, jobId) => subagents.stop(sessionId, jobId),
+    } satisfies SubagentJobsClient,
+    subagentConcurrency,
   })
   chat = new ChatController({
-    store: new DrizzleChatSessionStore(connection.db, { harnessVersion: HARNESS_VERSION }),
+    store: chatSessionStore,
     agent: new ChatAgent({ models, tools: chatTools }),
     compaction: new ChatCompactor({ models }),
     // A session runs on the model it records, so these read the stored choice per
@@ -351,6 +366,21 @@ async function startTrbotServer(): Promise<void> {
     },
     broadcast: broadcastChat,
     onError: (error) => log("Chat", error),
+  })
+  subagents = new ChatSubagentController({
+    store: chatSubagentStore,
+    models,
+    tools: chatTools,
+    sessions: chat.subagentSessions,
+    concurrency: subagentConcurrency,
+    resolveModel: (providerId, modelId) => harnessModel(models, providerId, modelId),
+    requireRootSession: async (sessionId) => {
+      const detail = await chat.detail(sessionId)
+      if (detail.session.parentSessionId) throw new Error("Subagent jobs belong to a root chat")
+    },
+    pendingPermissionSessionIds: () => new Set(permissions.list().map((request) => request.sessionId)),
+    enqueueEvent: async (sessionId, event) => { await chat.enqueueEvent(sessionId, event) },
+    onError: (error) => log("Background subagent", error),
   })
   automations = new ChatAutomationController({
     store: chatAutomationStore,
@@ -451,6 +481,7 @@ async function startTrbotServer(): Promise<void> {
   await automations.prepare()
   await chat.start()
   await permissions.reconcileModes()
+  await subagents.prepare()
   await mobile.start()
   await alerts.load()
   await marketMonitors.load()
@@ -547,6 +578,7 @@ async function startTrbotServer(): Promise<void> {
     if (positionRefreshTimer) clearTimeout(positionRefreshTimer)
     mobile.destroy()
     questions.destroy()
+    subagents.destroy()
     permissions.destroy()
     chat.destroy()
     automations.destroy()

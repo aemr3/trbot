@@ -10,8 +10,9 @@ import {
   type ChatToolRegistry,
 } from "./tool.ts"
 
-const MAX_PARALLEL_TASKS = 8
-const MAX_CONCURRENCY = 4
+export const MAX_SUBAGENT_TASKS = 8
+export const MAX_SUBAGENT_CONCURRENCY = 4
+export const MAX_OUTSTANDING_SUBAGENTS = 8
 const MAX_SUBAGENTS_PER_TURN = 8
 const MAX_SUBAGENT_DEPTH = 1
 const PER_TASK_OUTPUT_CAP = 50 * 1_024
@@ -45,7 +46,20 @@ const SubagentParameters = Type.Object({
   chain: Type.Optional(Type.Array(ChainItem, {
     description: "Chain mode only. Omit top-level agent, task, and tasks.",
   })),
+  background: Type.Optional(Type.Boolean({
+    description: "Run the entire invocation in the background and return its job ID immediately.",
+  })),
 })
+
+const ListSubagentsParameters = Type.Object({})
+const GetSubagentParameters = Type.Object({
+  jobId: Type.String({ description: "Background subagent job ID", minLength: 1 }),
+})
+const StopSubagentParameters = Type.Object({
+  jobId: Type.String({ description: "Background subagent job ID to cancel", minLength: 1 }),
+})
+
+const SUBAGENT_TOOL_NAMES = new Set(["subagent", "list_subagents", "get_subagent", "stop_subagent"])
 
 const WORKER_PROMPT = [
   "You are a general-purpose subagent working in an isolated context.",
@@ -55,9 +69,11 @@ const WORKER_PROMPT = [
   "When using web sources, include the URLs you relied on.",
 ].join(" ")
 
-type SubagentMode = "single" | "parallel" | "chain"
+export type SubagentMode = "single" | "parallel" | "chain"
+export type SubagentModels = Models
+export type SubagentModel = Model<Api>
 
-interface SubagentResult {
+export interface SubagentResult {
   agent: string
   task: string
   sessionId: string | null
@@ -65,6 +81,54 @@ interface SubagentResult {
   error: string | null
   usage: ChatUsage | null
   step?: number
+}
+
+export interface SubagentJobTaskInput {
+  agent: string
+  task: string
+}
+
+export interface SubagentJobSummary {
+  jobId: string
+  mode: SubagentMode
+  status: "QUEUED" | "RUNNING" | "WAITING_PERMISSION" | "COMPLETED" | "FAILED" | "CANCELLED"
+  completed: number
+  total: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface SubagentJobTaskDetail {
+  index: number
+  agent: string
+  task: string
+  status: SubagentJobSummary["status"]
+  sessionIds: string[]
+  result: string | null
+  error: string | null
+  usage: ChatUsage | null
+}
+
+export interface SubagentJobDetail extends SubagentJobSummary {
+  error: string | null
+  tasks: SubagentJobTaskDetail[]
+}
+
+export interface SubagentJobsClient {
+  checkCapacity(sessionId: string, requested: number): Promise<boolean>
+  start(input: {
+    sessionId: string
+    parentToolCallId: string | null
+    mode: SubagentMode
+    tasks: SubagentJobTaskInput[]
+    providerId: string
+    modelId: string
+    reasoning: string | null
+    automationEvent: { label: string | null; referenceId: string | null } | null
+  }): Promise<SubagentJobDetail>
+  list(sessionId: string): Promise<SubagentJobSummary[]>
+  get(sessionId: string, jobId: string): Promise<SubagentJobDetail | null>
+  stop(sessionId: string, jobId: string): Promise<SubagentJobDetail | null>
 }
 
 interface SubagentDetails {
@@ -94,11 +158,74 @@ export interface SubagentSessionRecorder {
   }): Promise<SubagentSessionRun>
 }
 
+interface WaitingWorker {
+  resolve: () => void
+  reject: (error: Error) => void
+  signal?: AbortSignal
+  onAbort?: () => void
+}
+
+/** Shares the per-root worker ceiling across foreground and background jobs. */
+export class SubagentConcurrency {
+  private readonly active = new Map<string, number>()
+  private readonly waiting = new Map<string, WaitingWorker[]>()
+
+  constructor(private readonly limit = MAX_SUBAGENT_CONCURRENCY) {}
+
+  async run<T>(sessionId: string, signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
+    await this.acquire(sessionId, signal)
+    try {
+      return await work()
+    } finally {
+      this.release(sessionId)
+    }
+  }
+
+  private async acquire(sessionId: string, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw abortError()
+    if ((this.active.get(sessionId) ?? 0) < this.limit) {
+      this.active.set(sessionId, (this.active.get(sessionId) ?? 0) + 1)
+      return
+    }
+    await new Promise<void>((resolve, reject) => {
+      const worker: WaitingWorker = { resolve, reject, signal }
+      if (signal) {
+        worker.onAbort = () => {
+          const queue = this.waiting.get(sessionId)
+          const index = queue?.indexOf(worker) ?? -1
+          if (index >= 0) queue!.splice(index, 1)
+          reject(abortError())
+        }
+        signal.addEventListener("abort", worker.onAbort, { once: true })
+      }
+      const queue = this.waiting.get(sessionId) ?? []
+      queue.push(worker)
+      this.waiting.set(sessionId, queue)
+    })
+  }
+
+  private release(sessionId: string): void {
+    const queue = this.waiting.get(sessionId)
+    const next = queue?.shift()
+    if (queue?.length === 0) this.waiting.delete(sessionId)
+    if (next) {
+      if (next.signal && next.onAbort) next.signal.removeEventListener("abort", next.onAbort)
+      next.resolve()
+      return
+    }
+    const active = (this.active.get(sessionId) ?? 1) - 1
+    if (active > 0) this.active.set(sessionId, active)
+    else this.active.delete(sessionId)
+  }
+}
+
 /** Pi-style isolated delegation with single, bounded-parallel, and chained execution. */
 export function subagentTool(
   models: Models,
   tools: ChatToolRegistry,
   sessions?: SubagentSessionRecorder,
+  jobs?: SubagentJobsClient,
+  concurrency = new SubagentConcurrency(),
 ): ChatTool<typeof SubagentParameters> {
   return {
     definition: {
@@ -109,7 +236,8 @@ export function subagentTool(
         'Single: use only {"agent":"worker","task":"..."}; omit tasks and chain.',
         'Parallel: use only {"tasks":[{"agent":"worker","task":"..."}]}; omit top-level agent, task, and chain.',
         'Chain: use only {"chain":[{"agent":"worker","task":"..."}]}; omit top-level agent, task, and tasks. Use {previous} to include the prior step\'s output.',
-        `Parallel mode accepts at most ${MAX_PARALLEL_TASKS} tasks and runs ${MAX_CONCURRENCY} at once.`,
+        `Every mode accepts at most ${MAX_SUBAGENT_TASKS} workers or steps and at most ${MAX_SUBAGENT_CONCURRENCY} run at once per root chat.`,
+        'Set "background":true to return a durable job ID immediately; completion arrives as one application event. Use list_subagents or get_subagent only when you need status before then.',
         `One chat turn can create at most ${MAX_SUBAGENTS_PER_TURN} workers. Only the user-facing agent can delegate; workers cannot create further subagents.`,
         "If a limit is reached, the tool reports it so you can continue without delegating; the worker budget resets on the next user or application turn.",
         'The available agent is "worker".',
@@ -124,10 +252,12 @@ export function subagentTool(
       const hasSingle = Boolean(params.agent && params.task)
       const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle)
       if (modeCount !== 1) return invalidModeOutcome()
-      if (params.tasks && params.tasks.length > MAX_PARALLEL_TASKS) {
+      const itemCount = params.tasks?.length ?? params.chain?.length ?? 1
+      if (itemCount > MAX_SUBAGENT_TASKS) {
+        const label = hasTasks ? "parallel tasks" : "chain steps"
         return {
-          blocks: [toolText(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`)],
-          details: { mode: "parallel", results: [] } satisfies SubagentDetails,
+          blocks: [toolText(`Too many ${label} (${itemCount}). Max is ${MAX_SUBAGENT_TASKS}.`)],
+          details: { mode: hasChain ? "chain" : hasTasks ? "parallel" : "single", results: [] } satisfies SubagentDetails,
           isError: true,
         }
       }
@@ -142,6 +272,41 @@ export function subagentTool(
       const limitError = reserveSubagents(delegation, requestedWorkers)
       if (limitError) return limitOutcome(mode, limitError)
 
+      if (params.background) {
+        if (!jobs || !options.chatSessionId) {
+          return limitOutcome(mode, "Background subagents are unavailable in this chat.")
+        }
+        const tasks = mode === "chain"
+          ? params.chain!
+          : mode === "parallel"
+            ? params.tasks!
+            : [{ agent: params.agent!, task: params.task! }]
+        const job = await jobs.start({
+          sessionId: options.chatSessionId,
+          parentToolCallId: options.toolCallId ?? null,
+          mode,
+          tasks,
+          providerId: options.model.provider,
+          modelId: options.model.id,
+          reasoning: options.reasoningEffort ?? null,
+          automationEvent: options.automationEvent ?? null,
+        })
+        return {
+          blocks: [toolText(`Background subagent job ${job.jobId} started (${job.total} task${job.total === 1 ? "" : "s"}).`)],
+          modelBlocks: [toolText(`Background job ${job.jobId} is ${job.status}. Do not poll it; one application event will report its final result.`)],
+          details: job,
+          isError: false,
+          effects: [externalToolEffect(`Background subagent job ${job.jobId} and its worker transcripts remain`)],
+        }
+      }
+
+      if (jobs && options.chatSessionId && !await jobs.checkCapacity(options.chatSessionId, requestedWorkers)) {
+        return limitOutcome(
+          mode,
+          `Subagent limit reached: at most ${MAX_OUTSTANDING_SUBAGENTS} queued or running workers are allowed per root chat.`,
+        )
+      }
+
       const runOptions: RunTaskOptions = {
         model: options.model,
         reasoningEffort: options.reasoningEffort,
@@ -154,6 +319,7 @@ export function subagentTool(
           depth: delegation.depth + 1,
           budget: delegation.budget,
         },
+        concurrency,
       }
 
       if (params.chain?.length) {
@@ -169,7 +335,61 @@ export function subagentTool(
   }
 }
 
-interface RunTaskOptions {
+/** Inspection and cancellation tools for durable background delegation. */
+export function subagentJobTools(jobs: SubagentJobsClient): ChatTool[] {
+  return [
+    {
+      definition: {
+        name: "list_subagents",
+        description: "List compact status summaries for background subagent jobs in the current root chat.",
+        parameters: ListSubagentsParameters,
+      },
+      run: async (_params, options) => {
+        const sessionId = requireSessionId(options.chatSessionId)
+        const summaries = await jobs.list(sessionId)
+        const text = summaries.length === 0
+          ? "No background subagent jobs in this chat."
+          : summaries.map(formatJobSummary).join("\n")
+        return { blocks: [toolText(text)], details: summaries, isError: false }
+      },
+    },
+    {
+      definition: {
+        name: "get_subagent",
+        description: "Get detailed status, progress, child session IDs, errors, usage, and bounded results for one background subagent job.",
+        parameters: GetSubagentParameters,
+      },
+      run: async ({ jobId }, options) => {
+        const job = await jobs.get(requireSessionId(options.chatSessionId), jobId)
+        if (!job) return missingJob(jobId)
+        return {
+          blocks: [toolText(formatJobSummary(job))],
+          modelBlocks: [toolText(formatJobDetail(job))],
+          details: job,
+          isError: false,
+        }
+      },
+    },
+    {
+      definition: {
+        name: "stop_subagent",
+        description: "Cancel one queued or running background subagent job while preserving its child transcripts.",
+        parameters: StopSubagentParameters,
+      },
+      run: async ({ jobId }, options) => {
+        const job = await jobs.stop(requireSessionId(options.chatSessionId), jobId)
+        if (!job) return missingJob(jobId)
+        return {
+          blocks: [toolText(`Background subagent job ${jobId} is ${job.status}. Its transcripts were preserved.`)],
+          details: job,
+          isError: false,
+        }
+      },
+    },
+  ]
+}
+
+export interface RunTaskOptions {
   model: Model<Api>
   reasoningEffort?: string | null
   signal?: AbortSignal
@@ -178,6 +398,7 @@ interface RunTaskOptions {
   notificationBudget: { sent: number }
   automationEvent?: { label: string | null; referenceId: string | null }
   delegation: ChatDelegationContext
+  concurrency?: SubagentConcurrency
 }
 
 async function runSingle(
@@ -188,7 +409,7 @@ async function runSingle(
   options: RunTaskOptions,
   sessions?: SubagentSessionRecorder,
 ) {
-  const result = await runTask(models, tools, agentName, task, options, undefined, sessions)
+  const result = await runSubagentTask(models, tools, agentName, task, options, undefined, sessions)
   const text = result.error ? `Agent failed: ${result.error}` : result.answer || "(no output)"
   return {
     blocks: [toolText(result.error ? text : `Subagent ${agentName} completed.`)],
@@ -207,8 +428,8 @@ async function runParallel(
   options: RunTaskOptions,
   sessions?: SubagentSessionRecorder,
 ) {
-  const results = await mapWithConcurrencyLimit(tasks, MAX_CONCURRENCY, (item) => (
-    runTask(models, tools, item.agent, item.task, options, undefined, sessions)
+  const results = await mapWithConcurrencyLimit(tasks, MAX_SUBAGENT_CONCURRENCY, (item) => (
+    runSubagentTask(models, tools, item.agent, item.task, options, undefined, sessions)
   ))
   const successes = results.filter((result) => result.error === null).length
   const summaries = results.map((result) => {
@@ -239,7 +460,7 @@ async function runChain(
   for (let index = 0; index < chain.length; index++) {
     const item = chain[index]
     const task = item.task.replaceAll("{previous}", previous)
-    const result = await runTask(models, tools, item.agent, task, options, index + 1, sessions)
+    const result = await runSubagentTask(models, tools, item.agent, task, options, index + 1, sessions)
     results.push(result)
     if (result.error) {
       const text = `Chain stopped at step ${index + 1} (${item.agent}): ${result.error}`
@@ -265,7 +486,25 @@ async function runChain(
   }
 }
 
-async function runTask(
+export async function runSubagentTask(
+  models: Models,
+  tools: ChatToolRegistry,
+  agentName: string,
+  task: string,
+  options: RunTaskOptions,
+  step?: number,
+  sessions?: SubagentSessionRecorder,
+): Promise<SubagentResult> {
+  const rootSessionId = options.chatSessionId
+  if (rootSessionId && options.concurrency) {
+    return await options.concurrency.run(rootSessionId, options.signal, async () => (
+      await executeSubagentTask(models, tools, agentName, task, options, step, sessions)
+    ))
+  }
+  return await executeSubagentTask(models, tools, agentName, task, options, step, sessions)
+}
+
+async function executeSubagentTask(
   models: Models,
   tools: ChatToolRegistry,
   agentName: string,
@@ -367,11 +606,11 @@ function reserveSubagents(context: ChatDelegationContext, requested: number): st
 /** Give a worker every parent capability except the ability to delegate again. */
 function workerTools(tools: ChatToolRegistry): ChatToolRegistry {
   return {
-    list: () => tools.list().filter((tool) => tool.name !== "subagent"),
+    list: () => tools.list().filter((tool) => !SUBAGENT_TOOL_NAMES.has(tool.name)),
     call: (call, options) => {
-      if (call.name !== "subagent") return tools.call(call, options)
+      if (!SUBAGENT_TOOL_NAMES.has(call.name)) return tools.call(call, options)
       return Promise.resolve({
-        blocks: [toolText("Workers cannot create further subagents. Continue the delegated task using the available tools.")],
+        blocks: [toolText("Workers cannot create further subagents or manage subagent jobs. Continue the delegated task using the available tools.")],
         details: null,
         isError: true,
       })
@@ -450,4 +689,35 @@ function sumUsage(values: Array<ChatUsage | null>): ChatUsage | null {
     total.costTotal += usage.costTotal
   }
   return total
+}
+
+function requireSessionId(sessionId: string | undefined): string {
+  if (!sessionId) throw new Error("This subagent tool requires a chat session")
+  return sessionId
+}
+
+function missingJob(jobId: string) {
+  return {
+    blocks: [toolText(`No background subagent job ${jobId} exists in this chat.`)],
+    details: null,
+    isError: true,
+  }
+}
+
+function formatJobSummary(job: SubagentJobSummary): string {
+  return `${job.jobId} · ${job.mode} · ${job.status} · ${job.completed}/${job.total}`
+}
+
+function formatJobDetail(job: SubagentJobDetail): string {
+  const tasks = job.tasks.map((task) => {
+    const output = truncateOutput((task.error ?? task.result) || "(no output yet)")
+    return `### Step ${task.index + 1} [${task.agent}] ${task.status}\n\n${output}`
+  })
+  return [`Job ${formatJobSummary(job)}`, job.error ? `Error: ${job.error}` : "", ...tasks]
+    .filter(Boolean)
+    .join("\n\n")
+}
+
+function abortError(): Error {
+  return new DOMException("Subagent stopped", "AbortError")
 }

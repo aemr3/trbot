@@ -174,6 +174,56 @@ export const chatSessions = sqliteTable("chat_sessions", {
   updatedAt: integer("updated_at").notNull(),
 })
 
+// A background delegation is split into a job and durable task rows so a server
+// restart can resume only unfinished work while keeping completed chain steps.
+export const chatSubagentJobs = sqliteTable(
+  "chat_subagent_jobs",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
+    parentToolCallId: text("parent_tool_call_id"),
+    mode: text("mode", { enum: ["single", "parallel", "chain"] }).notNull(),
+    status: text("status", { enum: ["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"] }).notNull(),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    reasoning: text("reasoning"),
+    automationLabel: text("automation_label"),
+    automationReferenceId: text("automation_reference_id"),
+    error: text("error"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    completedAt: integer("completed_at"),
+    notifiedAt: integer("notified_at"),
+  },
+  (table) => [index("chat_subagent_jobs_session_status").on(table.sessionId, table.status)],
+)
+
+export const chatSubagentTasks = sqliteTable(
+  "chat_subagent_tasks",
+  {
+    jobId: text("job_id").notNull().references(() => chatSubagentJobs.id, { onDelete: "cascade" }),
+    index: integer("task_index").notNull(),
+    agent: text("agent").notNull(),
+    taskTemplate: text("task_template").notNull(),
+    resolvedTask: text("resolved_task"),
+    sessionIds: text("session_ids").notNull().default("[]"),
+    status: text("status", { enum: ["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"] }).notNull(),
+    result: text("result"),
+    error: text("error"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    totalTokens: integer("total_tokens"),
+    costTotal: real("cost_total"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.jobId, table.index] }),
+    index("chat_subagent_tasks_job_status").on(table.jobId, table.status),
+  ],
+)
+
 // Agent notices remain pending across terminal disconnects until the user opens
 // or dismisses them. Deleting their chat removes notices that can no longer open.
 export const chatNotifications = sqliteTable(

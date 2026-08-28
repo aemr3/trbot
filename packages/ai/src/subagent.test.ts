@@ -10,7 +10,13 @@ import {
 } from "@earendil-works/pi-ai"
 import type { ChatMessageDraft } from "@trbot/chat/session.ts"
 import { ChatAgent } from "./chat.ts"
-import { subagentTool, type SubagentSessionRecorder } from "./subagent.ts"
+import {
+  subagentJobTools,
+  subagentTool,
+  type SubagentJobDetail,
+  type SubagentJobsClient,
+  type SubagentSessionRecorder,
+} from "./subagent.ts"
 import { ChatTools, toolText, type ChatTool } from "./tool.ts"
 import { z } from "zod"
 
@@ -350,6 +356,63 @@ test("runs a chain sequentially and substitutes the previous output", async () =
   expect(outcome.usage?.totalTokens).toBeGreaterThan(0)
 })
 
+test("starts an entire invocation in the background without waiting for a worker", async () => {
+  const { faux, models } = harness(0, fauxAssistantMessage("Should not run inline."))
+  const starts: Array<Parameters<SubagentJobsClient["start"]>[0]> = []
+  const job = jobDetail()
+  const jobs: SubagentJobsClient = {
+    checkCapacity: async () => true,
+    start: async (input) => {
+      starts.push(input)
+      return job
+    },
+    list: async () => [job],
+    get: async () => job,
+    stop: async () => ({ ...job, status: "CANCELLED" }),
+  }
+  const tools = new ChatTools()
+  for (const tool of subagentJobTools(jobs)) tools.register(tool)
+  tools.register(subagentTool(models, tools, undefined, jobs))
+
+  const outcome = await tools.call({
+    type: "toolCall",
+    id: "background-call",
+    name: "subagent",
+    arguments: {
+      chain: [
+        { agent: "worker", task: "Research" },
+        { agent: "worker", task: "Review {previous}" },
+      ],
+      background: true,
+    },
+  }, { model: faux.getModel(), reasoningEffort: "high", chatSessionId: "chat-1" })
+
+  expect(outcome.isError).toBe(false)
+  expect(outcome.blocks[0]?.text).toContain("job-1 started")
+  expect(starts).toEqual([{
+    sessionId: "chat-1",
+    parentToolCallId: "background-call",
+    mode: "chain",
+    tasks: [
+      { agent: "worker", task: "Research" },
+      { agent: "worker", task: "Review {previous}" },
+    ],
+    providerId: faux.getModel().provider,
+    modelId: faux.getModel().id,
+    reasoning: "high",
+    automationEvent: null,
+  }])
+  expect(faux.state.callCount).toBe(0)
+
+  const listed = await tools.call({
+    type: "toolCall",
+    id: "list-call",
+    name: "list_subagents",
+    arguments: {},
+  }, { chatSessionId: "chat-1" })
+  expect(listed.blocks[0]?.text).toContain("job-1 · chain · QUEUED · 0/2")
+})
+
 test("requires exactly one execution mode", async () => {
   const { faux, models } = harness(1, fauxAssistantMessage("Should not run."))
   const tools = new ChatTools()
@@ -375,5 +438,19 @@ function passthroughTool(name: string): ChatTool {
   return {
     definition: { name, description: name, parameters: Type.Object({}) },
     run: async () => ({ blocks: [], details: null, isError: false }),
+  }
+}
+
+function jobDetail(): SubagentJobDetail {
+  return {
+    jobId: "job-1",
+    mode: "chain",
+    status: "QUEUED",
+    completed: 0,
+    total: 2,
+    createdAt: 1_000,
+    updatedAt: 1_000,
+    error: null,
+    tasks: [],
   }
 }

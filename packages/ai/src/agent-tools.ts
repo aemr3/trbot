@@ -3,7 +3,13 @@ import { marketDataTools, type MarketDataToolClients } from "./market-data.ts"
 import { marketMonitorTools, type MarketMonitorToolClients } from "./market-monitor.ts"
 import { notifyUserTool, type ChatNotifier } from "./notification.ts"
 import { askQuestionTool, type ChatQuestionAsker } from "./question.ts"
-import { subagentTool, type SubagentSessionRecorder } from "./subagent.ts"
+import {
+  SubagentConcurrency,
+  subagentJobTools,
+  subagentTool,
+  type SubagentJobsClient,
+  type SubagentSessionRecorder,
+} from "./subagent.ts"
 import { ChatTools, type ChatToolRegistry } from "./tool.ts"
 import { webTools, type WebToolsOptions } from "./web.ts"
 import { automationTools, type ChatAutomationToolsClient } from "./automation.ts"
@@ -18,6 +24,8 @@ export interface AgentToolsOptions {
   questions?: ChatQuestionAsker
   notifications?: ChatNotifier
   subagentSessions?: SubagentSessionRecorder
+  subagentJobs?: SubagentJobsClient
+  subagentConcurrency?: SubagentConcurrency
   automations?: ChatAutomationToolsClient
   trading?: TradingToolClients
   stopRules?: StopRuleToolClients
@@ -43,6 +51,15 @@ export function createAgentTools(options: AgentToolsOptions): ChatToolRegistry {
   if (options.automations) {
     for (const tool of automationTools(options.automations)) tools.register(tool)
   }
-  tools.register(subagentTool(options.models, tools, options.subagentSessions))
+  if (options.subagentJobs) {
+    for (const tool of subagentJobTools(options.subagentJobs)) tools.register(tool)
+  }
+  tools.register(subagentTool(
+    options.models,
+    tools,
+    options.subagentSessions,
+    options.subagentJobs,
+    options.subagentConcurrency,
+  ))
   return tools
 }
