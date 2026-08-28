@@ -1,5 +1,6 @@
 import type { ChatRecord, ChatTurnModel, ChatTurnOptions, ChatTurnResult } from "@trbot/ai/chat.ts"
 import { modelRecord, type ChatCompactionRunner } from "@trbot/ai/compaction.ts"
+import { steeringPrompt } from "@trbot/ai/steering.ts"
 import type { SubagentSessionRecorder, SubagentSessionRun } from "@trbot/ai/subagent.ts"
 import {
   chatBlockText,
@@ -92,6 +93,11 @@ interface ChatRun {
   controller?: AbortController
 }
 
+interface PendingSteering {
+  runId: string
+  message: ChatMessage
+}
+
 /**
  * Owns every chat conversation: what is queued, what is running, and what has
  * been said.
@@ -101,11 +107,10 @@ interface ChatRun {
  * quits — and so every attached client sees the same conversation. That is the same
  * reason the stop and alert monitors are here.
  *
- * Sending never fails for being busy. A message is queued, and each session works
- * through its own queue one turn at a time while different sessions run at once. A
- * queued message can be taken back until its turn starts, which is what makes a
- * queue a queue rather than a hidden buffer: a trader who changes their mind before
- * the model gets there can simply remove it.
+ * Sending never fails for being busy. A message sent during a run steers that run
+ * at its next safe model boundary; otherwise each session works through its durable
+ * queue one turn at a time while different sessions run at once. A queued message
+ * can be taken back until it is claimed.
  */
 export class ChatController {
   private readonly runs = new Map<string, ChatRun>()
@@ -120,6 +125,8 @@ export class ChatController {
   private readonly removedSessionIds = new Set<string>()
   /** Serializes destructive transcript changes for one conversation. */
   private readonly undoing = new Set<string>()
+  /** User guidance waiting for the next safe boundary of the run it targeted. */
+  private readonly steering = new Map<string, PendingSteering[]>()
   private readonly now: () => number
   private destroyed = false
 
@@ -235,6 +242,7 @@ export class ChatController {
       this.titleRuns.get(id)?.abort()
       this.titleRuns.delete(id)
       this.runs.delete(id)
+      this.steering.delete(id)
     }
     await this.options.store.delete(sessionId)
     await this.announceSessions()
@@ -269,7 +277,16 @@ export class ChatController {
       thinkingMs: null,
       createdAt: this.now(),
     }
-    await this.options.store.append(sessionId, { message, record: userRecord(message) })
+    const activeRun = this.runs.get(sessionId)
+    await this.options.store.append(sessionId, {
+      message,
+      record: activeRun ? steeringRecord(message) : userRecord(message),
+    })
+    if (activeRun && this.runs.get(sessionId)?.runId === activeRun.runId) {
+      const pending = this.steering.get(sessionId) ?? []
+      pending.push({ runId: activeRun.runId, message })
+      this.steering.set(sessionId, pending)
+    }
 
     this.options.broadcast({ type: "chatMessage", sessionId, message })
     await this.announceSessions()
@@ -324,7 +341,10 @@ export class ChatController {
     if (message.status !== "QUEUED") {
       throw new ProtocolError("invalid_request", "That message has already been sent")
     }
-    await this.options.store.remove(messageId)
+    if (!(await this.options.store.remove(messageId))) {
+      throw new ProtocolError("invalid_request", "That message has already been sent")
+    }
+    this.removeSteering(sessionId, messageId)
     this.options.broadcast({ type: "chatMessageRemoved", sessionId, messageId })
     await this.announceSessions()
   }
@@ -458,6 +478,7 @@ export class ChatController {
     for (const title of this.titleRuns.values()) title.abort()
     this.runs.clear()
     this.titleRuns.clear()
+    this.steering.clear()
   }
 
   /**
@@ -682,7 +703,11 @@ export class ChatController {
       // Claim the queued input before announcing the run. A client resyncs when
       // it sees that announcement, so the durable status must already say this
       // prompt is being handled rather than still being cancellable.
-      await this.options.store.markSent(asked.id)
+      if (!(await this.options.store.markSent(asked.id))) {
+        this.runs.delete(sessionId)
+        this.releaseSteering(sessionId, run.runId)
+        return
+      }
       await this.options.broadcast({
         type: "chatRun",
         sessionId,
@@ -730,6 +755,7 @@ export class ChatController {
           prompt,
           chatSessionId: sessionId,
           automationEvent: automationEvent ?? undefined,
+          steering: () => this.claimSteering(sessionId, run.runId),
           signal: run.controller!.signal,
           events: {
             onText: (delta) => {
@@ -783,6 +809,11 @@ export class ChatController {
         recoveryAttempted = true
         let compacted = null
         try {
+          const refreshed = await this.options.store.context(sessionId)
+          modelContext = {
+            ...refreshed,
+            records: refreshed.records.filter((entry) => entry.id !== asked.id),
+          }
           compacted = await this.options.compaction.compact({
             sessionId,
             model: turnModel.model,
@@ -871,6 +902,7 @@ export class ChatController {
       await this.announceSessions()
     } finally {
       this.runs.delete(sessionId)
+      this.releaseSteering(sessionId, run.runId)
     }
   }
 
@@ -914,6 +946,45 @@ export class ChatController {
     await this.options.broadcast({ type: "chatMessage", sessionId, message: draft.message })
   }
 
+  /** Moves guidance for this run from the durable queue into its model context. */
+  private async claimSteering(sessionId: string, runId: string): Promise<ChatRecord[]> {
+    const pending = this.steering.get(sessionId) ?? []
+    const targeted = pending.filter((item) => item.runId === runId)
+    const remaining = pending.filter((item) => item.runId !== runId)
+    if (remaining.length > 0) this.steering.set(sessionId, remaining)
+    else this.steering.delete(sessionId)
+
+    const claimed: ChatRecord[] = []
+    for (const item of targeted) {
+      if (!(await this.options.store.markSent(item.message.id))) continue
+      const content = await this.options.store.inputText(item.message.id)
+        ?? steeringPrompt(item.message.text)
+      claimed.push({ role: "user", content, timestamp: item.message.createdAt })
+      await this.options.broadcast({
+        type: "chatMessage",
+        sessionId,
+        message: { ...item.message, status: "SENT" },
+      })
+    }
+    if (claimed.length > 0) await this.announceSessions()
+    return claimed
+  }
+
+  private removeSteering(sessionId: string, messageId: string): void {
+    const remaining = (this.steering.get(sessionId) ?? [])
+      .filter((item) => item.message.id !== messageId)
+    if (remaining.length > 0) this.steering.set(sessionId, remaining)
+    else this.steering.delete(sessionId)
+  }
+
+  /** A message that missed the run's final poll remains queued for the next turn. */
+  private releaseSteering(sessionId: string, runId: string): void {
+    const remaining = (this.steering.get(sessionId) ?? [])
+      .filter((item) => item.runId !== runId)
+    if (remaining.length > 0) this.steering.set(sessionId, remaining)
+    else this.steering.delete(sessionId)
+  }
+
   private async sessionTreeIds(sessionId: string): Promise<string[]> {
     const ids = [sessionId]
     let parents = [sessionId]
@@ -947,6 +1018,10 @@ export class ChatController {
 
 function userRecord(message: ChatMessage): ChatRecord {
   return { role: "user", content: message.text, timestamp: message.createdAt }
+}
+
+function steeringRecord(message: ChatMessage): ChatRecord {
+  return { role: "user", content: steeringPrompt(message.text), timestamp: message.createdAt }
 }
 
 /** The model a session runs on, or null when it names none. */

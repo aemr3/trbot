@@ -446,27 +446,46 @@ export class DrizzleChatSessionStore implements ChatSessionStore {
     await this.db.update(chatMessages).set({ status }).where(eq(chatMessages.id, messageId))
   }
 
-  async markSent(messageId: string): Promise<void> {
-    const [existing] = await this.db
-      .select({ sessionId: chatMessages.sessionId })
-      .from(chatMessages)
-      .where(eq(chatMessages.id, messageId))
-      .limit(1)
-    if (!existing) return
-    const [last] = await this.db
-      .select({ seq: max(chatMessages.seq) })
-      .from(chatMessages)
-      .where(eq(chatMessages.sessionId, existing.sessionId))
-    await this.db
-      .update(chatMessages)
-      .set({ status: "SENT", seq: (last?.seq ?? -1) + 1 })
-      .where(eq(chatMessages.id, messageId))
+  async markSent(messageId: string): Promise<boolean> {
+    return this.db.transaction((tx) => {
+      const existing = tx
+        .select({ sessionId: chatMessages.sessionId })
+        .from(chatMessages)
+        .where(and(eq(chatMessages.id, messageId), eq(chatMessages.status, "QUEUED")))
+        .limit(1)
+        .get()
+      if (!existing) return false
+      const last = tx
+        .select({ seq: max(chatMessages.seq) })
+        .from(chatMessages)
+        .where(eq(chatMessages.sessionId, existing.sessionId))
+        .get()
+      const updated = tx
+        .update(chatMessages)
+        .set({ status: "SENT", seq: (last?.seq ?? -1) + 1 })
+        .where(and(eq(chatMessages.id, messageId), eq(chatMessages.status, "QUEUED")))
+        .returning({ id: chatMessages.id })
+        .all()
+      return updated.length === 1
+    })
   }
 
-  async remove(messageId: string): Promise<void> {
-    this.db.transaction((tx) => {
+  async remove(messageId: string): Promise<boolean> {
+    return this.db.transaction((tx) => {
+      const existing = tx
+        .select({ id: chatMessages.id })
+        .from(chatMessages)
+        .where(and(eq(chatMessages.id, messageId), eq(chatMessages.status, "QUEUED")))
+        .limit(1)
+        .get()
+      if (!existing) return false
       tx.delete(chatMessageBlocks).where(eq(chatMessageBlocks.messageId, messageId)).run()
-      tx.delete(chatMessages).where(eq(chatMessages.id, messageId)).run()
+      const removed = tx
+        .delete(chatMessages)
+        .where(and(eq(chatMessages.id, messageId), eq(chatMessages.status, "QUEUED")))
+        .returning({ id: chatMessages.id })
+        .all()
+      return removed.length === 1
     })
   }
 

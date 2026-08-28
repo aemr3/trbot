@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-ai"
 import type { ChatMessageDraft } from "@trbot/chat/session.ts"
 import { CHAT_SYSTEM_PROMPT, ChatAgent, type ChatRecord } from "./chat.ts"
+import { steeringPrompt } from "./steering.ts"
 import { ChatTools, toolText, type ChatTool } from "./tool.ts"
 
 /** A harness answering with scripted replies, as the harness's own tests do it. */
@@ -191,6 +192,55 @@ test("runs the tools a reply asks for and answers with their results", async () 
   expect(drafts[1]?.message.text).toBe("Fetched ASELS quote.")
   expect(drafts[1]?.message.usage).toEqual({ inputTokens: 10, outputTokens: 5, totalTokens: 15, costTotal: 0.01 })
   expect(drafts[2]?.message.text).toBe("ASELS last traded at 390.00.")
+})
+
+test("applies steering after the current tool batch and before the next model call", async () => {
+  const inspect: ChatTool = {
+    definition: {
+      name: "inspect_stop",
+      description: "Read the current stop",
+      parameters: Type.Object({}),
+    },
+    run: async () => ({ blocks: [toolText("Stop is 420.")], details: null, isError: false }),
+  }
+  const { faux, models } = scripted()
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("inspect_stop", {})], { stopReason: "toolUse" }),
+    (context) => {
+      expect(context.messages.map((message) => message.role)).toEqual([
+        "user",
+        "assistant",
+        "toolResult",
+        "user",
+      ])
+      expect(JSON.stringify(context.messages.at(-1))).toContain("your stop is too close")
+      return fauxAssistantMessage("I widened the stop.")
+    },
+  ])
+  const agent = new ChatAgent({ models, tools: new ChatTools([inspect]) })
+  let polls = 0
+
+  const result = await agent.run({
+    model: faux.getModel(),
+    history: [],
+    prompt: "Manage the position",
+    steering: async () => {
+      polls += 1
+      return polls === 1
+        ? [{ role: "user", content: steeringPrompt("your stop is too close"), timestamp: 2 }]
+        : []
+    },
+    events: {
+      onText: () => {},
+      onReasoning: () => {},
+      onToolCall: () => {},
+      onRetry: ignoreRetry,
+      onMessage: async () => {},
+    },
+  })
+
+  expect(result.completed).toBe(true)
+  expect(polls).toBe(2)
 })
 
 test("waits for tool-start delivery before running the tool", async () => {

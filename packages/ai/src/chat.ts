@@ -129,6 +129,11 @@ export interface ChatTurnOptions {
   notificationBudget?: { sent: number }
   /** Application event that woke this turn, when one exists. */
   automationEvent?: { label: string | null; referenceId: string | null }
+  /**
+   * Claims user guidance submitted while this run is active. Polled only after
+   * a complete assistant/tool batch, so steering never interrupts a tool midway.
+   */
+  steering?: () => Promise<ChatRecord[]>
   events: ChatTurnEvents
   signal?: AbortSignal
 }
@@ -254,41 +259,45 @@ export class ChatAgent {
       }
 
       const calls = reply.content.filter((block): block is ToolCall => block.type === "toolCall")
-      if (calls.length === 0 || !tools) {
-        return { completed: true, aborted: false, errorMessage: null }
+      if (tools) {
+        for (const call of calls) {
+          await turn.events.onToolCall(call.name)
+          toolExecuted = true
+          const outcome = await tools.call(call, {
+            signal: turn.signal,
+            model: turn.model,
+            reasoningEffort: turn.reasoningEffort,
+            chatSessionId: turn.chatSessionId,
+            delegation,
+            notificationBudget,
+            automationEvent: turn.automationEvent,
+          })
+          const result: Message = {
+            role: "toolResult",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: (outcome.modelBlocks ?? outcome.blocks)
+              .filter((block) => block.kind === "TEXT")
+              .map((block) => ({ type: "text" as const, text: block.text ?? "" })),
+            details: outcome.details,
+            isError: outcome.isError,
+            timestamp: this.now(),
+          }
+          if (outcome.usage) result.usage = harnessUsage(outcome.usage)
+          context.messages.push(result)
+          await turn.events.onMessage(toolResultDraft(
+            result,
+            outcome.blocks,
+            outcome.usage ?? null,
+            outcome.effects,
+          ))
+        }
       }
 
-      for (const call of calls) {
-        await turn.events.onToolCall(call.name)
-        toolExecuted = true
-        const outcome = await tools.call(call, {
-          signal: turn.signal,
-          model: turn.model,
-          reasoningEffort: turn.reasoningEffort,
-          chatSessionId: turn.chatSessionId,
-          delegation,
-          notificationBudget,
-          automationEvent: turn.automationEvent,
-        })
-        const result: Message = {
-          role: "toolResult",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: (outcome.modelBlocks ?? outcome.blocks)
-            .filter((block) => block.kind === "TEXT")
-            .map((block) => ({ type: "text" as const, text: block.text ?? "" })),
-          details: outcome.details,
-          isError: outcome.isError,
-          timestamp: this.now(),
-        }
-        if (outcome.usage) result.usage = harnessUsage(outcome.usage)
-        context.messages.push(result)
-        await turn.events.onMessage(toolResultDraft(
-          result,
-          outcome.blocks,
-          outcome.usage ?? null,
-          outcome.effects,
-        ))
+      const steering = await turn.steering?.() ?? []
+      if (steering.length > 0) context.messages.push(...steering)
+      if ((calls.length === 0 || !tools) && steering.length === 0) {
+        return { completed: true, aborted: false, errorMessage: null }
       }
     }
   }

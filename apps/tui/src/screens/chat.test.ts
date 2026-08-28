@@ -478,7 +478,7 @@ test("clears a focused composer draft before Ctrl+C can quit", async () => {
   renderer.destroy()
 })
 
-test("shows only prompts waiting behind the active turn as queued", async () => {
+test("shows steering input as cancellable until the active turn claims it", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
@@ -501,10 +501,10 @@ test("shows only prompts waiting behind the active turn as queued", async () => 
   await mockInput.typeText("and what about THYAO?")
   mockInput.pressEnter()
 
-  // The first prompt is already being answered; only the second can be cancelled.
-  const queued = await waitForFrame((frame) => frame.includes("and what about THYAO?") && frame.includes("queued"))
-  expect(queued).toContain("^X cancels it")
-  expect(queued.match(/queued/gu)).toHaveLength(1)
+  // The first prompt is already being answered; guidance remains cancellable until
+  // the model reaches a safe boundary and claims it.
+  const steering = await waitForFrame((frame) => frame.includes("and what about THYAO?") && frame.includes("steering"))
+  expect(steering).toContain("^X cancels it")
 
   screen.destroy()
   renderer.destroy()

@@ -5,6 +5,7 @@ import type {
   ChatModelContext,
 } from "@trbot/chat/session.ts"
 import type { ChatRecord } from "./chat.ts"
+import { isSteeringPrompt } from "./steering.ts"
 
 export const CHAT_COMPACTION_RESERVE_TOKENS = 16_384
 export const CHAT_COMPACTION_KEEP_RECENT_TOKENS = 20_000
@@ -15,6 +16,7 @@ const SUMMARY_SYSTEM_PROMPT = [
   "Summarize only the supplied history. Never answer it or invent current market facts.",
   "Preserve exact instrument symbols, quantities, prices, timestamps, monitor levels, decisions,",
   "user instructions, risk constraints, pending questions, and relevant tool results.",
+  "Treat <user-steering> guidance as an update to the active task, not a separate task.",
   "Treat market values as historical observations unless the source explicitly says otherwise.",
   "Return only the requested structure in concise plain text.",
 ].join(" ")
@@ -181,7 +183,7 @@ export class ChatCompactor implements ChatCompactionRunner {
 /** Keeps the newest complete turns inside the verbatim tail. */
 export function selectRecentTurns(records: readonly ChatContextRecord[], keepTokens: number): number {
   const starts = records.flatMap((entry, index) => (
-    modelRecord(entry.record).role === "user" ? [index] : []
+    startsTurn(modelRecord(entry.record)) ? [index] : []
   ))
   if (starts.length === 0) return records.length
 
@@ -198,6 +200,14 @@ export function selectRecentTurns(records: readonly ChatContextRecord[], keepTok
     keepFrom = start
   }
   return keepFrom
+}
+
+function startsTurn(message: ChatRecord): boolean {
+  if (message.role !== "user") return false
+  const content = Array.isArray(message.content)
+    ? message.content.map((block) => block.type === "text" ? block.text : "").join("\n")
+    : message.content
+  return !isSteeringPrompt(content)
 }
 
 /** Pi's context estimate starts at the last valid provider usage, then adds trailing messages. */

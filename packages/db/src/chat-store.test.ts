@@ -547,7 +547,8 @@ describe("chat session store", () => {
     expect(await chats.inputText("event-1")).toBe(prompt)
     expect((await chats.get("chat-1"))?.messages).toMatchObject([{ role: "APP_EVENT", text: visible }])
 
-    await chats.markSent("event-1")
+    expect(await chats.markSent("event-1")).toBe(true)
+    expect(await chats.markSent("event-1")).toBe(false)
     expect(await chats.records("chat-1")).toEqual([{ role: "user", content: prompt, timestamp: 2_000 }])
   })
 
@@ -594,7 +595,8 @@ describe("chat session store", () => {
     const detail = await chats.get("chat-1")
     const messageId = detail?.messages[0]?.id ?? ""
 
-    await chats.remove(messageId)
+    expect(await chats.remove(messageId)).toBe(true)
+    expect(await chats.remove(messageId)).toBe(false)
 
     expect((await chats.get("chat-1"))?.messages).toEqual([])
     expect(await chats.records("chat-1")).toEqual([])

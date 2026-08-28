@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai"
 import type { ChatContextRecord, ChatModelContext } from "@trbot/chat/session.ts"
 import { ChatCompactor, selectRecentTurns } from "./compaction.ts"
+import { steeringPrompt } from "./steering.ts"
 
 function harness() {
   const faux = fauxProvider({ models: [{ id: "compact-model", contextWindow: 1_000, maxTokens: 500 }] })
@@ -179,6 +180,19 @@ test("keeps tool results with the turn that called them", () => {
   ]
   expect(selectRecentTurns(records, 10)).toBe(2)
   expect(selectRecentTurns(records, 1)).toBe(4)
+})
+
+test("keeps steering with the active turn instead of treating it as a new one", () => {
+  const records = [
+    record(1, { role: "user", content: `large ${"x".repeat(1_000)}`, timestamp: 1 }),
+    record(2, assistant("checking", 2)),
+    record(3, { role: "user", content: steeringPrompt("change the stop"), timestamp: 3 }),
+    record(4, assistant("changed", 4)),
+    record(5, { role: "user", content: "latest", timestamp: 5 }),
+    record(6, assistant("latest answer", 6)),
+  ]
+
+  expect(selectRecentTurns(records, 100)).toBe(4)
 })
 
 function record<T>(seq: number, value: T): ChatContextRecord {

@@ -2884,6 +2884,7 @@ export class ChatScreen {
         this.promptBackground(),
         this.options.embedded === true,
         message.id !== activeQueuedPrompt,
+        session.running,
         activeSubagentCalls.map(() => "subagent"),
       ))
       if (session.parentSessionId === null && message.role === "TOOL_RESULT" && message.toolName === "subagent") {
@@ -3035,6 +3036,7 @@ function messageBlock(
   promptBackground: string,
   embedded: boolean,
   showQueued: boolean,
+  steering: boolean,
   activeTools: readonly string[] = [],
 ): ChatTranscriptBlock {
   if (message.role === "APP_EVENT") {
@@ -3058,7 +3060,7 @@ function messageBlock(
       selectable: !queued,
       content: new StyledText([fg(queued ? QUEUED_COLOR : TEXT_COLOR)(message.text)]),
       ...(queued
-        ? { footer: new StyledText([fg(QUEUED_COLOR)("queued · ^X cancels it")]) }
+        ? { footer: new StyledText([fg(QUEUED_COLOR)(`${steering ? "steering" : "queued"} · ^X cancels it`)]) }
         : message.status === "FAILED"
           ? { footer: new StyledText([fg(ERROR_COLOR)("failed")]) }
           : {}),

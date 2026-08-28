@@ -443,15 +443,17 @@ export interface ChatSessionStore {
   update(messageId: string, draft: ChatMessageDraft): Promise<void>
   setStatus(messageId: string, status: ChatMessageStatus): Promise<void>
   /**
-   * Marks a queued message as asked, and moves it to the end of the conversation.
+   * Claims a queued message atomically and moves it to the end of the conversation.
    *
    * A message takes its place in the queue when it is written, but its place in the
    * conversation only when it is actually said. Without the move, a question queued
    * behind another would sort before the answer to that other one — and the model
    * would be replayed a conversation in an order nobody ever had.
+   * Returns false when another operation already claimed or cancelled it.
    */
-  markSent(messageId: string): Promise<void>
-  remove(messageId: string): Promise<void>
+  markSent(messageId: string): Promise<boolean>
+  /** Cancels a queued input atomically; false means it was already claimed. */
+  remove(messageId: string): Promise<boolean>
   /** Tool mutations recorded at or after a prospective rewind point. */
   effectsFrom(sessionId: string, messageId: string): Promise<ChatToolEffect[]>
   /** Removes one prompt and everything after it, including hidden compacted context. */

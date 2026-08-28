@@ -178,6 +178,57 @@ test("two messages in a row queue and run in the order they were sent", async ()
   expect(detail.messages.every((message) => message.status !== "QUEUED")).toBe(true)
 })
 
+test("steers an active run with all pending guidance instead of starting more turns", async () => {
+  const started = Promise.withResolvers<void>()
+  const continueRun = Promise.withResolvers<void>()
+  const injected: ChatRecord[] = []
+  const { chat, turns, frames } = await harness({
+    run: async (turn) => {
+      started.resolve()
+      await continueRun.promise
+      injected.push(...await turn.steering?.() ?? [])
+      await turn.events.onMessage(reply("I widened the stop."))
+      return { completed: true, aborted: false, errorMessage: null }
+    },
+  })
+  const session = await chat.create()
+  await chat.send(session.id, "Manage the position")
+  await started.promise
+
+  const guidance = await chat.send(session.id, "your stop is too close change it")
+  const followOn = await chat.send(session.id, "keep the same risk amount")
+  expect((await chat.detail(session.id)).messages.find((message) => message.id === guidance.id)?.status)
+    .toBe("QUEUED")
+
+  continueRun.resolve()
+  await settle()
+
+  expect(turns).toHaveLength(1)
+  expect(injected).toHaveLength(2)
+  expect(JSON.stringify(injected[0])).toContain("your stop is too close change it")
+  expect(JSON.stringify(injected[1])).toContain("keep the same risk amount")
+  expect((await chat.detail(session.id)).messages.map((message) => ({
+    role: message.role,
+    status: message.status,
+    text: message.text,
+  }))).toEqual([
+    { role: "USER", status: "SENT", text: "Manage the position" },
+    { role: "USER", status: "SENT", text: "your stop is too close change it" },
+    { role: "USER", status: "SENT", text: "keep the same risk amount" },
+    { role: "ASSISTANT", status: "COMPLETE", text: "I widened the stop." },
+  ])
+  expect(frames).toContainEqual({
+    type: "chatMessage",
+    sessionId: session.id,
+    message: { ...guidance, status: "SENT" },
+  })
+  expect(frames).toContainEqual({
+    type: "chatMessage",
+    sessionId: session.id,
+    message: { ...followOn, status: "SENT" },
+  })
+})
+
 test("claims the prompt before delivering the running state and starting the model", async () => {
   const running = Promise.withResolvers<void>()
   const delivered = Promise.withResolvers<void>()
