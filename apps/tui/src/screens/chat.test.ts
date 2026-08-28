@@ -1995,7 +1995,7 @@ test("opens and cancels only the current chat's agent monitors", async () => {
   renderer.destroy()
 })
 
-test("opens read-only worker transcripts with /subagents and returns with ⌥ up", async () => {
+test("keeps the usual composer in worker transcripts but blocks submission", async () => {
   const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const parent = await chats.create()
@@ -2023,14 +2023,16 @@ test("opens read-only worker transcripts with /subagents and returns with ⌥ up
   mockInput.pressEnter()
   await waitForFrame((frame) => frame.includes("Subagents") && frame.includes("Inspect the XU100 trend"))
   mockInput.pressEnter()
-  const worker = await waitForFrame((frame) => frame.includes("Read-only · Subagent transcript") && frame.includes("worker · ○ test-model"))
-  expect(worker).not.toContain("ask something")
-  expect(renderer.currentFocusedRenderable).toBeNull()
+  const worker = await waitForFrame((frame) => frame.includes("Cannot send · Subagent transcript") && frame.includes("worker · ○ test-model"))
+  expect(worker).toContain("ask something")
+  expect(renderer.currentFocusedRenderable).not.toBeNull()
 
-  await mockInput.typeText("cannot type here")
+  await mockInput.typeText("draft in the usual composer")
+  mockInput.pressEnter()
+  await waitForFrame((frame) => frame.includes("Subagent transcripts cannot receive messages."))
   mockInput.pressArrow("up", { meta: true })
   const returned = await waitForFrame((frame) => frame.includes("/help keys") && !frame.includes("Subagent transcript"))
-  expect(returned).not.toContain("cannot type here")
+  expect(returned).toContain("draft in the usual composer")
   expect(chats.sent).toEqual([])
 
   screen.destroy()
@@ -2877,7 +2879,13 @@ test("⌥ arrows cycle worker transcripts only while viewing one and return to t
 
   await mockInput.typeText("draft stays here")
   screen.openSession(first.id)
-  await waitForFrame((frame) => frame.includes("Subagent transcript") && frame.includes("⌥←/→ workers"))
+  const workerFrame = await waitForFrame((frame) => (
+    frame.includes("Subagent transcript")
+    && frame.includes("Cannot send")
+    && frame.includes("⌥←/→ workers")
+  ))
+  expect(workerFrame).toContain("draft stays here")
+  expect(renderer.currentFocusedRenderable).not.toBeNull()
   expect(selected.at(-1)).toBe(first.id)
 
   mockInput.pressArrow("right", { meta: true })

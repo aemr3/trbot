@@ -507,7 +507,7 @@ export class ChatScreen {
 
   /** Restores the place the trader left focused when CHAT becomes visible again. */
   activate(): void {
-    if (this.typing()) this.composer.focus()
+    this.syncComposerFocus()
     if (!this.selectedSessionId) void this.loadDefaultChoice()
     else void this.refreshMobileConnection(this.selectedSessionId)
   }
@@ -626,6 +626,12 @@ export class ChatScreen {
       return
     }
     if (key.name !== "escape" && key.name !== "esc") this.lastEscapeAt = 0
+    if (this.selectedSession()?.parentSessionId && isEnter(key) && !key.shift) {
+      this.commandNotice = "Subagent transcripts cannot receive messages."
+      this.commandMenu.close()
+      this.render.schedule()
+      return
+    }
     if (this.typing() && this.handleCommandMenuKey(key)) return
     if (this.selectedSession()?.parentSessionId) {
       if (isAltArrow(key, "right")) {
@@ -1359,12 +1365,17 @@ export class ChatScreen {
   private async sendComposed(): Promise<void> {
     const text = this.composer.plainText.trim()
     if (!text) return
+    if (this.selectedSession()?.parentSessionId) {
+      this.commandNotice = "Subagent transcripts cannot receive messages."
+      this.commandMenu.close()
+      this.render.schedule()
+      return
+    }
     const serverPrompt = this.composerIsServerPrompt
     this.resetPromptHistoryNavigation()
     this.composerIsServerPrompt = false
     const command = text.split(/\s+/u, 1)[0]?.toLowerCase()
     if (!serverPrompt && CHAT_COMMANDS.some((entry) => entry.name === command) && await this.runCommand(text)) return
-    if (this.selectedSession()?.parentSessionId) return
     const session = this.selectedSession() ?? await this.startSession()
     if (!session || this.destroyed) return
     const send = this.options.chats.send(session.id, text)
@@ -1723,7 +1734,7 @@ export class ChatScreen {
     this.undoPanel = null
     if (!this.undoSlot.isDestroyed && !panel.root.isDestroyed) this.undoSlot.remove(panel.root)
     panel.destroy()
-    if (!this.destroyed && this.focus === "composer" && this.composerUsable()) this.composer.focus()
+    if (!this.destroyed) this.syncComposerFocus()
     this.render.schedule()
   }
 
@@ -2461,14 +2472,14 @@ export class ChatScreen {
   }
 
   private syncComposerFocus(): void {
-    if (this.focus === "composer" && this.undoPanel === null && this.composerUsable()) this.composer.focus()
+    const focusComposer = this.focus === "composer" && this.undoPanel === null
+    if (focusComposer && this.composerUsable()) this.composer.focus()
     else this.composer.blur()
   }
 
-  /** No provider, no model, or a read-only worker means there is nothing to type into. */
+  /** No provider or model means there is nothing to type into. */
   private composerUsable(): boolean {
-    return !this.selectedSession()?.parentSessionId
-      && this.connected !== false
+    return this.connected !== false
       && this.selectedHasModel()
       && this.blockingFocus() === null
   }
@@ -2484,7 +2495,9 @@ export class ChatScreen {
     this.emptyState.visible = showEmptyState
     this.syncQuestionPanel()
     this.syncPermissionPanel()
-    this.composerRow.visible = this.composerUsable()
+    const composerUsable = this.composerUsable()
+    this.composerRow.visible = composerUsable
+    this.composer.visible = composerUsable
     // Nothing here sizes the field: it measures its own text and the block around it
     // takes exactly the height the prompt needs. Only the active insertion marker is
     // warm; when the transcript has focus it recedes with the other turn markers.
@@ -2697,14 +2710,14 @@ export class ChatScreen {
     if (session?.parentSessionId) {
       const candidates = this.streamingBySession.has(session.id)
         ? [
-            "Esc interrupt · Read-only · Subagent running · ⌥←/→ workers · ⌥↑ parent",
-            "Esc interrupt · Read-only · ⌥←/→ workers · ⌥↑ parent",
+            "Esc interrupt · Cannot send · Subagent running · ⌥←/→ workers · ⌥↑ parent",
+            "Esc interrupt · Cannot send · ⌥←/→ workers · ⌥↑ parent",
             "Esc interrupt · ⌥↑ parent",
             "Esc interrupt",
           ]
         : [
-            "Read-only · Subagent transcript · ⌥←/→ workers · ⌥↑ parent",
-            "Read-only · ⌥←/→ workers · ⌥↑ parent",
+            "Cannot send · Subagent transcript · ⌥←/→ workers · ⌥↑ parent",
+            "Cannot send · ⌥←/→ workers · ⌥↑ parent",
             "⌥←/→ workers · ⌥↑ parent",
             "⌥↑ parent",
           ]
