@@ -3,12 +3,14 @@ import {
   createModels,
   type Api,
   type Model,
+  type ModelsRefreshOptions,
   type MutableModels,
 } from "@earendil-works/pi-ai"
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all"
+import { builtinProviders, getBuiltinModelDataGeneratedAt } from "@earendil-works/pi-ai/providers/all"
 import manifest from "../package.json"
 import type { AiCredentialStore } from "./credential-store.ts"
 import { StoredCredentials } from "./credentials.ts"
+import { type RemoteCatalogOptions, withRemoteCatalog } from "./remote-catalog.ts"
 
 /**
  * The model harness version stamped on every stored chat message.
@@ -41,10 +43,35 @@ export type AiHarness = MutableModels
  * One object then owns the catalogue, credential resolution, and refresh, so nothing
  * in this application describes a model or exchanges a token by hand.
  */
-export function createHarness(credentials: AiCredentialStore): AiHarness {
+export interface CreateHarnessOptions extends Omit<RemoteCatalogOptions, "localGeneratedAt" | "userAgent"> {}
+
+export function createHarness(credentials: AiCredentialStore, options: CreateHarnessOptions = {}): AiHarness {
   const models = createModels({ credentials: new StoredCredentials(credentials) })
-  for (const provider of builtinProviders()) models.setProvider(provider)
+  const remoteOptions: RemoteCatalogOptions = {
+    ...options,
+    localGeneratedAt: getBuiltinModelDataGeneratedAt(),
+    userAgent: `trbot ${HARNESS_VERSION}`,
+  }
+  for (const provider of builtinProviders()) {
+    // Radius discovers models from its authenticated gateway and already owns
+    // its refresh behavior. Every generated provider gets pi.dev's overlay.
+    models.setProvider(provider.id === "radius" ? provider : withRemoteCatalog(provider, remoteOptions))
+  }
   return models
+}
+
+/** Refreshes only providers that are configured in this server process. */
+export async function refreshConfiguredModels(
+  models: AiHarness,
+  options: Pick<ModelsRefreshOptions, "force" | "signal"> = {},
+): Promise<void> {
+  const configured = (await Promise.all(models.getProviders().map(async (provider) => (
+    await models.checkAuth(provider.id, options.signal === undefined ? {} : { signal: options.signal })
+      ? provider.id
+      : null
+  )))).filter((providerId): providerId is string => providerId !== null)
+  if (configured.length === 0) return
+  await models.refresh({ ...options, providers: configured })
 }
 
 /**

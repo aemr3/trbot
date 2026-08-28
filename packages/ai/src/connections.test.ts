@@ -38,7 +38,7 @@ describe("model providers", () => {
 
   test("forces dynamic provider refresh before returning a requested fresh list", async () => {
     const credentials = memoryCredentials()
-    const harness = createHarness(credentials)
+    const harness = createTestHarness(credentials)
     const faux = fauxProvider({ provider: "dynamic", models: [{ id: "dynamic-model" }] })
     let networkRefreshes = 0
     let forced = false
@@ -145,7 +145,7 @@ describe("model providers", () => {
 
 describe("resolving a chosen model", () => {
   test("finds a model the catalogue has", () => {
-    const models = createHarness(memoryCredentials())
+    const models = createTestHarness(memoryCredentials())
     const first = models.getModels("groq")[0]
     if (!first) throw new Error("the harness reported no Groq models")
 
@@ -155,7 +155,7 @@ describe("resolving a chosen model", () => {
   test("refuses a model that is gone, naming ones that are not", () => {
     // A provider retires a model, or an upgrade drops it. Guessing a replacement
     // would answer a trader from a model they never picked.
-    const models = createHarness(memoryCredentials())
+    const models = createTestHarness(memoryCredentials())
     const failure = attempt(() => harnessModel(models, "groq", "llama-1-does-not-exist"))
 
     expect(failure?.message).toContain("llama-1-does-not-exist")
@@ -163,14 +163,18 @@ describe("resolving a chosen model", () => {
   })
 
   test("refuses a provider the harness does not have at all", () => {
-    const models = createHarness(memoryCredentials())
+    const models = createTestHarness(memoryCredentials())
     expect(attempt(() => harnessModel(models, "not-a-provider", "any"))?.message).toContain("reconnect")
   })
 })
 
 function build(): AiConnections {
   const credentials = memoryCredentials()
-  return new AiConnections(createHarness(credentials), credentials, memoryPreferences())
+  return new AiConnections(createTestHarness(credentials), credentials, memoryPreferences())
+}
+
+function createTestHarness(credentials: AiCredentialStore) {
+  return createHarness(credentials, { fetch: async () => Response.json({}) })
 }
 
 function memoryCredentials(): AiCredentialStore {

@@ -8,7 +8,7 @@ import type {
 } from "@trbot/protocol/ai.ts"
 import type { AiCredentialStore, AiPreferencesStore } from "./credential-store.ts"
 import { asCredential, CredentialInputSchema, StoredCredentials } from "./credentials.ts"
-import type { AiHarness } from "./harness.ts"
+import { refreshConfiguredModels, type AiHarness } from "./harness.ts"
 import { z } from "zod"
 
 const CredentialAccountSchema = z.object({ accountId: z.string().min(1).optional() })
@@ -97,7 +97,7 @@ export class AiConnections {
    * built from this cannot offer a model that would fail on send.
    */
   async models(options: AiModelListOptions = {}): Promise<AiModelSummary[]> {
-    if (options.refresh) await this.harness.refresh({ force: true })
+    if (options.refresh) await refreshConfiguredModels(this.harness, { force: true })
     const available = await this.harness.getAvailable()
     return available
       .map((model) => ({

@@ -79,7 +79,7 @@ describe("server and client over the wire", () => {
     const hub = new StreamHub(session)
     const credentials = memoryCredentials()
     const ai = new AiService({
-      models: createHarness(credentials),
+      models: createHarness(credentials, { fetch: async () => Response.json({}) }),
       credentials,
       preferences: memoryPreferences(),
     })

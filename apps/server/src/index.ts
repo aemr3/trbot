@@ -17,7 +17,13 @@ import { ChatAgent } from "@trbot/ai/chat.ts"
 import { ChatCompactor } from "@trbot/ai/compaction.ts"
 import { ChatTitleGenerator } from "@trbot/ai/title.ts"
 import { ChatGoalEvaluator } from "@trbot/ai/goal-evaluator.ts"
-import { HARNESS_VERSION, closeHarness, createHarness, harnessModel } from "@trbot/ai/harness.ts"
+import {
+  HARNESS_VERSION,
+  closeHarness,
+  createHarness,
+  harnessModel,
+  refreshConfiguredModels,
+} from "@trbot/ai/harness.ts"
 import {
   ApiVoiceTranscriber,
   OpenAiVoiceCredentialResolver,
@@ -164,6 +170,7 @@ async function startTrbotServer(): Promise<void> {
   const credentials = new DrizzleAiCredentialStore(connection.db)
   const aiPreferences = new DrizzleAiPreferencesStore(connection.db)
   const models = createHarness(credentials)
+  await refreshConfiguredModels(models)
   const titles = new ChatTitleGenerator(models)
   const goalEvaluator = new ChatGoalEvaluator(models)
 
