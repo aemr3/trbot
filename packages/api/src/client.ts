@@ -8,6 +8,7 @@ import type { HttpResponse, SseFrame, Transport } from "./transport.ts"
 const AUTH_ERROR_CODES = new Set([9002, 9005, 9008, 9010])
 const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 120_000
 const DEFAULT_AUTH_RATE_LIMIT_MS = 30_000
+const DEFAULT_OTP_EXPIRY_MS = 5 * 60_000
 const API_URL = "https://api.getmidas.com"
 const STREAM_URL = "https://stream.getmidas.com"
 const USER_AGENT = "Midas/3.2.1 (iPhone; iOS 18.1.1; Scale/3.00) AppleWebKit/605.1.15 (KHTML, like Gecko)"
@@ -115,7 +116,10 @@ export class ApiClient {
 
     return this.runAuthentication(async () => {
       const credentials = this.credentials()
-      const state = await this.loadOrCreateState()
+      let state = await this.loadOrCreateState()
+      if (state.loginReferenceCode && !hasActiveLoginChallenge(state, this.now())) {
+        state = await this.clearLoginChallenge(state)
+      }
       if (!state.memberUid || !state.loginReferenceCode) {
         return this.initializeLogin(state)
       }
@@ -176,12 +180,16 @@ export class ApiClient {
   }
 
   private async authenticateInternal(force: boolean): Promise<ApiSession> {
-    const state = await this.loadOrCreateState()
+    let state = await this.loadOrCreateState()
 
     if (!force && hasUsableAccessToken(state, this.now())) return sessionFrom(state)
     if (state.loginReferenceCode) {
-      if (!this.hasCredentials()) throw new CredentialsRequiredError()
-      throw new OtpRequiredError(state.loginReferenceCode, null)
+      if (hasActiveLoginChallenge(state, this.now())) {
+        if (!this.hasCredentials()) throw new CredentialsRequiredError()
+        const expiresInSeconds = Math.max(1, Math.ceil((state.loginReferenceExpiresAt - this.now()) / 1_000))
+        throw new OtpRequiredError(state.loginReferenceCode, expiresInSeconds)
+      }
+      state = await this.clearLoginChallenge(state)
     }
     this.throwIfAuthenticationRateLimited()
 
@@ -206,6 +214,7 @@ export class ApiClient {
             refreshToken: null,
             accessTokenExpiresAt: null,
             loginReferenceCode: null,
+            loginReferenceExpiresAt: null,
             updatedAt: this.now(),
           }
           await this.options.store.put(resetState)
@@ -230,14 +239,16 @@ export class ApiClient {
     if (!memberUid || !referenceCode) {
       throw new AuthenticationError("Login initialization returned no member or OTP reference")
     }
+    const expiresInSeconds = login.otp?.expirationSeconds ?? null
 
     await this.options.store.put({
       ...state,
       memberUid,
       loginReferenceCode: referenceCode,
+      loginReferenceExpiresAt: this.now() + otpExpiryMs(expiresInSeconds),
       updatedAt: this.now(),
     })
-    throw new OtpRequiredError(referenceCode, login.otp?.expirationSeconds ?? null)
+    throw new OtpRequiredError(referenceCode, expiresInSeconds)
   }
 
   private async refresh(state: AuthState): Promise<ApiSession> {
@@ -293,6 +304,7 @@ export class ApiClient {
       refreshToken: token.refresh_token ?? state.refreshToken,
       accessTokenExpiresAt: accessTokenExpiresAt(token.access_token),
       loginReferenceCode: options.clearLoginChallenge ? null : state.loginReferenceCode,
+      loginReferenceExpiresAt: options.clearLoginChallenge ? null : state.loginReferenceExpiresAt,
       updatedAt: this.now(),
     }
     await this.options.store.put(next)
@@ -323,11 +335,23 @@ export class ApiClient {
       privateKeyPem: keyPair.privateKey,
       publicKeyBase64: keyPair.publicKey.toString("base64"),
       loginReferenceCode: null,
+      loginReferenceExpiresAt: null,
       createdAt: now,
       updatedAt: now,
     }
     await this.options.store.put(state)
     return state
+  }
+
+  private async clearLoginChallenge(state: AuthState): Promise<AuthState> {
+    const next = {
+      ...state,
+      loginReferenceCode: null,
+      loginReferenceExpiresAt: null,
+      updatedAt: this.now(),
+    }
+    await this.options.store.put(next)
+    return next
   }
 
   private hasCredentials(): boolean {
@@ -462,6 +486,22 @@ function isApiAuthenticationError(cause: unknown): boolean {
 function hasUsableAccessToken(state: AuthState, now: number): state is AuthState & { accessToken: string } {
   if (!state.accessToken) return false
   return state.accessTokenExpiresAt === null || state.accessTokenExpiresAt - now > ACCESS_TOKEN_EXPIRY_BUFFER_MS
+}
+
+function hasActiveLoginChallenge(
+  state: AuthState,
+  now: number,
+): state is AuthState & { loginReferenceCode: string; loginReferenceExpiresAt: number } {
+  return state.loginReferenceCode !== null
+    && state.loginReferenceExpiresAt !== null
+    && state.loginReferenceExpiresAt > now
+}
+
+function otpExpiryMs(expiresInSeconds: number | null): number {
+  if (expiresInSeconds === null || !Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
+    return DEFAULT_OTP_EXPIRY_MS
+  }
+  return expiresInSeconds * 1_000
 }
 
 function sessionFrom(state: AuthState): ApiSession {

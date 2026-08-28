@@ -54,7 +54,10 @@ describe("API authentication", () => {
   })
 
   test("does not bypass an unfinished SMS challenge during forced reauthentication", async () => {
-    const store = new MemoryAuthStore(authState({ loginReferenceCode: "reference-1" }))
+    const store = new MemoryAuthStore(authState({
+      loginReferenceCode: "reference-1",
+      loginReferenceExpiresAt: NOW + 60_000,
+    }))
     const transport = new FakeTransport(() => {
       throw new Error("transport should not be called")
     })
@@ -62,7 +65,35 @@ describe("API authentication", () => {
     const error = await client(store, transport).reauthenticate().catch((cause: unknown) => cause)
 
     expect(error).toBeInstanceOf(OtpRequiredError)
+    expect(error).toMatchObject({ expiresInSeconds: 60 })
     expect(transport.requests).toHaveLength(0)
+  })
+
+  test("replaces a legacy SMS challenge whose expiry was not stored", async () => {
+    const store = new MemoryAuthStore(authState({
+      memberUid: null,
+      accessToken: null,
+      refreshToken: null,
+      accessTokenExpiresAt: null,
+      loginReferenceCode: "reference-old",
+      loginReferenceExpiresAt: null,
+    }))
+    const transport = new FakeTransport((request) => {
+      expect(operationName(request)).toBe("loginInitializeMemberV2")
+      return data({
+        loginInitializeMemberV2: {
+          memberUid: "member-1",
+          otp: { referenceCode: "reference-new", expirationSeconds: 180 },
+        },
+      })
+    })
+
+    const error = await client(store, transport).reauthenticate().catch((cause: unknown) => cause)
+
+    expect(error).toMatchObject({ referenceCode: "reference-new", expiresInSeconds: 180 })
+    expect(store.state?.loginReferenceCode).toBe("reference-new")
+    expect(store.state?.loginReferenceExpiresAt).toBe(NOW + 180_000)
+    expect(transport.requests.map(operationName)).toEqual(["loginInitializeMemberV2"])
   })
 
   test("resumes a stored access token without user credentials", async () => {
@@ -261,11 +292,13 @@ describe("API authentication", () => {
     if (!(error instanceof OtpRequiredError)) throw new Error("Expected an OTP challenge")
     expect(error.expiresInSeconds).toBe(180)
     expect(store.state?.loginReferenceCode).toBe("reference-1")
+    expect(store.state?.loginReferenceExpiresAt).toBe(NOW + 180_000)
     expect(store.state?.privateKeyPem).toContain("BEGIN PRIVATE KEY")
 
     const session = await api.completeLogin("123456")
     expect(session.accessToken).toBe(accessToken)
     expect(store.state?.loginReferenceCode).toBeNull()
+    expect(store.state?.loginReferenceExpiresAt).toBeNull()
   })
 
   test("coalesces concurrent refreshes", async () => {
@@ -353,6 +386,7 @@ function authState(overrides: Partial<AuthState> = {}): AuthState {
     privateKeyPem: keys.privateKey,
     publicKeyBase64: keys.publicKey.toString("base64"),
     loginReferenceCode: null,
+    loginReferenceExpiresAt: null,
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,

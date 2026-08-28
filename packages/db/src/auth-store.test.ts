@@ -45,6 +45,7 @@ function state(): AuthState {
     privateKeyPem: "private-key",
     publicKeyBase64: "public-key",
     loginReferenceCode: null,
+    loginReferenceExpiresAt: null,
     createdAt: 1_786_000_000_000,
     updatedAt: 1_786_000_000_000,
   }

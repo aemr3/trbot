@@ -1,0 +1,1 @@
+ALTER TABLE `auth_state` ADD `login_reference_expires_at` integer;

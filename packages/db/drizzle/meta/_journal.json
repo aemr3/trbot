@@ -330,6 +330,13 @@
       "when": 1787826968636,
       "tag": "0046_retry_failed_goals",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1787898082400,
+      "tag": "0047_expire_login_challenges",
+      "breakpoints": true
     }
   ]
 }

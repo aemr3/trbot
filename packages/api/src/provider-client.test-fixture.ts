@@ -52,6 +52,7 @@ export function providerApiClient<TResponse>(
     privateKeyPem: "unused",
     publicKeyBase64: "unused",
     loginReferenceCode: null,
+    loginReferenceExpiresAt: null,
     createdAt: 0,
     updatedAt: 0,
   }

@@ -43,6 +43,7 @@ export class DrizzleAuthStore implements AuthStore {
           privateKeyPem: state.privateKeyPem,
           publicKeyBase64: state.publicKeyBase64,
           loginReferenceCode: state.loginReferenceCode,
+          loginReferenceExpiresAt: state.loginReferenceExpiresAt,
           updatedAt: state.updatedAt,
         },
       })

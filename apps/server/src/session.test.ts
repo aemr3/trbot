@@ -26,6 +26,7 @@ function authState(): AuthState {
     privateKeyPem: "key",
     publicKeyBase64: "pub",
     loginReferenceCode: null,
+    loginReferenceExpiresAt: null,
     createdAt: 0,
     updatedAt: 0,
   }
@@ -120,6 +121,7 @@ describe("provider session recovery", () => {
     state.memberUid = "member-1"
     state.accessTokenExpiresAt = Date.now() + 60_000
     state.loginReferenceCode = "challenge-1"
+    state.loginReferenceExpiresAt = Date.now() + 60_000
     const session = new ProviderSession({
       openAuthSession: sessionWith(state, { count: 0 }),
       credentials: null,
@@ -165,6 +167,26 @@ describe("provider session recovery", () => {
     const [first, second, third] = await Promise.all([session.recover(), session.recover(), session.recover()])
 
     expect([first, second, third]).toEqual([false, false, false])
+    expect(connector.resumeCalls).toBe(1)
+  })
+
+  test("an authentication report during recovery does not start a second attempt", async () => {
+    const failure = new ProtocolError("otp_required", "verification required")
+    const connector = new TestConnector([], [new TestHandle(undefined, async () => { throw failure })])
+    let reports = 0
+    let session: ProviderSession
+    session = new ProviderSession({
+      openAuthSession: noAuthSession,
+      credentials: null,
+      connector,
+      onError: () => {
+        reports += 1
+        void session.recover()
+      },
+    })
+
+    expect(await session.recover()).toBe(false)
+    expect(reports).toBe(1)
     expect(connector.resumeCalls).toBe(1)
   })
 

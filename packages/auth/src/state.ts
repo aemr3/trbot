@@ -9,6 +9,7 @@ export interface AuthState {
   privateKeyPem: string
   publicKeyBase64: string
   loginReferenceCode: string | null
+  loginReferenceExpiresAt: number | null
   createdAt: number
   updatedAt: number
 }

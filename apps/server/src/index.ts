@@ -455,7 +455,10 @@ async function startTrbotServer(): Promise<void> {
   await alerts.load()
   await marketMonitors.load()
 
-  const resumed = await session.resume()
+  // Recovery owns its in-flight guard, including errors reported back through
+  // reportProviderError. Calling resume directly here would let that callback
+  // start the same recovery a second time during startup.
+  const resumed = await session.recover()
   await automations.start()
   if (!resumed) console.log("No provider session; waiting for a client to sign in")
 
