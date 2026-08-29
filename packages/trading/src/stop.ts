@@ -140,26 +140,6 @@ export interface StopRuleStore {
   remove(id: string): Promise<void>
 }
 
-export function isStopRuleRole(value: string): value is StopRuleRole {
-  return STOP_RULE_ROLES.some((role) => role === value)
-}
-
-export function isStopRuleKind(value: string): value is StopRuleKind {
-  return STOP_RULE_KINDS.some((kind) => kind === value)
-}
-
-export function isStopRuleBasis(value: string): value is StopRuleBasis {
-  return STOP_RULE_BASES.some((basis) => basis === value)
-}
-
-export function isStopPositionSide(value: string): value is StopPositionSide {
-  return STOP_POSITION_SIDES.some((side) => side === value)
-}
-
-export function isStopRuleStatus(value: string): value is StopRuleStatus {
-  return STOP_RULE_STATUSES.some((status) => status === value)
-}
-
 /** Whether a protective rule can still affect or describe an open position. */
 export function isOpenStopRule(rule: Pick<StopRule, "status">): boolean {
   return rule.status !== "DONE"

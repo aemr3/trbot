@@ -133,22 +133,6 @@ export interface PriceAlertActions {
   remove(id: string): Promise<void>
 }
 
-export function isPriceAlertKind(value: string): value is PriceAlertKind {
-  return ALERT_KINDS.some((kind) => kind === value)
-}
-
-export function isPriceAlertBasis(value: string): value is PriceAlertBasis {
-  return ALERT_BASES.some((basis) => basis === value)
-}
-
-export function isPriceAlertStatus(value: string): value is PriceAlertStatus {
-  return ALERT_STATUSES.some((status) => status === value)
-}
-
-export function isPriceAlertRepeat(value: string): value is PriceAlertRepeat {
-  return ALERT_REPEATS.some((repeat) => repeat === value)
-}
-
 /** Whether an alert is still available to watch, pause, or edit. */
 export function isOpenPriceAlert(alert: Pick<PriceAlert, "status">): boolean {
   return alert.status !== "TRIGGERED"
