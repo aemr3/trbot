@@ -10,33 +10,35 @@ import {
 } from "@opentui/core"
 import { SelectableList } from "./selectable-list.ts"
 
-interface SearchListModalFrameOptions {
+interface ListModalFrameOptions {
   maxWidth: number
   maxHeight: number
   minWidth: number
   minHeight: number
-  placeholder: string
+  search?: {
+    placeholder: string
+    onInput: () => void
+  }
   wrapContent?: boolean
-  onSearchInput: () => void
   onSelect: (index: number) => void
   onActivate: () => void
 }
 
-/** Shared OpenTUI frame for searchable, keyboard-navigable modal lists. */
-export class SearchListModalFrame {
+/** Shared OpenTUI frame for keyboard-navigable modal lists, with optional search. */
+export class ListModalFrame {
   readonly root: BoxRenderable
   readonly header: TextRenderable
-  readonly search: InputRenderable
   readonly list: SelectableList
   readonly footer: TextRenderable
 
   private previousFocus: Renderable | null = null
   private readonly modal: BoxRenderable
+  private readonly search: InputRenderable | null
   private destroyed = false
 
   constructor(
     private readonly renderer: RenderContext,
-    private readonly options: SearchListModalFrameOptions,
+    private readonly options: ListModalFrameOptions,
   ) {
     this.root = new BoxRenderable(renderer, {
       position: "absolute",
@@ -62,19 +64,24 @@ export class SearchListModalFrame {
       flexDirection: "column",
     })
     this.header = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
-    this.search = new InputRenderable(renderer, {
-      width: "100%",
-      flexShrink: 0,
-      marginBottom: 1,
-      maxLength: 100,
-      placeholder: options.placeholder,
-      backgroundColor: TUI_THEME.fieldBackground,
-      focusedBackgroundColor: TUI_THEME.fieldBackground,
-      textColor: TUI_THEME.textPrimary,
-      focusedTextColor: TUI_THEME.textPrimary,
-      cursorColor: TUI_THEME.accent,
-    })
-    this.search.on(InputRenderableEvents.INPUT, options.onSearchInput)
+    const search = options.search
+    if (search) {
+      this.search = new InputRenderable(renderer, {
+        width: "100%",
+        flexShrink: 0,
+        marginBottom: 1,
+        maxLength: 100,
+        placeholder: search.placeholder,
+        backgroundColor: TUI_THEME.fieldBackground,
+        focusedBackgroundColor: TUI_THEME.fieldBackground,
+        textColor: TUI_THEME.textPrimary,
+        focusedTextColor: TUI_THEME.textPrimary,
+        cursorColor: TUI_THEME.accent,
+      })
+      this.search.on(InputRenderableEvents.INPUT, search.onInput)
+    } else {
+      this.search = null
+    }
     this.list = new SelectableList(renderer, {
       backgroundColor: TUI_THEME.appBackground,
       selectedBackgroundColor: TUI_THEME.overlaySelection,
@@ -84,15 +91,31 @@ export class SearchListModalFrame {
     })
     this.footer = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
     this.modal.add(this.header)
-    this.modal.add(this.search)
+    if (this.search) this.modal.add(this.search)
     this.modal.add(this.list.root)
     this.modal.add(this.footer)
     this.root.add(this.modal)
   }
 
+  get searchValue(): string {
+    return this.search?.value ?? ""
+  }
+
   mount(): void {
     this.previousFocus = this.renderer.currentFocusedRenderable
-    this.search.focus()
+    this.search?.focus()
+  }
+
+  focusSearch(): void {
+    this.search?.focus()
+  }
+
+  blurSearch(): void {
+    this.search?.blur()
+  }
+
+  setSearchVisible(visible: boolean): void {
+    if (this.search) this.search.visible = visible
   }
 
   handleKey(key: KeyEvent): boolean {
@@ -104,7 +127,7 @@ export class SearchListModalFrame {
       this.list.handleKey(key)
       return true
     }
-    if (this.search.handleKeyPress(key)) return true
+    if (this.search?.handleKeyPress(key)) return true
     this.list.handleKey(key)
     return true
   }

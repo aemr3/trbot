@@ -1,23 +1,19 @@
 import { TUI_THEME } from "../theme.ts"
 import {
-  BoxRenderable,
   StyledText,
-  TextRenderable,
   fg,
+  type BoxRenderable,
   type KeyEvent,
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
 import type { ChatSession } from "@trbot/chat/session.ts"
-import { SelectableList } from "./selectable-list.ts"
+import { ListModalFrame } from "./list-modal-frame.ts"
 
-const PANEL_BG = TUI_THEME.appBackground
-const BORDER_COLOR = TUI_THEME.textFaint
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
 const ACCENT_COLOR = TUI_THEME.accent
 const RUNNING_COLOR = TUI_THEME.running
-const SELECTED_BG = TUI_THEME.overlaySelection
 
 export interface SubagentSessionModalOptions {
   sessions: ChatSession[]
@@ -31,10 +27,7 @@ export interface SubagentSessionModalOptions {
 export class SubagentSessionModal {
   readonly root: BoxRenderable
 
-  private readonly modal: BoxRenderable
-  private readonly header: TextRenderable
-  private readonly list: SelectableList
-  private readonly footer: TextRenderable
+  private readonly frame: ListModalFrame
   private sessions: ChatSession[]
   private currentId: string | null
   private highlighted: string | null
@@ -50,33 +43,11 @@ export class SubagentSessionModal {
       ? options.currentId
       : (this.sessions[0]?.id ?? null)
 
-    this.root = new BoxRenderable(renderer, {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      width: "100%",
-      height: "100%",
-      alignItems: "center",
-      justifyContent: "center",
-      onSizeChange: () => this.resizeModal(),
-    })
-    this.modal = new BoxRenderable(renderer, {
-      width: 76,
-      height: 22,
-      paddingTop: 1,
-      paddingBottom: 1,
-      paddingLeft: 2,
-      paddingRight: 2,
-      backgroundColor: PANEL_BG,
-      border: true,
-      borderStyle: "rounded",
-      borderColor: BORDER_COLOR,
-      flexDirection: "column",
-    })
-    this.header = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
-    this.list = new SelectableList(renderer, {
-      backgroundColor: PANEL_BG,
-      selectedBackgroundColor: SELECTED_BG,
+    this.frame = new ListModalFrame(renderer, {
+      maxWidth: 76,
+      maxHeight: 22,
+      minWidth: 42,
+      minHeight: 10,
       wrapContent: true,
       onSelect: (index) => {
         this.highlighted = this.sessions[index]?.id ?? null
@@ -84,11 +55,7 @@ export class SubagentSessionModal {
       },
       onActivate: () => this.openHighlighted(),
     })
-    this.footer = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
-    this.modal.add(this.header)
-    this.modal.add(this.list.root)
-    this.modal.add(this.footer)
-    this.root.add(this.modal)
+    this.root = this.frame.root
     this.render()
   }
 
@@ -107,19 +74,13 @@ export class SubagentSessionModal {
       this.options.onClose()
       return true
     }
-    if (key.name === "return" || key.name === "enter") {
-      this.openHighlighted()
-      return true
-    }
-    this.list.handleKey(key)
-    return true
+    return this.frame.handleKey(key)
   }
 
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
-    this.list.destroy()
-    if (!this.root.isDestroyed) this.root.destroyRecursively()
+    this.frame.destroy()
   }
 
   private openHighlighted(): void {
@@ -129,16 +90,16 @@ export class SubagentSessionModal {
   private render(): void {
     if (this.destroyed) return
     const now = this.options.now?.() ?? Date.now()
-    this.header.content = new StyledText([
+    this.frame.header.content = new StyledText([
       fg(VALUE_COLOR)("Subagents\n"),
       fg(MUTED_COLOR)(`${this.sessions.length} worker session${this.sessions.length === 1 ? "" : "s"}\n`),
     ])
-    this.list.setRows(
+    this.frame.list.setRows(
       this.sessions.map((session) => ({ id: session.id, content: this.sessionRow(session, now) })),
       this.highlighted ?? undefined,
       { preserveScroll: true },
     )
-    this.footer.content = new StyledText([
+    this.frame.footer.content = new StyledText([
       fg(MUTED_COLOR)(this.sessions.length === 0
         ? "\nNo subagents have run in this session.\nEsc close"
         : "\nEnter open transcript · ↑↓ worker · Esc close"),
@@ -155,11 +116,6 @@ export class SubagentSessionModal {
       fg(VALUE_COLOR)(session.title),
     ]
     return new StyledText(chunks)
-  }
-
-  private resizeModal(): void {
-    this.modal.width = Math.max(42, Math.min(76, this.root.width - 4))
-    this.modal.height = Math.max(10, Math.min(22, this.root.height - 2))
   }
 }
 

@@ -10,7 +10,7 @@ import {
   type TextChunk,
 } from "@opentui/core"
 import type { AiAccount, AiAuthType, AiProviderSummary, AiSelectOption } from "@trbot/protocol/ai.ts"
-import { SearchListModalFrame } from "./search-list-modal-frame.ts"
+import { ListModalFrame } from "./list-modal-frame.ts"
 
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
@@ -47,7 +47,7 @@ export interface AiConnectionModalOptions {
 export class AiConnectionModal {
   readonly root: BoxRenderable
 
-  private readonly frame: SearchListModalFrame
+  private readonly frame: ListModalFrame
 
   private providers: AiProviderSummary[] = []
   private selectedProviderId: string | null = null
@@ -75,14 +75,16 @@ export class AiConnectionModal {
     private readonly renderer: RenderContext,
     private readonly options: AiConnectionModalOptions,
   ) {
-    this.frame = new SearchListModalFrame(renderer, {
+    this.frame = new ListModalFrame(renderer, {
       maxWidth: 78,
       maxHeight: 24,
       minWidth: 40,
       minHeight: 12,
-      placeholder: "Search providers…",
+      search: {
+        placeholder: "Search providers…",
+        onInput: () => this.render(false),
+      },
       wrapContent: true,
-      onSearchInput: () => this.render(false),
       onSelect: (index) => {
         this.selectedProviderId = this.visibleProviders()[index]?.providerId ?? null
         this.render()
@@ -161,7 +163,7 @@ export class AiConnectionModal {
     const request = new AbortController()
     this.request = request
     this.busy = true
-    this.frame.search.blur()
+    this.frame.blurSearch()
     this.failed = false
     this.message = `Connecting ${provider.name}…`
     this.authorizationUrl = null
@@ -208,7 +210,7 @@ export class AiConnectionModal {
     } finally {
       if (this.request === request) this.request = null
       this.busy = false
-      if (!this.destroyed) this.frame.search.focus()
+      if (!this.destroyed) this.frame.focusSearch()
       this.render()
     }
   }
@@ -228,7 +230,7 @@ export class AiConnectionModal {
     const provider = this.selectedProvider()
     if (!provider || !provider.connected || this.busy || this.destroyed) return
     this.busy = true
-    this.frame.search.blur()
+    this.frame.blurSearch()
     this.message = `Disconnecting ${provider.name}…`
     this.render()
     try {
@@ -243,7 +245,7 @@ export class AiConnectionModal {
       this.fail(error)
     } finally {
       this.busy = false
-      if (!this.destroyed) this.frame.search.focus()
+      if (!this.destroyed) this.frame.focusSearch()
     }
   }
 
@@ -340,7 +342,7 @@ export class AiConnectionModal {
   private render(preserveScroll = true): void {
     const visible = this.visibleProviders()
     const connected = this.providers.filter((provider) => provider.connected).length
-    const matching = this.frame.search.value
+    const matching = this.frame.searchValue
       ? `${visible.length} matching · `
       : ""
     this.frame.header.content = new StyledText([
@@ -425,7 +427,7 @@ export class AiConnectionModal {
   }
 
   private visibleProviders(): AiProviderSummary[] {
-    const terms = this.frame.search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+    const terms = this.frame.searchValue.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
     if (terms.length === 0) return this.providers
     return this.providers.filter((provider) => {
       const auth = provider.authTypes.flatMap((type) =>

@@ -1,25 +1,21 @@
 import { TUI_THEME } from "../theme.ts"
 import {
-  BoxRenderable,
   StyledText,
-  TextRenderable,
   fg,
+  type BoxRenderable,
   type KeyEvent,
   type RenderContext,
   type TextChunk,
 } from "@opentui/core"
 import type { ChatSession } from "@trbot/chat/session.ts"
-import { SelectableList } from "./selectable-list.ts"
+import { ListModalFrame } from "./list-modal-frame.ts"
 
-const PANEL_BG = TUI_THEME.appBackground
-const BORDER_COLOR = TUI_THEME.textFaint
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
 const ACCENT_COLOR = TUI_THEME.accent
 const MONITOR_COLOR = TUI_THEME.monitorAccent
 const LOOP_COLOR = TUI_THEME.warning
 const CONFIRM_COLOR = TUI_THEME.warning
-const SELECTED_BG = TUI_THEME.overlaySelection
 
 export interface ChatSessionModalOptions {
   sessions: ChatSession[]
@@ -45,10 +41,7 @@ export interface ChatSessionModalOptions {
 export class ChatSessionModal {
   readonly root: BoxRenderable
 
-  private readonly modal: BoxRenderable
-  private readonly header: TextRenderable
-  private readonly list: SelectableList
-  private readonly footer: TextRenderable
+  private readonly frame: ListModalFrame
 
   private sessions: ChatSession[]
   private currentId: string | null
@@ -70,33 +63,11 @@ export class ChatSessionModal {
     this.mobileConnections = options.mobileConnections ?? new Map()
     this.highlighted = options.currentId ?? this.sessions[0]?.id ?? null
 
-    this.root = new BoxRenderable(renderer, {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      width: "100%",
-      height: "100%",
-      alignItems: "center",
-      justifyContent: "center",
-      onSizeChange: () => this.resizeModal(),
-    })
-    this.modal = new BoxRenderable(renderer, {
-      width: 72,
-      height: 22,
-      paddingTop: 1,
-      paddingBottom: 1,
-      paddingLeft: 2,
-      paddingRight: 2,
-      backgroundColor: PANEL_BG,
-      border: true,
-      borderStyle: "rounded",
-      borderColor: BORDER_COLOR,
-      flexDirection: "column",
-    })
-    this.header = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
-    this.list = new SelectableList(renderer, {
-      backgroundColor: PANEL_BG,
-      selectedBackgroundColor: SELECTED_BG,
+    this.frame = new ListModalFrame(renderer, {
+      maxWidth: 72,
+      maxHeight: 22,
+      minWidth: 40,
+      minHeight: 10,
       wrapContent: true,
       onSelect: (index) => {
         this.highlighted = this.sessions[index]?.id ?? null
@@ -107,11 +78,7 @@ export class ChatSessionModal {
       },
       onActivate: () => this.openHighlighted(),
     })
-    this.footer = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
-    this.modal.add(this.header)
-    this.modal.add(this.list.root)
-    this.modal.add(this.footer)
-    this.root.add(this.modal)
+    this.root = this.frame.root
     this.render()
   }
 
@@ -140,10 +107,6 @@ export class ChatSessionModal {
       this.options.onClose()
       return true
     }
-    if (key.name === "return" || key.name === "enter") {
-      this.openHighlighted()
-      return true
-    }
     if (isLowercase(key, "n")) {
       this.options.onCreate()
       return true
@@ -152,15 +115,13 @@ export class ChatSessionModal {
       this.confirmDelete()
       return true
     }
-    this.list.handleKey(key)
-    return true
+    return this.frame.handleKey(key)
   }
 
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
-    this.list.destroy()
-    if (!this.root.isDestroyed) this.root.destroyRecursively()
+    this.frame.destroy()
   }
 
   private openHighlighted(): void {
@@ -190,12 +151,12 @@ export class ChatSessionModal {
   private render(): void {
     if (this.destroyed) return
     const now = this.options.now?.() ?? Date.now()
-    this.header.content = new StyledText([
+    this.frame.header.content = new StyledText([
       fg(VALUE_COLOR)("Sessions\n"),
       fg(MUTED_COLOR)(`${this.sessions.length === 1 ? "1 session" : `${this.sessions.length} sessions`}\n`),
     ])
 
-    this.list.setRows(
+    this.frame.list.setRows(
       this.sessions.map((session) => ({
         id: session.id,
         content: this.sessionRow(session, now),
@@ -204,7 +165,7 @@ export class ChatSessionModal {
       { preserveScroll: true },
     )
 
-    this.footer.content = new StyledText(this.footerChunks())
+    this.frame.footer.content = new StyledText(this.footerChunks())
     this.renderer.requestRender()
   }
 
@@ -239,11 +200,6 @@ export class ChatSessionModal {
       return [fg(CONFIRM_COLOR)(`\nPress d again to delete "${pending.title}".`)]
     }
     return [fg(MUTED_COLOR)("\nEnter open · n new · d delete · ↑↓ session · Esc close")]
-  }
-
-  private resizeModal(): void {
-    this.modal.width = Math.max(40, Math.min(72, this.root.width - 4))
-    this.modal.height = Math.max(10, Math.min(22, this.root.height - 2))
   }
 }
 

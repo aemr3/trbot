@@ -7,7 +7,7 @@ import {
   type RenderContext,
 } from "@opentui/core"
 import type { ViopInstrument } from "@trbot/market/instrument.ts"
-import { SearchListModalFrame } from "./search-list-modal-frame.ts"
+import { ListModalFrame } from "./list-modal-frame.ts"
 
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
@@ -23,7 +23,7 @@ export interface TickerSearchModalOptions {
 export class TickerSearchModal {
   readonly root: BoxRenderable
 
-  private readonly frame: SearchListModalFrame
+  private readonly frame: ListModalFrame
   private highlightedUid: string | null
   private destroyed = false
 
@@ -35,13 +35,15 @@ export class TickerSearchModal {
       ? options.currentUid
       : options.instruments[0]?.uid ?? null
 
-    this.frame = new SearchListModalFrame(renderer, {
+    this.frame = new ListModalFrame(renderer, {
       maxWidth: 72,
       maxHeight: 22,
       minWidth: 42,
       minHeight: 10,
-      placeholder: "Search ticker or contract symbol…",
-      onSearchInput: () => this.render(false),
+      search: {
+        placeholder: "Search ticker or contract symbol…",
+        onInput: () => this.render(false),
+      },
       onSelect: (index) => {
         this.highlightedUid = this.visibleInstruments()[index]?.uid ?? null
         this.render()
@@ -80,7 +82,7 @@ export class TickerSearchModal {
   private render(preserveScroll = true): void {
     if (this.destroyed) return
     const visible = this.visibleInstruments()
-    const matching = this.frame.search.value ? `${visible.length} matching · ` : ""
+    const matching = this.frame.searchValue ? `${visible.length} matching · ` : ""
     this.frame.header.content = new StyledText([
       fg(VALUE_COLOR)("Ticker search\n"),
       fg(MUTED_COLOR)(`${matching}${this.options.instruments.length} contracts\n`),
@@ -106,7 +108,7 @@ export class TickerSearchModal {
   }
 
   private visibleInstruments(): ViopInstrument[] {
-    const query = normalizedSearch(this.frame.search.value)
+    const query = normalizedSearch(this.frame.searchValue)
     if (!query) return this.options.instruments
     return this.options.instruments
       .map((instrument, index) => ({ instrument, index, score: searchScore(instrument, query) }))

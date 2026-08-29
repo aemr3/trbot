@@ -7,7 +7,7 @@ import {
   type RenderContext,
 } from "@opentui/core"
 import type { AiModelChoice, AiModelSummary } from "@trbot/protocol/ai.ts"
-import { SearchListModalFrame } from "./search-list-modal-frame.ts"
+import { ListModalFrame } from "./list-modal-frame.ts"
 
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
@@ -39,7 +39,7 @@ export interface AiModelModalOptions {
 export class AiModelModal {
   readonly root: BoxRenderable
 
-  private readonly frame: SearchListModalFrame
+  private readonly frame: ListModalFrame
 
   private models: AiModelSummary[] = []
   /**
@@ -60,13 +60,15 @@ export class AiModelModal {
     private readonly renderer: RenderContext,
     private readonly options: AiModelModalOptions,
   ) {
-    this.frame = new SearchListModalFrame(renderer, {
+    this.frame = new ListModalFrame(renderer, {
       maxWidth: 78,
       maxHeight: 24,
       minWidth: 40,
       minHeight: 12,
-      placeholder: "Search models or providers…",
-      onSearchInput: () => this.render(false),
+      search: {
+        placeholder: "Search models or providers…",
+        onInput: () => this.render(false),
+      },
       onSelect: (index) => {
         const model = this.visibleModels()[index]
         if (model) this.selectedModel = modelKey(model)
@@ -89,7 +91,7 @@ export class AiModelModal {
       if (this.levels) {
         this.levels = null
         this.render()
-        this.frame.search.focus()
+        this.frame.focusSearch()
         return true
       }
       this.options.onClose()
@@ -157,7 +159,7 @@ export class AiModelModal {
     )
     if (!model || model.thinkingLevels.length <= 1) return
     this.levels = { model, index: Math.max(0, model.thinkingLevels.indexOf(current.reasoning ?? "")) }
-    this.frame.search.blur()
+    this.frame.blurSearch()
   }
 
   private activate(): void {
@@ -180,7 +182,7 @@ export class AiModelModal {
       ? Math.max(0, model.thinkingLevels.indexOf(current.reasoning ?? ""))
       : 0
     this.levels = { model, index }
-    this.frame.search.blur()
+    this.frame.blurSearch()
     this.render()
   }
 
@@ -204,8 +206,8 @@ export class AiModelModal {
   private render(preserveScroll = true): void {
     const levels = this.levels
     const visible = this.visibleModels()
-    const matching = this.frame.search.value.trim() ? `${visible.length} matching · ` : ""
-    this.frame.search.visible = !levels
+    const matching = this.frame.searchValue.trim() ? `${visible.length} matching · ` : ""
+    this.frame.setSearchVisible(!levels)
     this.frame.header.content = new StyledText([
       fg(VALUE_COLOR)(`${levels ? `${levels.model.name} — reasoning` : this.options.title}\n`),
       ...(levels ? [] : [fg(MUTED_COLOR)(`${matching}${this.models.length} available\n`)]),
@@ -250,7 +252,7 @@ export class AiModelModal {
   }
 
   private visibleModels(): AiModelSummary[] {
-    const terms = this.frame.search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+    const terms = this.frame.searchValue.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
     if (terms.length === 0) return this.models
     return this.models.filter((model) => {
       const searchable = [model.providerName, model.providerId, model.name, model.modelId]
