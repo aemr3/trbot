@@ -23,7 +23,7 @@ const RECURRING_EXPIRY_MS = 7 * 24 * 60 * 60_000
 const DEFAULT_DYNAMIC_DELAY_MS = 60_000
 const CADENCE_CONFLICT_REASON = "Paused because this chat also has active scheduled tasks. Cancel them before resuming the goal."
 
-export const DEFAULT_LOOP_PROMPT = [
+const DEFAULT_LOOP_PROMPT = [
   "Continue unfinished work from this conversation.",
   "Review any active position, monitor, or analysis the user already asked you to tend.",
   "If nothing needs action, report that briefly without starting a new initiative.",

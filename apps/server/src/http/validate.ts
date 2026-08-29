@@ -1,5 +1,5 @@
 import {
-  UserPriceAlertDraftSchema,
+  PriceAlertDraftSchema,
   validatePriceAlert,
   type PriceAlertDraft,
 } from "@trbot/market/alert.ts"
@@ -118,7 +118,7 @@ export function stopRuleDraft(body: JsonObject): StopRuleDraft {
 }
 
 export function priceAlertDraft(body: JsonObject): PriceAlertDraft {
-  const parsed = UserPriceAlertDraftSchema.safeParse(body)
+  const parsed = PriceAlertDraftSchema.safeParse(body)
   if (!parsed.success) throw invalidSchema(parsed.error, "alert", "is not a valid price alert")
   const draft = parsed.data
   checkDraft(validatePriceAlert(draft, null))

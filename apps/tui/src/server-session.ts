@@ -31,7 +31,7 @@ export interface ServerSessionOptions {
   transports?: ServerSessionTransports
 }
 
-export interface ServerSessionTransports {
+interface ServerSessionTransports {
   http(options: HttpClientOptions): HttpClient
   stream(options: StreamConnectionOptions): StreamConnection
 }

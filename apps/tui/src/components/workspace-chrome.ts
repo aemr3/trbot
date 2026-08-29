@@ -3,8 +3,8 @@ import { TUI_THEME } from "../theme.ts"
 // screen — is a vivid indigo band so it reads as a frame around the near-black
 // panels. Text placed on it needs these foreground colors, not the muted greys
 // the panels use, to stay legible.
-export const WORKSPACE_CHROME_BACKGROUND = TUI_THEME.chromeBackground
-export const WORKSPACE_ACTIVE_BACKGROUND = TUI_THEME.chromeActive
+const WORKSPACE_CHROME_BACKGROUND = TUI_THEME.chromeBackground
+const WORKSPACE_ACTIVE_BACKGROUND = TUI_THEME.chromeActive
 export const WORKSPACE_CHROME_TEXT = TUI_THEME.textStrong
 export const WORKSPACE_CHROME_MUTED = TUI_THEME.chromeMuted
 

@@ -17,7 +17,7 @@ const ACTION_BG = TUI_THEME.notificationAction
 const SELECTED_BG = TUI_THEME.notificationSelection
 const CARD_HEIGHT = 8
 
-export interface NotificationAction {
+interface NotificationAction {
   label: string
   onSelect?: () => void
 }

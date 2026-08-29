@@ -103,8 +103,6 @@ export const PriceAlertDraftSchema = z.object({
   atrValue: z.number().nullable(),
 }) satisfies z.ZodType<PriceAlertDraft>
 
-export const UserPriceAlertDraftSchema = PriceAlertDraftSchema
-
 export const PriceAlertSchema: z.ZodType<PriceAlert> = PriceAlertDraftSchema.extend({
   id: RequiredTextSchema,
   status: z.enum(ALERT_STATUSES),
