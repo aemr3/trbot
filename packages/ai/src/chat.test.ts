@@ -98,11 +98,12 @@ test("streams a reply and hands over the message it produced", async () => {
 
 test("replays the stored history rather than only the new question", async () => {
   const { faux, models } = scripted()
+  let replayedRoles: string[] = []
   faux.setResponses([
     (context) => {
       // Every earlier turn plus the new question, in order: a session that replayed
       // less than this would answer as if the conversation had not happened.
-      expect(context.messages.map((message) => message.role)).toEqual(["user", "assistant", "user"])
+      replayedRoles = context.messages.map((message) => message.role)
       return fauxAssistantMessage("Still Ankara.")
     },
   ])
@@ -127,6 +128,8 @@ test("replays the stored history rather than only the new question", async () =>
     prompt: "Are you sure?",
     events: { onText: () => {}, onReasoning: () => {}, onToolCall: () => {}, onRetry: ignoreRetry, onMessage: async () => {} },
   })
+
+  expect(replayedRoles).toEqual(["user", "assistant", "user"])
 })
 
 test("runs the tools a reply asks for and answers with their results", async () => {
@@ -204,11 +207,12 @@ test("keeps optional tool metadata when a future consumer opts into it", async (
     }),
   }
   const { faux, models } = scripted()
+  let toolDetails: unknown
   faux.setResponses([
     fauxAssistantMessage([fauxToolCall("inspect", {})], { stopReason: "toolUse" }),
     (context) => {
       const result = context.messages.at(-1)
-      expect(result?.role === "toolResult" ? result.details : undefined).toEqual({ source: "future-renderer" })
+      toolDetails = result?.role === "toolResult" ? result.details : undefined
       return fauxAssistantMessage("Done.")
     },
   ])
@@ -219,6 +223,8 @@ test("keeps optional tool metadata when a future consumer opts into it", async (
     prompt: "Inspect it",
     events: { onText: () => {}, onReasoning: () => {}, onToolCall: () => {}, onRetry: ignoreRetry, onMessage: async () => {} },
   })
+
+  expect(toolDetails).toEqual({ source: "future-renderer" })
 })
 
 test("applies steering after the current tool batch and before the next model call", async () => {
