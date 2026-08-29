@@ -3,7 +3,6 @@ import { TUI_THEME } from "../theme.ts"
 // draft — the monitor decides when the level is reached, and nothing here, or
 // anywhere downstream of it, trades.
 import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
-import { z } from "zod"
 import {
   ALERT_BASES,
   ALERT_KINDS,
@@ -24,12 +23,19 @@ import {
 } from "@trbot/market/candle.ts"
 import { LEVEL_DIRECTIONS, type LevelDirection } from "@trbot/market/price-level.ts"
 import type { ViopInstrument } from "@trbot/market/instrument.ts"
+import {
+  cycle,
+  distanceLabel,
+  fieldLine,
+  formatNumber,
+  isDigitKey,
+  metricLine,
+  valueLabel,
+} from "../components/level-editor-fields.ts"
 
 const PANEL_BG = TUI_THEME.appBackground
-const FIELD_BG = TUI_THEME.fieldBackground
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
-const EMPHASIS_COLOR = TUI_THEME.accent
 const ABOVE_COLOR = TUI_THEME.positive
 const BELOW_COLOR = TUI_THEME.negative
 const ERROR_COLOR = TUI_THEME.softError
@@ -390,45 +396,4 @@ function previewLevel(draft: PriceAlertDraft): number | null {
   if (distance <= 0) return null
   const level = draft.direction === "BELOW" ? anchor - distance : anchor + distance
   return level > 0 ? level : null
-}
-
-function valueLabel(kind: PriceAlertKind): string {
-  if (kind === "PRICE") return "Price"
-  if (kind === "PERCENT" || kind === "TRAILING_PERCENT") return "Distance (%)"
-  return "Distance (ATR ×)"
-}
-
-function distanceLabel(level: number, lastPrice: number | null): string {
-  if (lastPrice === null || lastPrice <= 0) return ""
-  const percent = ((level - lastPrice) / lastPrice) * 100
-  return `  (${percent >= 0 ? "+" : ""}${percent.toFixed(2)}% from market)`
-}
-
-function cycle<T>(values: readonly T[], current: T, direction: number): T {
-  const index = values.indexOf(current)
-  return values[(Math.max(0, index) + direction + values.length) % values.length] ?? current
-}
-
-function fieldLine(label: string, value: string, active: boolean): TextChunk[] {
-  return [
-    fg(MUTED_COLOR)(label.padEnd(16)),
-    fg(active ? EMPHASIS_COLOR : VALUE_COLOR)(active ? `▸ ${value} ` : `  ${value}`),
-    ...(active ? [fg(FIELD_BG)(" ")] : []),
-  ]
-}
-
-function metricLine(label: string, value: string): TextChunk[] {
-  return [fg(MUTED_COLOR)(label.padEnd(16)), fg(VALUE_COLOR)(`  ${value}`)]
-}
-
-function formatNumber(value: number | null): string {
-  return value === null || !Number.isFinite(value)
-    ? "—"
-    : value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
-function isDigitKey(key: KeyEvent): boolean {
-  const value = key.sequence || key.name
-  const parsed = z.string().length(1).safeParse(value)
-  return parsed.success && parsed.data >= "0" && parsed.data <= "9"
 }
