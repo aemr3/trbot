@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
-import type { KeyEvent } from "@opentui/core"
+import { InputRenderable, type KeyEvent } from "@opentui/core"
 import type { ViopInstrument } from "@trbot/market/instrument.ts"
 import { keyEvent } from "../key-event.test-fixture.ts"
 import { TickerSearchModal } from "./ticker-search-modal.ts"
@@ -87,5 +87,26 @@ test("shows an empty result and closes with Escape", async () => {
   expect(closed).toBe(1)
 
   modal.destroy()
+  harness.renderer.destroy()
+})
+
+test("restores focus to the control behind it when destroyed", async () => {
+  const harness = await createTestRenderer({ width: 80, height: 22 })
+  const previous = new InputRenderable(harness.renderer, { width: 20 })
+  harness.renderer.root.add(previous)
+  previous.focus()
+  const modal = new TickerSearchModal(harness.renderer, {
+    instruments,
+    currentUid: null,
+    onSelect: () => {},
+    onClose: () => {},
+  })
+  harness.renderer.root.add(modal.root)
+
+  modal.mount()
+  expect(harness.renderer.currentFocusedRenderable).not.toBe(previous)
+
+  modal.destroy()
+  expect(harness.renderer.currentFocusedRenderable).toBe(previous)
   harness.renderer.destroy()
 })

@@ -1,25 +1,18 @@
 import { TUI_THEME } from "../theme.ts"
 import {
-  BoxRenderable,
-  InputRenderable,
-  InputRenderableEvents,
   StyledText,
-  TextRenderable,
   fg,
+  type BoxRenderable,
   type KeyEvent,
   type RenderContext,
-  type Renderable,
 } from "@opentui/core"
 import type { AiModelChoice, AiModelSummary } from "@trbot/protocol/ai.ts"
-import { SelectableList } from "./selectable-list.ts"
+import { SearchListModalFrame } from "./search-list-modal-frame.ts"
 
-const PANEL_BG = TUI_THEME.appBackground
-const BORDER_COLOR = TUI_THEME.textFaint
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
 const EMPHASIS_COLOR = TUI_THEME.accent
 const ERROR_COLOR = TUI_THEME.negative
-const SELECTED_BG = TUI_THEME.overlaySelection
 
 export interface AiModelModalOptions {
   /** Every model usable right now. Only connected providers are represented. */
@@ -46,11 +39,7 @@ export interface AiModelModalOptions {
 export class AiModelModal {
   readonly root: BoxRenderable
 
-  private readonly modal: BoxRenderable
-  private readonly header: TextRenderable
-  private readonly search: InputRenderable
-  private readonly list: SelectableList
-  private readonly footer: TextRenderable
+  private readonly frame: SearchListModalFrame
 
   private models: AiModelSummary[] = []
   /**
@@ -65,53 +54,19 @@ export class AiModelModal {
   private busy = false
   /** Null while choosing a model; set once one is chosen and levels are on offer. */
   private levels: { model: AiModelSummary; index: number } | null = null
-  private previousFocus: Renderable | null = null
   private destroyed = false
 
   constructor(
     private readonly renderer: RenderContext,
     private readonly options: AiModelModalOptions,
   ) {
-    this.root = new BoxRenderable(renderer, {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      width: "100%",
-      height: "100%",
-      alignItems: "center",
-      justifyContent: "center",
-      onSizeChange: () => this.resizeModal(),
-    })
-    this.modal = new BoxRenderable(renderer, {
-      width: 78,
-      height: 24,
-      paddingTop: 1,
-      paddingBottom: 1,
-      paddingLeft: 2,
-      paddingRight: 2,
-      backgroundColor: PANEL_BG,
-      border: true,
-      borderStyle: "rounded",
-      borderColor: BORDER_COLOR,
-      flexDirection: "column",
-    })
-    this.header = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
-    this.search = new InputRenderable(renderer, {
-      width: "100%",
-      flexShrink: 0,
-      marginBottom: 1,
-      maxLength: 100,
+    this.frame = new SearchListModalFrame(renderer, {
+      maxWidth: 78,
+      maxHeight: 24,
+      minWidth: 40,
+      minHeight: 12,
       placeholder: "Search models or providers…",
-      backgroundColor: TUI_THEME.fieldBackground,
-      focusedBackgroundColor: TUI_THEME.fieldBackground,
-      textColor: VALUE_COLOR,
-      focusedTextColor: VALUE_COLOR,
-      cursorColor: EMPHASIS_COLOR,
-    })
-    this.search.on(InputRenderableEvents.INPUT, () => this.render(false))
-    this.list = new SelectableList(renderer, {
-      backgroundColor: PANEL_BG,
-      selectedBackgroundColor: SELECTED_BG,
+      onSearchInput: () => this.render(false),
       onSelect: (index) => {
         const model = this.visibleModels()[index]
         if (model) this.selectedModel = modelKey(model)
@@ -119,18 +74,12 @@ export class AiModelModal {
       },
       onActivate: () => this.activate(),
     })
-    this.footer = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
-    this.modal.add(this.header)
-    this.modal.add(this.search)
-    this.modal.add(this.list.root)
-    this.modal.add(this.footer)
-    this.root.add(this.modal)
+    this.root = this.frame.root
     this.render()
   }
 
   mount(): void {
-    this.previousFocus = this.renderer.currentFocusedRenderable
-    this.search.focus()
+    this.frame.mount()
     void this.load()
   }
 
@@ -140,7 +89,7 @@ export class AiModelModal {
       if (this.levels) {
         this.levels = null
         this.render()
-        this.search.focus()
+        this.frame.search.focus()
         return true
       }
       this.options.onClose()
@@ -161,23 +110,13 @@ export class AiModelModal {
       this.render()
       return true
     }
-    if (key.name === "up" || key.name === "down") {
-      this.list.handleKey(key)
-      return true
-    }
-    if (this.search.handleKeyPress(key)) return true
-    this.list.handleKey(key)
-    return true
+    return this.frame.handleKey(key)
   }
 
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
-    this.list.destroy()
-    if (!this.root.isDestroyed) this.root.destroyRecursively()
-    const previousFocus = this.previousFocus
-    this.previousFocus = null
-    if (previousFocus && !previousFocus.isDestroyed) previousFocus.focus()
+    this.frame.destroy()
   }
 
   private async load(): Promise<void> {
@@ -218,7 +157,7 @@ export class AiModelModal {
     )
     if (!model || model.thinkingLevels.length <= 1) return
     this.levels = { model, index: Math.max(0, model.thinkingLevels.indexOf(current.reasoning ?? "")) }
-    this.search.blur()
+    this.frame.search.blur()
   }
 
   private activate(): void {
@@ -229,7 +168,7 @@ export class AiModelModal {
     }
     const visible = this.visibleModels()
     const model = visible.find((candidate) => modelKey(candidate) === this.selectedModel)
-      ?? visible[this.list.selectedIndex]
+      ?? visible[this.frame.list.selectedIndex]
     if (!model) return
     // A model with one level, or none, has nothing to ask about.
     if (model.thinkingLevels.length <= 1) {
@@ -241,7 +180,7 @@ export class AiModelModal {
       ? Math.max(0, model.thinkingLevels.indexOf(current.reasoning ?? ""))
       : 0
     this.levels = { model, index }
-    this.search.blur()
+    this.frame.search.blur()
     this.render()
   }
 
@@ -265,15 +204,15 @@ export class AiModelModal {
   private render(preserveScroll = true): void {
     const levels = this.levels
     const visible = this.visibleModels()
-    const matching = this.search.value.trim() ? `${visible.length} matching · ` : ""
-    this.search.visible = !levels
-    this.header.content = new StyledText([
+    const matching = this.frame.search.value.trim() ? `${visible.length} matching · ` : ""
+    this.frame.search.visible = !levels
+    this.frame.header.content = new StyledText([
       fg(VALUE_COLOR)(`${levels ? `${levels.model.name} — reasoning` : this.options.title}\n`),
       ...(levels ? [] : [fg(MUTED_COLOR)(`${matching}${this.models.length} available\n`)]),
     ])
 
     if (levels) {
-      this.list.setRows(
+      this.frame.list.setRows(
         levels.model.thinkingLevels.map((level, index) => ({
           id: level,
           content: new StyledText([
@@ -283,7 +222,7 @@ export class AiModelModal {
         levels.model.thinkingLevels[levels.index],
       )
     } else {
-      this.list.setRows(
+      this.frame.list.setRows(
         visible.map((model) => ({
           id: modelKey(model),
           content: new StyledText([
@@ -295,11 +234,11 @@ export class AiModelModal {
         this.selectedModel ?? undefined,
         { preserveScroll },
       )
-      const selected = visible[this.list.selectedIndex]
+      const selected = visible[this.frame.list.selectedIndex]
       this.selectedModel = selected ? modelKey(selected) : null
     }
 
-    this.footer.content = new StyledText([
+    this.frame.footer.content = new StyledText([
       ...(this.message ? [fg(this.failed ? ERROR_COLOR : MUTED_COLOR)(`\n${this.message}\n`)] : []),
       fg(MUTED_COLOR)(levels
         ? "\n↑↓ level · Enter choose · Esc back"
@@ -311,7 +250,7 @@ export class AiModelModal {
   }
 
   private visibleModels(): AiModelSummary[] {
-    const terms = this.search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+    const terms = this.frame.search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
     if (terms.length === 0) return this.models
     return this.models.filter((model) => {
       const searchable = [model.providerName, model.providerId, model.name, model.modelId]
@@ -319,13 +258,6 @@ export class AiModelModal {
         .toLocaleLowerCase()
       return terms.every((term) => searchable.includes(term))
     })
-  }
-
-  private resizeModal(): void {
-    const width = Math.max(40, Math.min(78, this.root.width - 4))
-    const height = Math.max(12, Math.min(24, this.root.height - 2))
-    this.modal.width = width
-    this.modal.height = height
   }
 }
 
