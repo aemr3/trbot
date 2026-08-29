@@ -1,7 +1,7 @@
 import { TUI_THEME } from "../theme.ts"
 // Writes one protective level for an open position. It only produces a draft —
 // the monitor decides when the level is reached, and nothing here trades.
-import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
+import { StyledText, fg, type BoxRenderable, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
 import {
   CANDLE_INTERVAL_LABELS,
   DEFAULT_RULE_INTERVAL,
@@ -27,12 +27,11 @@ import {
   distanceLabel,
   fieldLine,
   formatNumber,
-  isDigitKey,
   metricLine,
   valueLabel,
 } from "../components/level-editor-fields.ts"
+import { LevelEditorFrame } from "../components/level-editor-frame.ts"
 
-const PANEL_BG = TUI_THEME.appBackground
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
 const STOP_COLOR = TUI_THEME.negative
@@ -68,8 +67,7 @@ export interface StopRuleEditorOptions {
 export class StopRuleEditor {
   readonly root: BoxRenderable
 
-  private readonly modal: BoxRenderable
-  private readonly content: TextRenderable
+  private readonly frame: LevelEditorFrame<EditorField>
   private positionIndex = 0
   private role: StopRuleRole = "STOP"
   private kind: StopRuleKind = "PRICE"
@@ -79,7 +77,6 @@ export class StopRuleEditor {
   private quantityText = ""
   private valueFresh = true
   private quantityFresh = true
-  private field: EditorField = "value"
   private atrValue: number | null = null
   private atrRequest = 0
   private status: string | null = null
@@ -103,32 +100,19 @@ export class StopRuleEditor {
       this.valueFresh = false
     }
 
-    this.root = new BoxRenderable(renderer, {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      width: "100%",
-      height: "100%",
-      alignItems: "center",
-      justifyContent: "center",
-      onSizeChange: () => this.resizeModal(),
-    })
-    this.modal = new BoxRenderable(renderer, {
-      width: 76,
-      height: 24,
-      paddingTop: 1,
-      paddingBottom: 1,
-      paddingLeft: 2,
-      paddingRight: 2,
-      backgroundColor: PANEL_BG,
-      border: true,
-      borderStyle: "rounded",
+    this.frame = new LevelEditorFrame(renderer, {
+      fields: () => this.fields(),
+      initialField: "value",
+      valueField: "value",
+      actionField: "action",
       borderColor: this.role === "STOP" ? STOP_COLOR : TARGET_COLOR,
-      flexDirection: "column",
+      onClose: options.onClose,
+      onFieldChange: () => this.render(),
+      onCycle: (field, direction) => this.cycleField(field, direction),
+      onEdit: (field, edit) => this.editText(field, edit),
+      onSave: () => this.save(),
     })
-    this.content = new TextRenderable(renderer, { content: "", width: "100%", flexGrow: 1, wrapMode: "word" })
-    this.modal.add(this.content)
-    this.root.add(this.modal)
+    this.root = this.frame.root
     this.render()
   }
 
@@ -139,45 +123,11 @@ export class StopRuleEditor {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
-    if (!this.root.isDestroyed) this.root.destroyRecursively()
+    this.frame.destroy()
   }
 
   handleKey(key: KeyEvent): boolean {
-    if (this.destroyed) return true
-    if (key.name === "escape" || key.name === "esc") {
-      this.options.onClose()
-      return true
-    }
-    if (key.name === "tab") {
-      this.moveField(key.shift ? -1 : 1)
-      return true
-    }
-    if (key.name === "up" || key.name === "down") {
-      this.moveField(key.name === "up" ? -1 : 1)
-      return true
-    }
-    if (key.name === "left" || key.name === "right" || key.name === "space") {
-      this.cycleField(key.name === "left" ? -1 : 1)
-      return true
-    }
-    if (key.name === "return" || key.name === "enter") {
-      if (this.field === "action") this.save()
-      else this.moveField(1)
-      return true
-    }
-    if (key.name === "backspace") {
-      this.editText((text) => text.slice(0, -1))
-      return true
-    }
-    if (isDigitKey(key)) {
-      this.editText((text) => text + (key.sequence || key.name))
-      return true
-    }
-    if (this.field === "value" && (key.sequence === "." || key.sequence === "," || key.name === "." || key.name === ",")) {
-      this.editText((text) => (text.includes(".") ? text : `${text}.`))
-      return true
-    }
-    return true
+    return this.frame.handleKey(key)
   }
 
   private get position(): AccountPosition | undefined {
@@ -216,31 +166,24 @@ export class StopRuleEditor {
     return fields
   }
 
-  private moveField(direction: number): void {
-    const fields = this.fields()
-    const index = fields.indexOf(this.field)
-    this.field = fields[(Math.max(0, index) + direction + fields.length) % fields.length] ?? "value"
-    this.render()
-  }
-
-  private cycleField(direction: number): void {
-    if (this.field === "position") {
+  private cycleField(field: EditorField, direction: number): void {
+    if (field === "position") {
       const count = this.options.positions.length
       if (count > 0) this.positionIndex = (this.positionIndex + direction + count) % count
-    } else if (this.field === "role") {
+    } else if (field === "role") {
       this.role = cycle(STOP_RULE_ROLES, this.role, direction)
-      this.modal.borderColor = this.role === "STOP" ? STOP_COLOR : TARGET_COLOR
-    } else if (this.field === "kind") {
+      this.frame.borderColor = this.role === "STOP" ? STOP_COLOR : TARGET_COLOR
+    } else if (field === "kind") {
       this.kind = cycle(STOP_RULE_KINDS, this.kind, direction)
       // Percent and ATR are different units; a value typed for one is wrong for
       // the other, so it starts fresh.
       this.valueText = ""
       this.valueFresh = true
       void this.refreshAtr()
-    } else if (this.field === "basis") {
+    } else if (field === "basis") {
       this.basis = cycle(STOP_RULE_BASES, this.basis, direction)
       void this.refreshAtr()
-    } else if (this.field === "interval") {
+    } else if (field === "interval") {
       this.interval = cycle(RULE_INTERVALS, this.interval, direction)
       void this.refreshAtr()
     } else return
@@ -248,12 +191,12 @@ export class StopRuleEditor {
     this.render()
   }
 
-  private editText(edit: (text: string) => string): void {
-    if (this.field === "value") {
+  private editText(field: EditorField, edit: (text: string) => string): void {
+    if (field === "value") {
       if (this.valueFresh) this.valueText = ""
       this.valueFresh = false
       this.valueText = edit(this.valueText)
-    } else if (this.field === "quantity") {
+    } else if (field === "quantity") {
       if (this.quantityFresh) this.quantityText = ""
       this.quantityFresh = false
       this.quantityText = edit(this.quantityText)
@@ -299,11 +242,6 @@ export class StopRuleEditor {
     this.render()
   }
 
-  private resizeModal(): void {
-    this.modal.width = Math.min(76, Math.max(40, this.root.width - 2))
-    this.modal.height = Math.min(24, Math.max(12, this.root.height - 2))
-  }
-
   private render(): void {
     if (this.destroyed) return
     const draft = this.draft()
@@ -321,27 +259,27 @@ export class StopRuleEditor {
         position
           ? `${position.displayName}  ${formatQuantity(position.quantity)}x @ ${formatNumber(position.averageCost)}`
           : "No open positions",
-        this.field === "position",
+        this.frame.field === "position",
       ),
       fg(VALUE_COLOR)("\n"),
-      ...fieldLine("Level", this.role === "STOP" ? "Stop (cap the loss)" : "Target (take the profit)", this.field === "role"),
+      ...fieldLine("Level", this.role === "STOP" ? "Stop (cap the loss)" : "Target (take the profit)", this.frame.field === "role"),
       fg(VALUE_COLOR)("\n"),
-      ...fieldLine("Measured by", KIND_LABELS[this.kind], this.field === "kind"),
+      ...fieldLine("Measured by", KIND_LABELS[this.kind], this.frame.field === "kind"),
       fg(VALUE_COLOR)("\n"),
-      ...fieldLine(valueLabel(this.kind), this.valueText || "—", this.field === "value"),
+      ...fieldLine(valueLabel(this.kind), this.valueText || "—", this.frame.field === "value"),
       fg(VALUE_COLOR)("\n"),
       ...fieldLine(
         "Triggers on",
         this.basis === "TOUCH" ? "Any trade through the level" : "A candle closing beyond it",
-        this.field === "basis",
+        this.frame.field === "basis",
       ),
       fg(VALUE_COLOR)("\n"),
     ]
     if (this.needsInterval()) {
-      chunks.push(...fieldLine("Timeframe", CANDLE_INTERVAL_LABELS[this.interval], this.field === "interval"), fg(VALUE_COLOR)("\n"))
+      chunks.push(...fieldLine("Timeframe", CANDLE_INTERVAL_LABELS[this.interval], this.frame.field === "interval"), fg(VALUE_COLOR)("\n"))
     }
     chunks.push(
-      ...fieldLine("Contracts", this.quantityText === "" ? "Whole position" : this.quantityText, this.field === "quantity"),
+      ...fieldLine("Contracts", this.quantityText === "" ? "Whole position" : this.quantityText, this.frame.field === "quantity"),
       fg(VALUE_COLOR)("\n\n"),
       ...metricLine("Market", formatNumber(lastPrice)),
       fg(VALUE_COLOR)("\n"),
@@ -358,11 +296,11 @@ export class StopRuleEditor {
     }
     chunks.push(
       fg(VALUE_COLOR)("\n"),
-      ...fieldLine("Save rule", this.field === "action" ? "Press Enter" : "Enter", this.field === "action"),
+      ...fieldLine("Save rule", this.frame.field === "action" ? "Press Enter" : "Enter", this.frame.field === "action"),
     )
     if (this.status) chunks.push(fg(this.statusColor)(`\n\n${this.status}`))
     chunks.push(fg(MUTED_COLOR)("\n\nTab/↑/↓ field · ←/→ change · digits value · Enter save · Esc close"))
-    this.content.content = new StyledText(chunks)
+    this.frame.content.content = new StyledText(chunks)
     this.renderer.requestRender()
   }
 }

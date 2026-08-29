@@ -2,7 +2,7 @@ import { TUI_THEME } from "../theme.ts"
 // Writes one price level the trader wants to be told about. It only produces a
 // draft — the monitor decides when the level is reached, and nothing here, or
 // anywhere downstream of it, trades.
-import { BoxRenderable, StyledText, TextRenderable, fg, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
+import { StyledText, fg, type BoxRenderable, type KeyEvent, type RenderContext, type TextChunk } from "@opentui/core"
 import {
   ALERT_BASES,
   ALERT_KINDS,
@@ -28,12 +28,11 @@ import {
   distanceLabel,
   fieldLine,
   formatNumber,
-  isDigitKey,
   metricLine,
   valueLabel,
 } from "../components/level-editor-fields.ts"
+import { LevelEditorFrame } from "../components/level-editor-frame.ts"
 
-const PANEL_BG = TUI_THEME.appBackground
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
 const ABOVE_COLOR = TUI_THEME.positive
@@ -74,8 +73,7 @@ export interface AlertEditorOptions {
 export class AlertEditor {
   readonly root: BoxRenderable
 
-  private readonly modal: BoxRenderable
-  private readonly content: TextRenderable
+  private readonly frame: LevelEditorFrame<EditorField>
   private instrumentIndex = 0
   private direction: LevelDirection = "ABOVE"
   private kind: PriceAlertKind = "PRICE"
@@ -84,7 +82,6 @@ export class AlertEditor {
   private repeat: PriceAlertRepeat = "ONCE"
   private valueText = ""
   private valueFresh = true
-  private field: EditorField = "value"
   private atrValue: number | null = null
   private atrRequest = 0
   private status: string | null = null
@@ -115,32 +112,19 @@ export class AlertEditor {
       )
     }
 
-    this.root = new BoxRenderable(renderer, {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      width: "100%",
-      height: "100%",
-      alignItems: "center",
-      justifyContent: "center",
-      onSizeChange: () => this.resizeModal(),
-    })
-    this.modal = new BoxRenderable(renderer, {
-      width: 76,
-      height: 24,
-      paddingTop: 1,
-      paddingBottom: 1,
-      paddingLeft: 2,
-      paddingRight: 2,
-      backgroundColor: PANEL_BG,
-      border: true,
-      borderStyle: "rounded",
+    this.frame = new LevelEditorFrame(renderer, {
+      fields: () => this.fields(),
+      initialField: "value",
+      valueField: "value",
+      actionField: "action",
       borderColor: this.directionColor(),
-      flexDirection: "column",
+      onClose: options.onClose,
+      onFieldChange: () => this.render(),
+      onCycle: (field, direction) => this.cycleField(field, direction),
+      onEdit: (field, edit) => this.editValue(field, edit),
+      onSave: () => this.save(),
     })
-    this.content = new TextRenderable(renderer, { content: "", width: "100%", flexGrow: 1, wrapMode: "word" })
-    this.modal.add(this.content)
-    this.root.add(this.modal)
+    this.root = this.frame.root
     this.render()
   }
 
@@ -151,45 +135,11 @@ export class AlertEditor {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
-    if (!this.root.isDestroyed) this.root.destroyRecursively()
+    this.frame.destroy()
   }
 
   handleKey(key: KeyEvent): boolean {
-    if (this.destroyed) return true
-    if (key.name === "escape" || key.name === "esc") {
-      this.options.onClose()
-      return true
-    }
-    if (key.name === "tab") {
-      this.moveField(key.shift ? -1 : 1)
-      return true
-    }
-    if (key.name === "up" || key.name === "down") {
-      this.moveField(key.name === "up" ? -1 : 1)
-      return true
-    }
-    if (key.name === "left" || key.name === "right" || key.name === "space") {
-      this.cycleField(key.name === "left" ? -1 : 1)
-      return true
-    }
-    if (key.name === "return" || key.name === "enter") {
-      if (this.field === "action") this.save()
-      else this.moveField(1)
-      return true
-    }
-    if (key.name === "backspace") {
-      this.editValue((text) => text.slice(0, -1))
-      return true
-    }
-    if (isDigitKey(key)) {
-      this.editValue((text) => text + (key.sequence || key.name))
-      return true
-    }
-    if (this.field === "value" && (key.sequence === "." || key.sequence === "," || key.name === "." || key.name === ",")) {
-      this.editValue((text) => (text.includes(".") ? text : `${text}.`))
-      return true
-    }
-    return true
+    return this.frame.handleKey(key)
   }
 
   private get instrument(): ViopInstrument | undefined {
@@ -227,43 +177,36 @@ export class AlertEditor {
     return fields
   }
 
-  private moveField(direction: number): void {
-    const fields = this.fields()
-    const index = fields.indexOf(this.field)
-    this.field = fields[(Math.max(0, index) + direction + fields.length) % fields.length] ?? "value"
-    this.render()
-  }
-
-  private cycleField(step: number): void {
-    if (this.field === "instrument") {
+  private cycleField(field: EditorField, step: number): void {
+    if (field === "instrument") {
       const count = this.options.instruments.length
       if (count > 0) this.instrumentIndex = (this.instrumentIndex + step + count) % count
       void this.refreshAtr()
-    } else if (this.field === "direction") {
+    } else if (field === "direction") {
       this.direction = cycle(LEVEL_DIRECTIONS, this.direction, step)
-      this.modal.borderColor = this.directionColor()
-    } else if (this.field === "kind") {
+      this.frame.borderColor = this.directionColor()
+    } else if (field === "kind") {
       this.kind = cycle(ALERT_KINDS, this.kind, step)
       // Percent and ATR are different units; a value typed for one is wrong for
       // the other, so it starts fresh.
       this.valueText = ""
       this.valueFresh = true
       void this.refreshAtr()
-    } else if (this.field === "basis") {
+    } else if (field === "basis") {
       this.basis = cycle(ALERT_BASES, this.basis, step)
       void this.refreshAtr()
-    } else if (this.field === "interval") {
+    } else if (field === "interval") {
       this.interval = cycle(ALERT_INTERVALS, this.interval, step)
       void this.refreshAtr()
-    } else if (this.field === "repeat") {
+    } else if (field === "repeat") {
       this.repeat = cycle(ALERT_REPEATS, this.repeat, step)
     } else return
     this.status = null
     this.render()
   }
 
-  private editValue(edit: (text: string) => string): void {
-    if (this.field !== "value") return
+  private editValue(field: EditorField, edit: (text: string) => string): void {
+    if (field !== "value") return
     if (this.valueFresh) this.valueText = ""
     this.valueFresh = false
     this.valueText = edit(this.valueText)
@@ -311,11 +254,6 @@ export class AlertEditor {
     return this.direction === "ABOVE" ? ABOVE_COLOR : BELOW_COLOR
   }
 
-  private resizeModal(): void {
-    this.modal.width = Math.min(76, Math.max(40, this.root.width - 2))
-    this.modal.height = Math.min(24, Math.max(12, this.root.height - 2))
-  }
-
   private render(): void {
     if (this.destroyed) return
     const draft = this.draft()
@@ -331,29 +269,29 @@ export class AlertEditor {
       ...fieldLine(
         "Contract",
         instrument ? `${instrument.displayName}  ${instrument.symbol}` : "No contracts",
-        this.field === "instrument",
+        this.frame.field === "instrument",
       ),
       fg(VALUE_COLOR)("\n"),
       ...fieldLine(
         "Tell me when",
         this.direction === "ABOVE" ? "Price rises to the level" : "Price falls to the level",
-        this.field === "direction",
+        this.frame.field === "direction",
       ),
       fg(VALUE_COLOR)("\n"),
-      ...fieldLine("Measured by", KIND_LABELS[this.kind], this.field === "kind"),
+      ...fieldLine("Measured by", KIND_LABELS[this.kind], this.frame.field === "kind"),
       fg(VALUE_COLOR)("\n"),
-      ...fieldLine(valueLabel(this.kind), this.valueText || "—", this.field === "value"),
+      ...fieldLine(valueLabel(this.kind), this.valueText || "—", this.frame.field === "value"),
       fg(VALUE_COLOR)("\n"),
       ...fieldLine(
         "Triggers on",
         this.basis === "TOUCH" ? "Any trade through the level" : "A candle closing beyond it",
-        this.field === "basis",
+        this.frame.field === "basis",
       ),
       fg(VALUE_COLOR)("\n"),
     ]
     if (this.needsInterval()) {
       chunks.push(
-        ...fieldLine("Timeframe", CANDLE_INTERVAL_LABELS[this.interval], this.field === "interval"),
+        ...fieldLine("Timeframe", CANDLE_INTERVAL_LABELS[this.interval], this.frame.field === "interval"),
         fg(VALUE_COLOR)("\n"),
       )
     }
@@ -361,7 +299,7 @@ export class AlertEditor {
       ...fieldLine(
         "Tell me",
         this.repeat === "ONCE" ? "Once, then stop" : "Every time it crosses",
-        this.field === "repeat",
+        this.frame.field === "repeat",
       ),
       fg(VALUE_COLOR)("\n\n"),
       ...metricLine("Market", formatNumber(lastPrice)),
@@ -377,11 +315,11 @@ export class AlertEditor {
     }
     chunks.push(
       fg(VALUE_COLOR)("\n"),
-      ...fieldLine("Save alert", this.field === "action" ? "Press Enter" : "Enter", this.field === "action"),
+      ...fieldLine("Save alert", this.frame.field === "action" ? "Press Enter" : "Enter", this.frame.field === "action"),
     )
     if (this.status) chunks.push(fg(ERROR_COLOR)(`\n\n${this.status}`))
     chunks.push(fg(MUTED_COLOR)("\n\nTab/↑/↓ field · ←/→ change · digits value · Enter save · Esc close"))
-    this.content.content = new StyledText(chunks)
+    this.frame.content.content = new StyledText(chunks)
     this.renderer.requestRender()
   }
 }
