@@ -41,14 +41,7 @@ export const ProtocolErrorBodySchema: z.ZodType<ProtocolErrorBody> = z.object({
     message: z.string(),
   }),
 })
-
-const ProtocolErrorPayloadSchema = z.object({
-  error: z.object({
-    code: z.enum(PROTOCOL_ERROR_CODES),
-    message: z.string().optional(),
-  }),
-})
-const ProtocolErrorPayloadInputSchema = z.preprocess((value) => value, ProtocolErrorPayloadSchema)
+const ProtocolErrorBodyInputSchema = z.preprocess((value) => value, ProtocolErrorBodySchema)
 
 const STATUS_BY_CODE = {
   unauthorized: 401,
@@ -93,8 +86,8 @@ export function isTransientError(cause: unknown): boolean {
   return isProtocolError(cause) && cause.code === "upstream_unavailable"
 }
 
-export function parseErrorBody(body: z.input<typeof ProtocolErrorPayloadInputSchema>): ProtocolError | null {
-  const parsed = ProtocolErrorPayloadInputSchema.safeParse(body)
+export function parseErrorBody(body: z.input<typeof ProtocolErrorBodyInputSchema>): ProtocolError | null {
+  const parsed = ProtocolErrorBodyInputSchema.safeParse(body)
   if (!parsed.success) return null
-  return new ProtocolError(parsed.data.error.code, parsed.data.error.message ?? parsed.data.error.code)
+  return new ProtocolError(parsed.data.error.code, parsed.data.error.message)
 }
