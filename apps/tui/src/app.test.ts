@@ -383,9 +383,10 @@ test("server performance summaries are forwarded to the application log until de
   expect(logs.list()).toMatchObject([{
     level: "INFO",
     scope: "Server performance",
-    message: "1-minute performance summary",
+    message: JSON.stringify(frame.report),
+    details: null,
   }])
-  expect(logs.list()[0]?.details).toContain('"ws.sent.frames": 4')
+  expect(logs.list()[0]?.message).not.toContain("\n")
 
   detach()
   for (const listener of listeners) listener(frame)
