@@ -577,7 +577,7 @@ export class CandlestickChart {
     const previousLength = this.series.candles.length
     if (applyLivePrice(this.series, price, timestamp)) {
       if (this.scrollOffset > 0) this.scrollOffset += this.series.candles.length - previousLength
-      this.liveRender.schedule()
+      this.liveRender.scheduleFrame()
     }
   }
 

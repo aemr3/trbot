@@ -897,7 +897,7 @@ export class ChatScreen {
       streaming.retry = delta.retry ? localRetryStatus(delta.retry) : null
     }
     this.streamingBySession.set(sessionId, streaming)
-    this.render.schedule()
+    this.render.scheduleFrame()
   }
 
   acceptRun(sessionId: string, runId: string, status: ChatRunStatus, promptMessageId?: string, error?: string): void {

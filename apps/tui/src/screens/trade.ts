@@ -1410,7 +1410,7 @@ export class TradeScreen {
   // because the row's new value can move it.
   private renderInstrumentRow(instrument: ViopInstrument, index: number): void {
     if (this.instrumentSort === "change") {
-      this.listResort.schedule()
+      this.listResort.scheduleFrame()
       return
     }
     this.instrumentList.updateRow(index, {

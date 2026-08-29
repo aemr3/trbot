@@ -773,6 +773,7 @@ test("applies live account, order, and futures price updates", async () => {
   expect(pricedPosition).toContain("THYAO")
 
   accountStream.emit({ type: "position", uid: "position-1", quantity: 3, averageCost: 305, country: "TR" })
+  await Bun.sleep(40)
   const updatedPosition = await waitForFrame((frame) => frame.includes("305,00→320,00") && frame.includes("+₺450,00"))
   expect(updatedPosition).toContain("3x")
 

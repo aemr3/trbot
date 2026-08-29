@@ -129,7 +129,7 @@ export class ViopOrderTicket {
     if (update.lastPrice !== undefined) preparation.lastPrice = update.lastPrice
     if (update.ask !== undefined) preparation.ask = update.ask
     if (update.bid !== undefined) preparation.bid = update.bid
-    this.liveRender.schedule()
+    this.liveRender.scheduleFrame()
   }
 
   handleKey(key: KeyEvent): boolean {

@@ -124,7 +124,9 @@ export async function startApp(): Promise<void> {
       consoleMode: "disabled",
       exitOnCtrlC: false,
       exitSignals: EXIT_SIGNALS,
+      maxFps: 30,
       openConsoleOnError: false,
+      targetFps: 30,
       onDestroy: () => {
         restoreTmuxKeyboard()
         app?.dispose()

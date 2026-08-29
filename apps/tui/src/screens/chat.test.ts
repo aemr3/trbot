@@ -2449,7 +2449,7 @@ test("shows only the current subagent tool and opens the worker when clicked", a
   const retrying = await waitForFrame((frame) => frame.includes(child.title) && frame.includes("↳ retry 1/5 in"))
   expect(retrying).not.toContain("↳ get_quote")
   screen.acceptDelta(child.id, "worker-run", { retry: null })
-  await Bun.sleep(0)
+  await Bun.sleep(40)
   await waitForFrame((frame) => frame.includes(child.title) && frame.includes("↳ get_quote"))
 
   screen.acceptMessage(child.id, toolResultMessage("get_quote", "Read quote."))
@@ -3834,6 +3834,7 @@ test("hides reasoning content throughout a folded stream", async () => {
   expect(folded).not.toContain("checking the higher timeframe")
 
   screen.acceptDelta(session.id, "run-1", { text: "The trend is intact." })
+  await Bun.sleep(40)
   const answering = await waitForFrame((frame) => frame.includes("The trend is intact."))
   expect(answering).toContain("+ thought")
   expect(answering).not.toContain("checking the higher timeframe")

@@ -345,7 +345,7 @@ export class AccountPanel {
     if (!position) return
     position.currentPrice = update.lastPrice
     position.unrealizedProfitLoss = positionProfitLoss(position)
-    if (this.tab === "positions") this.liveRender.schedule()
+    if (this.tab === "positions") this.liveRender.scheduleFrame()
   }
 
   async refresh(): Promise<void> {

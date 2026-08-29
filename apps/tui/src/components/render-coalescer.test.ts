@@ -34,6 +34,54 @@ test("a sustained stream renders once per event-loop turn, not once per event", 
   expect(renders).toBe(3)
 })
 
+test("frame scheduling keeps the latest state and caps sustained rebuilds", async () => {
+  let state = 0
+  const rendered: number[] = []
+  const coalescer = new RenderCoalescer(() => rendered.push(state))
+
+  state = 1
+  coalescer.scheduleFrame()
+  await nextTurn()
+  expect(rendered).toEqual([1])
+
+  for (let event = 2; event <= 100; event++) {
+    state = event
+    coalescer.scheduleFrame()
+    await nextTurn()
+  }
+  expect(rendered).toEqual([1])
+
+  await Bun.sleep(40)
+  expect(rendered).toEqual([1, 100])
+})
+
+test("an immediate schedule accelerates a pending frame without rendering twice", async () => {
+  let renders = 0
+  const coalescer = new RenderCoalescer(() => renders++)
+
+  coalescer.scheduleFrame()
+  await nextTurn()
+  coalescer.scheduleFrame()
+  coalescer.schedule()
+  await nextTurn()
+  expect(renders).toBe(2)
+
+  await Bun.sleep(40)
+  expect(renders).toBe(2)
+})
+
+test("an immediate render does not delay the first live frame", async () => {
+  let renders = 0
+  const coalescer = new RenderCoalescer(() => renders++)
+
+  coalescer.schedule()
+  await nextTurn()
+  coalescer.scheduleFrame()
+  await nextTurn()
+
+  expect(renders).toBe(2)
+})
+
 test("cancel drops the pending render and blocks future schedules", async () => {
   let renders = 0
   const coalescer = new RenderCoalescer(() => renders++)

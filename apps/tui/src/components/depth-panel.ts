@@ -207,7 +207,7 @@ export class DepthPanel {
     // comparing against the underlying alone would drop every one of them.
     if (book.symbol.toUpperCase() !== this.activeSymbol()?.toUpperCase()) return
     this.book = book
-    this.liveRender.schedule()
+    this.liveRender.scheduleFrame()
   }
 
   setFocused(focused: boolean): void {
