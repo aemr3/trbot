@@ -87,7 +87,7 @@ export interface StopRuleDraft {
 const RequiredTextSchema = z.string().refine((value) => value.trim().length > 0)
 
 /** Structural boundary for drafts; position and market semantics remain in validateStopRule. */
-export const StopRuleDraftSchema: z.ZodType<StopRuleDraft> = z.object({
+export const StopRuleDraftSchema = z.object({
   id: RequiredTextSchema.optional(),
   instrumentUid: RequiredTextSchema,
   symbol: RequiredTextSchema,
@@ -101,25 +101,13 @@ export const StopRuleDraftSchema: z.ZodType<StopRuleDraft> = z.object({
   quantity: z.number().nullable(),
   referencePrice: z.number().nullable(),
   atrValue: z.number().nullable(),
-})
+}) satisfies z.ZodType<StopRuleDraft>
 
-export const StopRuleSchema: z.ZodType<StopRule> = z.object({
+export const StopRuleSchema: z.ZodType<StopRule> = StopRuleDraftSchema.extend({
   id: RequiredTextSchema,
-  instrumentUid: RequiredTextSchema,
-  symbol: RequiredTextSchema,
-  displayName: RequiredTextSchema,
-  side: z.enum(STOP_POSITION_SIDES),
-  role: z.enum(STOP_RULE_ROLES),
-  kind: z.enum(STOP_RULE_KINDS),
-  value: z.number().positive(),
-  basis: z.enum(STOP_RULE_BASES),
-  interval: z.enum(CANDLE_INTERVALS).nullable(),
-  quantity: z.number().nullable(),
   status: z.enum(STOP_RULE_STATUSES),
   triggerPrice: z.number().nullable(),
   extremePrice: z.number().nullable(),
-  referencePrice: z.number().nullable(),
-  atrValue: z.number().nullable(),
   createdAt: z.number(),
   updatedAt: z.number(),
   triggeredAt: z.number().nullable(),
