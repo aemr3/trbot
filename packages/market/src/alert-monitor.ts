@@ -2,14 +2,8 @@
 // owns nothing but attention: when a level is reached it says so once, and the
 // screen decides how loudly. Nothing here trades, and no alert depends on a
 // position existing.
-import {
-  averageTrueRange,
-  closedCandles,
-  rangeForInterval,
-  type Candle,
-  type CandleInterval,
-  type CandleSource,
-} from "./candle.ts"
+import type { Candle, CandleInterval, CandleSource } from "./candle.ts"
+import { LevelMonitorFeed, type LevelMonitorFeedState } from "./level-monitor-feed.ts"
 import {
   advanceAlertTrail,
   alertNeedsCandles,
@@ -25,15 +19,6 @@ import {
 import type { QuoteUpdate } from "./quote-stream.ts"
 import { z } from "zod"
 
-// A price this old is treated as no price at all: a dead feed must not look
-// like a market standing still just above a level.
-const DEFAULT_STALE_PRICE_MS = 20_000
-// Candle reads happen on the screen's poll rather than per tick, so a close
-// based alert is judged against a window a few polls wide instead of the tick
-// one.
-const STALE_CANDLE_MS = 90_000
-const ATR_PERIOD = 14
-
 export interface AlertTriggerEvent<TAlert extends PriceAlert = PriceAlert> {
   alert: TAlert
   // The price that reached the level.
@@ -48,7 +33,7 @@ export interface PriceRuleStore<TAlert extends PriceAlert> {
 }
 
 /** How the price feed for an alert's symbol is doing. */
-export type AlertFeedState = "live" | "stale" | "missing"
+export type AlertFeedState = LevelMonitorFeedState
 
 export interface PriceAlertView<TAlert extends PriceAlert = PriceAlert> {
   alert: TAlert
@@ -89,45 +74,35 @@ export interface AlertMonitorOptions<
   now?: () => number
 }
 
-interface QuoteSample {
-  price: number
-  timestamp: number
-}
-
 export class AlertMonitor<
   TAlert extends PriceAlert = PriceAlert,
   TDraft extends PriceAlertDraft = PriceAlertDraft,
 > {
   private alerts = new Map<string, TAlert>()
-  private readonly quotes = new Map<string, QuoteSample>()
-  // The last closed candle read per instrument and grain, keyed
-  // `instrumentUid:interval`. A close-based alert watches these, not ticks.
-  private readonly candles = new Map<string, QuoteSample>()
+  private readonly feed: LevelMonitorFeed
   // Alerts seen at least once with the market on the near side of their level.
   // One written on the far side therefore waits for the market to come back
   // rather than firing the instant it is saved.
   private readonly approaching = new Set<string>()
-  private candleRequest: AbortController | null = null
-  private destroyed = false
 
-  constructor(private readonly options: AlertMonitorOptions<TAlert, TDraft>) {}
+  constructor(private readonly options: AlertMonitorOptions<TAlert, TDraft>) {
+    this.feed = new LevelMonitorFeed(options)
+  }
 
   /** Seeds from the store. A fired alert stays fired until it is re-armed. */
   async load(): Promise<void> {
     try {
       const stored = await this.options.store.list()
-      if (this.destroyed) return
+      if (this.feed.destroyed) return
       this.alerts = new Map(stored.map((alert) => [alert.id, alert]))
       this.options.onChange?.()
     } catch (error) {
-      this.report(error)
+      this.feed.report(error)
     }
   }
 
   destroy(): void {
-    this.destroyed = true
-    this.candleRequest?.abort()
-    this.candleRequest = null
+    this.feed.destroy()
   }
 
   /** Symbols the monitor needs ticks for, so the screen can subscribe to them. */
@@ -144,38 +119,25 @@ export class AlertMonitor<
   }
 
   views(): PriceAlertView<TAlert>[] {
-    const now = this.now()
+    const now = this.feed.now()
     return [...this.alerts.values()]
       // Newest first: the alert just written is the one being looked for.
       .sort((left, right) => right.createdAt - left.createdAt || left.symbol.localeCompare(right.symbol))
       .map((alert) => {
         // A close-based alert is read from candles, so a contract that never
         // ticks is not a broken alert and must not be reported as one.
-        const fromCandles = alert.basis === "CLOSE"
-        const sample = fromCandles
-          ? this.candles.get(`${alert.instrumentUid}:${alert.interval}`)
-          : this.quotes.get(alert.symbol)
-        const level = resolveAlertLevel(alert)
-        const lastPrice = sample?.price ?? null
         return {
           alert,
-          level,
-          lastPrice,
-          distancePercent: level !== null && lastPrice !== null && lastPrice > 0
-            ? ((level - lastPrice) / lastPrice) * 100
-            : null,
-          feed: sampleState(sample, now, fromCandles ? STALE_CANDLE_MS : this.staleAfter()),
+          ...this.feed.view(alert, resolveAlertLevel(alert), now),
         }
       })
   }
 
   /** A tick: advances trailing levels and fires any touch alert it reaches. */
   applyQuote(update: QuoteUpdate): void {
-    if (this.destroyed || update.lastPrice === null || !Number.isFinite(update.lastPrice)) return
-    const now = this.now()
-    // Provider timestamps can run ahead of the local clock; a future tick is
-    // fresh, not stale.
-    this.quotes.set(update.symbol, { price: update.lastPrice, timestamp: Math.min(update.timestamp, now) })
+    const sample = this.feed.recordQuote(update)
+    if (!sample) return
+    const now = sample.observedAt
     // A new price moves the distance and feed a watching row shows, whether or
     // not it moves the alert, so the panel hears about it either way.
     let changed = false
@@ -185,7 +147,7 @@ export class AlertMonitor<
       if (alert.symbol !== update.symbol) continue
       if (alert.basis !== "CLOSE") watched = true
       if (isTrailingAlert(alert.kind) && alert.status === "ARMED") {
-        const advanced = advanceAlertTrail(alert, update.lastPrice)
+        const advanced = advanceAlertTrail(alert, sample.price)
         if (advanced) {
           const moved = { ...alert, ...advanced, updatedAt: now }
           this.alerts.set(alert.id, moved)
@@ -193,7 +155,7 @@ export class AlertMonitor<
           changed = true
         }
       }
-      if (alert.basis === "TOUCH") changed = this.evaluate(alert.id, { lastPrice: update.lastPrice }, now) || changed
+      if (alert.basis === "TOUCH") changed = this.evaluate(alert.id, { lastPrice: sample.price }, now) || changed
     }
     if (changed || watched) this.options.onChange?.()
   }
@@ -204,8 +166,6 @@ export class AlertMonitor<
    * Called on the screen's timer.
    */
   async refreshCandleAlerts(): Promise<void> {
-    const source = this.options.candles
-    if (!source || this.destroyed) return
     const wanted = new Map<string, { instrumentUid: string; interval: CandleInterval }>()
     for (const alert of this.alerts.values()) {
       if (alert.status !== "ARMED" || !alertNeedsCandles(alert) || !alert.interval) continue
@@ -215,49 +175,24 @@ export class AlertMonitor<
       })
     }
     if (wanted.size === 0) return
-
-    this.candleRequest?.abort()
-    const request = new AbortController()
-    this.candleRequest = request
-    try {
-      let changed = false
-      for (const { instrumentUid, interval } of wanted.values()) {
-        const series = await source.loadCandles(instrumentUid, rangeForInterval(interval), interval, {
-          signal: request.signal,
-          target: "INSTRUMENT",
-        })
-        if (this.destroyed || request.signal.aborted || this.candleRequest !== request) return
-        const now = this.now()
-        const closed = closedCandles(series, now)
-        const lastClosed = closed.at(-1) ?? null
-        // A fresh reading changes what every close-based row displays, so it
-        // counts as a change in its own right; see the stop monitor.
-        if (lastClosed) {
-          this.candles.set(`${instrumentUid}:${interval}`, { price: lastClosed.close, timestamp: now })
-          changed = true
-        }
-        changed = this.applyCandles(instrumentUid, interval, lastClosed, averageTrueRange(closed, ATR_PERIOD), now)
-          || changed
-      }
-      if (changed) this.options.onChange?.()
-    } catch (error) {
-      if (request.signal.aborted || isAbortError(error)) return
-      this.report(error)
-    } finally {
-      if (this.candleRequest === request) this.candleRequest = null
-    }
+    const changed = await this.feed.refreshCandles(
+      wanted.values(),
+      ({ instrumentUid, interval, lastClosed, atr, now }) =>
+        this.applyCandles(instrumentUid, interval, lastClosed, atr, now),
+    )
+    if (changed) this.options.onChange?.()
   }
 
   async saveAlert(draft: TDraft): Promise<TAlert> {
     const existing = draft.id ? this.alerts.get(draft.id) : undefined
-    const alert = this.options.create(draft, this.now())
+    const alert = this.options.create(draft, this.feed.now())
     if (existing) alert.createdAt = existing.createdAt
     this.alerts.set(alert.id, alert)
     // An edited alert earns its near-side latch again: its level moved. A fresh
     // cached quote can establish that side immediately, so the first trade through
     // the level is not discarded while waiting for another near-side tick.
     this.approaching.delete(alert.id)
-    this.seedApproachFromQuote(alert, this.now())
+    this.seedApproachFromQuote(alert, this.feed.now())
     await this.persist(alert)
     this.options.onChange?.()
     return alert
@@ -269,7 +204,7 @@ export class AlertMonitor<
     try {
       await this.options.store.remove(id)
     } catch (error) {
-      this.report(error)
+      this.feed.report(error)
     }
     this.options.onChange?.()
   }
@@ -281,7 +216,7 @@ export class AlertMonitor<
     if (alert) {
       this.alerts.set(id, alert)
       this.approaching.delete(id)
-      this.seedApproachFromQuote(alert, this.now())
+      this.seedApproachFromQuote(alert, this.feed.now())
     } else {
       this.alerts.delete(id)
       this.approaching.delete(id)
@@ -298,7 +233,7 @@ export class AlertMonitor<
     const updated: TAlert = {
       ...alert,
       status,
-      updatedAt: this.now(),
+      updatedAt: this.feed.now(),
     }
     if (status === "ARMED") {
       updated.triggeredAt = null
@@ -343,7 +278,7 @@ export class AlertMonitor<
   private evaluate(id: string, sample: { lastPrice?: number; closedCandle?: Candle | null }, now: number): boolean {
     const alert = this.alerts.get(id)
     if (!alert || alert.status !== "ARMED") return false
-    if (sample.lastPrice !== undefined && this.feedState(alert.symbol, now) !== "live") return false
+    if (sample.lastPrice !== undefined && this.feed.quoteState(alert.symbol, now) !== "live") return false
 
     if (!isAlertReached(alert, sample)) {
       this.approaching.add(alert.id)
@@ -371,32 +306,23 @@ export class AlertMonitor<
     const event = {
       alert: triggered,
       price,
-      priceAgeMs: Math.max(0, now - (this.quotes.get(alert.symbol)?.timestamp ?? now)),
+      priceAgeMs: this.feed.quoteAgeMs(alert.symbol, now),
     }
     const persistence = this.persist(triggered)
     this.options.onTrigger(event)
     if (this.options.onTriggerPersisted) {
       void persistence.then((stored) => {
-        if (stored && !this.destroyed) this.options.onTriggerPersisted?.(event)
+        if (stored && !this.feed.destroyed) this.options.onTriggerPersisted?.(event)
       })
     }
     return true
   }
 
-  /** Tick freshness, which is what decides whether a touch alert may fire. */
-  private feedState(symbol: string, now: number): AlertFeedState {
-    return sampleState(this.quotes.get(symbol), now, this.staleAfter())
-  }
-
   /** Arms a touch crossing from a live quote observed before the rule was saved. */
   private seedApproachFromQuote(alert: TAlert, now: number): void {
-    if (alert.basis !== "TOUCH" || this.feedState(alert.symbol, now) !== "live") return
-    const quote = this.quotes.get(alert.symbol)
+    if (alert.basis !== "TOUCH" || this.feed.quoteState(alert.symbol, now) !== "live") return
+    const quote = this.feed.quote(alert.symbol)
     if (quote && !isAlertReached(alert, { lastPrice: quote.price })) this.approaching.add(alert.id)
-  }
-
-  private staleAfter(): number {
-    return this.options.stalePriceMs ?? DEFAULT_STALE_PRICE_MS
   }
 
   private async persist(alert: TAlert): Promise<boolean> {
@@ -404,28 +330,8 @@ export class AlertMonitor<
       await this.options.store.put(alert)
       return true
     } catch (error) {
-      this.report(error)
+      this.feed.report(error)
       return false
     }
   }
-
-  private report(cause: unknown): void {
-    if (this.destroyed) return
-    this.options.onError?.(cause)
-  }
-
-  private now(): number {
-    return this.options.now?.() ?? Date.now()
-  }
-}
-
-
-
-function sampleState(sample: QuoteSample | undefined, now: number, staleAfter: number): AlertFeedState {
-  if (!sample) return "missing"
-  return now - sample.timestamp > staleAfter ? "stale" : "live"
-}
-
-function isAbortError(cause: unknown): boolean {
-  return cause instanceof DOMException && cause.name === "AbortError"
 }

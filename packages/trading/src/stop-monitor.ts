@@ -3,13 +3,11 @@
 // screen confirms. Everything that decides whether an exit is safe lives here,
 // not in the panel.
 import {
-  averageTrueRange,
-  closedCandles,
-  rangeForInterval,
   type Candle,
   type CandleInterval,
   type CandleSource,
 } from "@trbot/market/candle.ts"
+import { LevelMonitorFeed, type LevelMonitorFeedState } from "@trbot/market/level-monitor-feed.ts"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
 import { AccountPositionSchema, type AccountPosition } from "./account.ts"
 import type { ViopOrderSide } from "./order.ts"
@@ -31,16 +29,6 @@ import {
   type StopRuleStore,
 } from "./stop.ts"
 import { z } from "zod"
-
-// A price this old is treated as no price at all: a dead feed must not look
-// like a market standing still just above a stop.
-const DEFAULT_STALE_PRICE_MS = 20_000
-// Candle reads happen on the screen's poll rather than per tick, so a close
-// based rule is judged against a window a few polls wide instead of the tick
-// one. Holding it to the tick window would flag a perfectly healthy rule stale
-// between every read.
-const STALE_CANDLE_MS = 90_000
-const ATR_PERIOD = 14
 
 /**
  * How a fired stop ended.
@@ -73,7 +61,7 @@ export interface StopTriggerEvent {
 }
 
 /** How the price feed for a rule's symbol is doing. */
-export type StopFeedState = "live" | "stale" | "missing"
+export type StopFeedState = LevelMonitorFeedState
 
 export interface StopRuleView {
   rule: StopRule
@@ -113,44 +101,32 @@ export interface StopMonitorOptions {
   now?: () => number
 }
 
-interface QuoteSample {
-  price: number
-  timestamp: number
-}
-
 export class StopMonitor {
   private rules = new Map<string, StopRule>()
   private positions = new Map<string, AccountPosition>()
-  private readonly quotes = new Map<string, QuoteSample>()
-  // The last closed candle read per instrument and grain, keyed
-  // `instrumentUid:interval`. A close-based rule watches these, not ticks, so
-  // this is the feed that says whether it is actually working.
-  private readonly candles = new Map<string, QuoteSample>()
+  private readonly feed: LevelMonitorFeed
   // Rules seen at least once with the market on the safe side of their level.
   // A rule typed on the wrong side of the market therefore waits instead of
   // firing the instant it is saved.
   private readonly safe = new Set<string>()
-  private candleRequest: AbortController | null = null
-  private destroyed = false
-
-  constructor(private readonly options: StopMonitorOptions) {}
+  constructor(private readonly options: StopMonitorOptions) {
+    this.feed = new LevelMonitorFeed(options)
+  }
 
   /** Seeds from the store. Triggered rules stay triggered — never auto-sent. */
   async load(): Promise<void> {
     try {
       const stored = await this.options.store.list()
-      if (this.destroyed) return
+      if (this.feed.destroyed) return
       this.rules = new Map(stored.map((rule) => [rule.id, rule]))
       this.options.onChange?.()
     } catch (error) {
-      this.report(error)
+      this.feed.report(error)
     }
   }
 
   destroy(): void {
-    this.destroyed = true
-    this.candleRequest?.abort()
-    this.candleRequest = null
+    this.feed.destroy()
   }
 
   /** Symbols the monitor needs ticks for, so the screen can subscribe to them. */
@@ -167,25 +143,16 @@ export class StopMonitor {
   }
 
   views(): StopRuleView[] {
-    const now = this.now()
+    const now = this.feed.now()
     return [...this.rules.values()]
       // Newest first: the rule just written is the one being looked for.
       .sort((left, right) => right.createdAt - left.createdAt || left.symbol.localeCompare(right.symbol))
       .map((rule) => {
         // A close-based rule is read from candles, so a contract that never
         // ticks is not a broken rule and must not be reported as one.
-        const fromCandles = rule.basis === "CLOSE"
-        const sample = fromCandles ? this.candles.get(candleKey(rule)) : this.quotes.get(rule.symbol)
-        const level = resolveStopLevel(rule)
-        const lastPrice = sample?.price ?? null
         return {
           rule,
-          level,
-          lastPrice,
-          distancePercent: level !== null && lastPrice !== null && lastPrice > 0
-            ? ((level - lastPrice) / lastPrice) * 100
-            : null,
-          feed: sampleState(sample, now, fromCandles ? STALE_CANDLE_MS : this.staleAfter()),
+          ...this.feed.view(rule, resolveStopLevel(rule), now),
           hasPosition: this.positions.has(rule.instrumentUid),
         }
       })
@@ -201,9 +168,9 @@ export class StopMonitor {
    * passing a placeholder before the account answers destroys the rule set.
    */
   setPositions(positions: AccountPosition[]): void {
-    if (this.destroyed) return
+    if (this.feed.destroyed) return
     this.positions = new Map(positions.map((position) => [position.uid, position]))
-    const now = this.now()
+    const now = this.feed.now()
     let changed = false
     for (const rule of this.rules.values()) {
       const reconciled = reconcileStopRule(rule, this.positions.get(rule.instrumentUid), now)
@@ -217,11 +184,9 @@ export class StopMonitor {
 
   /** A tick: advances trailing levels and fires any touch rule it reaches. */
   applyQuote(update: QuoteUpdate): void {
-    if (this.destroyed || update.lastPrice === null || !Number.isFinite(update.lastPrice)) return
-    const now = this.now()
-    // Provider timestamps can run ahead of the local clock; a future tick is
-    // fresh, not stale.
-    this.quotes.set(update.symbol, { price: update.lastPrice, timestamp: Math.min(update.timestamp, now) })
+    const sample = this.feed.recordQuote(update)
+    if (!sample) return
+    const now = sample.observedAt
     // A new price moves the distance and feed a watching row shows, whether or
     // not it moves the rule, so the panel hears about it either way.
     let changed = false
@@ -231,7 +196,7 @@ export class StopMonitor {
       if (rule.symbol !== update.symbol) continue
       if (rule.basis !== "CLOSE") watched = true
       if (isTrailingStopRule(rule.kind) && rule.status === "ARMED") {
-        const advanced = advanceTrailingStop(rule, update.lastPrice)
+        const advanced = advanceTrailingStop(rule, sample.price)
         if (advanced) {
           const moved = { ...rule, ...advanced, updatedAt: now }
           this.rules.set(rule.id, moved)
@@ -239,7 +204,7 @@ export class StopMonitor {
           changed = true
         }
       }
-      if (rule.basis === "TOUCH") changed = this.evaluate(rule.id, { lastPrice: update.lastPrice }, now) || changed
+      if (rule.basis === "TOUCH") changed = this.evaluate(rule.id, { lastPrice: sample.price }, now) || changed
     }
     if (changed || watched) this.options.onChange?.()
   }
@@ -250,52 +215,23 @@ export class StopMonitor {
    * Called on the screen's timer.
    */
   async refreshCandleRules(): Promise<void> {
-    const source = this.options.candles
-    if (!source || this.destroyed) return
     const wanted = new Map<string, { instrumentUid: string; interval: CandleInterval }>()
     for (const rule of this.rules.values()) {
       if (rule.status !== "ARMED" || !stopRuleNeedsCandles(rule) || !rule.interval) continue
       wanted.set(`${rule.instrumentUid}:${rule.interval}`, { instrumentUid: rule.instrumentUid, interval: rule.interval })
     }
     if (wanted.size === 0) return
-
-    this.candleRequest?.abort()
-    const request = new AbortController()
-    this.candleRequest = request
-    try {
-      let changed = false
-      for (const { instrumentUid, interval } of wanted.values()) {
-        const series = await source.loadCandles(instrumentUid, rangeForInterval(interval), interval, {
-          signal: request.signal,
-          target: "INSTRUMENT",
-        })
-        if (this.destroyed || request.signal.aborted || this.candleRequest !== request) return
-        const now = this.now()
-        const closed = closedCandles(series, now)
-        const lastClosed = closed.at(-1) ?? null
-        const atr = averageTrueRange(closed, ATR_PERIOD)
-        // A fresh reading changes what every close-based row displays, so it
-        // counts as a change in its own right. Without this the panel is only
-        // repainted when a rule itself moves — which a close-based rule may
-        // never do — and the row stays frozen on whatever it said at load.
-        if (lastClosed) {
-          this.candles.set(`${instrumentUid}:${interval}`, { price: lastClosed.close, timestamp: now })
-          changed = true
-        }
-        changed = this.applyCandles(instrumentUid, interval, lastClosed, atr, now) || changed
-      }
-      if (changed) this.options.onChange?.()
-    } catch (error) {
-      if (request.signal.aborted || isAbortError(error)) return
-      this.report(error)
-    } finally {
-      if (this.candleRequest === request) this.candleRequest = null
-    }
+    const changed = await this.feed.refreshCandles(
+      wanted.values(),
+      ({ instrumentUid, interval, lastClosed, atr, now }) =>
+        this.applyCandles(instrumentUid, interval, lastClosed, atr, now),
+    )
+    if (changed) this.options.onChange?.()
   }
 
   async saveRule(draft: StopRuleDraft): Promise<StopRule> {
     const existing = draft.id ? this.rules.get(draft.id) : undefined
-    const rule = createStopRule(draft, this.now())
+    const rule = createStopRule(draft, this.feed.now())
     if (existing) rule.createdAt = existing.createdAt
     this.rules.set(rule.id, rule)
     // An edited rule earns its safe-tick latch again: its level moved.
@@ -311,7 +247,7 @@ export class StopMonitor {
     try {
       await this.options.store.remove(id)
     } catch (error) {
-      this.report(error)
+      this.feed.report(error)
     }
     this.options.onChange?.()
   }
@@ -336,7 +272,7 @@ export class StopMonitor {
     // Re-arming starts the safe-tick latch over, so a level the market has
     // already passed cannot fire the moment it is switched back on.
     if (status === "ARMED") this.safe.delete(id)
-    const updated: StopRule = { ...rule, status, updatedAt: this.now() }
+    const updated: StopRule = { ...rule, status, updatedAt: this.feed.now() }
     this.rules.set(id, updated)
     await this.persist(updated)
     this.options.onChange?.()
@@ -354,7 +290,7 @@ export class StopMonitor {
   ): Promise<void> {
     const rule = this.rules.get(id)
     if (!rule) return
-    const now = this.now()
+    const now = this.feed.now()
     if (outcome !== "SUBMITTED") {
       // Stood down, refused, or unknown. The rule stops watching either way:
       // left armed it would fire again immediately, and left triggered it would
@@ -420,7 +356,7 @@ export class StopMonitor {
     if (!rule || rule.status !== "ARMED") return false
     const position = this.positions.get(rule.instrumentUid)
     if (!position || position.quantity === 0) return false
-    if (sample.lastPrice !== undefined && this.feedState(rule.symbol, now) !== "live") return false
+    if (sample.lastPrice !== undefined && this.feed.quoteState(rule.symbol, now) !== "live") return false
 
     const breached = isStopBreached(rule, sample)
     if (!breached) {
@@ -443,52 +379,19 @@ export class StopMonitor {
       price,
       quantity,
       side: stopExitSide(rule.side),
-      priceAgeMs: Math.max(0, now - (this.quotes.get(rule.symbol)?.timestamp ?? now)),
+      priceAgeMs: this.feed.quoteAgeMs(rule.symbol, now),
     })
     return true
-  }
-
-  /** Tick freshness, which is what decides whether a touch rule may fire. */
-  private feedState(symbol: string, now: number): StopFeedState {
-    return sampleState(this.quotes.get(symbol), now, this.staleAfter())
-  }
-
-  private staleAfter(): number {
-    return this.options.stalePriceMs ?? DEFAULT_STALE_PRICE_MS
   }
 
   private async persist(rule: StopRule): Promise<void> {
     try {
       await this.options.store.put(rule)
     } catch (error) {
-      this.report(error)
+      this.feed.report(error)
     }
   }
-
-  private report(cause: unknown): void {
-    if (this.destroyed) return
-    this.options.onError?.(cause)
-  }
-
-  private now(): number {
-    return this.options.now?.() ?? Date.now()
-  }
-}
-
-
-
-function candleKey(rule: StopRule): string {
-  return `${rule.instrumentUid}:${rule.interval}`
-}
-
-function sampleState(sample: QuoteSample | undefined, now: number, staleAfter: number): StopFeedState {
-  if (!sample) return "missing"
-  return now - sample.timestamp > staleAfter ? "stale" : "live"
-}
-
-function isAbortError(cause: unknown): boolean {
-  return cause instanceof DOMException && cause.name === "AbortError"
 }
 
 // Re-exported so callers that already reach for the monitor keep one import.
-export { rangeForInterval }
+export { rangeForInterval } from "@trbot/market/candle.ts"
