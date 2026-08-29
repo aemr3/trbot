@@ -40,6 +40,16 @@ export interface StreamSocket {
  * tick costs nothing: the next one supersedes it.
  */
 const BACKPRESSURE_LIMIT_BYTES = 1 << 20
+const MARKET_FRAME_INTERVAL_MS = 1_000 / 30
+
+type MarketChannel = Extract<StreamChannel, "quotes" | "equityQuotes" | "depth">
+type MarketFrame = Extract<ServerFrame, { type: "quotes" | "equityQuotes" | "depth" }>
+
+interface PendingMarketFrame {
+  channel: MarketChannel
+  frame: MarketFrame
+  symbol: string
+}
 
 export interface StreamHubOptions {
   /** Tracks the client process that owns temporary tool grants across brief reconnects. */
@@ -85,6 +95,9 @@ interface SymbolStream {
 export class StreamHub {
   private readonly sockets = new Set<StreamSocket>()
   private attached: ProviderSources | null = null
+  private readonly pendingMarketFrames = new Map<string, PendingMarketFrame>()
+  private marketFlushTimer: ReturnType<typeof setTimeout> | null = null
+  private lastMarketFlushAt: number | null = null
   // One upstream connection per watched symbol, since these channels carry a
   // single symbol each. Two clients on different symbols are both served.
   private readonly depthStreams = new Map<string, SymbolStream>()
@@ -139,6 +152,7 @@ export class StreamHub {
     this.resyncSymbols("depth")
     this.resyncAccount()
     this.resyncPendingOrders()
+    if (this.sockets.size === 0) this.resetMarketFrames()
   }
 
   handle(socket: StreamSocket, frame: ClientFrame): void {
@@ -195,6 +209,54 @@ export class StreamHub {
     }
   }
 
+  /**
+   * Keeps only the newest complete snapshot for each channel and symbol while a
+   * frame window is open. Monitor callbacks run before this queue, so sampling
+   * client traffic never costs the server a tick used for trading decisions.
+   */
+  private emitMarket(channel: MarketChannel, frame: MarketFrame, symbol: string): void {
+    if (!this.hasSubscriber(channel, symbol)) return
+
+    const elapsed = this.lastMarketFlushAt === null
+      ? MARKET_FRAME_INTERVAL_MS
+      : performance.now() - this.lastMarketFlushAt
+    if (elapsed >= MARKET_FRAME_INTERVAL_MS && this.marketFlushTimer === null) {
+      this.lastMarketFlushAt = performance.now()
+      this.emit(channel, frame, symbol)
+      return
+    }
+
+    this.pendingMarketFrames.set(`${channel}:${symbol}`, { channel, frame, symbol })
+    if (this.marketFlushTimer !== null) return
+
+    const delay = Math.max(0, MARKET_FRAME_INTERVAL_MS - elapsed)
+    this.marketFlushTimer = setTimeout(() => this.flushMarketFrames(), delay)
+  }
+
+  private flushMarketFrames(): void {
+    this.marketFlushTimer = null
+    if (this.pendingMarketFrames.size === 0) return
+
+    const frames = [...this.pendingMarketFrames.values()]
+    this.pendingMarketFrames.clear()
+    this.lastMarketFlushAt = performance.now()
+    for (const { channel, frame, symbol } of frames) this.emit(channel, frame, symbol)
+  }
+
+  private resetMarketFrames(): void {
+    if (this.marketFlushTimer !== null) clearTimeout(this.marketFlushTimer)
+    this.marketFlushTimer = null
+    this.pendingMarketFrames.clear()
+    this.lastMarketFlushAt = null
+  }
+
+  private hasSubscriber(channel: MarketChannel, symbol: string): boolean {
+    for (const socket of this.sockets) {
+      if (socket.data.subscriptions.has(channel) && this.wants(socket, channel, symbol)) return true
+    }
+    return false
+  }
+
   /** Remembers a status frame and sends it on, so a later subscriber can be told. */
   private status(key: string, channel: StreamChannel, frame: ServerFrame, symbol?: string): void {
     this.lastStatus.set(key, frame)
@@ -233,11 +295,12 @@ export class StreamHub {
     this.depthStreams.clear()
     this.equityStreams.clear()
     this.lastStatus.clear()
+    this.resetMarketFrames()
     this.attached = sources
 
     sources.quotes.subscribe((update) => {
       this.options.onQuote?.(update)
-      this.emit("quotes", { type: "quotes", update }, update.symbol)
+      this.emitMarket("quotes", { type: "quotes", update }, update.symbol)
     })
     sources.quotes.onConnectionChange((connected) =>
       this.status("quotes", "quotes", { type: "status", channel: "quotes", connected }),
@@ -303,7 +366,7 @@ export class StreamHub {
 
   private openDepth(sources: ProviderSources, symbol: string): SymbolStream {
     const stream = sources.openDepthStream()
-    stream.subscribe((book) => this.emit("depth", { type: "depth", book }, book.symbol))
+    stream.subscribe((book) => this.emitMarket("depth", { type: "depth", book }, book.symbol))
     // Status frames carry no symbol, so they are routed by the stream that
     // reported them rather than by the frame's contents.
     stream.onStatusChange((status) => this.status(`depth:${symbol}`, "depth", { type: "depthStatus", status }, symbol))
@@ -313,7 +376,7 @@ export class StreamHub {
 
   private openEquity(sources: ProviderSources, symbol: string): SymbolStream {
     const stream = sources.openEquityQuoteStream()
-    stream.subscribe((update) => this.emit("equityQuotes", { type: "equityQuotes", update }, update.symbol))
+    stream.subscribe((update) => this.emitMarket("equityQuotes", { type: "equityQuotes", update }, update.symbol))
     stream.onConnectionChange((connected) =>
       this.status(`equityQuotes:${symbol}`, "equityQuotes", { type: "status", channel: "equityQuotes", connected }, symbol),
     )

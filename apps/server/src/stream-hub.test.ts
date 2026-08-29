@@ -113,6 +113,8 @@ function quote(symbol: string, lastPrice = 100): QuoteUpdate {
   return { symbol, lastPrice, sessionStatus: null, timestamp: 0 }
 }
 
+const waitForMarketFlush = () => Bun.sleep(50)
+
 function book(symbol: string): DepthBook {
   return {
     symbol,
@@ -189,7 +191,48 @@ describe("stream hub", () => {
     expect(b.sent).toHaveLength(0)
   })
 
-  test("two clients on different depth symbols are each served their own book", () => {
+  test("keeps only the latest update per symbol within a market frame", async () => {
+    const quotes = new FakeQuoteStream()
+    const hub = new StreamHub(sessionWith(sourcesWith(quotes, new FakeDepthFactory())))
+
+    const client = socket()
+    hub.add(client)
+    hub.handle(client, { type: "subscribe", channel: "quotes", symbols: ["AAA", "BBB"] })
+
+    quotes.listener?.(quote("AAA", 100))
+    for (let price = 101; price <= 200; price++) quotes.listener?.(quote("AAA", price))
+    quotes.listener?.(quote("BBB", 300))
+    quotes.listener?.(quote("BBB", 301))
+
+    // The leading frame is immediate; the rest of the burst has not been sent.
+    expect(client.sent).toEqual([{ type: "quotes", update: quote("AAA", 100) }])
+
+    await waitForMarketFlush()
+
+    expect(client.sent).toHaveLength(3)
+    expect(client.sent).toContainEqual({ type: "quotes", update: quote("AAA", 200) })
+    expect(client.sent).toContainEqual({ type: "quotes", update: quote("BBB", 301) })
+  })
+
+  test("sends critical events immediately while a market frame is pending", async () => {
+    const quotes = new FakeQuoteStream()
+    const hub = new StreamHub(sessionWith(sourcesWith(quotes, new FakeDepthFactory())))
+
+    const client = socket()
+    hub.add(client)
+    hub.handle(client, { type: "subscribe", channel: "quotes", symbols: ["AAA"] })
+
+    quotes.listener?.(quote("AAA", 100))
+    quotes.listener?.(quote("AAA", 101))
+    hub.broadcast({ type: "session", state: "expired" })
+
+    expect(client.sent.at(-1)).toEqual({ type: "session", state: "expired" })
+
+    await waitForMarketFlush()
+    expect(client.sent.at(-1)).toEqual({ type: "quotes", update: quote("AAA", 101) })
+  })
+
+  test("two clients on different depth symbols are each served their own book", async () => {
     const depth = new FakeDepthFactory()
     const hub = new StreamHub(sessionWith(sourcesWith(new FakeQuoteStream(), depth)))
 
@@ -205,6 +248,8 @@ describe("stream hub", () => {
 
     depth.forSymbol("BBB")?.listener?.(book("BBB"))
     depth.forSymbol("AAA")?.listener?.(book("AAA"))
+
+    await waitForMarketFlush()
 
     expect(a.sent).toEqual([{ type: "depth", book: book("AAA") }])
     expect(b.sent).toEqual([{ type: "depth", book: book("BBB") }])
@@ -312,9 +357,10 @@ describe("stream hub", () => {
     })
     hub.refresh()
 
-    quotes.listener?.(quote("AAA"))
+    for (let price = 1; price <= 100; price++) quotes.listener?.(quote("AAA", price))
 
-    expect(seen).toHaveLength(1)
+    expect(seen).toHaveLength(100)
+    expect(seen.at(-1)).toEqual(quote("AAA", 100))
   })
 
   // A stop reads what is held to decide whether to fire and how much to exit, so
@@ -383,6 +429,23 @@ describe("stream hub", () => {
     // And the quotes still reach the client, which is the whole point.
     recoveredQuotes.listener?.(quote("F_XU0300826", 305))
     expect(client.sent.at(-1)).toEqual({ type: "quotes", update: quote("F_XU0300826", 305) })
+  })
+
+  test("discards a pending market frame when the provider session is replaced", async () => {
+    const quotes = new FakeQuoteStream()
+    const session = sessionWith(sourcesWith(quotes, new FakeDepthFactory()))
+    const hub = new StreamHub(session)
+
+    const client = socket()
+    hub.add(client)
+    hub.handle(client, { type: "subscribe", channel: "quotes", symbols: ["AAA"] })
+
+    quotes.listener?.(quote("AAA", 100))
+    quotes.listener?.(quote("AAA", 101))
+    adoptSources(session, sourcesWith(new FakeQuoteStream(), new FakeDepthFactory()))
+
+    await waitForMarketFlush()
+    expect(client.sent).toEqual([{ type: "quotes", update: quote("AAA", 100) }])
   })
 })
 
