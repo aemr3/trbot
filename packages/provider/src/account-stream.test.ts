@@ -47,8 +47,8 @@ test("streams positions, collateral, and pending order status with the captured 
     ["order", { event: "OrderResult", data: '{"status":"COMPLETED"}' }],
   ])
   const client = {
-    async authenticate() {
-      return { accessToken: "token", refreshToken: null, memberUid: "member 1" }
+    async getMemberUid() {
+      return "member 1"
     },
     async *stream(options: { path: string; query?: Record<string, string>; signal?: AbortSignal }): AsyncGenerator<SseFrame> {
       calls.push({ path: options.path, query: options.query })
@@ -88,8 +88,8 @@ test("streams positions, collateral, and pending order status with the captured 
 test("reports a sustained transient outage once and logs its recovery", async () => {
   let positionAttempts = 0
   const client = {
-    async authenticate() {
-      return { accessToken: "token", refreshToken: null, memberUid: "member-1" }
+    async getMemberUid() {
+      return "member-1"
     },
     async *stream(options: { path: string; signal?: AbortSignal }): AsyncGenerator<SseFrame> {
       if (options.path.includes("overview-sse")) {

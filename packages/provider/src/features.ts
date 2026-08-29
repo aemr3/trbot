@@ -2,7 +2,7 @@ import type { ApiClient } from "@trbot/api"
 import { memberOperations } from "@trbot/api/member.ts"
 import { memberFeatureSet, type MemberFeature, type MemberFeatureSet, type MemberFeatureSource } from "@trbot/member/features.ts"
 
-type MemberApiClient = Pick<ApiClient, "call" | "authenticate">
+type MemberApiClient = Pick<ApiClient, "call" | "getMemberUid">
 
 // The provider names its flags after the market they were launched in
 // (`TR_DEPTH`) and after its own subscription brand (`MIDAS_PRO`). Only this
@@ -22,10 +22,10 @@ export class ApiMemberFeatureSource implements MemberFeatureSource {
   constructor(private readonly client: MemberApiClient) {}
 
   async loadFeatures(options: { signal?: AbortSignal } = {}): Promise<MemberFeatureSet> {
-    const session = await this.client.authenticate()
+    const memberUid = await this.client.getMemberUid()
     const data = await this.client.call(
       memberOperations.memberFeatures,
-      { memberUid: session.memberUid },
+      { memberUid },
       { signal: options.signal },
     )
     const enabled = (data.memberFeatures ?? []).flatMap((flag): MemberFeature[] => {

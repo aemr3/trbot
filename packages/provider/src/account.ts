@@ -2,7 +2,6 @@ import type { ApiClient } from "@trbot/api"
 import {
   accountOperations,
   type AccountOrderEntry,
-  type AccountOverviewData,
   type AccountPositionEntry,
   type ViopMarginData,
   type ViopPortfolioData,
@@ -18,8 +17,9 @@ import type {
   PortfolioRange,
   PortfolioSummary,
 } from "@trbot/trading/account.ts"
+import { ApiAccountResolver } from "./account-resolver.ts"
 
-type AccountApiClient = Pick<ApiClient, "authenticate" | "call">
+type AccountApiClient = Pick<ApiClient, "getMemberUid" | "call">
 
 const ASSET_VERTICAL = "TR"
 const INVESTMENT_TYPE = "FUTURES"
@@ -29,24 +29,20 @@ export class ApiAccountSource implements AccountSource {
   constructor(
     private readonly client: AccountApiClient,
     private readonly now: () => number = Date.now,
+    private readonly accountResolver = new ApiAccountResolver(client),
   ) {}
 
   async loadAccount(
     options: { signal?: AbortSignal; portfolioRange?: PortfolioRange } = {},
   ): Promise<AccountSnapshot> {
     const range = options.portfolioRange ?? "WEEK"
-    const session = await this.client.authenticate()
-    const overview = await this.client.call(
-      accountOperations.overview,
-      { memberId: session.memberUid, currencyCode: "TRY", period: "DAY" },
-      options,
-    )
-    const accountUid = activeAccountUid(overview)
+    const memberUid = await this.client.getMemberUid()
+    const accountUid = await this.accountResolver.getActiveTryAccountUid(memberUid)
 
     const [portfolio, margin, positions, pendingOrders, completedOrders] = await Promise.all([
       this.client.call(
         accountOperations.portfolio,
-        { accountId: session.memberUid, period: range },
+        { accountId: memberUid, period: range },
         options,
       ),
       this.client.call(
@@ -56,13 +52,13 @@ export class ApiAccountSource implements AccountSource {
       ),
       this.client.call(
         accountOperations.positions,
-        { accountId: session.memberUid },
+        { accountId: memberUid },
         options,
       ),
       this.client.call(
         accountOperations.orders,
         {
-          memberId: session.memberUid,
+          memberId: memberUid,
           status: "PENDING",
           page: 0,
           size: ORDER_PAGE_SIZE,
@@ -74,7 +70,7 @@ export class ApiAccountSource implements AccountSource {
       this.client.call(
         accountOperations.orders,
         {
-          memberId: session.memberUid,
+          memberId: memberUid,
           status: "COMPLETED",
           page: 0,
           size: ORDER_PAGE_SIZE,
@@ -86,7 +82,7 @@ export class ApiAccountSource implements AccountSource {
     ])
 
     return {
-      portfolio: normalizePortfolio(overview, portfolio, margin, accountUid),
+      portfolio: normalizePortfolio(portfolio, margin),
       performance: normalizePerformance(portfolio, range),
       positions: (positions.viopOverviewPositions?.positions ?? []).flatMap(normalizePosition),
       orders: [
@@ -98,24 +94,13 @@ export class ApiAccountSource implements AccountSource {
   }
 }
 
-function activeAccountUid(data: AccountOverviewData): string {
-  const account = data.overviewV7?.accounts?.find(
-    (candidate) => candidate.status === "ACTIVE" && candidate.currency === "TRY" && candidate.accountUid,
-  )
-  if (!account?.accountUid) throw new Error("No active TRY investment account was found")
-  return account.accountUid
-}
-
 function normalizePortfolio(
-  overviewData: AccountOverviewData,
   portfolioData: ViopPortfolioData,
   marginData: ViopMarginData,
-  accountUid: string,
 ): PortfolioSummary {
-  const account = overviewData.overviewV7?.accounts?.find((candidate) => candidate.accountUid === accountUid)
   const portfolio = portfolioData.viopRealizedProfitLoss
   return {
-    currency: account?.currency ?? "TRY",
+    currency: "TRY",
     totalCollateral: finiteNumber(portfolio?.totalCollateral),
     availableCollateral: finiteNumber(marginData.accountViopMarginHealthDetail?.availableCollateral),
     dailyProfitLoss: finiteNumber(portfolio?.dailyProfitLoss?.value),

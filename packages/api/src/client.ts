@@ -107,6 +107,12 @@ export class ApiClient {
     return this.runAuthentication(() => this.authenticateInternal(false))
   }
 
+  async getMemberUid(): Promise<string> {
+    const { memberUid } = await this.loadOrCreateState()
+    if (!memberUid) throw new AuthenticationError("Session has no member ID")
+    return memberUid
+  }
+
   reauthenticate(): Promise<ApiSession> {
     return this.runAuthentication(() => this.authenticateInternal(true))
   }

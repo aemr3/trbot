@@ -21,6 +21,7 @@ import type { QuoteStream } from "@trbot/market/quote-stream.ts"
 import type { SettlementSource } from "@trbot/market/settlement.ts"
 import type { MemberFeatureSource } from "@trbot/member/features.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
+import { ApiAccountResolver } from "@trbot/provider/account-resolver.ts"
 import { ApiAccountSource } from "@trbot/provider/account.ts"
 import { ApiAccountStream } from "@trbot/provider/account-stream.ts"
 import { ApiMemberFeatureSource } from "@trbot/provider/features.ts"
@@ -329,7 +330,8 @@ function providerHandle(handle: ApiClientHandle, feed: MarketFeed): ProviderSess
  * numbers is worse than none.
  */
 function providerSources(client: ApiClient, feed: MarketFeed, options: ProviderSourceOptions): ProviderSources {
-  const orders = new ApiViopOrderSource(client)
+  const accountResolver = new ApiAccountResolver(client)
+  const orders = new ApiViopOrderSource(client, accountResolver)
   const report = (label: string) => (cause: unknown) => options.report(label, cause)
   const brokerageInstruments = new ApiViopInstrumentSource(client)
   const instruments = new FeedAwareInstrumentSource(brokerageInstruments, feed.instruments)
@@ -350,7 +352,7 @@ function providerSources(client: ApiClient, feed: MarketFeed, options: ProviderS
     financials: feed.financials,
     candles: new InstrumentCandleSource(feed.candles, symbols),
     news: new ApiNewsSource(client),
-    account: new ApiAccountSource(client),
+    account: new ApiAccountSource(client, Date.now, accountResolver),
     orders,
     brokerage: new FeedBrokerageDistributionSource(brokerFeeds),
     settlement: new FeedSettlementSource(brokerFeeds),

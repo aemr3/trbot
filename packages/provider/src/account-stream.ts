@@ -19,7 +19,7 @@ const TERMINAL_ORDER_STATUSES = new Set([
 const DEFAULT_RECONNECT_DELAYS_MS = [1000, 3000, 5000]
 const TRANSIENT_FAILURE_REPORT_THRESHOLD = 3
 
-type AccountStreamApiClient = Pick<ApiClient, "authenticate" | "stream">
+type AccountStreamApiClient = Pick<ApiClient, "getMemberUid" | "stream">
 type PositionLiveUpdate = Extract<AccountLiveUpdate, { type: "position" }>
 type CollateralLiveUpdate = Extract<AccountLiveUpdate, { type: "collateral" }>
 type OrderLiveUpdate = Extract<AccountLiveUpdate, { type: "order" }>
@@ -98,8 +98,8 @@ export class ApiAccountStream implements AccountStream {
     let attempt = 0
     while (this.running && !signal.aborted) {
       try {
-        const session = await this.client.authenticate()
-        const path = `${POSITION_STREAM_PATH}/${encodeURIComponent(session.memberUid)}`
+        const memberUid = await this.client.getMemberUid()
+        const path = `${POSITION_STREAM_PATH}/${encodeURIComponent(memberUid)}`
         for await (const frame of this.client.stream({ path, query: { eventTypes: "position" }, signal })) {
           if (!this.running || signal.aborted) return
           attempt = 0
@@ -156,8 +156,8 @@ export class ApiAccountStream implements AccountStream {
     let attempt = 0
     while (this.running && this.pendingOrderUids.has(uid) && !signal.aborted) {
       try {
-        const session = await this.client.authenticate()
-        const path = `${ORDER_STREAM_PATH}/${encodeURIComponent(session.memberUid)}/order/${encodeURIComponent(uid)}`
+        const memberUid = await this.client.getMemberUid()
+        const path = `${ORDER_STREAM_PATH}/${encodeURIComponent(memberUid)}/order/${encodeURIComponent(uid)}`
         for await (const frame of this.client.stream({ path, signal })) {
           if (!this.running || signal.aborted) return
           attempt = 0

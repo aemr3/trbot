@@ -2,7 +2,6 @@ import type { ApiClient } from "@trbot/api"
 import {
   accountOperations,
   type AccountOrderEntry,
-  type AccountOverviewData,
   type AccountPositionsData,
 } from "@trbot/api/account.ts"
 import { tradingOperations, type OrderPreparationData } from "@trbot/api/trading.ts"
@@ -22,8 +21,9 @@ import {
   type ViopPositionExitSource,
   type ViopPositionIntent,
 } from "@trbot/trading/order.ts"
+import { ApiAccountResolver } from "./account-resolver.ts"
 
-type OrderApiClient = Pick<ApiClient, "authenticate" | "call">
+type OrderApiClient = Pick<ApiClient, "getMemberUid" | "call">
 
 const ASSET_VERTICAL = "TR"
 const INVESTMENT_TYPE = "FUTURES"
@@ -36,8 +36,23 @@ interface PreparedOrderContext {
   result: ViopOrderPreparation
 }
 
+interface OpenPosition {
+  instrumentUid: string
+  symbol: string
+  quantity: number
+}
+
+interface PositionExitContext {
+  memberUid: string
+  accountUid: string
+  positions: OpenPosition[]
+}
+
 export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellationSource, ViopPositionExitSource {
-  constructor(private readonly client: OrderApiClient) {}
+  constructor(
+    private readonly client: OrderApiClient,
+    private readonly accountResolver = new ApiAccountResolver(client),
+  ) {}
 
   async prepareOrder(request: PrepareViopOrderRequest): Promise<ViopOrderPreparation> {
     return (await this.prepareContext(request)).result
@@ -69,24 +84,14 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
   }
 
   async exitAllPositions(options: { signal?: AbortSignal } = {}): Promise<ViopPositionExitResult> {
-    const session = await this.client.authenticate()
-    const [overview, positionsData] = await Promise.all([
-      this.client.call(
-        accountOperations.overview,
-        { memberId: session.memberUid, currencyCode: "TRY", period: "DAY" },
-        options,
-      ),
-      this.client.call(accountOperations.positions, { accountId: session.memberUid }, options),
-    ])
-    const accountUid = activeTryAccountUid(overview)
-    const positions = openPositions(positionsData)
+    const { memberUid, accountUid, positions } = await this.loadPositionExitContext(options)
     const result: ViopPositionExitResult = { submitted: [], failures: [] }
 
     for (const position of positions) {
       const quantity = Math.abs(position.quantity)
       try {
         result.submitted.push(
-          await this.submitPositionExit(session.memberUid, accountUid, position, quantity, options),
+          await this.submitPositionExit(memberUid, accountUid, position, quantity, options),
         )
       } catch (error) {
         if (options.signal?.aborted || isAbortError(error)) throw error
@@ -98,16 +103,8 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
 
   async exitPosition(request: ExitViopPositionRequest): Promise<SubmittedViopPositionExit> {
     const options = { signal: request.signal }
-    const session = await this.client.authenticate()
-    const [overview, positionsData] = await Promise.all([
-      this.client.call(
-        accountOperations.overview,
-        { memberId: session.memberUid, currencyCode: "TRY", period: "DAY" },
-        options,
-      ),
-      this.client.call(accountOperations.positions, { accountId: session.memberUid }, options),
-    ])
-    const position = openPositions(positionsData).find((entry) => entry.instrumentUid === request.instrumentUid)
+    const { memberUid, accountUid, positions } = await this.loadPositionExitContext(options)
+    const position = positions.find((entry) => entry.instrumentUid === request.instrumentUid)
     // The position may have closed between the decision and this call; exiting
     // what is no longer held would open a new one in the opposite direction.
     if (!position) throw new Error("Position is no longer open")
@@ -117,7 +114,20 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
     if (!Number.isInteger(quantity) || quantity <= 0) {
       throw new Error("Exit quantity must be a positive whole number of contracts")
     }
-    return this.submitPositionExit(session.memberUid, activeTryAccountUid(overview), position, quantity, options)
+    return this.submitPositionExit(memberUid, accountUid, position, quantity, options)
+  }
+
+  private async loadPositionExitContext(options: { signal?: AbortSignal }): Promise<PositionExitContext> {
+    const memberUid = await this.client.getMemberUid()
+    const [accountUid, positionsData] = await Promise.all([
+      this.accountResolver.getActiveTryAccountUid(memberUid),
+      this.client.call(accountOperations.positions, { accountId: memberUid }, options),
+    ])
+    return {
+      memberUid,
+      accountUid,
+      positions: openPositions(positionsData),
+    }
   }
 
   /**
@@ -128,7 +138,7 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
   private async submitPositionExit(
     memberUid: string,
     accountUid: string,
-    position: { instrumentUid: string; symbol: string; quantity: number },
+    position: OpenPosition,
     quantity: number,
     options: { signal?: AbortSignal },
   ): Promise<SubmittedViopPositionExit> {
@@ -218,14 +228,14 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
   }
 
   async listPendingOrders(options: { signal?: AbortSignal } = {}): Promise<PendingViopOrder[]> {
-    const session = await this.client.authenticate()
+    const memberUid = await this.client.getMemberUid()
     const orders: PendingViopOrder[] = []
     const seen = new Set<string>()
     for (let page = 0; ; page += 1) {
       const data = await this.client.call(
         accountOperations.orders,
         {
-          memberId: session.memberUid,
+          memberId: memberUid,
           status: "PENDING",
           page,
           size: ORDER_PAGE_SIZE,
@@ -250,13 +260,8 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
   async cancelPendingOrders(request: { orderUids: string[]; signal?: AbortSignal }): Promise<ViopOrderCancellationResult> {
     const orderUids = [...new Set(request.orderUids.filter(Boolean))]
     if (orderUids.length === 0) return { cancelledOrderUids: [], failures: [] }
-    const session = await this.client.authenticate()
-    const overview = await this.client.call(
-      accountOperations.overview,
-      { memberId: session.memberUid, currencyCode: "TRY", period: "DAY" },
-      { signal: request.signal },
-    )
-    const accountUid = activeTryAccountUid(overview)
+    const memberUid = await this.client.getMemberUid()
+    const accountUid = await this.accountResolver.getActiveTryAccountUid(memberUid)
     const result: ViopOrderCancellationResult = { cancelledOrderUids: [], failures: [] }
     for (const orderUid of orderUids) {
       try {
@@ -279,25 +284,20 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
 
   private async prepareContext(request: PrepareViopOrderRequest): Promise<PreparedOrderContext> {
     if (!request.instrumentUid) throw new Error("Instrument ID is required")
-    const session = await this.client.authenticate()
-    const [overview, positions, future] = await Promise.all([
-      this.client.call(
-        accountOperations.overview,
-        { memberId: session.memberUid, currencyCode: "TRY", period: "DAY" },
-        { signal: request.signal },
-      ),
+    const memberUid = await this.client.getMemberUid()
+    const [accountUid, positions, future] = await Promise.all([
+      this.accountResolver.getActiveTryAccountUid(memberUid),
       this.client.call(
         accountOperations.positions,
-        { accountId: session.memberUid },
+        { accountId: memberUid },
         { signal: request.signal },
       ),
       this.client.call(
         tradingOperations.assetFuture,
-        { instrumentId: request.instrumentUid, memberId: session.memberUid },
+        { instrumentId: request.instrumentUid, memberId: memberUid },
         { signal: request.signal },
       ),
     ])
-    const accountUid = activeTryAccountUid(overview)
     const positionQuantity = currentPositionQuantity(positions, request.instrumentUid)
     const positionIntent = viopPositionIntent(positionQuantity, request.side)
     const [prepared, margin] = await Promise.all([
@@ -357,14 +357,6 @@ function normalizePendingOrder(entry: AccountOrderEntry): PendingViopOrder[] {
   }]
 }
 
-function activeTryAccountUid(data: AccountOverviewData): string {
-  const account = data.overviewV7?.accounts?.find(
-    (candidate) => candidate.status === "ACTIVE" && candidate.currency === "TRY" && candidate.accountUid,
-  )
-  if (!account?.accountUid) throw new Error("No active TRY investment account was found")
-  return account.accountUid
-}
-
 function currentPositionQuantity(data: AccountPositionsData, instrumentUid: string): number {
   return (data.viopOverviewPositions?.positions ?? []).reduce((quantity, position) => {
     if (position.assetUid !== instrumentUid) return quantity
@@ -372,8 +364,8 @@ function currentPositionQuantity(data: AccountPositionsData, instrumentUid: stri
   }, 0)
 }
 
-function openPositions(data: AccountPositionsData): Array<{ instrumentUid: string; symbol: string; quantity: number }> {
-  const positions = new Map<string, { instrumentUid: string; symbol: string; quantity: number }>()
+function openPositions(data: AccountPositionsData): OpenPosition[] {
+  const positions = new Map<string, OpenPosition>()
   for (const entry of data.viopOverviewPositions?.positions ?? []) {
     const instrumentUid = entry.assetUid
     const quantity = finiteNumber(entry.quantity)

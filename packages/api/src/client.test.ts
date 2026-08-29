@@ -21,6 +21,16 @@ const viewerOperation = defineOperation<{ viewer: { id: string } }, Record<strin
 )
 
 describe("API authentication", () => {
+  test("reads the stored member identity without authenticating", async () => {
+    const store = new MemoryAuthStore(authState({ accessTokenExpiresAt: NOW - 1 }))
+    const transport = new FakeTransport(() => {
+      throw new Error("transport should not be called")
+    })
+
+    expect(await client(store, transport).getMemberUid()).toBe("member-1")
+    expect(transport.requests).toHaveLength(0)
+  })
+
   test("uses a stored access token while it is valid", async () => {
     const accessToken = jwt(600)
     const store = new MemoryAuthStore(authState({ accessToken, accessTokenExpiresAt: NOW + 600_000 }))
