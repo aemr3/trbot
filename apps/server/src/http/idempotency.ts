@@ -9,6 +9,7 @@ const RETENTION_MS = 24 * 60 * 60 * 1000
 const IN_DOUBT = "IN_DOUBT"
 const JsonValueSchema = z.json()
 const JsonInputSchema = z.preprocess((value) => value, JsonValueSchema)
+const JsonObjectSchema = z.record(z.string(), JsonValueSchema)
 export type IdempotentInput = z.input<typeof JsonInputSchema>
 type JsonValue = z.output<typeof JsonValueSchema>
 
@@ -157,7 +158,17 @@ function conflict(key: string): ProtocolError {
 }
 
 export function hashRequest(body: IdempotentInput): string {
-  return new Bun.CryptoHasher("sha256").update(JSON.stringify(body ?? null)).digest("hex")
+  return new Bun.CryptoHasher("sha256").update(canonicalJson(jsonValue(body))).digest("hex")
+}
+
+function canonicalJson(value: JsonValue): string {
+  return JSON.stringify(value, (_key, item) => {
+    const object = JsonObjectSchema.safeParse(item)
+    if (!object.success) return item
+    return Object.fromEntries(Object.entries(object.data).sort(([left], [right]) => (
+      left < right ? -1 : left > right ? 1 : 0
+    )))
+  }) ?? "null"
 }
 
 function jsonValue(input: IdempotentInput): JsonValue {

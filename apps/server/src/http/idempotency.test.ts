@@ -62,7 +62,8 @@ describe("idempotency store", () => {
   })
 
   test("hashes are stable across key order and sensitive to values", () => {
-    expect(hashRequest({ a: 1, b: 2 })).toBe(hashRequest({ a: 1, b: 2 }))
+    expect(hashRequest({ a: 1, b: 2 })).toBe(hashRequest({ b: 2, a: 1 }))
+    expect(hashRequest({ nested: { a: 1, b: 2 } })).toBe(hashRequest({ nested: { b: 2, a: 1 } }))
     expect(hashRequest(ORDER)).not.toBe(hashRequest({ ...ORDER, quantity: 3 }))
   })
 
