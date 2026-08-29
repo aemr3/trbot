@@ -65,7 +65,7 @@ export interface AlertEditorOptions {
   lastPrice: (symbol: string) => number | null
   // Resolves the ATR the offset kinds measure with, or null when unavailable.
   atr?: (instrumentUid: string, interval: CandleInterval) => Promise<number | null>
-  onSave: (draft: PriceAlertDraft) => void
+  onSave: (draft: PriceAlertDraft) => Promise<void>
   onClose: () => void
   onError?: (cause: unknown) => void
 }
@@ -85,6 +85,8 @@ export class AlertEditor {
   private atrValue: number | null = null
   private atrRequest = 0
   private status: string | null = null
+  private statusColor = ERROR_COLOR
+  private saving = false
   private destroyed = false
 
   constructor(
@@ -139,6 +141,7 @@ export class AlertEditor {
   }
 
   handleKey(key: KeyEvent): boolean {
+    if (this.saving) return true
     return this.frame.handleKey(key)
   }
 
@@ -231,7 +234,8 @@ export class AlertEditor {
     }
   }
 
-  private save(): void {
+  private async save(): Promise<void> {
+    if (this.saving) return
     const draft = this.draft()
     if (!draft) {
       this.fail("No contract to watch")
@@ -242,11 +246,27 @@ export class AlertEditor {
       this.fail(problem)
       return
     }
-    this.options.onSave(draft)
+    this.saving = true
+    this.status = "Saving alert…"
+    this.statusColor = MUTED_COLOR
+    this.render()
+    try {
+      await this.options.onSave(draft)
+      if (this.destroyed) return
+      this.status = null
+      this.options.onClose()
+    } catch (error) {
+      if (this.destroyed) return
+      this.options.onError?.(error)
+      this.fail(error instanceof Error ? error.message : "Could not save the alert")
+    } finally {
+      this.saving = false
+    }
   }
 
   private fail(message: string): void {
     this.status = message
+    this.statusColor = ERROR_COLOR
     this.render()
   }
 
@@ -264,7 +284,6 @@ export class AlertEditor {
 
     const chunks: TextChunk[] = [
       fg(color)(this.options.alert ? "Edit price alert" : "New price alert"),
-      fg(MUTED_COLOR)("  ·  the app watches and tells you; it never trades"),
       fg(VALUE_COLOR)("\n\n"),
       ...fieldLine(
         "Contract",
@@ -317,7 +336,7 @@ export class AlertEditor {
       fg(VALUE_COLOR)("\n"),
       ...fieldLine("Save alert", this.frame.field === "action" ? "Press Enter" : "Enter", this.frame.field === "action"),
     )
-    if (this.status) chunks.push(fg(ERROR_COLOR)(`\n\n${this.status}`))
+    if (this.status) chunks.push(fg(this.statusColor)(`\n\n${this.status}`))
     chunks.push(fg(MUTED_COLOR)("\n\nTab/↑/↓ field · ←/→ change · digits value · Enter save · Esc close"))
     this.frame.content.content = new StyledText(chunks)
     this.renderer.requestRender()

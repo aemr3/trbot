@@ -88,11 +88,15 @@ test("restores the preferred order type and reports M and L changes", async () =
 test("uses the exchange upper and lower limits for simulated market orders", async () => {
   const setup = await createTestRenderer({ width: 80, height: 28 })
   const placed: PlaceViopOrderRequest[] = []
+  let closeTicket!: () => void
+  const closed = new Promise<void>((resolve) => {
+    closeTicket = resolve
+  })
   const ticket = new ViopOrderTicket(setup.renderer, {
     source: fakeOrderSource(placed),
     instrument,
     side: "SELL",
-    onClose() {},
+    onClose: closeTicket,
   })
   setup.renderer.root.add(ticket.root)
   ticket.mount()
@@ -108,9 +112,10 @@ test("uses the exchange upper and lower limits for simulated market orders", asy
   const reviewFrame = await setup.waitForFrame((value) => value.includes("Review sell order"))
   expect(reviewFrame).toContain("may remain as a day limit order")
   ticket.handleKey(keyEvent("return", { sequence: "\r" }))
-  await setup.waitForFrame((value) => value.includes("Order submitted"))
+  await closed
 
   expect(placed[0]).toMatchObject({ side: "SELL", quantity: 1, limitPrice: 188.3 })
+  expect(setup.captureCharFrame()).not.toContain("Order submitted")
 
   ticket.destroy()
   setup.renderer.destroy()
@@ -119,11 +124,15 @@ test("uses the exchange upper and lower limits for simulated market orders", asy
 test("uses the matching side key to review and submit the order", async () => {
   const setup = await createTestRenderer({ width: 80, height: 28 })
   const placed: PlaceViopOrderRequest[] = []
+  let closeTicket!: () => void
+  const closed = new Promise<void>((resolve) => {
+    closeTicket = resolve
+  })
   const ticket = new ViopOrderTicket(setup.renderer, {
     source: fakeOrderSource(placed),
     instrument,
     side: "BUY",
-    onClose() {},
+    onClose: closeTicket,
   })
   setup.renderer.root.add(ticket.root)
   ticket.mount()
@@ -134,7 +143,7 @@ test("uses the matching side key to review and submit the order", async () => {
   ticket.handleKey(keyEvent("b"))
   await setup.waitForFrame((value) => value.includes("Review buy order"))
   ticket.handleKey(keyEvent("b"))
-  await setup.waitForFrame((value) => value.includes("Order submitted"))
+  await closed
   expect(placed).toHaveLength(1)
 
   ticket.destroy()
@@ -228,7 +237,11 @@ test("reuses one idempotency key across retries, and mints a new one once the or
     }
     return { uid: "order-1", status: "PENDING", description: "Bekliyor" }
   }
-  const ticket = new ViopOrderTicket(setup.renderer, { source, instrument, side: "BUY", onClose() {} })
+  let closeTicket!: () => void
+  const closed = new Promise<void>((resolve) => {
+    closeTicket = resolve
+  })
+  const ticket = new ViopOrderTicket(setup.renderer, { source, instrument, side: "BUY", onClose: closeTicket })
   setup.renderer.root.add(ticket.root)
   ticket.mount()
   await setup.waitForFrame((value) => value.includes("Upper limit"))
@@ -248,7 +261,7 @@ test("reuses one idempotency key across retries, and mints a new one once the or
   ticket.handleKey(keyEvent("r"))
   await setup.waitForFrame((value) => value.includes("Review buy order"))
   ticket.handleKey(keyEvent("return", { sequence: "\r" }))
-  await setup.waitForFrame((value) => value.includes("Order submitted"))
+  await closed
 
   expect(placed).toHaveLength(3)
   expect(placed[0]?.idempotencyKey).toBeTruthy()

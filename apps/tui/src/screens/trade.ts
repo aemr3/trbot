@@ -1543,15 +1543,15 @@ export class TradeScreen {
       rule,
       lastPrice: (symbol) => this.lastPriceFor(symbol),
       atr: (instrumentUid, interval) => this.readAtr(instrumentUid, interval),
-      onSave: (draft) => {
-        void this.stopMonitor?.saveRule(draft).then(() => {
-          if (this.destroyed) return
-          this.syncQuoteSubscription()
-          // A close-based rule reads candles, not ticks, so give it its first
-          // read now instead of leaving it blank until the poll comes round.
-          this.showHintStatus(`${draft.role === "STOP" ? "Stop" : "Target"} armed for ${draft.displayName}.`, TUI_THEME.positive, 4_000)
-        })
-        this.closeStopRuleEditor()
+      onSave: async (draft) => {
+        const monitor = this.stopMonitor
+        if (!monitor) throw new Error("Stop rules are unavailable")
+        await monitor.saveRule(draft)
+        if (this.destroyed) return
+        this.syncQuoteSubscription()
+        // A close-based rule reads candles, not ticks, so give it its first
+        // read now instead of leaving it blank until the poll comes round.
+        this.showHintStatus(`${draft.role === "STOP" ? "Stop" : "Target"} armed for ${draft.displayName}.`, TUI_THEME.positive, 4_000)
       },
       onClose: () => this.closeStopRuleEditor(),
       onError: (error) => this.reportError("Stop manager", error),
@@ -1752,18 +1752,18 @@ export class TradeScreen {
       instrumentUid: this.instruments[this.instrumentList.selectedIndex]?.uid,
       lastPrice: (symbol) => this.lastPriceFor(symbol),
       atr: (instrumentUid, interval) => this.readAtr(instrumentUid, interval),
-      onSave: (draft) => {
-        void this.alertMonitor?.saveAlert(draft).then(() => {
-          if (this.destroyed) return
-          this.syncQuoteSubscription()
-          // Same as a close-based stop rule: read its candles straight away.
-          this.showHintStatus(
-            `Alert set on ${draft.displayName} ${draft.direction === "ABOVE" ? "above" : "below"} the level.`,
-            TUI_THEME.positive,
-            4_000,
-          )
-        })
-        this.closeAlertEditor()
+      onSave: async (draft) => {
+        const monitor = this.alertMonitor
+        if (!monitor) throw new Error("Price alerts are unavailable")
+        await monitor.saveAlert(draft)
+        if (this.destroyed) return
+        this.syncQuoteSubscription()
+        // Same as a close-based stop rule: read its candles straight away.
+        this.showHintStatus(
+          `Alert set on ${draft.displayName} ${draft.direction === "ABOVE" ? "above" : "below"} the level.`,
+          TUI_THEME.positive,
+          4_000,
+        )
       },
       onClose: () => this.closeAlertEditor(),
       onError: (error) => this.reportError("Price alerts", error),

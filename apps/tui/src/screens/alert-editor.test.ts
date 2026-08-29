@@ -35,7 +35,9 @@ async function mountEditor(overrides: Partial<AlertEditorOptions> = {}) {
     instruments: [instrument()],
     lastPrice: () => 400,
     atr: async () => 4,
-    onSave: (draft) => saved.push(draft),
+    onSave: async (draft) => {
+      saved.push(draft)
+    },
     onClose: () => (closed += 1),
     ...overrides,
   })
@@ -50,8 +52,8 @@ function save(editor: AlertEditor, steps: number): void {
   editor.handleKey(key("return"))
 }
 
-test("saves a fixed-price alert on the selected contract", async () => {
-  const { renderer, editor, saved } = await mountEditor()
+test("saves a fixed-price alert on the selected contract and closes", async () => {
+  const { renderer, editor, saved, closed } = await mountEditor()
 
   type(editor, "420")
   save(editor, 3) // basis → repeat → action
@@ -67,6 +69,25 @@ test("saves a fixed-price alert on the selected contract", async () => {
     interval: null,
     referencePrice: 400,
   })
+  await Bun.sleep(0)
+  expect(closed()).toBe(1)
+
+  editor.destroy()
+  renderer.destroy()
+})
+
+test("keeps a failed save open and shows the error", async () => {
+  const { renderer, editor, closed, waitForFrame } = await mountEditor({
+    onSave: async () => {
+      throw new Error("Alert service is unavailable")
+    },
+  })
+
+  type(editor, "420")
+  save(editor, 3)
+
+  await waitForFrame((frame) => frame.includes("Alert service is unavailable"))
+  expect(closed()).toBe(0)
 
   editor.destroy()
   renderer.destroy()

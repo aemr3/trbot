@@ -642,11 +642,9 @@ test("opens modal buy and sell tickets and submits simulated market orders at ex
   await mockInput.typeText("r")
   await waitForFrame((frame) => frame.includes("Review buy order") && frame.includes("₺17.000,00"))
   mockInput.pressEnter()
-  await waitForFrame((frame) => frame.includes("Order submitted"))
+  await waitForFrame((frame) => frame.includes("XU030 stock") && !frame.includes("Review buy order"))
   expect(placed[0]).toMatchObject({ side: "BUY", quantity: 1, limitPrice: 17_000 })
 
-  mockInput.pressEscape()
-  await waitForFrame((frame) => frame.includes("XU030 stock") && !frame.includes("Order submitted"))
   await mockInput.typeText("s")
   await waitForFrame((frame) => frame.includes("Sell XU030 08/26"))
 

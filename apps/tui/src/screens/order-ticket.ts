@@ -23,7 +23,7 @@ const BUY_COLOR = TUI_THEME.positive
 const SELL_COLOR = TUI_THEME.negative
 const ERROR_COLOR = TUI_THEME.softError
 
-type TicketPhase = "edit" | "review" | "submitting" | "success"
+type TicketPhase = "edit" | "review" | "submitting"
 type TicketField = "kind" | "price" | "quantity" | "action"
 
 export interface ViopOrderTicketOptions {
@@ -59,7 +59,6 @@ export class ViopOrderTicket {
   private status: string | null = "Preparing order…"
   private statusColor = MUTED_COLOR
   private request: AbortController | null = null
-  private placedOrder: PlacedViopOrder | null = null
   // Names the order the trader is trying to place, not the call that carries
   // it. A resubmit after a failure whose outcome is unknown keeps the same key
   // and is deduplicated by the server; changing the size or the price makes it
@@ -141,10 +140,6 @@ export class ViopOrderTicket {
         this.status = null
         this.render()
       } else this.options.onClose()
-      return true
-    }
-    if (this.phase === "success") {
-      if (key.name === "return" || key.name === "enter") this.options.onClose()
       return true
     }
     if (this.phase === "review") {
@@ -307,11 +302,8 @@ export class ViopOrderTicket {
         signal: request.signal,
       })
       if (this.destroyed || request.signal.aborted || this.request !== request) return
-      this.placedOrder = order
-      this.phase = "success"
-      this.status = null
       this.options.onPlaced?.(order)
-      this.render()
+      this.options.onClose()
     } catch (error) {
       if (this.destroyed || request.signal.aborted || this.request !== request || isAbortError(error)) return
       this.phase = "review"
@@ -387,9 +379,7 @@ export class ViopOrderTicket {
   private render(): void {
     this.content.content = this.phase === "edit"
       ? this.renderEdit()
-      : this.phase === "success"
-        ? this.renderSuccess()
-        : this.renderReview()
+      : this.renderReview()
   }
 
   private renderEdit(): StyledText {
@@ -506,17 +496,6 @@ export class ViopOrderTicket {
     return new StyledText(chunks)
   }
 
-  private renderSuccess(): StyledText {
-    const order = this.placedOrder
-    return new StyledText([
-      fg(BUY_COLOR)("Order submitted"),
-      fg(VALUE_COLOR)("\n\n"),
-      ...metricLine("Order ID", order?.uid ?? "—"),
-      fg(VALUE_COLOR)("\n"),
-      ...metricLine("Status", order?.description ?? order?.status ?? "Pending"),
-      fg(MUTED_COLOR)("\n\nEnter or Esc to return to the watchlist"),
-    ])
-  }
 }
 
 function fieldLine(label: string, value: string, active: boolean): TextChunk[] {
