@@ -351,6 +351,13 @@
       "when": 1787948102892,
       "tag": "0049_add_chat_message_delivery",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1788003662772,
+      "tag": "0050_remove_legacy_alert_continuation",
+      "breakpoints": true
     }
   ]
 }

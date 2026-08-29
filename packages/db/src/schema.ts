@@ -100,8 +100,6 @@ export const priceAlerts = sqliteTable("price_alerts", {
   updatedAt: integer("updated_at").notNull(),
   triggeredAt: integer("triggered_at"),
   triggeredPrice: real("triggered_price"),
-  chatSessionId: text("chat_session_id"),
-  onTrigger: text("on_trigger"),
   triggerId: text("trigger_id"),
 })
 
