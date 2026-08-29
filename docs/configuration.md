@@ -18,6 +18,7 @@ The application reads configuration through `@trbot/config`, which overlays the 
 | `TRBOT_CLIENT_TLS_CERT` | no | `data/tls/client.crt` for HTTPS | Client certificate presented to an mTLS server |
 | `TRBOT_CLIENT_TLS_KEY` | no | `data/tls/client.key` for HTTPS | Client private key presented to an mTLS server |
 | `TRBOT_TELEGRAM_BOT_TOKEN` | no | none | BotFather token enabling Telegram chat pairing |
+| `TRBOT_PERFORMANCE` | no | `false` | Emit aggregated server and TUI performance summaries every 10 seconds |
 
 ## `DATABASE_URL`
 
@@ -86,6 +87,29 @@ Then pick what answers: `m` in the `CHAT` tab sets the model for that chat
 session, and `r` its reasoning effort. Each session records its own, so two
 sessions can run on two providers at once. Until something is picked, the
 composer says so and names the key that fixes it.
+
+## Performance telemetry
+
+Set `TRBOT_PERFORMANCE=true` in the server and terminal environments when
+diagnosing responsiveness. The server writes one JSON summary every ten seconds
+to its console; the terminal writes the corresponding summary to its **Logs**
+tab. Leaving the setting unset or false creates no timers, samples, or logs.
+
+Each summary contains counters plus bounded timing distributions with `count`,
+`p50`, `p95`, and `max` values. The main metrics are:
+
+- `market.upstream.*`, `market.coalesced.*`, and `market.queue_ms.*` for server-side market traffic.
+- `ws.sent.*`, `ws.received.*`, and `ws.decode_ms` for payload volume and validation cost.
+- `market.age_at_receive_ms`, `market.receive_to_frame_ms`, and
+  `market.event_to_frame_ms` for feed age and completed-frame latency. The event
+  metric uses the feed's epoch timestamp and therefore assumes a synchronized
+  terminal clock; the receive metric is monotonic and clock-independent.
+- `renderer.*` and `event_loop_lag_ms` for OpenTUI/native rendering and process stalls.
+
+The collector retains at most 4,096 timing samples per metric in each reporting
+window. It logs aggregates only; symbols, prices, credentials, and individual
+payloads are never recorded. Disable the setting and restart both processes
+after collecting a representative busy-market sample.
 
 ## Telegram mobile chat
 

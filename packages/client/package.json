@@ -12,6 +12,7 @@
     "@trbot/member": "workspace:*",
     "@trbot/preferences": "workspace:*",
     "@trbot/protocol": "workspace:*",
+    "@trbot/telemetry": "workspace:*",
     "@trbot/trading": "workspace:*",
     "zod": "^4.4.3"
   },

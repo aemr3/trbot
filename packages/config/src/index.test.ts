@@ -6,6 +6,7 @@ import {
   loadConfig,
   loadCredentials,
   loadDatabaseUrl,
+  loadPerformanceConfig,
   loadServerConfig,
   parseEnvFile,
   workspaceRoot,
@@ -87,6 +88,19 @@ describe("loadConfig", () => {
 
   test("reads and trims the optional Telegram bot token", () => {
     expect(loadConfig({ TRBOT_TELEGRAM_BOT_TOKEN: " 123:token " }).telegramBotToken).toBe("123:token")
+  })
+})
+
+describe("loadPerformanceConfig", () => {
+  test("is off by default and accepts explicit boolean values", () => {
+    expect(loadPerformanceConfig({})).toEqual({ enabled: false })
+    expect(loadPerformanceConfig({ TRBOT_PERFORMANCE: " true " })).toEqual({ enabled: true })
+    expect(loadPerformanceConfig({ TRBOT_PERFORMANCE: "1" })).toEqual({ enabled: true })
+    expect(loadPerformanceConfig({ TRBOT_PERFORMANCE: "false" })).toEqual({ enabled: false })
+  })
+
+  test("rejects a value that would otherwise silently disable measurement", () => {
+    expect(() => loadPerformanceConfig({ TRBOT_PERFORMANCE: "maybe" })).toThrow(/true or false/)
   })
 })
 

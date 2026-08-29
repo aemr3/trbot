@@ -3,6 +3,7 @@ import type { DepthBook, DepthBookListener, DepthStatusListener, DepthStream } f
 import type { ConnectionListener, QuoteStream, QuoteUpdate, QuoteUpdateListener } from "@trbot/market/quote-stream.ts"
 import { parseServerFrame, type ServerFrame } from "@trbot/protocol/stream.ts"
 import type { AccountLiveUpdate } from "@trbot/trading/account.ts"
+import { PerformanceTelemetry } from "@trbot/telemetry/performance.ts"
 import { providerSources, TestProviderSession } from "./provider.test-fixture.ts"
 import type { ProviderSources } from "./session.ts"
 import { newSocketData, StreamHub, type StreamSocket } from "./stream-hub.ts"
@@ -193,7 +194,8 @@ describe("stream hub", () => {
 
   test("keeps only the latest update per symbol within a market frame", async () => {
     const quotes = new FakeQuoteStream()
-    const hub = new StreamHub(sessionWith(sourcesWith(quotes, new FakeDepthFactory())))
+    const telemetry = new PerformanceTelemetry({ scope: "server" })
+    const hub = new StreamHub(sessionWith(sourcesWith(quotes, new FakeDepthFactory())), { performance: telemetry })
 
     const client = socket()
     hub.add(client)
@@ -212,6 +214,13 @@ describe("stream hub", () => {
     expect(client.sent).toHaveLength(3)
     expect(client.sent).toContainEqual({ type: "quotes", update: quote("AAA", 200) })
     expect(client.sent).toContainEqual({ type: "quotes", update: quote("BBB", 301) })
+
+    const report = telemetry.report()
+    expect(report?.counters["market.upstream.quotes"]).toBe(103)
+    expect(report?.counters["market.coalesced.quotes"]).toBe(100)
+    expect(report?.counters["ws.sent.quotes"]).toBe(3)
+    expect(report?.counters["ws.sent.bytes"]).toBeGreaterThan(0)
+    expect(report?.distributions["market.queue_ms.quotes"]?.count).toBe(3)
   })
 
   test("sends critical events immediately while a market frame is pending", async () => {

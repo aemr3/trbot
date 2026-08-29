@@ -1,0 +1,4 @@
+{
+  "extends": "@trbot/tsconfig/base.json",
+  "include": ["src"]
+}

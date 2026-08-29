@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { HttpClient, type HttpClientOptions } from "@trbot/client/http.ts"
 import { StreamConnection, type StreamConnectionOptions } from "@trbot/client/stream.ts"
+import { PerformanceTelemetry } from "@trbot/telemetry/performance.ts"
 import { createServerSession } from "./server-session.ts"
 
 const AUTHORITY = "-----BEGIN CERTIFICATE-----\nnot-a-real-one\n-----END CERTIFICATE-----\n"
@@ -111,6 +112,19 @@ test("a stream failure reaches the listener the application set", async () => {
   while (failures.length === 0 && Date.now() < deadline) await Bun.sleep(5)
 
   expect(failures).toHaveLength(1)
+  session.close()
+})
+
+test("performance telemetry reaches the WebSocket transport", () => {
+  const captured = captureTransports()
+  const telemetry = new PerformanceTelemetry({ scope: "tui" })
+  const session = createServerSession({
+    config: { url: "http://127.0.0.1:8080", token: "test-token", tls: null },
+    performance: telemetry,
+    transports: captured.transports,
+  })
+
+  expect(captured.streamOptions[0]?.performance).toBe(telemetry)
   session.close()
 })
 

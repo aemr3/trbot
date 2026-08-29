@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Server } from "bun"
 import { parseClientFrame, type ServerFrame } from "@trbot/protocol/stream.ts"
+import { PerformanceTelemetry } from "@trbot/telemetry/performance.ts"
 import { StreamConnection } from "./stream.ts"
 
 /**
@@ -154,6 +155,46 @@ test("a listener can be taken off again, so a replaced screen stops hearing fram
   await Bun.sleep(50)
 
   expect(heard).toBeEmpty()
+})
+
+test("records WebSocket payload and decode metrics without changing dispatch", async () => {
+  const port = 47_918
+  const frame: ServerFrame = {
+    type: "quotes",
+    update: { symbol: "AAA", lastPrice: 100, sessionStatus: null, timestamp: Date.now() },
+  }
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port,
+    fetch: (request, self) => (self.upgrade(request) ? undefined : new Response("no", { status: 400 })),
+    websocket: {
+      open(socket) {
+        socket.send(JSON.stringify(frame))
+      },
+      message() {},
+    },
+  })
+  servers.push(server)
+
+  const telemetry = new PerformanceTelemetry({ scope: "tui" })
+  const heard: ServerFrame[] = []
+  const connection = track(new StreamConnection({
+    url: `http://127.0.0.1:${port}`,
+    token: "test-token",
+    performance: telemetry,
+  }))
+  connection.on((received) => heard.push(received))
+  connection.connect()
+
+  await waitFor(() => heard.length === 1)
+
+  expect(heard).toEqual([frame])
+  const report = telemetry.report()
+  expect(report?.counters["ws.received.frames"]).toBe(1)
+  expect(report?.counters["ws.received.quotes"]).toBe(1)
+  expect(report?.counters["ws.received.bytes"]).toBeGreaterThan(0)
+  expect(report?.distributions["ws.decode_ms"]?.count).toBe(1)
+  expect(report?.distributions["market.age_at_receive_ms"]?.count).toBe(1)
 })
 
 test("reports again once a connection that came back has failed a second time", async () => {

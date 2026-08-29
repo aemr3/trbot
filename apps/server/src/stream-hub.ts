@@ -1,5 +1,6 @@
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
 import type { ClientFrame, ServerFrame, StreamChannel } from "@trbot/protocol/stream.ts"
+import type { PerformanceRecorder } from "@trbot/telemetry/performance.ts"
 import type { AccountLiveUpdate } from "@trbot/trading/account.ts"
 import type { ProviderSessionAccess, ProviderSources } from "./session.ts"
 
@@ -49,6 +50,7 @@ interface PendingMarketFrame {
   channel: MarketChannel
   frame: MarketFrame
   symbol: string
+  queuedAt: number
 }
 
 export interface StreamHubOptions {
@@ -78,6 +80,7 @@ export interface StreamHubOptions {
    * thing protecting the position.
    */
   wantsAccount?: () => boolean
+  performance?: PerformanceRecorder
 }
 
 /**
@@ -187,7 +190,7 @@ export class StreamHub {
    */
   broadcast(frame: ServerFrame): void {
     const payload = JSON.stringify(frame)
-    for (const socket of this.sockets) socket.send(payload)
+    for (const socket of this.sockets) this.send(socket, frame, payload)
   }
 
   /**
@@ -203,9 +206,10 @@ export class StreamHub {
       if (symbol !== undefined && !this.wants(socket, channel, symbol)) continue
       if (socket.getBufferedAmount() > BACKPRESSURE_LIMIT_BYTES) {
         socket.data.dropped += 1
+        this.options.performance?.count(`ws.backpressure_dropped.${channel}`)
         continue
       }
-      socket.send(payload)
+      this.send(socket, frame, payload)
     }
   }
 
@@ -215,18 +219,23 @@ export class StreamHub {
    * client traffic never costs the server a tick used for trading decisions.
    */
   private emitMarket(channel: MarketChannel, frame: MarketFrame, symbol: string): void {
+    const now = performance.now()
+    this.options.performance?.count(`market.upstream.${channel}`)
     if (!this.hasSubscriber(channel, symbol)) return
 
     const elapsed = this.lastMarketFlushAt === null
       ? MARKET_FRAME_INTERVAL_MS
-      : performance.now() - this.lastMarketFlushAt
+      : now - this.lastMarketFlushAt
     if (elapsed >= MARKET_FRAME_INTERVAL_MS && this.marketFlushTimer === null) {
-      this.lastMarketFlushAt = performance.now()
+      this.lastMarketFlushAt = now
+      this.options.performance?.observe(`market.queue_ms.${channel}`, 0)
       this.emit(channel, frame, symbol)
       return
     }
 
-    this.pendingMarketFrames.set(`${channel}:${symbol}`, { channel, frame, symbol })
+    const key = `${channel}:${symbol}`
+    if (this.pendingMarketFrames.has(key)) this.options.performance?.count(`market.coalesced.${channel}`)
+    this.pendingMarketFrames.set(key, { channel, frame, symbol, queuedAt: now })
     if (this.marketFlushTimer !== null) return
 
     const delay = Math.max(0, MARKET_FRAME_INTERVAL_MS - elapsed)
@@ -239,8 +248,12 @@ export class StreamHub {
 
     const frames = [...this.pendingMarketFrames.values()]
     this.pendingMarketFrames.clear()
-    this.lastMarketFlushAt = performance.now()
-    for (const { channel, frame, symbol } of frames) this.emit(channel, frame, symbol)
+    const now = performance.now()
+    this.lastMarketFlushAt = now
+    for (const { channel, frame, symbol, queuedAt } of frames) {
+      this.options.performance?.observe(`market.queue_ms.${channel}`, now - queuedAt)
+      this.emit(channel, frame, symbol)
+    }
   }
 
   private resetMarketFrames(): void {
@@ -257,6 +270,23 @@ export class StreamHub {
     return false
   }
 
+  private send(socket: StreamSocket, frame: ServerFrame, payload: string): void {
+    const bytes = socket.send(payload)
+    const telemetry = this.options.performance
+    if (!telemetry) return
+    if (bytes === 0) {
+      telemetry.count("ws.send_dropped")
+      return
+    }
+    if (bytes < 0) {
+      telemetry.count("ws.send_backpressure")
+      return
+    }
+    telemetry.count("ws.sent.frames")
+    telemetry.count(`ws.sent.${frame.type}`)
+    telemetry.count("ws.sent.bytes", bytes)
+  }
+
   /** Remembers a status frame and sends it on, so a later subscriber can be told. */
   private status(key: string, channel: StreamChannel, frame: ServerFrame, symbol?: string): void {
     this.lastStatus.set(key, frame)
@@ -268,7 +298,7 @@ export class StreamHub {
     const symbol = channel === "depth" ? socket.data.depthSymbol : socket.data.equitySymbol
     const key = channel === "depth" || channel === "equityQuotes" ? `${channel}:${symbol ?? ""}` : channel
     const frame = this.lastStatus.get(key)
-    if (frame) socket.send(JSON.stringify(frame))
+    if (frame) this.send(socket, frame, JSON.stringify(frame))
   }
 
   private wants(socket: StreamSocket, channel: StreamChannel, symbol: string): boolean {

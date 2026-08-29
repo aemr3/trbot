@@ -4,6 +4,7 @@ import { StreamConnection, type StreamConnectionOptions } from "@trbot/client/st
 import type { ClientTlsOptions } from "@trbot/client/tls.ts"
 import type { ClientConfig, ClientTls } from "@trbot/config"
 import { ROUTES, SessionStateSchema } from "@trbot/protocol/routes.ts"
+import type { PerformanceRecorder } from "@trbot/telemetry/performance.ts"
 
 /**
  * The terminal's link to the server: one HTTP client for requests and one socket
@@ -26,6 +27,7 @@ export interface ServerSession {
 
 export interface ServerSessionOptions {
   config: ClientConfig
+  performance?: PerformanceRecorder
   /** PEM material overriding the paths in `config.tls`. */
   tls?: ClientTlsOptions | null
   transports?: ServerSessionTransports
@@ -60,6 +62,7 @@ export function createServerSession(options: ServerSessionOptions): ServerSessio
     clientId,
     tls,
     onError: (error) => report?.(error),
+    performance: options.performance,
   })
 
   return {

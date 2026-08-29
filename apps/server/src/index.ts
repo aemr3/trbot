@@ -1,5 +1,5 @@
 import { resolve } from "node:path"
-import { loadConfig, loadServerConfig, workspaceRoot } from "@trbot/config"
+import { loadConfig, loadPerformanceConfig, loadServerConfig, workspaceRoot } from "@trbot/config"
 import { MarketFeed, type FeedEntitlements } from "@trbot/feed"
 import type { CandleSource } from "@trbot/market/candle.ts"
 import { requiresAuthentication } from "@trbot/protocol/error.ts"
@@ -39,6 +39,7 @@ import { DrizzleChatMobileStore } from "@trbot/db/chat-mobile-store.ts"
 import { DrizzleChatSubagentStore } from "@trbot/db/chat-subagent-store.ts"
 import { TelegramBotApi } from "@trbot/api/telegram.ts"
 import type { ChatFrame } from "@trbot/protocol/stream.ts"
+import { PerformanceTelemetry } from "@trbot/telemetry/performance.ts"
 import { AiService } from "./ai.ts"
 import { ChatController } from "./chat.ts"
 import { ChatQuestionController } from "./chat-question.ts"
@@ -76,6 +77,13 @@ const CLIENT_RECONNECT_GRACE_MS = 10_000
 async function startTrbotServer(): Promise<void> {
   const config = loadConfig()
   const serverConfig = loadServerConfig()
+  const performanceConfig = loadPerformanceConfig()
+  const telemetry = performanceConfig.enabled
+    ? new PerformanceTelemetry({
+        scope: "server",
+        onReport: (report) => console.info("[Performance]", JSON.stringify(report)),
+      })
+    : null
   const connection = await openDatabase(config.databaseUrl)
 
   const log = (label: string, cause: unknown): void => {
@@ -459,6 +467,7 @@ async function startTrbotServer(): Promise<void> {
     })
     .catch((error) => log("Voice transcription model", error))
   hub = new StreamHub(session, {
+    performance: telemetry ?? undefined,
     onClientAttach: (clientId) => permissions.attachClient(clientId),
     onClientDetach: (clientId) => permissions.detachClient(clientId, {
       reconnectGraceMs: CLIENT_RECONNECT_GRACE_MS,
@@ -578,8 +587,10 @@ async function startTrbotServer(): Promise<void> {
   const scheme = serverConfig.tls ? "https" : "http"
   console.log(`trbot server listening on ${scheme}://${serverConfig.host}:${server.port}`)
   await warnAboutCertificateExpiry(serverConfig.tls?.certPath)
+  telemetry?.start()
 
   const shutdown = (): void => {
+    telemetry?.stop()
     clearInterval(positionTimer)
     clearInterval(candleTimer)
     if (positionRefreshTimer) clearTimeout(positionRefreshTimer)

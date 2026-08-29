@@ -29,6 +29,7 @@
         "@trbot/preferences": "workspace:*",
         "@trbot/protocol": "workspace:*",
         "@trbot/provider": "workspace:*",
+        "@trbot/telemetry": "workspace:*",
         "@trbot/trading": "workspace:*",
         "drizzle-orm": "^0.45.2",
         "reflect-metadata": "^0.2.2",
@@ -51,6 +52,7 @@
         "@trbot/member": "workspace:*",
         "@trbot/preferences": "workspace:*",
         "@trbot/protocol": "workspace:*",
+        "@trbot/telemetry": "workspace:*",
         "@trbot/trading": "workspace:*",
         "zod": "^4.4.3",
       },
@@ -113,6 +115,7 @@
         "@trbot/member": "workspace:*",
         "@trbot/preferences": "workspace:*",
         "@trbot/protocol": "workspace:*",
+        "@trbot/telemetry": "workspace:*",
         "@trbot/trading": "workspace:*",
         "zod": "^4.4.3",
       },
@@ -209,6 +212,12 @@
         "@trbot/trading": "workspace:*",
         "zod": "^4.4.3",
       },
+      "devDependencies": {
+        "@trbot/tsconfig": "workspace:*",
+      },
+    },
+    "packages/telemetry": {
+      "name": "@trbot/telemetry",
       "devDependencies": {
         "@trbot/tsconfig": "workspace:*",
       },
@@ -557,6 +566,8 @@
     "@trbot/provider": ["@trbot/provider@workspace:packages/provider"],
 
     "@trbot/server": ["@trbot/server@workspace:apps/server"],
+
+    "@trbot/telemetry": ["@trbot/telemetry@workspace:packages/telemetry"],
 
     "@trbot/trading": ["@trbot/trading@workspace:packages/trading"],
 

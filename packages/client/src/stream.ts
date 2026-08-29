@@ -5,11 +5,13 @@ import type { ConnectionListener, QuoteStream, QuoteUpdateListener } from "@trbo
 import { CLIENT_INSTANCE_HEADER, ROUTES } from "@trbot/protocol/routes.ts"
 import { parseServerFrame, STREAM_CHANNELS } from "@trbot/protocol/stream.ts"
 import type { ClientFrame, ServerFrame, StopOutcome } from "@trbot/protocol/stream.ts"
+import type { PerformanceRecorder } from "@trbot/telemetry/performance.ts"
 import type { AccountLiveUpdateListener, AccountStream } from "@trbot/trading/account.ts"
 import type { StopRuleView, StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
 import type { ClientTlsOptions } from "./tls.ts"
 
 const DEFAULT_RECONNECT_DELAYS_MS = [1000, 3000, 5000]
+const UTF8_ENCODER = new TextEncoder()
 
 function webSocketProtocols<T extends NonNullable<object>>(options: T): string[] {
   // SAFETY: Bun accepts its headers/TLS socket options in WebSocket's second argument.
@@ -30,6 +32,7 @@ export interface StreamConnectionOptions {
    */
   onError?: (cause: unknown) => void
   reconnectDelaysMs?: number[]
+  performance?: PerformanceRecorder
 }
 
 /**
@@ -74,7 +77,27 @@ export class StreamConnection {
       for (const frame of this.pending.splice(0)) this.write(frame)
     }
     socket.onmessage = (event) => {
-      const frame = parseServerFrame(String(event.data))
+      const payload = String(event.data)
+      const startedAt = this.options.performance ? performance.now() : 0
+      const frame = parseServerFrame(payload)
+      const telemetry = this.options.performance
+      if (telemetry) {
+        telemetry.count("ws.received.bytes", UTF8_ENCODER.encode(payload).byteLength)
+        telemetry.observe("ws.decode_ms", performance.now() - startedAt)
+        if (frame) {
+          telemetry.count("ws.received.frames")
+          telemetry.count(`ws.received.${frame.type}`)
+          if (isMarketFrame(frame)) {
+            telemetry.mark("market_received")
+            if (frame.type !== "depth" && frame.update.timestamp > 0) {
+              telemetry.markEpoch("market_event", frame.update.timestamp)
+              telemetry.observe("market.age_at_receive_ms", Date.now() - frame.update.timestamp)
+            }
+          }
+        } else {
+          telemetry.count("ws.invalid_frames")
+        }
+      }
       if (frame) this.dispatch(frame)
     }
     socket.onerror = () => {
@@ -153,6 +176,10 @@ export class StreamConnection {
     this.attempt += 1
     this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelaysMs[index] ?? 1000)
   }
+}
+
+function isMarketFrame(frame: ServerFrame): frame is Extract<ServerFrame, { type: "quotes" | "equityQuotes" | "depth" }> {
+  return frame.type === "quotes" || frame.type === "equityQuotes" || frame.type === "depth"
 }
 
 export class WsQuoteStream implements QuoteStream {

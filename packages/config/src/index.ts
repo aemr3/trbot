@@ -52,6 +52,10 @@ export interface ClientConfig {
   tls: ClientTls | null
 }
 
+export interface PerformanceConfig {
+  enabled: boolean
+}
+
 function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.has(host.trim().toLowerCase())
 }
@@ -145,6 +149,14 @@ export function loadClientConfig(env: Record<string, string | undefined> = envir
     token,
     tls: certPath && keyPath ? { caPath, certPath, keyPath } : null,
   }
+}
+
+/** Opt-in aggregated timing summaries for the server and terminal. */
+export function loadPerformanceConfig(env: Record<string, string | undefined> = environment()): PerformanceConfig {
+  const value = env.TRBOT_PERFORMANCE?.trim().toLowerCase()
+  if (!value || value === "0" || value === "false") return { enabled: false }
+  if (value === "1" || value === "true") return { enabled: true }
+  throw new Error(`TRBOT_PERFORMANCE must be true or false, received "${env.TRBOT_PERFORMANCE}"`)
 }
 
 function parsePort(value: string | undefined): number {

@@ -16,6 +16,7 @@
     "@trbot/preferences": "workspace:*",
     "@trbot/protocol": "workspace:*",
     "@trbot/provider": "workspace:*",
+    "@trbot/telemetry": "workspace:*",
     "@trbot/trading": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "reflect-metadata": "^0.2.2",

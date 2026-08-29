@@ -27,7 +27,7 @@ import {
   WsEquityQuoteStream,
   WsQuoteStream,
 } from "@trbot/client/stream.ts"
-import { loadClientConfig } from "@trbot/config"
+import { loadClientConfig, loadPerformanceConfig } from "@trbot/config"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
 import { isTransientError, requiresAuthentication } from "@trbot/protocol/error.ts"
 import { SystemSoundPlayer, type SoundPlayer } from "./components/sound.ts"
@@ -43,6 +43,8 @@ import { TradeScreen } from "./screens/trade.ts"
 import { RemoteAlerts, RemoteStopRules } from "./remote-monitors.ts"
 import { createServerSession, serverAuthenticated, type ServerSession } from "./server-session.ts"
 import { DEFAULT_APP_PREFERENCES, type AppPreferences } from "@trbot/preferences/app.ts"
+import { PerformanceTelemetry, type PerformanceRecorder } from "@trbot/telemetry/performance.ts"
+import { observeRendererPerformance } from "./performance.ts"
 
 interface Screen {
   readonly root: BoxRenderable
@@ -87,6 +89,7 @@ interface AppOptions {
   logs?: ApplicationLog
   /** How often to re-ask whether the server has a session. Tests shorten it. */
   sessionPollMs?: number
+  performance?: PerformanceRecorder
 }
 
 // How often the terminal re-asks whether the server has a session, while the
@@ -107,7 +110,16 @@ const EXIT_SIGNALS: NodeJS.Signals[] = [
   "SIGBUS",
 ]
 export async function startApp(): Promise<void> {
-  const initialState = await resolveInitialState()
+  const logs = new ApplicationLog()
+  const performanceConfig = loadPerformanceConfig()
+  const telemetry = performanceConfig.enabled
+    ? new PerformanceTelemetry({
+        scope: "tui",
+        onReport: (report) => logs.info("Performance", "10-second performance summary", report),
+      })
+    : null
+  const initialState = await resolveInitialState(telemetry ?? undefined)
+  telemetry?.start()
   let app: App | null = null
   let renderer: CliRenderer | null = null
   let restoreTmuxKeyboard = (): void => {}
@@ -124,12 +136,14 @@ export async function startApp(): Promise<void> {
       consoleMode: "disabled",
       exitOnCtrlC: false,
       exitSignals: EXIT_SIGNALS,
+      gatherStats: telemetry !== null,
       maxFps: 30,
       openConsoleOnError: false,
       targetFps: 30,
       onDestroy: () => {
         restoreTmuxKeyboard()
         app?.dispose()
+        telemetry?.stop()
       },
     })
     renderer = createdRenderer
@@ -146,11 +160,14 @@ export async function startApp(): Promise<void> {
       sound: new SystemSoundPlayer({
         write: (data) => rendererOutput(createdRenderer).writeOut(data),
       }),
+      logs,
+      performance: telemetry ?? undefined,
     })
     app.mount()
   } catch (error) {
     renderer?.destroy()
     app?.dispose()
+    telemetry?.stop()
     if (!app) initialState.session.close()
     throw error
   }
@@ -217,8 +234,8 @@ export function configureTmuxKeyboard(renderer: CliRenderer, options: TmuxKeyboa
  * session. The server signs itself in unattended, so the terminal usually finds
  * one waiting.
  */
-async function resolveInitialState(): Promise<InitialState> {
-  const session = createServerSession({ config: loadClientConfig() })
+async function resolveInitialState(performance?: PerformanceRecorder): Promise<InitialState> {
+  const session = createServerSession({ config: loadClientConfig(), performance })
   try {
     return { session, authenticated: await serverAuthenticated(session.http) }
   } catch {
@@ -255,6 +272,7 @@ export class App {
   private quitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private quitConfirmationAt: number | null = null
   private readonly sessionPollMs: number
+  private readonly detachPerformance: () => void
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     const copyShortcut = key.name === "c" && (key.ctrl || key.meta || key.super)
@@ -310,6 +328,9 @@ export class App {
     this.selection = options.selection ?? renderer
     this.logs = options.logs ?? new ApplicationLog()
     this.sessionPollMs = options.sessionPollMs ?? SESSION_POLL_MS
+    this.detachPerformance = options.performance
+      ? observeRendererPerformance(renderer, options.performance)
+      : () => {}
     this.renderer.on(CliRenderEvents.RENDER_ERROR, this.handleRendererError)
 
     // Stop rules and price alerts are evaluated by the server so they keep
@@ -361,6 +382,7 @@ export class App {
     this.disposed = true
     this.renderer.off(CliRenderEvents.RENDER_ERROR, this.handleRendererError)
     this.renderer.keyInput.off("keypress", this.handleKeypress)
+    this.detachPerformance()
     this.resetQuitConfirmation()
     this.stopWatchingForSession()
     for (const adapter of this.adapters.splice(0)) adapter.destroy()
