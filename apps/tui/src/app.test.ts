@@ -146,6 +146,7 @@ test("copies selected text by keyboard or mouse without exiting", async () => {
   ])
 
   app.dispose()
+  renderer.destroy()
 })
 
 test("shows the sign-in screen when the server holds no provider session", async () => {
@@ -156,6 +157,7 @@ test("shows the sign-in screen when the server holds no provider session", async
   await waitForFrame((frame) => frame.includes("Sign in"))
 
   app.dispose()
+  renderer.destroy()
   session.close()
 })
 
@@ -182,6 +184,7 @@ test("waits on an unreachable server instead of asking for a password", async ()
   expect(frame).toContain("127.0.0.1:1")
 
   app.dispose()
+  renderer.destroy()
   session.close()
 })
 
@@ -205,6 +208,7 @@ test("asks for a password once the server says there is no session", async () =>
   await waitForFrame((value) => value.includes("Sign in"))
 
   app.dispose()
+  renderer.destroy()
   session.close()
   await server.stop(true)
 })
@@ -246,6 +250,7 @@ test("leaves the sign-in screen on its own once the server has a session", async
   await waitForFrame((frame) => !frame.includes("Sign in"))
 
   app.dispose()
+  renderer.destroy()
   session.close()
   await server.stop(true)
 })
@@ -283,6 +288,7 @@ test("reads the stored settings when the server appears, rather than defaulting 
   expect(loads).toBe(1)
 
   app.dispose()
+  renderer.destroy()
   session.close()
 })
 
@@ -314,6 +320,7 @@ test("opens the workspace even when the settings cannot be read, and writes noth
   expect(saved).toBeEmpty()
 
   app.dispose()
+  renderer.destroy()
   session.close()
 })
 
@@ -346,6 +353,7 @@ test("a stream failure is written to the log the trader can open", async () => {
   expect(entry?.message).toContain("trbot server")
 
   app.dispose()
+  renderer.destroy()
   session.close()
 })
 
