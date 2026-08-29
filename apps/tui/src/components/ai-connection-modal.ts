@@ -1,29 +1,22 @@
 import { TUI_THEME } from "../theme.ts"
 import {
-  BoxRenderable,
-  InputRenderable,
-  InputRenderableEvents,
   StyledText,
-  TextRenderable,
   fg,
   link,
+  type BoxRenderable,
   type KeyEvent,
   type PasteEvent,
   type RenderContext,
-  type Renderable,
   type TextChunk,
 } from "@opentui/core"
 import type { AiAccount, AiAuthType, AiProviderSummary, AiSelectOption } from "@trbot/protocol/ai.ts"
-import { SelectableList } from "./selectable-list.ts"
+import { SearchListModalFrame } from "./search-list-modal-frame.ts"
 
-const PANEL_BG = TUI_THEME.appBackground
-const BORDER_COLOR = TUI_THEME.textFaint
 const MUTED_COLOR = TUI_THEME.textMuted
 const VALUE_COLOR = TUI_THEME.textPrimary
 const EMPHASIS_COLOR = TUI_THEME.accent
 const SUCCESS_COLOR = TUI_THEME.positive
 const ERROR_COLOR = TUI_THEME.negative
-const SELECTED_BG = TUI_THEME.overlaySelection
 
 /**
  * What the flow is waiting for the trader to do.
@@ -54,11 +47,7 @@ export interface AiConnectionModalOptions {
 export class AiConnectionModal {
   readonly root: BoxRenderable
 
-  private readonly modal: BoxRenderable
-  private readonly header: TextRenderable
-  private readonly search: InputRenderable
-  private readonly list: SelectableList
-  private readonly footer: TextRenderable
+  private readonly frame: SearchListModalFrame
 
   private providers: AiProviderSummary[] = []
   private selectedProviderId: string | null = null
@@ -69,7 +58,6 @@ export class AiConnectionModal {
   private busy = false
   private pending: Pending | null = null
   private request: AbortController | null = null
-  private previousFocus: Renderable | null = null
   private destroyed = false
 
   private readonly handlePaste = (event: PasteEvent): void => {
@@ -87,66 +75,27 @@ export class AiConnectionModal {
     private readonly renderer: RenderContext,
     private readonly options: AiConnectionModalOptions,
   ) {
-    this.root = new BoxRenderable(renderer, {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      width: "100%",
-      height: "100%",
-      alignItems: "center",
-      justifyContent: "center",
-      onSizeChange: () => this.resizeModal(),
-    })
-    this.modal = new BoxRenderable(renderer, {
-      width: 78,
-      height: 24,
-      paddingTop: 1,
-      paddingBottom: 1,
-      paddingLeft: 2,
-      paddingRight: 2,
-      backgroundColor: PANEL_BG,
-      border: true,
-      borderStyle: "rounded",
-      borderColor: BORDER_COLOR,
-      flexDirection: "column",
-    })
-    this.header = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
-    this.search = new InputRenderable(renderer, {
-      width: "100%",
-      flexShrink: 0,
-      marginBottom: 1,
-      maxLength: 100,
+    this.frame = new SearchListModalFrame(renderer, {
+      maxWidth: 78,
+      maxHeight: 24,
+      minWidth: 40,
+      minHeight: 12,
       placeholder: "Search providers…",
-      backgroundColor: TUI_THEME.fieldBackground,
-      focusedBackgroundColor: TUI_THEME.fieldBackground,
-      textColor: VALUE_COLOR,
-      focusedTextColor: VALUE_COLOR,
-      cursorColor: EMPHASIS_COLOR,
-    })
-    this.search.on(InputRenderableEvents.INPUT, () => this.render(false))
-    this.list = new SelectableList(renderer, {
-      backgroundColor: PANEL_BG,
-      selectedBackgroundColor: SELECTED_BG,
       wrapContent: true,
+      onSearchInput: () => this.render(false),
       onSelect: (index) => {
         this.selectedProviderId = this.visibleProviders()[index]?.providerId ?? null
         this.render()
       },
       onActivate: () => void this.connectSelected(),
     })
-    this.footer = new TextRenderable(renderer, { content: "", width: "100%", wrapMode: "word" })
-    this.modal.add(this.header)
-    this.modal.add(this.search)
-    this.modal.add(this.list.root)
-    this.modal.add(this.footer)
-    this.root.add(this.modal)
+    this.root = this.frame.root
     this.render()
   }
 
   mount(): void {
-    this.previousFocus = this.renderer.currentFocusedRenderable
+    this.frame.mount()
     this.renderer.keyInput.on("paste", this.handlePaste)
-    this.search.focus()
     void this.load()
   }
 
@@ -157,21 +106,11 @@ export class AiConnectionModal {
       return true
     }
     if (this.busy) return true
-    if (key.name === "return" || key.name === "enter") {
-      void this.connectSelected()
-      return true
-    }
     if (key.ctrl && key.name === "d") {
       void this.disconnectSelected()
       return true
     }
-    if (key.name === "up" || key.name === "down") {
-      this.list.handleKey(key)
-      return true
-    }
-    if (this.search.handleKeyPress(key)) return true
-    this.list.handleKey(key)
-    return true
+    return this.frame.handleKey(key)
   }
 
   destroy(): void {
@@ -181,11 +120,7 @@ export class AiConnectionModal {
     this.request?.abort()
     this.request = null
     this.renderer.keyInput.off("paste", this.handlePaste)
-    this.list.destroy()
-    if (!this.root.isDestroyed) this.root.destroyRecursively()
-    const previousFocus = this.previousFocus
-    this.previousFocus = null
-    if (previousFocus && !previousFocus.isDestroyed) previousFocus.focus()
+    this.frame.destroy()
   }
 
   private async load(): Promise<void> {
@@ -202,7 +137,7 @@ export class AiConnectionModal {
   private selectedProvider(): AiProviderSummary | null {
     const visible = this.visibleProviders()
     return visible.find((provider) => provider.providerId === this.selectedProviderId)
-      ?? visible[this.list.selectedIndex]
+      ?? visible[this.frame.list.selectedIndex]
       ?? null
   }
 
@@ -226,7 +161,7 @@ export class AiConnectionModal {
     const request = new AbortController()
     this.request = request
     this.busy = true
-    this.search.blur()
+    this.frame.search.blur()
     this.failed = false
     this.message = `Connecting ${provider.name}…`
     this.authorizationUrl = null
@@ -273,7 +208,7 @@ export class AiConnectionModal {
     } finally {
       if (this.request === request) this.request = null
       this.busy = false
-      if (!this.destroyed) this.search.focus()
+      if (!this.destroyed) this.frame.search.focus()
       this.render()
     }
   }
@@ -293,7 +228,7 @@ export class AiConnectionModal {
     const provider = this.selectedProvider()
     if (!provider || !provider.connected || this.busy || this.destroyed) return
     this.busy = true
-    this.search.blur()
+    this.frame.search.blur()
     this.message = `Disconnecting ${provider.name}…`
     this.render()
     try {
@@ -308,7 +243,7 @@ export class AiConnectionModal {
       this.fail(error)
     } finally {
       this.busy = false
-      if (!this.destroyed) this.search.focus()
+      if (!this.destroyed) this.frame.search.focus()
     }
   }
 
@@ -405,15 +340,15 @@ export class AiConnectionModal {
   private render(preserveScroll = true): void {
     const visible = this.visibleProviders()
     const connected = this.providers.filter((provider) => provider.connected).length
-    const matching = this.search.value
+    const matching = this.frame.search.value
       ? `${visible.length} matching · `
       : ""
-    this.header.content = new StyledText([
+    this.frame.header.content = new StyledText([
       fg(VALUE_COLOR)("Model providers\n"),
       fg(MUTED_COLOR)(`${matching}${connected} connected of ${this.providers.length}\n`),
     ])
 
-    this.list.setRows(
+    this.frame.list.setRows(
       visible.map((provider) => ({
         id: provider.providerId,
         content: new StyledText([
@@ -425,9 +360,9 @@ export class AiConnectionModal {
       this.selectedProviderId ?? undefined,
       { preserveScroll },
     )
-    this.selectedProviderId = visible[this.list.selectedIndex]?.providerId ?? null
+    this.selectedProviderId = visible[this.frame.list.selectedIndex]?.providerId ?? null
 
-    this.footer.content = new StyledText(this.footerChunks())
+    this.frame.footer.content = new StyledText(this.footerChunks())
     this.renderer.requestRender()
   }
 
@@ -490,7 +425,7 @@ export class AiConnectionModal {
   }
 
   private visibleProviders(): AiProviderSummary[] {
-    const terms = this.search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+    const terms = this.frame.search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
     if (terms.length === 0) return this.providers
     return this.providers.filter((provider) => {
       const auth = provider.authTypes.flatMap((type) =>
@@ -505,13 +440,6 @@ export class AiConnectionModal {
       ].join(" ").toLocaleLowerCase()
       return terms.every((term) => searchable.includes(term))
     })
-  }
-
-  private resizeModal(): void {
-    const width = Math.max(40, Math.min(78, this.root.width - 4))
-    const height = Math.max(12, Math.min(24, this.root.height - 2))
-    this.modal.width = width
-    this.modal.height = height
   }
 }
 

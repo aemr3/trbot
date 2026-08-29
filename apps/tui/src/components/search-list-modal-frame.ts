@@ -16,6 +16,7 @@ interface SearchListModalFrameOptions {
   minWidth: number
   minHeight: number
   placeholder: string
+  wrapContent?: boolean
   onSearchInput: () => void
   onSelect: (index: number) => void
   onActivate: () => void
@@ -77,6 +78,7 @@ export class SearchListModalFrame {
     this.list = new SelectableList(renderer, {
       backgroundColor: TUI_THEME.appBackground,
       selectedBackgroundColor: TUI_THEME.overlaySelection,
+      wrapContent: options.wrapContent,
       onSelect: options.onSelect,
       onActivate: options.onActivate,
     })
