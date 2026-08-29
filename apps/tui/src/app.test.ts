@@ -383,7 +383,7 @@ test("server performance summaries are forwarded to the application log until de
   expect(logs.list()).toMatchObject([{
     level: "INFO",
     scope: "Server performance",
-    message: "10-second performance summary",
+    message: "1-minute performance summary",
   }])
   expect(logs.list()[0]?.details).toContain('"ws.sent.frames": 4')
 

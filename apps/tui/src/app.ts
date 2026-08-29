@@ -116,7 +116,7 @@ export async function startApp(): Promise<void> {
   const telemetry = performanceConfig.enabled
     ? new PerformanceTelemetry({
         scope: "tui",
-        onReport: (report) => logs.info("Performance", "10-second performance summary", report),
+        onReport: (report) => logs.info("Performance", "1-minute performance summary", report),
       })
     : null
   const initialState = await resolveInitialState(telemetry ?? undefined)
@@ -182,7 +182,7 @@ interface ServerFrameSource {
 export function forwardServerPerformance(stream: ServerFrameSource, logs: ApplicationLog): () => void {
   return stream.on((frame) => {
     if (frame.type === "performanceReport") {
-      logs.info("Server performance", "10-second performance summary", frame.report)
+      logs.info("Server performance", "1-minute performance summary", frame.report)
     }
   })
 }
