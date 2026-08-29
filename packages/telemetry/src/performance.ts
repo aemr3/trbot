@@ -1,3 +1,5 @@
+import { z } from "zod"
+
 const DEFAULT_REPORT_INTERVAL_MS = 10_000
 const EVENT_LOOP_SAMPLE_INTERVAL_MS = 250
 const MAX_SAMPLES = 4_096
@@ -16,6 +18,20 @@ export interface PerformanceReport {
   counters: Record<string, number>
   distributions: Record<string, PerformanceDistribution>
 }
+
+export const PerformanceDistributionSchema: z.ZodType<PerformanceDistribution> = z.object({
+  count: z.number().int().nonnegative(),
+  p50: z.number().nonnegative(),
+  p95: z.number().nonnegative(),
+  max: z.number().nonnegative(),
+})
+
+export const PerformanceReportSchema: z.ZodType<PerformanceReport> = z.object({
+  scope: z.string().min(1),
+  windowMs: z.number().nonnegative(),
+  counters: z.record(z.string(), z.number()),
+  distributions: z.record(z.string(), PerformanceDistributionSchema),
+})
 
 export interface PerformanceRecorder {
   count(name: string, value?: number): void

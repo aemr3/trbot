@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test"
 import { CliRenderEvents, MouseEvent } from "@opentui/core"
 import { createTestRenderer, setRendererCapabilities } from "@opentui/core/testing"
-import { App, configureTmuxKeyboard } from "./app.ts"
+import { App, configureTmuxKeyboard, forwardServerPerformance } from "./app.ts"
 import { ApplicationLog } from "./logging/application-log.ts"
 import { DEFAULT_APP_PREFERENCES } from "@trbot/preferences/app.ts"
 import { ROUTES } from "@trbot/protocol/routes.ts"
+import type { ServerFrame } from "@trbot/protocol/stream.ts"
 import { createServerSession, type ServerSession } from "./server-session.ts"
 
 // The terminal reaches an unreachable address here: constructing the app makes
@@ -355,6 +356,40 @@ test("a stream failure is written to the log the trader can open", async () => {
   app.dispose()
   renderer.destroy()
   session.close()
+})
+
+test("server performance summaries are forwarded to the application log until detached", () => {
+  const listeners = new Set<(frame: ServerFrame) => void>()
+  const stream = {
+    on(listener: (frame: ServerFrame) => void): () => void {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+  const logs = new ApplicationLog()
+  const detach = forwardServerPerformance(stream, logs)
+  const frame: ServerFrame = {
+    type: "performanceReport",
+    report: {
+      scope: "server",
+      windowMs: 10_000,
+      counters: { "ws.sent.frames": 4 },
+      distributions: {},
+    },
+  }
+
+  for (const listener of listeners) listener(frame)
+
+  expect(logs.list()).toMatchObject([{
+    level: "INFO",
+    scope: "Server performance",
+    message: "10-second performance summary",
+  }])
+  expect(logs.list()[0]?.details).toContain('"ws.sent.frames": 4')
+
+  detach()
+  for (const listener of listeners) listener(frame)
+  expect(logs.list()).toHaveLength(1)
 })
 
 test("renderer failures reach the application log without opening a debug overlay", async () => {

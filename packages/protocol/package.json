@@ -8,6 +8,7 @@
   "dependencies": {
     "@trbot/chat": "workspace:*",
     "@trbot/market": "workspace:*",
+    "@trbot/telemetry": "workspace:*",
     "@trbot/trading": "workspace:*",
     "zod": "^4.4.3"
   },

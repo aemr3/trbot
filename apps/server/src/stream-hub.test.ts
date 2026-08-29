@@ -241,6 +241,24 @@ describe("stream hub", () => {
     expect(client.sent.at(-1)).toEqual({ type: "quotes", update: quote("AAA", 101) })
   })
 
+  test("broadcasts performance summaries to attached clients", () => {
+    const hub = new StreamHub(sessionWith(sourcesWith(new FakeQuoteStream(), new FakeDepthFactory())))
+    const client = socket()
+    const report = {
+      scope: "server",
+      windowMs: 10_000,
+      counters: { "ws.sent.frames": 4 },
+      distributions: {
+        event_loop_lag_ms: { count: 40, p50: 0.2, p95: 1.5, max: 3 },
+      },
+    }
+    hub.add(client)
+
+    hub.broadcast({ type: "performanceReport", report })
+
+    expect(client.sent).toEqual([{ type: "performanceReport", report }])
+  })
+
   test("two clients on different depth symbols are each served their own book", async () => {
     const depth = new FakeDepthFactory()
     const hub = new StreamHub(sessionWith(sourcesWith(new FakeQuoteStream(), depth)))

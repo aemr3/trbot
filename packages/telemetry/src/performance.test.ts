@@ -1,5 +1,22 @@
 import { expect, test } from "bun:test"
-import { PerformanceTelemetry } from "./performance.ts"
+import { PerformanceReportSchema, PerformanceTelemetry } from "./performance.ts"
+
+test("validates complete performance reports at transport boundaries", () => {
+  const report = {
+    scope: "server",
+    windowMs: 10_000,
+    counters: { "ws.sent.frames": 4 },
+    distributions: {
+      event_loop_lag_ms: { count: 40, p50: 0.2, p95: 1.5, max: 3 },
+    },
+  }
+
+  expect(PerformanceReportSchema.parse(report)).toEqual(report)
+  expect(PerformanceReportSchema.safeParse({
+    ...report,
+    distributions: { event_loop_lag_ms: { count: 40, p50: 0.2 } },
+  }).success).toBe(false)
+})
 
 test("reports counters and bounded timing percentiles, then starts a fresh window", () => {
   let now = 100

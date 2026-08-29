@@ -78,10 +78,14 @@ async function startTrbotServer(): Promise<void> {
   const config = loadConfig()
   const serverConfig = loadServerConfig()
   const performanceConfig = loadPerformanceConfig()
+  let hub: StreamHub | null = null
   const telemetry = performanceConfig.enabled
     ? new PerformanceTelemetry({
         scope: "server",
-        onReport: (report) => console.info("[Performance]", JSON.stringify(report)),
+        onReport: (report) => {
+          console.info("[Performance]", JSON.stringify(report))
+          hub?.broadcast({ type: "performanceReport", report })
+        },
       })
     : null
   const connection = await openDatabase(config.databaseUrl)
@@ -183,7 +187,6 @@ async function startTrbotServer(): Promise<void> {
   const goalEvaluator = new ChatGoalEvaluator(models)
 
   const ai = new AiService({ models, credentials, preferences: aiPreferences })
-  let hub: StreamHub | null = null
   let chat!: ChatController
   let subagents!: ChatSubagentController
   let mobile: ChatMobileController | null = null

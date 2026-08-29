@@ -27,6 +27,7 @@ import { DEPTH_STATUSES, DepthBookSchema, type DepthBook, type DepthStatus } fro
 import { EquityQuoteUpdateSchema, type EquityQuoteUpdate } from "@trbot/market/equity-quote-stream.ts"
 import { QuoteUpdateSchema, type QuoteUpdate } from "@trbot/market/quote-stream.ts"
 import { AccountLiveUpdateSchema, type AccountLiveUpdate } from "@trbot/trading/account.ts"
+import { PerformanceReportSchema, type PerformanceReport } from "@trbot/telemetry/performance.ts"
 import {
   STOP_OUTCOMES,
   StopRuleViewSchema,
@@ -78,6 +79,7 @@ export type ServerFrame =
   | { type: "account"; update: AccountLiveUpdate }
   | { type: "status"; channel: StreamChannel; connected: boolean }
   | { type: "session"; state: "expired" }
+  | { type: "performanceReport"; report: PerformanceReport }
   | StopTriggerFrame
   | { type: "stopResolved"; ruleId: string; outcome: StopOutcome }
   | { type: "stops"; views: StopRuleView[] }
@@ -159,6 +161,7 @@ export const ServerFrameSchema: z.ZodType<ServerFrame> = z.discriminatedUnion("t
   z.object({ type: z.literal("account"), update: AccountLiveUpdateSchema }),
   z.object({ type: z.literal("status"), channel: z.enum(STREAM_CHANNELS), connected: z.boolean() }),
   z.object({ type: z.literal("session"), state: z.literal("expired") }),
+  z.object({ type: z.literal("performanceReport"), report: PerformanceReportSchema }),
   z.object({
     type: z.literal("stopTriggered"),
     event: StopTriggerEventSchema,

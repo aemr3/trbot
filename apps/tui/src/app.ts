@@ -30,6 +30,7 @@ import {
 import { loadClientConfig, loadPerformanceConfig } from "@trbot/config"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
 import { isTransientError, requiresAuthentication } from "@trbot/protocol/error.ts"
+import type { ServerFrame } from "@trbot/protocol/stream.ts"
 import { SystemSoundPlayer, type SoundPlayer } from "./components/sound.ts"
 import { rendererOutput } from "./renderer-output.ts"
 import { copySelection, SystemClipboard, type ClipboardWriter, type SelectionReader } from "./clipboard.ts"
@@ -173,6 +174,19 @@ export async function startApp(): Promise<void> {
   }
 }
 
+interface ServerFrameSource {
+  on(listener: (frame: ServerFrame) => void): () => void
+}
+
+/** Writes server-side performance windows into the terminal's Logs screen. */
+export function forwardServerPerformance(stream: ServerFrameSource, logs: ApplicationLog): () => void {
+  return stream.on((frame) => {
+    if (frame.type === "performanceReport") {
+      logs.info("Server performance", "10-second performance summary", frame.report)
+    }
+  })
+}
+
 /**
  * tmux's level 1 extended-key mode still encodes Ctrl+M as Return. Level 2
  * distinguishes them. Wait until OpenTUI's startup replies have gone quiet:
@@ -273,6 +287,7 @@ export class App {
   private quitConfirmationAt: number | null = null
   private readonly sessionPollMs: number
   private readonly detachPerformance: () => void
+  private readonly detachServerPerformance: () => void
 
   private readonly handleKeypress = (key: KeyEvent): void => {
     const copyShortcut = key.name === "c" && (key.ctrl || key.meta || key.super)
@@ -327,6 +342,7 @@ export class App {
     this.clipboard = options.clipboard ?? new SystemClipboard(renderer)
     this.selection = options.selection ?? renderer
     this.logs = options.logs ?? new ApplicationLog()
+    this.detachServerPerformance = forwardServerPerformance(this.session.stream, this.logs)
     this.sessionPollMs = options.sessionPollMs ?? SESSION_POLL_MS
     this.detachPerformance = options.performance
       ? observeRendererPerformance(renderer, options.performance)
@@ -383,6 +399,7 @@ export class App {
     this.renderer.off(CliRenderEvents.RENDER_ERROR, this.handleRendererError)
     this.renderer.keyInput.off("keypress", this.handleKeypress)
     this.detachPerformance()
+    this.detachServerPerformance()
     this.resetQuitConfirmation()
     this.stopWatchingForSession()
     for (const adapter of this.adapters.splice(0)) adapter.destroy()
