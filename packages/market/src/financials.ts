@@ -148,13 +148,6 @@ export interface RecentFinancial {
   metrics: FinancialMetricValues
 }
 
-export const RecentFinancialSchema: z.ZodType<RecentFinancial> = z.object({
-  symbol: z.string().min(1),
-  publishedAt: z.string().min(1),
-  period: z.string().regex(new RegExp(FINANCIAL_PERIOD_PATTERN)),
-  metrics: FinancialMetricValuesSchema,
-})
-
 /** Financials available through the current front-month VIOP equity universe. */
 export interface RecentFinancialSet {
   universe: "VIOP_EQUITIES"
@@ -162,13 +155,6 @@ export interface RecentFinancialSet {
   metrics: FinancialMetric[]
   financials: RecentFinancial[]
 }
-
-export const RecentFinancialSetSchema: z.ZodType<RecentFinancialSet> = z.object({
-  universe: z.literal("VIOP_EQUITIES"),
-  eligibleSymbols: z.array(z.string().min(1)),
-  metrics: z.array(FinancialMetricSchema),
-  financials: z.array(RecentFinancialSchema),
-})
 
 export interface RecentFinancialRequest {
   /** Omit for each company's latest available filing. */

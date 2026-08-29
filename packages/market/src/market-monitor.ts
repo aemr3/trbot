@@ -1,5 +1,4 @@
 import {
-  PriceAlertDraftSchema,
   PriceAlertSchema,
   createPriceAlert,
   type PriceAlert,
@@ -25,11 +24,6 @@ export interface MarketMonitorDraft extends PriceAlertDraft {
 }
 
 const RequiredTextSchema = z.string().refine((value) => value.trim().length > 0)
-
-export const MarketMonitorDraftSchema: z.ZodType<MarketMonitorDraft> = PriceAlertDraftSchema.extend({
-  chatSessionId: RequiredTextSchema,
-  onTrigger: RequiredTextSchema,
-})
 
 export const MarketMonitorSchema: z.ZodType<MarketMonitor> = z.intersection(
   PriceAlertSchema,
