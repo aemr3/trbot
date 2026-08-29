@@ -8,6 +8,7 @@ import {
   ALERT_KINDS,
   ALERT_REPEATS,
   isAtrAlert,
+  resolvePriceAlertDraftLevel,
   validatePriceAlert,
   type PriceAlert,
   type PriceAlertBasis,
@@ -279,7 +280,7 @@ export class AlertEditor {
     const draft = this.draft()
     const instrument = this.instrument
     const lastPrice = draft ? this.options.lastPrice(draft.symbol) : null
-    const level = draft ? previewLevel(draft) : null
+    const level = draft ? resolvePriceAlertDraftLevel(draft) : null
     const color = this.directionColor()
 
     const chunks: TextChunk[] = [
@@ -341,16 +342,4 @@ export class AlertEditor {
     this.frame.content.content = new StyledText(chunks)
     this.renderer.requestRender()
   }
-}
-
-/** The level a draft resolves to, for the preview line. */
-function previewLevel(draft: PriceAlertDraft): number | null {
-  if (!Number.isFinite(draft.value) || draft.value <= 0) return null
-  if (draft.kind === "PRICE") return draft.value
-  const anchor = draft.referencePrice
-  if (anchor === null || anchor <= 0) return null
-  const distance = isAtrAlert(draft.kind) ? (draft.atrValue ?? 0) * draft.value : anchor * (draft.value / 100)
-  if (distance <= 0) return null
-  const level = draft.direction === "BELOW" ? anchor - distance : anchor + distance
-  return level > 0 ? level : null
 }

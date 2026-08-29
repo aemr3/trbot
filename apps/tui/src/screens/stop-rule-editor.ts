@@ -14,6 +14,7 @@ import {
   STOP_RULE_KINDS,
   STOP_RULE_ROLES,
   isAtrStopRule,
+  resolveStopRuleDraftLevel,
   stopPositionSide,
   validateStopRule,
   type StopRule,
@@ -265,7 +266,7 @@ export class StopRuleEditor {
     const draft = this.draft()
     const position = this.position
     const lastPrice = draft ? this.options.lastPrice(draft.symbol) : null
-    const level = draft ? previewLevel(draft) : null
+    const level = draft ? resolveStopRuleDraftLevel(draft) : null
     const roleColor = this.role === "STOP" ? STOP_COLOR : TARGET_COLOR
 
     const chunks: TextChunk[] = [
@@ -320,21 +321,6 @@ export class StopRuleEditor {
     this.frame.content.content = new StyledText(chunks)
     this.renderer.requestRender()
   }
-}
-
-/** The level a draft resolves to, for the preview line. */
-function previewLevel(draft: StopRuleDraft): number | null {
-  if (!Number.isFinite(draft.value) || draft.value <= 0) return null
-  if (draft.kind === "PRICE") return draft.value
-  const anchor = draft.referencePrice
-  if (anchor === null || anchor <= 0) return null
-  const distance = isAtrStopRule(draft.kind)
-    ? (draft.atrValue ?? 0) * draft.value
-    : anchor * (draft.value / 100)
-  if (distance <= 0) return null
-  const below = draft.side === "LONG" ? draft.role === "STOP" : draft.role === "TARGET"
-  const level = below ? anchor - distance : anchor + distance
-  return level > 0 ? level : null
 }
 
 function formatQuantity(value: number): string {

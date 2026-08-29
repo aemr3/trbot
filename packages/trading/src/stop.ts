@@ -234,7 +234,7 @@ export function stopRuleQuantity(rule: StopRule, position: AccountPosition): num
  * standing level so a rule always knows the price it is watching.
  */
 export function createStopRule(draft: StopRuleDraft, now: number): StopRule {
-  const triggerPrice = draftLevel(draft)
+  const triggerPrice = resolveStopRuleDraftLevel(draft)
   return {
     id: draft.id ?? crypto.randomUUID(),
     instrumentUid: draft.instrumentUid,
@@ -273,7 +273,7 @@ export function validateStopRule(draft: StopRuleDraft, lastPrice: number | null)
   if (draft.kind !== "PRICE" && (draft.referencePrice === null || draft.referencePrice <= 0)) {
     return "The position has no average cost to measure from"
   }
-  const level = draftLevel(draft)
+  const level = resolveStopRuleDraftLevel(draft)
   if (level === null || level <= 0) return "The level could not be resolved"
   // A level already on the far side of the market would fire the moment it is
   // saved, which is never what the trader meant to type.
@@ -302,7 +302,7 @@ export function reconcileStopRule(rule: StopRule, position: AccountPosition | un
 }
 
 /** The level a draft resolves to, before it becomes a rule. */
-function draftLevel(draft: StopRuleDraft): number | null {
+export function resolveStopRuleDraftLevel(draft: StopRuleDraft): number | null {
   if (draft.kind === "PRICE") return positiveFinite(draft.value)
   const anchor = positiveFinite(draft.referencePrice)
   if (anchor === null) return null

@@ -212,7 +212,7 @@ export function createPriceAlert(draft: PriceAlertDraft, now: number): PriceAler
     interval: draft.interval,
     repeat: draft.repeat,
     status: "ARMED",
-    triggerPrice: draftLevel(draft),
+    triggerPrice: resolvePriceAlertDraftLevel(draft),
     extremePrice: isTrailingAlert(draft.kind) ? draft.referencePrice : null,
     referencePrice: draft.referencePrice,
     atrValue: draft.atrValue,
@@ -235,7 +235,7 @@ export function validatePriceAlert(draft: PriceAlertDraft, lastPrice: number | n
   if (draft.kind !== "PRICE" && (draft.referencePrice === null || draft.referencePrice <= 0)) {
     return "No market price to measure from"
   }
-  const level = draftLevel(draft)
+  const level = resolvePriceAlertDraftLevel(draft)
   if (level === null || level <= 0) return "The level could not be resolved"
   // A level the market has already passed would fire the moment it is saved,
   // which is never what the trader meant to type.
@@ -251,7 +251,7 @@ export function validatePriceAlert(draft: PriceAlertDraft, lastPrice: number | n
 }
 
 /** The level a draft resolves to, before it becomes an alert. */
-function draftLevel(draft: PriceAlertDraft): number | null {
+export function resolvePriceAlertDraftLevel(draft: PriceAlertDraft): number | null {
   if (draft.kind === "PRICE") return positiveFinite(draft.value)
   const anchor = positiveFinite(draft.referencePrice)
   if (anchor === null) return null
