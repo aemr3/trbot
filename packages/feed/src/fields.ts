@@ -48,16 +48,6 @@ export const QUOTE_FIELDS: FeedField[] = [
   FEED_FIELDS.TIMESTAMP,
 ]
 
-/** The fields a full instrument row needs, adding day range and turnover. */
-export const INSTRUMENT_FIELDS: FeedField[] = [
-  ...QUOTE_FIELDS,
-  FEED_FIELDS.OPEN,
-  FEED_FIELDS.HIGH,
-  FEED_FIELDS.LOW,
-  FEED_FIELDS.VOLUME,
-  FEED_FIELDS.CHANGE_PERCENT,
-]
-
 /** The fields the order book needs. */
 export const DEPTH_FIELDS: FeedField[] = [
   FEED_FIELDS.DEPTH_10,

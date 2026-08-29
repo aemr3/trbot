@@ -2,7 +2,6 @@ import { z } from "zod"
 import type { ChatUsage } from "./session.ts"
 
 export const CHAT_SUBAGENT_MODES = ["single", "parallel", "chain"] as const
-export type ChatSubagentMode = (typeof CHAT_SUBAGENT_MODES)[number]
 
 export const CHAT_SUBAGENT_STATUSES = ["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"] as const
 export type ChatSubagentStatus = (typeof CHAT_SUBAGENT_STATUSES)[number]

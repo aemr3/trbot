@@ -7,10 +7,6 @@
 export const LEVEL_DIRECTIONS = ["ABOVE", "BELOW"] as const
 export type LevelDirection = (typeof LEVEL_DIRECTIONS)[number]
 
-export function isLevelDirection(value: string): value is LevelDirection {
-  return LEVEL_DIRECTIONS.some((direction) => direction === value)
-}
-
 /**
  * Moves `anchor` by `distance` toward the watched side. Null when the result is
  * not a price a market could print.

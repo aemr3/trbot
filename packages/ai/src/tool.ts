@@ -182,11 +182,6 @@ function acceptedValues(schema: ToolValidationSchema | undefined): JsonLiteral[]
   })
 }
 
-/** An empty registry: what the chat runs with until tools are added. */
-export function noTools(): ChatToolRegistry {
-  return new ChatTools()
-}
-
 export function toolText(text: string): ChatBlock {
   return { kind: "TEXT", text, toolName: null, toolCallId: null, toolArguments: null }
 }

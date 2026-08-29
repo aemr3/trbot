@@ -1,13 +1,8 @@
 import { z } from "zod"
 
 export const CHAT_GOAL_STATUSES = ["ACTIVE", "PAUSED", "BLOCKED", "COMPLETE"] as const
-export type ChatGoalStatus = (typeof CHAT_GOAL_STATUSES)[number]
 
 export const CHAT_LOOP_STATUSES = ["ACTIVE", "PAUSED", "COMPLETE"] as const
-export type ChatLoopStatus = (typeof CHAT_LOOP_STATUSES)[number]
-
-export const CHAT_LOOP_SCHEDULES = ["INTERVAL", "DYNAMIC", "CRON", "ONCE"] as const
-export type ChatLoopSchedule = (typeof CHAT_LOOP_SCHEDULES)[number]
 
 export const ChatGoalSchema = z.object({
   id: z.string().min(1),

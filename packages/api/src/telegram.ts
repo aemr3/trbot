@@ -15,7 +15,6 @@ export const TelegramChatSchema = z.object({
   id: z.number().int(),
   type: z.string(),
 })
-export type TelegramChat = z.infer<typeof TelegramChatSchema>
 
 export const TelegramVoiceSchema = z.object({
   file_id: z.string(),
@@ -24,7 +23,6 @@ export const TelegramVoiceSchema = z.object({
   mime_type: z.string().optional(),
   file_size: z.number().int().nonnegative().optional(),
 })
-export type TelegramVoice = z.infer<typeof TelegramVoiceSchema>
 
 export const TelegramMessageSchema = z.object({
   message_id: z.number().int(),

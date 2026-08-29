@@ -8,8 +8,6 @@ export const ChatQuestionOptionSchema = z.object({
   description: z.string().min(1),
 })
 
-export type ChatQuestionOption = z.infer<typeof ChatQuestionOptionSchema>
-
 /** One question in an interactive request from an agent. */
 export const ChatQuestionPromptSchema = z.object({
   question: z.string().min(1),
