@@ -30,7 +30,7 @@ import {
   CHART_INDICATORS,
   CHART_INDICATOR_COLORS,
   CHART_INDICATOR_LABELS,
-  indicatorLines,
+  ChartIndicatorCache,
   type ChartIndicator,
   type IndicatorLine,
 } from "@trbot/market/indicator.ts"
@@ -156,6 +156,7 @@ export class CandlestickChart {
   private readonly indicatorButtonLabels = new Map<ChartIndicator, TextRenderable>()
   // Overlays the trader has switched on, in the order they are listed.
   private activeIndicators: ChartIndicator[]
+  private readonly indicatorCache = new ChartIndicatorCache()
   // Whether the indicator row is currently in the tree; see fitChrome.
   private indicatorToolbarMounted = true
   private instrument: ChartInstrument | null = null
@@ -576,6 +577,7 @@ export class CandlestickChart {
     }
     const previousLength = this.series.candles.length
     if (applyLivePrice(this.series, price, timestamp)) {
+      this.indicatorCache.invalidate()
       if (this.scrollOffset > 0) this.scrollOffset += this.series.candles.length - previousLength
       this.liveRender.scheduleFrame()
     }
@@ -587,6 +589,7 @@ export class CandlestickChart {
     this.renderer.off("capabilities", this.handleCapabilities)
     this.placeholderImages?.clear()
     this.liveRender.cancel()
+    this.indicatorCache.invalidate()
     this.request?.abort()
     this.request = null
     if (!this.root.isDestroyed) this.root.destroyRecursively()
@@ -630,6 +633,7 @@ export class CandlestickChart {
     const request = new AbortController()
     this.request = request
     this.series = null
+    this.indicatorCache.invalidate()
     // The candle that was marked belongs to the series being replaced.
     this.selectedTimestamp = null
     this.summary.content = `${CANDLE_INTERVAL_LABELS[this.interval]} · Loading OHLC…`
@@ -753,7 +757,7 @@ export class CandlestickChart {
     const grainMs = this.series?.intervalMs ?? 0
     // Computed over the whole history, not the window: an average is only
     // right if it has seen the candles before the ones on screen.
-    const lines = indicatorLines(candles, this.activeIndicators, grainMs)
+    const lines = this.indicatorCache.lines(candles, this.activeIndicators, grainMs)
     const view = bitmapSupport
       ? renderCandleChartBitmapView(
           candles, width, height, grainMs, this.scrollOffset, reserveScrollbarRow, bitmapSupport.cellPixel,

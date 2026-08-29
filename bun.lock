@@ -71,6 +71,7 @@
         "@trbot/market": "workspace:*",
         "@trbot/member": "workspace:*",
         "@trbot/protocol": "workspace:*",
+        "@trbot/telemetry": "workspace:*",
         "@trbot/trading": "workspace:*",
         "linkedom": "^0.18.13",
         "ogg-opus-decoder": "^1.7.3",

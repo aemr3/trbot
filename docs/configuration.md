@@ -105,6 +105,8 @@ Each summary contains counters plus bounded timing distributions with `count`,
   metric uses the feed's epoch timestamp and therefore assumes a synchronized
   terminal clock; the receive metric is monotonic and clock-independent.
 - `renderer.*` and `event_loop_lag_ms` for OpenTUI/native rendering and process stalls.
+- `ai.get_candles.*` for indicator-cache size, reuse, invalidation, and calculation cost.
+- `process.heap_used_mib` and `process.rss_mib` for process memory consumption.
 
 The collector retains at most 4,096 timing samples per metric in each reporting
 window. It logs aggregates only; symbols, prices, credentials, and individual

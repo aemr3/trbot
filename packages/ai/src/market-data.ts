@@ -50,6 +50,7 @@ import type {
   ViopMarginSource,
 } from "@trbot/market/viop-margin.ts"
 import type { MemberFeatureSource } from "@trbot/member/features.ts"
+import type { PerformanceRecorder } from "@trbot/telemetry/performance.ts"
 import type { AccountSource } from "@trbot/trading/account.ts"
 import type { ViopOrderCancellationSource, ViopOrderSource } from "@trbot/trading/order.ts"
 import { isOpenStopRule, type StopRule } from "@trbot/trading/stop.ts"
@@ -400,6 +401,7 @@ export interface MarketDataToolClients {
   viopMargins: ViopMarginSource
   brokerVolumes: BrokerVolumeSource
   stops: { list(): Promise<StopRule[]> }
+  performance?: Pick<PerformanceRecorder, "count" | "observe">
   /** Deterministic seam for deciding whether the newest candle has completed. */
   now?: () => number
 }
@@ -1053,6 +1055,7 @@ function contractDetailsTool(clients: MarketDataToolClients): ChatTool<typeof Sy
 }
 
 function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandleParameters> {
+  const indicatorCache = new CandleToolIndicatorCache(clients.performance)
   return {
     definition: {
       name: "get_candles",
@@ -1079,10 +1082,14 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
         : null
       const candleSymbol = indexSymbol ?? resolved?.candleSymbol
       if (!candleSymbol) throw new Error(`Unsupported candle target ${resolvedTarget}`)
-      const series = await clients.candleData.candles.loadCandles(candleSymbol, range, interval, {
+      const cacheKey = `${resolvedTarget}\u0000${candleSymbol}\u0000${range}\u0000${interval}`
+      const fresh = await clients.candleData.candles.loadCandles(candleSymbol, range, interval, {
         signal: options.signal,
         target: resolvedTarget,
       })
+      const cached = indicatorCache.update(cacheKey, fresh)
+      const series = cached.series
+      const asOf = clients.now?.() ?? Date.now()
       const remaining = Math.max(1, series.candles.length - (offset ?? 0))
       const pageLimit = limit ?? (indicators
         ? Math.min(DEFAULT_INDICATOR_CANDLE_LIMIT, remaining)
@@ -1092,11 +1099,10 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
         offset,
         pageLimit,
       )
-      const asOf = clients.now?.() ?? Date.now()
       const candleState = resolveCandleState(series.candles, closedCandles(series, asOf), asOf)
       const indicatorResults = indicators
         ? pageIndicatorSeries(
-            candleIndicatorSeries(series.candles, indicators, series.intervalMs),
+            cachedIndicatorSeries(cached, indicators, clients.performance),
             candleState,
             offset,
             pageLimit,
@@ -1128,6 +1134,69 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
       })
     },
   }
+}
+
+interface CandleToolIndicatorCacheEntry {
+  series: CandleSeries
+  indicators: Map<CandleIndicator, CandleIndicatorSeries>
+}
+
+/** Reuses indicator work while every fresh feed read returns the same candle timeline. */
+class CandleToolIndicatorCache {
+  private readonly entries = new Map<string, CandleToolIndicatorCacheEntry>()
+
+  constructor(private readonly performance?: Pick<PerformanceRecorder, "count" | "observe">) {}
+
+  update(key: string, series: CandleSeries): CandleToolIndicatorCacheEntry {
+    const previous = this.entries.get(key)
+    const timelineUnchanged = previous ? sameCandleTimeline(previous.series, series) : false
+    const entry: CandleToolIndicatorCacheEntry = {
+      series,
+      // A forming candle may change on every read, but the requested indicators
+      // remain stable until the feed adds or replaces a candle timestamp.
+      indicators: previous && timelineUnchanged
+        ? previous.indicators
+        : new Map(),
+    }
+    this.entries.set(key, entry)
+    const event = !previous
+      ? "timeline_added"
+      : timelineUnchanged
+        ? "timeline_reused"
+        : "timeline_invalidated"
+    this.performance?.count(`ai.get_candles.${event}`)
+    this.performance?.observe("ai.get_candles.cache_entries", this.entries.size)
+    return entry
+  }
+}
+
+function sameCandleTimeline(left: CandleSeries, right: CandleSeries): boolean {
+  return left.candles.length === right.candles.length
+    && left.candles.every((candle, index) => candle.timestamp === right.candles[index]?.timestamp)
+}
+
+function cachedIndicatorSeries(
+  entry: CandleToolIndicatorCacheEntry,
+  indicators: readonly CandleIndicator[],
+  telemetry?: Pick<PerformanceRecorder, "count" | "observe">,
+): CandleIndicatorSeries[] {
+  const result: CandleIndicatorSeries[] = []
+  for (const indicator of CANDLE_INDICATORS) {
+    if (!indicators.includes(indicator)) continue
+    let calculated = entry.indicators.get(indicator)
+    if (calculated) {
+      telemetry?.count("ai.get_candles.indicator_cache_hit")
+    } else {
+      telemetry?.count("ai.get_candles.indicator_cache_miss")
+      const startedAt = performance.now()
+      calculated = candleIndicatorSeries(entry.series.candles, [indicator], entry.series.intervalMs)[0]
+      telemetry?.observe(`ai.get_candles.indicator_ms.${indicator}`, performance.now() - startedAt)
+      if (!calculated) continue
+      entry.indicators.set(indicator, calculated)
+    }
+    result.push(calculated)
+  }
+  return result
 }
 
 function intradayContextTool(clients: MarketDataToolClients): ChatTool<typeof IntradayContextParameters> {

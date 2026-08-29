@@ -1,6 +1,7 @@
 const DEFAULT_REPORT_INTERVAL_MS = 10_000
 const EVENT_LOOP_SAMPLE_INTERVAL_MS = 250
 const MAX_SAMPLES = 4_096
+const BYTES_PER_MIB = 1024 * 1024
 
 export interface PerformanceDistribution {
   count: number
@@ -161,6 +162,9 @@ export class PerformanceTelemetry implements PerformanceRecorder {
   private sampleEventLoop(): void {
     const now = this.now()
     this.observe("event_loop_lag_ms", Math.max(0, now - this.nextEventLoopSampleAt))
+    const memory = process.memoryUsage()
+    this.observe("process.heap_used_mib", memory.heapUsed / BYTES_PER_MIB)
+    this.observe("process.rss_mib", memory.rss / BYTES_PER_MIB)
     this.nextEventLoopSampleAt = now + EVENT_LOOP_SAMPLE_INTERVAL_MS
   }
 }

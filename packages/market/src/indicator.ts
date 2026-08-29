@@ -365,6 +365,42 @@ export function indicatorLines(
   return lines
 }
 
+/**
+ * Reuses each chart overlay until its candle series changes. Live candles mutate
+ * their array in place, so their owner must call `invalidate` after applying a
+ * tick; replacing the array is detected automatically.
+ */
+export class ChartIndicatorCache {
+  private candles: Candle[] | null = null
+  private grainMs: number | null = null
+  private readonly cached = new Map<ChartIndicator, IndicatorLine[]>()
+
+  lines(candles: Candle[], active: readonly ChartIndicator[], grainMs: number | null): IndicatorLine[] {
+    if (this.candles !== candles || this.grainMs !== grainMs) {
+      this.candles = candles
+      this.grainMs = grainMs
+      this.cached.clear()
+    }
+
+    const lines: IndicatorLine[] = []
+    for (const indicator of CHART_INDICATORS) {
+      if (!active.includes(indicator)) continue
+      let indicatorResult = this.cached.get(indicator)
+      if (!indicatorResult) {
+        indicatorResult = indicatorLines(candles, [indicator], grainMs)
+        this.cached.set(indicator, indicatorResult)
+      }
+      lines.push(...indicatorResult)
+    }
+    return lines
+  }
+
+  invalidate(): void {
+    this.candles = null
+    this.cached.clear()
+  }
+}
+
 function classicPivotSnapshot(previous: Candle): Record<keyof DailyClassicPivotSeries, number> | null {
   const pivot = (previous.high + previous.low + previous.close) / 3
   const width = previous.high - previous.low

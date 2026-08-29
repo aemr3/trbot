@@ -1063,6 +1063,74 @@ test("returns every candle by default and optionally limits the result", async (
   expect(testHarness.calls.candles).toEqual([])
 })
 
+test("keeps calculated indicators until the candle timeline changes", async () => {
+  const testHarness = harness()
+  let reads = 0
+  const metrics = new Map<string, number>()
+  const observations = new Map<string, number[]>()
+  testHarness.clients.performance = {
+    count: (name, value = 1) => metrics.set(name, (metrics.get(name) ?? 0) + value),
+    observe: (name, value) => observations.set(name, [...(observations.get(name) ?? []), value]),
+  }
+  testHarness.clients.candleData.candles = {
+    loadCandles: async (symbol, range, interval) => {
+      reads += 1
+      const series = candles(symbol, range, interval)
+      series.candles = Array.from({ length: 25 }, (_, index) => ({
+        timestamp: NOW + index * 60_000,
+        open: 400 + index,
+        high: 401 + index,
+        low: 399 + index,
+        close: reads === 2 && index === 24 ? 1_000 : 400 + index,
+        volume: 1_000,
+      }))
+      if (reads >= 3) {
+        series.candles.push({
+          timestamp: NOW + 25 * 60_000,
+          open: 600,
+          high: 601,
+          low: 599,
+          close: 600,
+          volume: 1_000,
+        })
+      }
+      return series
+    },
+  }
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+  const request = {
+    symbol: "ASELS",
+    range: "WEEK",
+    interval: "HOUR_1",
+    target: "UNDERLYING",
+    indicators: ["EMA_20"],
+  } as const
+
+  const first = CandleIndicatorResultSchema.parse(modelData(await call(tools, "get_candles", request)))
+  const sameTimeline = CandleIndicatorResultSchema.parse(modelData(await call(tools, "get_candles", {
+    ...request,
+    indicators: ["EMA_20", "VWAP"],
+  })))
+  const newCandle = CandleIndicatorResultSchema.parse(modelData(await call(tools, "get_candles", request)))
+
+  expect(sameTimeline.candles.at(-1)?.close).toBe(1_000)
+  expect(sameTimeline.indicators.map(({ indicator }) => indicator)).toEqual(["EMA_20", "VWAP"])
+  expect(sameTimeline.indicators[0]?.lines.ema.at(-1)).toBe(first.indicators[0]?.lines.ema.at(-1))
+  expect(newCandle.candles).toHaveLength(26)
+  expect(newCandle.indicators[0]?.lines.ema.at(-1)).not.toBe(first.indicators[0]?.lines.ema.at(-1))
+  expect(reads).toBe(3)
+  expect(Object.fromEntries(metrics)).toEqual({
+    "ai.get_candles.timeline_added": 1,
+    "ai.get_candles.indicator_cache_miss": 3,
+    "ai.get_candles.timeline_reused": 1,
+    "ai.get_candles.indicator_cache_hit": 1,
+    "ai.get_candles.timeline_invalidated": 1,
+  })
+  expect(observations.get("ai.get_candles.cache_entries")).toEqual([1, 1, 1])
+  expect(observations.get("ai.get_candles.indicator_ms.EMA_20")).toHaveLength(2)
+  expect(observations.get("ai.get_candles.indicator_ms.VWAP")).toHaveLength(1)
+})
+
 test("calculates requested indicators before slicing the candle page", async () => {
   const testHarness = harness()
   const candleSource = testHarness.clients.candleData.candles
@@ -1129,6 +1197,7 @@ test("calculates requested indicators before slicing the candle page", async () 
   expect(older.candles.map((candle) => candle.close)).toEqual([400, 401])
   expect(older.indicators.find((indicator) => indicator.indicator === "PIVOT_DAILY_CLASSIC")?.lines.pivot)
     .toEqual([null, 400])
+  expect(testHarness.calls.feedCandles).toHaveLength(2)
 })
 
 test("bounds the default indicator page while preserving full-series warm-up", async () => {

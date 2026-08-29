@@ -3,6 +3,7 @@ import type { Candle } from "./candle.ts"
 import {
   CANDLE_INDICATORS,
   CHART_INDICATORS,
+  ChartIndicatorCache,
   bollingerBands,
   candleIndicatorSeries,
   dailyClassicPivotLevels,
@@ -86,6 +87,21 @@ test("draws only the active indicators, and drops VWAP on daily candles", () => 
 
   expect(indicatorLines(candles, [], HOUR_MS)).toEqual([])
   expect(indicatorLines([], ["EMA_20"], HOUR_MS)).toEqual([])
+})
+
+test("reuses chart indicators until the candle series changes", () => {
+  const candles = bars(Array.from({ length: 30 }, (_, index) => 100 + index))
+  const cache = new ChartIndicatorCache()
+
+  const first = cache.lines(candles, ["EMA_20"], HOUR_MS)
+  const repeated = cache.lines(candles, ["EMA_20", "VWAP"], HOUR_MS)
+  expect(repeated[0]).toBe(first[0])
+
+  candles[candles.length - 1]!.close = 500
+  cache.invalidate()
+  const refreshed = cache.lines(candles, ["EMA_20"], HOUR_MS)
+  expect(refreshed[0]).not.toBe(first[0])
+  expect(refreshed[0]?.values.at(-1)).not.toBe(first[0]?.values.at(-1))
 })
 
 test("calculates Wilder RSI on the requested candle sequence", () => {

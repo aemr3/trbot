@@ -305,6 +305,7 @@ async function startTrbotServer(): Promise<void> {
       viopMargins: feed.viopMargins,
       brokerVolumes: feed.brokerVolumes,
       stops: { list: async () => stops.list() },
+      performance: telemetry ?? undefined,
     },
     marketMonitors: {
       instruments: {
