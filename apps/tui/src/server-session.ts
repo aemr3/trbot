@@ -3,7 +3,7 @@ import { HttpClient, type HttpClientOptions } from "@trbot/client/http.ts"
 import { StreamConnection, type StreamConnectionOptions } from "@trbot/client/stream.ts"
 import type { ClientTlsOptions } from "@trbot/client/tls.ts"
 import type { ClientConfig, ClientTls } from "@trbot/config"
-import { ROUTES, SessionStateSchema } from "@trbot/protocol/routes.ts"
+import { ROUTES, SessionStateSchema, type SessionState } from "@trbot/protocol/routes.ts"
 import type { PerformanceRecorder } from "@trbot/telemetry/performance.ts"
 
 /**
@@ -103,17 +103,21 @@ function readPem(path: string, setting: string): string {
   }
 }
 
-/** Whether the server currently holds a usable provider session. */
-export async function serverAuthenticated(http: HttpClient): Promise<boolean> {
-  const state = await http.get(ROUTES.session, SessionStateSchema)
-  return state.authenticated
+/** Current provider-login state, including an SMS challenge awaiting the terminal. */
+export function serverSessionState(http: HttpClient): Promise<SessionState> {
+  return http.get(ROUTES.session, SessionStateSchema)
 }
 
 /** Signs the server in. Throws a protocol error with `otp_required` when the provider asks for a code. */
-export async function signIn(http: HttpClient, username: string, password: string): Promise<void> {
-  await http.post(ROUTES.login, SessionStateSchema, { body: { username, password } })
+export function signIn(http: HttpClient, username: string, password: string): Promise<SessionState> {
+  return http.post(ROUTES.login, SessionStateSchema, { body: { username, password } })
 }
 
-export async function submitOtp(http: HttpClient, code: string): Promise<void> {
-  await http.post(ROUTES.otp, SessionStateSchema, { body: { code } })
+export function submitOtp(http: HttpClient, code: string): Promise<SessionState> {
+  return http.post(ROUTES.otp, SessionStateSchema, { body: { code } })
+}
+
+/** Requests a replacement only after the challenge advertised by the server has expired. */
+export function requestNewOtp(http: HttpClient): Promise<SessionState> {
+  return http.post(ROUTES.otpResend, SessionStateSchema)
 }

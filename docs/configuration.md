@@ -68,6 +68,13 @@ token refresh and bound-device password login. If either is absent, the server r
 sign in when credentials are required. With both set, the server signs itself
 back in unattended, which is what keeps stop rules running overnight.
 
+If refresh and bound-device password recovery are both rejected, the server
+records only the failed recovery stages and provider status/authentication codes,
+then retains the resulting SMS challenge. A connected terminal opens directly on
+the verification-code input without asking for the phone number or password
+again. It shows the challenge countdown; after expiry, press `Ctrl+R` there to
+request a new SMS using the credentials already held by the server.
+
 The password remains environment-only. Authentication state such as device keys and rotated tokens is stored in the application database. Protect both the `.env` file and database as sensitive local state.
 
 ## Models and providers

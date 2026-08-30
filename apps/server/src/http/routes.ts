@@ -95,13 +95,17 @@ interface HandlerRegistry {
   [path: string]: Partial<Record<string, Handler>>
 }
 
+function providerSessionState(session: ProviderSessionAccess): SessionState {
+  return { authenticated: session.authenticated, otp: session.otpChallenge }
+}
+
 export const HANDLERS: HandlerRegistry = {
   [ROUTES.health]: {
     GET: async () => json({ ok: true }),
   },
 
   [ROUTES.session]: {
-    GET: async (_request, { session }) => json<SessionState>({ authenticated: session.authenticated }),
+    GET: async (_request, { session }) => json(providerSessionState(session)),
   },
 
   [ROUTES.login]: {
@@ -116,7 +120,7 @@ export const HANDLERS: HandlerRegistry = {
         loginLimiter.record(username)
         throw error
       }
-      return json<SessionState>({ authenticated: true })
+      return json(providerSessionState(session))
     },
   },
 
@@ -134,7 +138,16 @@ export const HANDLERS: HandlerRegistry = {
         otpLimiter.record(key)
         throw error
       }
-      return json<SessionState>({ authenticated: true })
+      return json(providerSessionState(session))
+    },
+  },
+
+  [ROUTES.otpResend]: {
+    POST: async (_request, { session }) => {
+      await session.requestNewOtp()
+      // The replacement is a different secret with its own attempt budget.
+      otpLimiter.clear("otp")
+      return json(providerSessionState(session))
     },
   },
 

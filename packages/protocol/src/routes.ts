@@ -41,6 +41,7 @@ export const ROUTES = {
   stopDecision: (id: string) => `${API_PREFIX}/stops/${encodeURIComponent(id)}/decision`,
   login: `${API_PREFIX}/auth/login`,
   otp: `${API_PREFIX}/auth/otp`,
+  otpResend: `${API_PREFIX}/auth/otp/resend`,
   session: `${API_PREFIX}/auth/session`,
   /** Every model provider the harness offers, connected or not. */
   aiProviders: `${API_PREFIX}/ai/providers`,
@@ -84,11 +85,18 @@ export const ROUTES = {
   health: `${API_PREFIX}/health`,
 } as const
 
-export interface SessionState {
-  authenticated: boolean
-}
+export const OtpChallengeStateSchema = z.object({
+  expiresAt: z.number().int().nonnegative().nullable(),
+})
+export type OtpChallengeState = z.output<typeof OtpChallengeStateSchema>
 
-export const SessionStateSchema: z.ZodType<SessionState> = z.object({ authenticated: z.boolean() })
+export const SessionStateSchema = z.object({
+  authenticated: z.boolean(),
+  // The default lets a newer terminal understand a pre-upgrade server during a
+  // rolling deployment; current servers always send the field explicitly.
+  otp: OtpChallengeStateSchema.nullable().default(null),
+})
+export type SessionState = z.output<typeof SessionStateSchema>
 
 export const OkResponseSchema = z.object({ ok: z.literal(true) })
 

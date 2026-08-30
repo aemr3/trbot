@@ -162,6 +162,28 @@ test("shows the sign-in screen when the server holds no provider session", async
   session.close()
 })
 
+test("shows an unattended SMS challenge without asking for the password again", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 80, height: 20 })
+  const session = offlineSession()
+  const app = new App(
+    renderer,
+    {
+      session,
+      authenticated: false,
+      otp: { expiresAt: Date.now() + 60_000 },
+    },
+    { exit: () => {} },
+  )
+  app.mount()
+
+  const frame = await waitForFrame((value) => value.includes("Enter the verification code sent by SMS"))
+  expect(frame).not.toContain("Password")
+
+  app.dispose()
+  renderer.destroy()
+  session.close()
+})
+
 /**
  * A server that has not answered has not said the trader is signed out. Asking
  * them to sign in is an instruction to fix something, and this is not something
@@ -206,6 +228,9 @@ test("asks for a password once the server says there is no session", async () =>
   await waitForFrame((value) => value.includes("Connecting to the trbot server"))
 
   reachable = true
+  // Let at least one real polling interval reach the now-available server before
+  // asking the renderer for the resulting frame; renderer passes are not timers.
+  await Bun.sleep(20)
   await waitForFrame((value) => value.includes("Sign in"))
 
   app.dispose()

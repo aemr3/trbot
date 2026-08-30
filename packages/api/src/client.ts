@@ -43,6 +43,9 @@ export class OtpRequiredError extends Error {
   constructor(
     readonly referenceCode: string,
     readonly expiresInSeconds: number | null,
+    readonly expiresAt: number,
+    /** Safe, credential-free explanation of why recovery reached SMS login. */
+    readonly reason: string,
   ) {
     super("An SMS verification code was sent; call completeLogin() with that code")
     this.name = "OtpRequiredError"
@@ -117,6 +120,24 @@ export class ApiClient {
     return this.runAuthentication(() => this.authenticateInternal(true))
   }
 
+  /** Starts a fresh SMS challenge after the previous one has expired. */
+  requestNewLoginCode(): Promise<ApiSession> {
+    return this.runAuthentication(async () => {
+      let state = await this.loadOrCreateState()
+      if (hasActiveLoginChallenge(state, this.now())) {
+        const expiresInSeconds = Math.max(1, Math.ceil((state.loginReferenceExpiresAt - this.now()) / 1_000))
+        throw new OtpRequiredError(
+          state.loginReferenceCode,
+          expiresInSeconds,
+          state.loginReferenceExpiresAt,
+          "the current SMS verification challenge is still active",
+        )
+      }
+      if (state.loginReferenceCode) state = await this.clearLoginChallenge(state)
+      return this.initializeLogin(state, "the previous SMS verification code expired")
+    })
+  }
+
   async completeLogin(verificationCode: string): Promise<ApiSession> {
     if (!verificationCode.trim()) throw new Error("The SMS verification code is required")
 
@@ -127,7 +148,7 @@ export class ApiClient {
         state = await this.clearLoginChallenge(state)
       }
       if (!state.memberUid || !state.loginReferenceCode) {
-        return this.initializeLogin(state)
+        return this.initializeLogin(state, "the previous SMS verification code expired")
       }
 
       const data = await this.request(authOperations.loginCompleteBindDeviceV2, {
@@ -187,13 +208,19 @@ export class ApiClient {
 
   private async authenticateInternal(force: boolean): Promise<ApiSession> {
     let state = await this.loadOrCreateState()
+    let refreshFailure: string | null = null
 
     if (!force && hasUsableAccessToken(state, this.now())) return sessionFrom(state)
     if (state.loginReferenceCode) {
       if (hasActiveLoginChallenge(state, this.now())) {
         if (!this.hasCredentials()) throw new CredentialsRequiredError()
         const expiresInSeconds = Math.max(1, Math.ceil((state.loginReferenceExpiresAt - this.now()) / 1_000))
-        throw new OtpRequiredError(state.loginReferenceCode, expiresInSeconds)
+        throw new OtpRequiredError(
+          state.loginReferenceCode,
+          expiresInSeconds,
+          state.loginReferenceExpiresAt,
+          "an SMS verification challenge is already pending",
+        )
       }
       state = await this.clearLoginChallenge(state)
     }
@@ -204,6 +231,7 @@ export class ApiClient {
         return await this.refresh(state)
       } catch (error) {
         if (!isApiAuthenticationError(error)) throw error
+        refreshFailure = `token refresh was rejected (${authenticationFailureSummary(error)})`
       }
     }
 
@@ -213,6 +241,7 @@ export class ApiClient {
         return await this.passwordRelogin(state)
       } catch (error) {
         if (isApiAuthenticationError(error)) {
+          const passwordFailure = `bound-device password login was rejected (${authenticationFailureSummary(error)})`
           const resetState: AuthState = {
             ...state,
             memberUid: null,
@@ -224,16 +253,19 @@ export class ApiClient {
             updatedAt: this.now(),
           }
           await this.options.store.put(resetState)
-          return this.initializeLogin(resetState)
+          return this.initializeLogin(
+            resetState,
+            refreshFailure ? `${refreshFailure}; ${passwordFailure}` : passwordFailure,
+          )
         }
         throw error
       }
     }
 
-    return this.initializeLogin(state)
+    return this.initializeLogin(state, "no bound device session is stored")
   }
 
-  private async initializeLogin(state: AuthState): Promise<never> {
+  private async initializeLogin(state: AuthState, reason: string): Promise<never> {
     const credentials = this.credentials()
     const data = await this.request(authOperations.loginInitializeMemberV2, {
       phoneNumber: credentials.username,
@@ -246,15 +278,16 @@ export class ApiClient {
       throw new AuthenticationError("Login initialization returned no member or OTP reference")
     }
     const expiresInSeconds = login.otp?.expirationSeconds ?? null
+    const expiresAt = this.now() + otpExpiryMs(expiresInSeconds)
 
     await this.options.store.put({
       ...state,
       memberUid,
       loginReferenceCode: referenceCode,
-      loginReferenceExpiresAt: this.now() + otpExpiryMs(expiresInSeconds),
+      loginReferenceExpiresAt: expiresAt,
       updatedAt: this.now(),
     })
-    throw new OtpRequiredError(referenceCode, expiresInSeconds)
+    throw new OtpRequiredError(referenceCode, expiresInSeconds, expiresAt, reason)
   }
 
   private async refresh(state: AuthState): Promise<ApiSession> {
@@ -487,6 +520,20 @@ export function requiresAuthentication(cause: unknown): boolean {
 function isApiAuthenticationError(cause: unknown): boolean {
   if (cause instanceof ApiHttpError) return cause.status === 401 || cause.status === 403
   return cause instanceof GraphqlError && cause.codes.some((code) => AUTH_ERROR_CODES.has(code))
+}
+
+/** Authentication-only summary safe for server logs. */
+function authenticationFailureSummary(cause: unknown): string {
+  if (cause instanceof ApiHttpError) {
+    const operation = cause.operationName ?? "authentication request"
+    return `${operation} returned HTTP ${cause.status}`
+  }
+  if (cause instanceof GraphqlError) {
+    const codes = [...new Set(cause.codes.filter((code) => AUTH_ERROR_CODES.has(code)))]
+    const label = codes.length === 1 ? "code" : "codes"
+    return `${cause.operationName} returned GraphQL authentication ${label} ${codes.join(", ")}`
+  }
+  return "the provider rejected authentication"
 }
 
 function hasUsableAccessToken(state: AuthState, now: number): state is AuthState & { accessToken: string } {

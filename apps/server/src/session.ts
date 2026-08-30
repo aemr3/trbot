@@ -1,4 +1,10 @@
-import { createApiClient, resumeApiClient, type ApiClient, type ApiClientHandle } from "@trbot/api"
+import {
+  createApiClient,
+  OtpRequiredError,
+  resumeApiClient,
+  type ApiClient,
+  type ApiClientHandle,
+} from "@trbot/api"
 import type { OpenAuthSession } from "@trbot/auth/session.ts"
 import type { AppCredentials } from "@trbot/config"
 import {
@@ -84,9 +90,15 @@ export interface ProviderSourceOptions {
 export interface ProviderSessionHandle {
   authenticate(): Promise<void>
   reauthenticate(): Promise<void>
+  requestNewOtp(): Promise<void>
   completeLogin(code: string): Promise<void>
   sources(options: ProviderSourceOptions): ProviderSources
   close(): void
+}
+
+export interface ProviderOtpChallenge {
+  /** Provider challenge expiry as Unix epoch milliseconds. */
+  expiresAt: number | null
 }
 
 /** Opens provider handles; tests replace this boundary without imitating ApiClient internals. */
@@ -98,9 +110,11 @@ export interface ProviderSessionConnector {
 /** Provider-session surface consumed by HTTP routing and stream fan-out. */
 export interface ProviderSessionAccess {
   readonly authenticated: boolean
+  readonly otpChallenge: ProviderOtpChallenge | null
   onExpired(listener: () => void): void
   onSession(listener: () => void): void
   login(username: string, password: string): Promise<void>
+  requestNewOtp(): Promise<void>
   completeOtp(code: string): Promise<void>
   require(): ProviderSources
   recover(): Promise<boolean>
@@ -114,7 +128,7 @@ export interface ProviderSessionAccess {
 export class ProviderSession implements ProviderSessionAccess {
   private handle: ProviderSessionHandle | null = null
   private current: ProviderSources | null = null
-  private pendingOtp: ProviderSessionHandle | null = null
+  private pendingOtp: { handle: ProviderSessionHandle; expiresAt: number | null } | null = null
   private recovering: Promise<boolean> | null = null
   private opened: { stop(): void }[] = []
   private readonly expiryListeners: (() => void)[] = []
@@ -128,6 +142,10 @@ export class ProviderSession implements ProviderSessionAccess {
 
   get authenticated(): boolean {
     return this.current !== null
+  }
+
+  get otpChallenge(): ProviderOtpChallenge | null {
+    return this.pendingOtp ? { expiresAt: this.pendingOtp.expiresAt } : null
   }
 
   onExpired(listener: () => void): void {
@@ -157,6 +175,13 @@ export class ProviderSession implements ProviderSessionAccess {
       this.adopt(handle)
       return true
     } catch (error) {
+      const protocolError = toProtocolError(error)
+      if (protocolError.code === "otp_required") {
+        this.rememberOtp(handle, error instanceof OtpRequiredError ? error.expiresAt : null)
+        const reason = error instanceof OtpRequiredError ? error.reason : "the provider requires SMS verification"
+        this.options.onInfo?.("Session recovery", `SMS verification required: ${reason}`)
+        return false
+      }
       handle.close()
       this.options.onError?.("Session recovery", error)
       return false
@@ -176,8 +201,7 @@ export class ProviderSession implements ProviderSessionAccess {
     } catch (error) {
       const protocolError = toProtocolError(error)
       if (protocolError.code === "otp_required") {
-        this.pendingOtp?.close()
-        this.pendingOtp = handle
+        this.rememberOtp(handle, error instanceof OtpRequiredError ? error.expiresAt : null)
       } else {
         handle.close()
       }
@@ -185,14 +209,38 @@ export class ProviderSession implements ProviderSessionAccess {
     }
   }
 
-  async completeOtp(code: string): Promise<void> {
-    const handle = this.pendingOtp
-    if (!handle) throw new ProtocolError("invalid_request", "No sign-in is waiting for a verification code")
+  /** Replaces an expired challenge using the credentials already held by its handle. */
+  async requestNewOtp(): Promise<void> {
+    const pending = this.pendingOtp
+    if (!pending) throw new ProtocolError("invalid_request", "No sign-in is waiting for a verification code")
+    if (pending.expiresAt === null) {
+      throw new ProtocolError("invalid_request", "The verification-code expiry is unavailable; sign in again")
+    }
+    if (pending.expiresAt > Date.now()) {
+      throw new ProtocolError("invalid_request", "The current verification code has not expired")
+    }
 
     try {
-      await handle.completeLogin(code)
+      await pending.handle.requestNewOtp()
+      throw new ProtocolError("internal", "The provider did not start a new SMS challenge")
+    } catch (error) {
+      const protocolError = toProtocolError(error)
+      if (protocolError.code !== "otp_required") throw protocolError
+      this.rememberOtp(pending.handle, error instanceof OtpRequiredError ? error.expiresAt : null)
+    }
+  }
+
+  async completeOtp(code: string): Promise<void> {
+    const pending = this.pendingOtp
+    if (!pending) throw new ProtocolError("invalid_request", "No sign-in is waiting for a verification code")
+    if (pending.expiresAt !== null && pending.expiresAt <= Date.now()) {
+      throw new ProtocolError("invalid_request", "The verification code expired; request a new SMS")
+    }
+
+    try {
+      await pending.handle.completeLogin(code)
       this.pendingOtp = null
-      this.adopt(handle)
+      this.adopt(pending.handle)
     } catch (error) {
       throw toProtocolError(error)
     }
@@ -241,7 +289,7 @@ export class ProviderSession implements ProviderSessionAccess {
 
   close(): void {
     this.dropSession()
-    this.pendingOtp?.close()
+    this.pendingOtp?.handle.close()
     this.pendingOtp = null
   }
 
@@ -269,8 +317,8 @@ export class ProviderSession implements ProviderSessionAccess {
     // A half-finished sign-in is stale the moment any session replaces it.
     // Left alone, its verification code stays redeemable: a second terminal
     // could complete a challenge from before this session and take its place.
-    if (this.pendingOtp !== handle) {
-      this.pendingOtp?.close()
+    if (this.pendingOtp?.handle !== handle) {
+      this.pendingOtp?.handle.close()
       this.pendingOtp = null
     }
     this.handle = handle
@@ -281,6 +329,11 @@ export class ProviderSession implements ProviderSessionAccess {
     })
 
     for (const listener of this.sessionListeners) listener()
+  }
+
+  private rememberOtp(handle: ProviderSessionHandle, expiresAt: number | null): void {
+    if (this.pendingOtp?.handle !== handle) this.pendingOtp?.handle.close()
+    this.pendingOtp = { handle, expiresAt }
   }
 }
 
@@ -310,6 +363,9 @@ function providerHandle(handle: ApiClientHandle, feed: MarketFeed): ProviderSess
     },
     async reauthenticate(): Promise<void> {
       await handle.client.reauthenticate()
+    },
+    async requestNewOtp(): Promise<void> {
+      await handle.client.requestNewLoginCode()
     },
     async completeLogin(code: string): Promise<void> {
       await handle.client.completeLogin(code)

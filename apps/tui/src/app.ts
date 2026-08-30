@@ -30,6 +30,7 @@ import {
 import { loadClientConfig, loadPerformanceConfig } from "@trbot/config"
 import type { AiAccount } from "@trbot/protocol/ai.ts"
 import { isTransientError, requiresAuthentication } from "@trbot/protocol/error.ts"
+import type { OtpChallengeState, SessionState } from "@trbot/protocol/routes.ts"
 import type { ServerFrame } from "@trbot/protocol/stream.ts"
 import { SystemSoundPlayer, type SoundPlayer } from "./components/sound.ts"
 import { rendererOutput } from "./renderer-output.ts"
@@ -42,7 +43,7 @@ import { LogsScreen } from "./screens/logs.ts"
 import { TradingWorkspaceScreen } from "./screens/trading-workspace.ts"
 import { TradeScreen } from "./screens/trade.ts"
 import { RemoteAlerts, RemoteStopRules } from "./remote-monitors.ts"
-import { createServerSession, serverAuthenticated, type ServerSession } from "./server-session.ts"
+import { createServerSession, serverSessionState, type ServerSession } from "./server-session.ts"
 import { DEFAULT_APP_PREFERENCES, type AppPreferences } from "@trbot/preferences/app.ts"
 import { PerformanceTelemetry, type PerformanceRecorder } from "@trbot/telemetry/performance.ts"
 import { observeRendererPerformance } from "./performance.ts"
@@ -68,6 +69,8 @@ interface InitialState {
    * not have and cannot fix by doing it.
    */
   authenticated: boolean | null
+  /** An unattended recovery waiting for its SMS code. */
+  otp?: OtpChallengeState | null
 }
 
 interface AppOptions {
@@ -251,7 +254,8 @@ export function configureTmuxKeyboard(renderer: CliRenderer, options: TmuxKeyboa
 async function resolveInitialState(performance?: PerformanceRecorder): Promise<InitialState> {
   const session = createServerSession({ config: loadClientConfig(), performance })
   try {
-    return { session, authenticated: await serverAuthenticated(session.http) }
+    const state = await serverSessionState(session.http)
+    return { session, authenticated: state.authenticated, otp: state.otp }
   } catch {
     // A server that cannot be reached has not said anything, so nothing is
     // decided yet. The application waits for it rather than guessing.
@@ -381,7 +385,9 @@ export class App {
       // settings could not be read. All three keep asking; only the first asks
       // the trader for anything.
       this.watchForSession()
-      this.screen = initialState.authenticated === false ? this.createLogin() : this.createConnecting()
+      this.screen = initialState.authenticated === false
+        ? this.createLogin(initialState.otp ?? null)
+        : this.createConnecting()
     }
   }
 
@@ -600,8 +606,9 @@ export class App {
     return workspace
   }
 
-  private createLogin(): LoginScreen {
+  private createLogin(otp: OtpChallengeState | null = null): LoginScreen {
     return new LoginScreen(this.renderer, this.session.http, {
+      initialOtp: otp,
       credentials: null,
       onAuthenticated: () => void this.openWorkspace(),
     })
@@ -628,23 +635,27 @@ export class App {
         this.stopWatchingForSession()
         return
       }
-      void serverAuthenticated(this.session.http).then(
-        (authenticated) => this.onSessionAnswer(authenticated),
+      void serverSessionState(this.session.http).then(
+        (state) => this.onSessionAnswer(state),
         (cause: unknown) => this.onNoAnswer(cause),
       )
     }, this.sessionPollMs)
   }
 
-  private onSessionAnswer(authenticated: boolean): void {
+  private onSessionAnswer(state: SessionState): void {
     if (this.disposed || this.screen instanceof TradingWorkspaceScreen) return
-    if (authenticated) {
+    if (state.authenticated) {
       void this.openWorkspace()
       return
     }
     // The server is reachable and holds nothing, so now there is something for
     // the trader to do. A sign-in already on screen is left alone: replacing it
     // would clear a password halfway through being typed.
-    if (this.screen instanceof ConnectingScreen) this.replaceScreen(this.createLogin())
+    if (this.screen instanceof ConnectingScreen) {
+      this.replaceScreen(this.createLogin(state.otp))
+    } else if (this.screen instanceof LoginScreen) {
+      this.screen.acceptSessionState(state)
+    }
   }
 
   private onNoAnswer(cause: unknown): void {

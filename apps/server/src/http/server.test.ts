@@ -12,7 +12,7 @@ import { HttpInstrumentSource, HttpMemberFeatureSource, HttpOrderSource } from "
 import { memberFeatureSet, type MemberFeatureSet } from "@trbot/member/features.ts"
 import { AiProviderSummarySchema, type AiPreferences } from "@trbot/protocol/ai.ts"
 import { isProtocolError, requiresAuthentication, type ProtocolError } from "@trbot/protocol/error.ts"
-import { ROUTES } from "@trbot/protocol/routes.ts"
+import { ROUTES, SessionStateSchema } from "@trbot/protocol/routes.ts"
 import { openDatabase, type DatabaseConnection } from "@trbot/db/client.ts"
 import { DrizzleAppPreferencesStore } from "@trbot/db/app-preferences-store.ts"
 import { AiService } from "../ai.ts"
@@ -179,6 +179,28 @@ describe("server and client over the wire", () => {
     expect(requiresAuthentication(error)).toBe(true)
   })
 
+  test("publishes a pending OTP expiry and requests its replacement", async () => {
+    const expiredAt = Date.now() - 1
+    const renewedAt = Date.now() + 180_000
+    session.setOtpChallenge(
+      { expiresAt: expiredAt },
+      async () => ({ expiresAt: renewedAt }),
+    )
+
+    try {
+      expect(await client.get(ROUTES.session, SessionStateSchema)).toEqual({
+        authenticated: false,
+        otp: { expiresAt: expiredAt },
+      })
+      expect(await client.post(ROUTES.otpResend, SessionStateSchema)).toEqual({
+        authenticated: false,
+        otp: { expiresAt: renewedAt },
+      })
+    } finally {
+      session.setOtpChallenge(null)
+    }
+  })
+
   test("an unknown route reports not_found rather than hanging", async () => {
     const error = await client.get("/v1/nope", z.unknown()).catch((cause: unknown) => cause)
     expect(isProtocolError(error) && error.code).toBe("not_found")
@@ -304,6 +326,18 @@ describe("server and client over the wire", () => {
 
     const refused = await attempt()
     expect(isProtocolError(refused) && refused.message).toContain("Too many attempts")
+
+    session.setOtpChallenge(
+      { expiresAt: Date.now() - 1 },
+      async () => ({ expiresAt: Date.now() + 180_000 }),
+    )
+    try {
+      await client.post(ROUTES.otpResend, SessionStateSchema)
+      const freshChallengeAttempt = await attempt()
+      expect(freshChallengeAttempt.message).toContain("No sign-in is waiting")
+    } finally {
+      session.setOtpChallenge(null)
+    }
   })
 
   test("takes on a credential the terminal logged in and never hands one back", async () => {

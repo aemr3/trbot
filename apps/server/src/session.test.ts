@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { AuthSession, OpenAuthSession } from "@trbot/auth/session.ts"
 import type { AuthState } from "@trbot/auth/state.ts"
 import type { AuthStore } from "@trbot/auth/store.ts"
+import { OtpRequiredError } from "@trbot/api"
 import type { AppCredentials } from "@trbot/config"
 import { ProtocolError } from "@trbot/protocol/error.ts"
 import { providerSources, unusedFeed } from "./provider.test-fixture.ts"
@@ -57,6 +58,7 @@ class TestHandle implements ProviderSessionHandle {
     private readonly authenticateResult: () => Promise<void> = async () => {},
     private readonly reauthenticateResult: () => Promise<void> = async () => {},
     private readonly completeLoginResult: () => Promise<void> = async () => {},
+    private readonly requestNewOtpResult: () => Promise<void> = async () => {},
   ) {}
 
   authenticate(): Promise<void> {
@@ -65,6 +67,10 @@ class TestHandle implements ProviderSessionHandle {
 
   reauthenticate(): Promise<void> {
     return this.reauthenticateResult()
+  }
+
+  requestNewOtp(): Promise<void> {
+    return this.requestNewOtpResult()
   }
 
   completeLogin(): Promise<void> {
@@ -170,24 +176,89 @@ describe("provider session recovery", () => {
     expect(connector.resumeCalls).toBe(1)
   })
 
-  test("an authentication report during recovery does not start a second attempt", async () => {
-    const failure = new ProtocolError("otp_required", "verification required")
-    const connector = new TestConnector([], [new TestHandle(undefined, async () => { throw failure })])
-    let reports = 0
+  test("retains an automatic SMS challenge and logs why it was needed", async () => {
+    const expiresAt = Date.now() + 60_000
+    const failure = new OtpRequiredError(
+      "reference-1",
+      60,
+      expiresAt,
+      "bound-device password login was rejected (login returned GraphQL authentication code 9002)",
+    )
+    const handle = new TestHandle(undefined, async () => { throw failure })
+    const connector = new TestConnector([], [handle])
+    const reports: [string, string][] = []
     let session: ProviderSession
     session = new ProviderSession({
       openAuthSession: noAuthSession,
       credentials: null,
       connector,
-      onError: () => {
-        reports += 1
+      onInfo: (label, message) => {
+        reports.push([label, message])
         void session.recover()
       },
     })
 
     expect(await session.recover()).toBe(false)
-    expect(reports).toBe(1)
+    expect(reports).toEqual([[
+      "Session recovery",
+      "SMS verification required: bound-device password login was rejected "
+      + "(login returned GraphQL authentication code 9002)",
+    ]])
     expect(connector.resumeCalls).toBe(1)
+    expect(session.otpChallenge).toEqual({ expiresAt })
+    expect(handle.closed).toBe(0)
+
+    await session.completeOtp("123456")
+    expect(session.authenticated).toBe(true)
+    expect(session.otpChallenge).toBeNull()
+  })
+
+  test("requests a new SMS after the retained challenge expires", async () => {
+    const expiredAt = Date.now() - 1
+    const renewedAt = Date.now() + 180_000
+    let renewals = 0
+    const handle = new TestHandle(
+      undefined,
+      async () => {
+        throw new OtpRequiredError("reference-old", 0, expiredAt, "an SMS challenge is already pending")
+      },
+      undefined,
+      undefined,
+      async () => {
+        renewals += 1
+        throw new OtpRequiredError("reference-new", 180, renewedAt, "the previous SMS code expired")
+      },
+    )
+    const session = testSession(new TestConnector([], [handle]))
+
+    expect(await session.recover()).toBe(false)
+    await expect(session.completeOtp("123456")).rejects.toThrow(/expired/)
+    await session.requestNewOtp()
+
+    expect(renewals).toBe(1)
+    expect(session.otpChallenge).toEqual({ expiresAt: renewedAt })
+    expect(handle.closed).toBe(0)
+  })
+
+  test("does not request another SMS while the current code is valid", async () => {
+    const expiresAt = Date.now() + 60_000
+    let renewals = 0
+    const handle = new TestHandle(
+      undefined,
+      async () => {
+        throw new OtpRequiredError("reference-1", 60, expiresAt, "an SMS challenge is already pending")
+      },
+      undefined,
+      undefined,
+      async () => {
+        renewals += 1
+      },
+    )
+    const session = testSession(new TestConnector([], [handle]))
+
+    expect(await session.recover()).toBe(false)
+    await expect(session.requestNewOtp()).rejects.toThrow(/has not expired/)
+    expect(renewals).toBe(0)
   })
 
   test("a later recovery starts a fresh attempt", async () => {

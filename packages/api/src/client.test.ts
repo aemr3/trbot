@@ -210,6 +210,44 @@ describe("API authentication", () => {
     ])
   })
 
+  test("explains which safe recovery stages caused the SMS fallback", async () => {
+    const store = new MemoryAuthStore(authState({ accessTokenExpiresAt: NOW - 1 }))
+    const transport = new FakeTransport((request) => {
+      switch (operationName(request)) {
+        case "refreshMemberTokenV2":
+          return graphqlError(9005)
+        case "retrieveLoginNonce":
+          return data({ retrieveLoginNonce: { serverTimestamp: NOW } })
+        case "deviceBindingLoginCompleteWithPasswordV2":
+          return graphqlError(9002)
+        case "loginInitializeMemberV2":
+          return data({
+            loginInitializeMemberV2: {
+              memberUid: "member-1",
+              otp: { referenceCode: "reference-1", expirationSeconds: 180 },
+            },
+          })
+        default:
+          throw new Error(`unexpected operation ${operationName(request)}`)
+      }
+    })
+
+    const error = await client(store, transport).authenticate().catch((cause: unknown) => cause)
+
+    if (!(error instanceof OtpRequiredError)) throw new Error("Expected an OTP challenge")
+    expect(error.reason).toBe(
+      "token refresh was rejected (refreshMemberTokenV2 returned GraphQL authentication code 9005); "
+      + "bound-device password login was rejected "
+      + "(deviceBindingLoginCompleteWithPasswordV2 returned GraphQL authentication code 9002)",
+    )
+    expect(transport.requests.map(operationName)).toEqual([
+      "refreshMemberTokenV2",
+      "retrieveLoginNonce",
+      "deviceBindingLoginCompleteWithPasswordV2",
+      "loginInitializeMemberV2",
+    ])
+  })
+
   test("preserves a rate-limit error from device relogin", async () => {
     const store = new MemoryAuthStore(authState({ accessTokenExpiresAt: NOW - 1 }))
     const transport = new FakeTransport((request) => {
@@ -309,6 +347,51 @@ describe("API authentication", () => {
     expect(session.accessToken).toBe(accessToken)
     expect(store.state?.loginReferenceCode).toBeNull()
     expect(store.state?.loginReferenceExpiresAt).toBeNull()
+  })
+
+  test("starts a new SMS challenge after the previous code expires", async () => {
+    const store = new MemoryAuthStore(authState({
+      loginReferenceCode: "reference-old",
+      loginReferenceExpiresAt: NOW - 1,
+    }))
+    const transport = new FakeTransport((request) => {
+      expect(operationName(request)).toBe("loginInitializeMemberV2")
+      return data({
+        loginInitializeMemberV2: {
+          memberUid: "member-1",
+          otp: { referenceCode: "reference-new", expirationSeconds: 180 },
+        },
+      })
+    })
+
+    const error = await client(store, transport).requestNewLoginCode().catch((cause: unknown) => cause)
+
+    expect(error).toMatchObject({
+      referenceCode: "reference-new",
+      expiresAt: NOW + 180_000,
+      reason: "the previous SMS verification code expired",
+    })
+    expect(store.state?.loginReferenceCode).toBe("reference-new")
+    expect(store.state?.loginReferenceExpiresAt).toBe(NOW + 180_000)
+  })
+
+  test("does not replace an SMS challenge before it expires", async () => {
+    const store = new MemoryAuthStore(authState({
+      loginReferenceCode: "reference-current",
+      loginReferenceExpiresAt: NOW + 60_000,
+    }))
+    const transport = new FakeTransport(() => {
+      throw new Error("transport should not be called")
+    })
+
+    const error = await client(store, transport).requestNewLoginCode().catch((cause: unknown) => cause)
+
+    expect(error).toMatchObject({
+      referenceCode: "reference-current",
+      expiresAt: NOW + 60_000,
+      reason: "the current SMS verification challenge is still active",
+    })
+    expect(transport.requests).toHaveLength(0)
   })
 
   test("coalesces concurrent refreshes", async () => {

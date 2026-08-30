@@ -1,7 +1,7 @@
 import { MarketFeed } from "@trbot/feed"
 import { memberFeatureSet } from "@trbot/member/features.ts"
 import { ProtocolError } from "@trbot/protocol/error.ts"
-import type { ProviderSessionAccess, ProviderSources } from "./session.ts"
+import type { ProviderOtpChallenge, ProviderSessionAccess, ProviderSources } from "./session.ts"
 
 const unavailable = async (): Promise<never> => {
   throw new Error("Provider source is not configured for this test")
@@ -45,6 +45,8 @@ export function providerSources(overrides: Partial<ProviderSources> = {}): Provi
 /** Mutable provider session used by route and stream-hub tests. */
 export class TestProviderSession implements ProviderSessionAccess {
   private sources: ProviderSources | null
+  private otp: ProviderOtpChallenge | null = null
+  private renewOtp: (() => Promise<ProviderOtpChallenge>) | null = null
   private readonly expiredListeners: (() => void)[] = []
   private readonly sessionListeners: (() => void)[] = []
 
@@ -57,6 +59,10 @@ export class TestProviderSession implements ProviderSessionAccess {
 
   get authenticated(): boolean {
     return this.sources !== null
+  }
+
+  get otpChallenge(): ProviderOtpChallenge | null {
+    return this.otp
   }
 
   onExpired(listener: () => void): void {
@@ -73,6 +79,11 @@ export class TestProviderSession implements ProviderSessionAccess {
 
   async completeOtp(): Promise<void> {
     throw new ProtocolError("invalid_request", "No sign-in is waiting for a verification code")
+  }
+
+  async requestNewOtp(): Promise<void> {
+    if (!this.renewOtp) throw new ProtocolError("invalid_request", "No sign-in is waiting for a verification code")
+    this.otp = await this.renewOtp()
   }
 
   require(): ProviderSources {
@@ -95,6 +106,14 @@ export class TestProviderSession implements ProviderSessionAccess {
     if (sources) {
       for (const listener of this.sessionListeners) listener()
     }
+  }
+
+  setOtpChallenge(
+    challenge: ProviderOtpChallenge | null,
+    renew: (() => Promise<ProviderOtpChallenge>) | null = null,
+  ): void {
+    this.otp = challenge
+    this.renewOtp = renew
   }
 }
 
