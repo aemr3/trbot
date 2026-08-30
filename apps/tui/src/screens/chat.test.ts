@@ -1506,6 +1506,41 @@ test("opens undo with Esc Esc or /undo and restores the chosen prompt", async ()
   renderer.destroy()
 })
 
+test("starts a fresh Escape sequence when a reply finishes after interrupt was armed", async () => {
+  const { renderer, mockInput, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  const session = await chats.create()
+  const prompt = userMessage("completed question", "SENT")
+  chats.messages.set(session.id, [prompt, replyMessage("completed answer")])
+  session.messageCount = 2
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  routeKeys(renderer, screen)
+  await waitForFrame((frame) => frame.includes("completed answer"))
+
+  screen.acceptRun(session.id, "run-after-answer", "running")
+  await waitForFrame((frame) => frame.includes("Esc interrupt"))
+  mockInput.pressEscape()
+  await waitForFrame((frame) => frame.includes("Esc again to interrupt"))
+
+  screen.acceptRun(session.id, "run-after-answer", "done")
+  await waitForFrame((frame) => frame.includes("/help keys") && !frame.includes("Esc again"))
+  mockInput.pressEscape()
+  await renderOnce()
+  expect(captureCharFrame()).not.toContain("Restore the conversation")
+
+  mockInput.pressEscape()
+  await waitForFrame((frame) => frame.includes("Restore the conversation"))
+
+  screen.destroy()
+  renderer.destroy()
+})
+
 test("clicking a completed prompt opens its undo confirmation before rewinding", async () => {
   const { renderer, mockInput, mockMouse, waitForFrame } = await createTestRenderer({
     width: 100,
@@ -3151,6 +3186,11 @@ test("takes back the message still waiting, and stops the reply that is running"
   mockInput.pressKey("x", { ctrl: true })
   await waitForFrame(() => chats.cancelled.length > 0)
   expect(chats.cancelled).toEqual(["message-waiting"])
+
+  mockInput.pressEscape()
+  const armed = await waitForFrame((frame) => frame.includes("Esc again to interrupt"))
+  expect(armed).toContain("answering")
+  expect(chats.aborted).toEqual([])
 
   mockInput.pressEscape()
   await waitForFrame(() => chats.aborted.length > 0)

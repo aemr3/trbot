@@ -83,6 +83,7 @@ const COMPOSER_COLOR = TUI_THEME.composer
  */
 const CHAT_HINT = "/help keys"
 const RUNNING_HINT = "Esc interrupt · /help keys"
+const INTERRUPT_CONFIRM_HINT = "Esc again to interrupt"
 const CONNECT_HINT = "No model provider connected · ^P to connect one"
 const NO_MODEL_HINT = "No model chosen for this chat · ^M to choose one"
 
@@ -114,6 +115,7 @@ const CHAT_INSET = 1
  */
 const COMPOSER_MAX_ROWS = 8
 const DOUBLE_ESCAPE_MS = 600
+const INTERRUPT_CONFIRM_MS = 2_000
 
 const CHAT_COMMANDS: readonly ChatCommand[] = [
   { name: "/models", description: "choose which model answers this chat" },
@@ -298,6 +300,7 @@ export class ChatScreen {
   private promptHistorySubmitPending = false
   private promptHistoryNavigation = Promise.resolve()
   private lastEscapeAt = 0
+  private interruptConfirmation: { sessionId: string; runId: string; expiresAt: number } | null = null
   /** Whether the screen that contains this chat currently owns keyboard input. */
   private hostActive = true
   private destroyed = false
@@ -607,32 +610,45 @@ export class ChatScreen {
     // holds while a modal is up: a modal may focus its own field and route the key
     // itself, so renderer delivery would otherwise type every character twice.
     key.preventDefault()
+    const escape = key.name === "escape" || key.name === "esc"
+    if (escape && key.repeated) return
     if (this.modal) {
       this.lastEscapeAt = 0
+      this.interruptConfirmation = null
       this.modal.handleKey(key)
       return
     }
     if (this.undoPanel) {
       this.lastEscapeAt = 0
+      this.interruptConfirmation = null
       this.undoPanel.handleKey(key)
       return
     }
     if (this.focus === "question" && this.questionPanel) {
       this.lastEscapeAt = 0
+      this.interruptConfirmation = null
       this.questionPanel.handleKey(key)
       return
     }
     if (isShiftTab(key)) {
       this.lastEscapeAt = 0
+      this.interruptConfirmation = null
       void this.togglePermissionMode()
       return
     }
     if (this.focus === "permission" && this.permissionPanel) {
       this.lastEscapeAt = 0
+      this.interruptConfirmation = null
       this.permissionPanel.handleKey(key)
       return
     }
-    if (key.name !== "escape" && key.name !== "esc") this.lastEscapeAt = 0
+    if (!escape) {
+      this.lastEscapeAt = 0
+      if (this.interruptConfirmation) {
+        this.interruptConfirmation = null
+        this.render.schedule()
+      }
+    }
     if (this.selectedSession()?.parentSessionId && isEnter(key) && !key.shift) {
       this.commandNotice = "Subagent transcripts cannot receive messages."
       this.commandMenu.close()
@@ -680,11 +696,12 @@ export class ChatScreen {
       void this.cancelQueued()
       return
     }
-    // One Escape still interrupts. A second, while idle, opens the same undo picker
-    // as /undo; keeping the presses close prevents an old Escape from firing later.
-    if (key.name === "escape" || key.name === "esc") {
+    // Escape sequences have separate meanings in separate states: a running reply
+    // requires confirmation, while the existing idle double press opens /undo.
+    if (escape) {
       const selectedId = this.selectedSessionId ?? ""
-      const replying = this.selectedSession()?.running || this.streamingBySession.has(selectedId)
+      const streaming = this.streamingBySession.get(selectedId)
+      const replying = this.selectedSession()?.running || Boolean(streaming)
       if (this.commandNotice && !replying) {
         this.commandNotice = null
         this.automationNotice = null
@@ -693,13 +710,32 @@ export class ChatScreen {
         return
       }
       const now = Date.now()
+      if (replying && streaming) {
+        const confirmation = this.interruptConfirmation
+        const confirmed = confirmation?.sessionId === selectedId
+          && confirmation.runId === streaming.runId
+          && now <= confirmation.expiresAt
+        this.lastEscapeAt = 0
+        if (confirmed) {
+          this.interruptConfirmation = null
+          void this.stopReply()
+        } else {
+          this.interruptConfirmation = {
+            sessionId: selectedId,
+            runId: streaming.runId,
+            expiresAt: now + INTERRUPT_CONFIRM_MS,
+          }
+          this.render.schedule()
+        }
+        return
+      }
+      this.interruptConfirmation = null
       const doubleEscape = this.lastEscapeAt > 0 && now - this.lastEscapeAt <= DOUBLE_ESCAPE_MS
       this.lastEscapeAt = doubleEscape ? 0 : now
       if (doubleEscape && !this.selectedSession()?.running && !this.streamingBySession.has(this.selectedSessionId ?? "")) {
         this.openUndo()
         return
       }
-      void this.stopReply()
       return
     }
     if (key.name === "tab" || key.name === "backtab") {
@@ -2293,6 +2329,7 @@ export class ChatScreen {
     if (sessionId) this.awaitingFirstPrompt = false
     if (sessionId === this.selectedSessionId) return
     this.closeUndo()
+    this.interruptConfirmation = null
     this.transcript.scrollToBottom()
     this.selectedSessionId = sessionId
     this.syncComposerFocus()
@@ -2724,6 +2761,9 @@ export class ChatScreen {
     if (this.connected === false) return CONNECT_HINT
     if (!this.selectedHasModel()) return NO_MODEL_HINT
     if (session?.parentSessionId) {
+      if (this.interruptConfirmationActive(session.id)) {
+        return INTERRUPT_CONFIRM_HINT.length <= availableWidth ? INTERRUPT_CONFIRM_HINT : ""
+      }
       const candidates = this.streamingBySession.has(session.id)
         ? [
             "Esc interrupt · Cannot send · Subagent running · ⌥←/→ workers · ⌥↑ parent",
@@ -2740,9 +2780,26 @@ export class ChatScreen {
       return candidates.find((candidate) => candidate.length <= availableWidth) ?? ""
     }
     if (session && this.streamingBySession.has(session.id)) {
+      if (this.interruptConfirmationActive(session.id)) return INTERRUPT_CONFIRM_HINT
       return this.options.embedded ? "Esc interrupt" : RUNNING_HINT
     }
     return this.options.embedded ? "" : CHAT_HINT
+  }
+
+  private interruptConfirmationActive(sessionId: string): boolean {
+    const confirmation = this.interruptConfirmation
+    const streaming = this.streamingBySession.get(sessionId)
+    if (
+      !confirmation
+      || !streaming
+      || confirmation.sessionId !== sessionId
+      || confirmation.runId !== streaming.runId
+      || Date.now() > confirmation.expiresAt
+    ) {
+      this.interruptConfirmation = null
+      return false
+    }
+    return true
   }
 
   /**
