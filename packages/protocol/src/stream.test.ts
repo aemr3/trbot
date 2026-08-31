@@ -150,24 +150,10 @@ describe("server frames the terminal will act on", () => {
   test("accepts the frames the server actually sends", () => {
     const frames: ServerFrame[] = [
       {
-        type: "quotes",
-        update: { symbol: "F_XU0300826", lastPrice: 11_120, sessionStatus: "OPEN", timestamp: 1 },
-      },
-      {
-        type: "equityQuotes",
-        update: { symbol: "THYAO", lastPrice: 350, sessionStatus: "OPEN", timestamp: 1 },
-      },
-      {
-        type: "depth",
-        book: {
-          symbol: "THYAO",
-          bids: [{ price: 349.9, lots: 10, orderCount: 2 }],
-          asks: [{ price: 350, lots: 8, orderCount: 1 }],
-          buyLots: 10,
-          sellLots: 8,
-          trades: [],
-          marketClosed: false,
-        },
+        type: "marketBatch",
+        quotes: [{ symbol: "F_XU0300826", lastPrice: 11_120, sessionStatus: "OPEN", timestamp: 1 }],
+        equityQuotes: [{ symbol: "THYAO", lastPrice: 350, sessionStatus: "OPEN", timestamp: 1 }],
+        depth: [],
       },
       { type: "depthStatus", status: "live" },
       {
@@ -262,8 +248,13 @@ describe("server frames the terminal will act on", () => {
     const frames = [
       // The one a version-skewed server sends: right type, no payload.
       { type: "quotes" },
+      {
+        type: "quotes",
+        update: { symbol: "F_XU0300826", lastPrice: 11_120, sessionStatus: "OPEN", timestamp: 1 },
+      },
       { type: "equityQuotes", update: null },
       { type: "depth" },
+      { type: "marketBatch", quotes: [], equityQuotes: [] },
       { type: "depthStatus" },
       { type: "account", update: "position" },
       { type: "status", channel: "quotes" },
@@ -303,6 +294,7 @@ describe("server frames the terminal will act on", () => {
       { type: "quotes", update: { symbol: 7 } },
       { type: "quotes", update: { symbol: "F_AKBNK0826", lastPrice: 114, sessionStatus: null } },
       { type: "equityQuotes", update: { lastPrice: 12 } },
+      { type: "marketBatch", quotes: [{}], equityQuotes: [], depth: [] },
       { type: "account", update: {} },
       { type: "stopTriggered", event: { rule: {} }, remainingMs: 1, held: false },
       { type: "stopTriggered", event: {}, remainingMs: 1, held: false },

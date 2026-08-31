@@ -128,6 +128,16 @@ function book(symbol: string): DepthBook {
   }
 }
 
+function marketBatch({
+  quotes = [],
+  depth = [],
+}: {
+  quotes?: QuoteUpdate[]
+  depth?: DepthBook[]
+}): ServerFrame {
+  return { type: "marketBatch", quotes, equityQuotes: [], depth }
+}
+
 describe("stream hub", () => {
   test("reports the lifetime of an identified client", () => {
     const events: string[] = []
@@ -175,7 +185,7 @@ describe("stream hub", () => {
     expect(quotes.stopped).toBe(0)
   })
 
-  test("sends a quote only to the clients watching that symbol", () => {
+  test("sends a quote only to the clients watching that symbol", async () => {
     const quotes = new FakeQuoteStream()
     const hub = new StreamHub(sessionWith(sourcesWith(quotes, new FakeDepthFactory())))
 
@@ -188,7 +198,10 @@ describe("stream hub", () => {
 
     quotes.listener?.(quote("AAA"))
 
+    await waitForMarketFlush()
+
     expect(a.sent).toHaveLength(1)
+    expect(a.sent[0]).toEqual(marketBatch({ quotes: [quote("AAA")] }))
     expect(b.sent).toHaveLength(0)
   })
 
@@ -206,21 +219,20 @@ describe("stream hub", () => {
     quotes.listener?.(quote("BBB", 300))
     quotes.listener?.(quote("BBB", 301))
 
-    // The leading frame is immediate; the rest of the burst has not been sent.
-    expect(client.sent).toEqual([{ type: "quotes", update: quote("AAA", 100) }])
+    // The whole window waits so every symbol can share one physical message.
+    expect(client.sent).toBeEmpty()
 
     await waitForMarketFlush()
 
-    expect(client.sent).toHaveLength(3)
-    expect(client.sent).toContainEqual({ type: "quotes", update: quote("AAA", 200) })
-    expect(client.sent).toContainEqual({ type: "quotes", update: quote("BBB", 301) })
+    expect(client.sent).toEqual([marketBatch({ quotes: [quote("AAA", 200), quote("BBB", 301)] })])
 
     const report = telemetry.report()
     expect(report?.counters["market.upstream.quotes"]).toBe(103)
-    expect(report?.counters["market.coalesced.quotes"]).toBe(100)
-    expect(report?.counters["ws.sent.quotes"]).toBe(3)
+    expect(report?.counters["market.coalesced.quotes"]).toBe(101)
+    expect(report?.counters["market.batch.items"]).toBe(2)
+    expect(report?.counters["ws.sent.marketBatch"]).toBe(1)
     expect(report?.counters["ws.sent.bytes"]).toBeGreaterThan(0)
-    expect(report?.distributions["market.queue_ms.quotes"]?.count).toBe(3)
+    expect(report?.distributions["market.queue_ms.quotes"]?.count).toBe(2)
   })
 
   test("sends critical events immediately while a market frame is pending", async () => {
@@ -238,7 +250,7 @@ describe("stream hub", () => {
     expect(client.sent.at(-1)).toEqual({ type: "session", state: "expired" })
 
     await waitForMarketFlush()
-    expect(client.sent.at(-1)).toEqual({ type: "quotes", update: quote("AAA", 101) })
+    expect(client.sent.at(-1)).toEqual(marketBatch({ quotes: [quote("AAA", 101)] }))
   })
 
   test("broadcasts performance summaries to attached clients", () => {
@@ -278,8 +290,8 @@ describe("stream hub", () => {
 
     await waitForMarketFlush()
 
-    expect(a.sent).toEqual([{ type: "depth", book: book("AAA") }])
-    expect(b.sent).toEqual([{ type: "depth", book: book("BBB") }])
+    expect(a.sent).toEqual([marketBatch({ depth: [book("AAA")] })])
+    expect(b.sent).toEqual([marketBatch({ depth: [book("BBB")] })])
   })
 
   test("a depth symbol nobody watches any more is stopped", () => {
@@ -295,7 +307,7 @@ describe("stream hub", () => {
     expect(depth.forSymbol("BBB")?.stopped).toBe(0)
   })
 
-  test("two clients on the same depth symbol share one upstream connection", () => {
+  test("two clients on the same depth symbol share one upstream connection", async () => {
     const depth = new FakeDepthFactory()
     const hub = new StreamHub(sessionWith(sourcesWith(new FakeQuoteStream(), depth)))
 
@@ -309,6 +321,7 @@ describe("stream hub", () => {
     expect(depth.opened).toHaveLength(1)
 
     depth.forSymbol("AAA")?.listener?.(book("AAA"))
+    await waitForMarketFlush()
     expect(a.sent).toHaveLength(1)
     expect(b.sent).toHaveLength(1)
   })
@@ -349,7 +362,7 @@ describe("stream hub", () => {
     expect(b.sent).toHaveLength(0)
   })
 
-  test("drops market data for a client that has fallen behind", () => {
+  test("retains only the newest market state until a slow client drains", async () => {
     const quotes = new FakeQuoteStream()
     const hub = new StreamHub(sessionWith(sourcesWith(quotes, new FakeDepthFactory())))
 
@@ -357,10 +370,41 @@ describe("stream hub", () => {
     hub.add(slow)
     hub.handle(slow, { type: "subscribe", channel: "quotes", symbols: ["AAA"] })
 
-    quotes.listener?.(quote("AAA"))
+    quotes.listener?.(quote("AAA", 100))
+    await waitForMarketFlush()
+
+    expect(slow.sent).toHaveLength(0)
+    expect(slow.data.dropped).toBe(0)
+
+    quotes.listener?.(quote("AAA", 101))
+    await waitForMarketFlush()
 
     expect(slow.sent).toHaveLength(0)
     expect(slow.data.dropped).toBe(1)
+
+    slow.buffered = 0
+    hub.drain(slow)
+
+    expect(slow.sent).toEqual([marketBatch({ quotes: [quote("AAA", 101)] })])
+  })
+
+  test("retries retained state below Bun's drain threshold", async () => {
+    const quotes = new FakeQuoteStream()
+    const hub = new StreamHub(sessionWith(sourcesWith(quotes, new FakeDepthFactory())))
+    const slow = socket(65 << 10)
+    hub.add(slow)
+    hub.handle(slow, { type: "subscribe", channel: "quotes", symbols: ["AAA"] })
+
+    quotes.listener?.(quote("AAA", 100))
+    await waitForMarketFlush()
+    expect(slow.sent).toBeEmpty()
+
+    // This amount never reached Bun's 1 MiB backpressure limit, so a drain
+    // callback is not guaranteed. The hub's bounded retry still recovers it.
+    slow.buffered = 0
+    await waitForMarketFlush()
+
+    expect(slow.sent).toEqual([marketBatch({ quotes: [quote("AAA", 100)] })])
   })
 
   test("a fired stop still reaches a client that has fallen behind", () => {
@@ -432,7 +476,7 @@ describe("stream hub", () => {
    * throughout and saw nothing happen — so unless the hub takes the
    * subscriptions out again the socket is live and permanently silent.
    */
-  test("subscribes again when the session is replaced, with no client asking", () => {
+  test("subscribes again when the session is replaced, with no client asking", async () => {
     const quotes = new FakeQuoteStream()
     const depth = new FakeDepthFactory()
     const session = sessionWith(sourcesWith(quotes, depth))
@@ -455,7 +499,8 @@ describe("stream hub", () => {
 
     // And the quotes still reach the client, which is the whole point.
     recoveredQuotes.listener?.(quote("F_XU0300826", 305))
-    expect(client.sent.at(-1)).toEqual({ type: "quotes", update: quote("F_XU0300826", 305) })
+    await waitForMarketFlush()
+    expect(client.sent.at(-1)).toEqual(marketBatch({ quotes: [quote("F_XU0300826", 305)] }))
   })
 
   test("discards a pending market frame when the provider session is replaced", async () => {
@@ -472,7 +517,7 @@ describe("stream hub", () => {
     adoptSources(session, sourcesWith(new FakeQuoteStream(), new FakeDepthFactory()))
 
     await waitForMarketFlush()
-    expect(client.sent).toEqual([{ type: "quotes", update: quote("AAA", 100) }])
+    expect(client.sent).toBeEmpty()
   })
 })
 

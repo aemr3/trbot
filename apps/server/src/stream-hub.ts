@@ -1,5 +1,12 @@
+import type { DepthBook } from "@trbot/market/depth.ts"
+import type { EquityQuoteUpdate } from "@trbot/market/equity-quote-stream.ts"
 import type { QuoteUpdate } from "@trbot/market/quote-stream.ts"
-import type { ClientFrame, ServerFrame, StreamChannel } from "@trbot/protocol/stream.ts"
+import type {
+  ClientFrame,
+  MarketBatchFrame,
+  ServerFrame,
+  StreamChannel,
+} from "@trbot/protocol/stream.ts"
 import type { PerformanceRecorder } from "@trbot/telemetry/performance.ts"
 import type { AccountLiveUpdate } from "@trbot/trading/account.ts"
 import type { ProviderSessionAccess, ProviderSources } from "./session.ts"
@@ -31,7 +38,7 @@ export function newSocketData(clientId: string | null = null): SocketData {
 
 export interface StreamSocket {
   data: SocketData
-  send(payload: string): number
+  send(payload: string, compress?: boolean): number
   getBufferedAmount(): number
 }
 
@@ -40,17 +47,32 @@ export interface StreamSocket {
  * A slow client must not make the server buffer without limit, and a dropped
  * tick costs nothing: the next one supersedes it.
  */
-const BACKPRESSURE_LIMIT_BYTES = 1 << 20
+const NON_MARKET_BACKPRESSURE_LIMIT_BYTES = 1 << 20
+/** At most a few current-state batches may wait on a slow remote connection. */
+const MARKET_BACKPRESSURE_LIMIT_BYTES = 64 << 10
 const MARKET_FRAME_INTERVAL_MS = 1_000 / 30
 
 type MarketChannel = Extract<StreamChannel, "quotes" | "equityQuotes" | "depth">
-type MarketFrame = Extract<ServerFrame, { type: "quotes" | "equityQuotes" | "depth" }>
+type MarketFrame =
+  | { type: "quotes"; update: QuoteUpdate }
+  | { type: "equityQuotes"; update: EquityQuoteUpdate }
+  | { type: "depth"; book: DepthBook }
 
 interface PendingMarketFrame {
   channel: MarketChannel
   frame: MarketFrame
   symbol: string
   queuedAt: number
+}
+
+function marketBatch(frames: MarketFrame[]): MarketBatchFrame {
+  const batch: MarketBatchFrame = { type: "marketBatch", quotes: [], equityQuotes: [], depth: [] }
+  for (const frame of frames) {
+    if (frame.type === "quotes") batch.quotes.push(frame.update)
+    else if (frame.type === "equityQuotes") batch.equityQuotes.push(frame.update)
+    else batch.depth.push(frame.book)
+  }
+  return batch
 }
 
 export interface StreamHubOptions {
@@ -99,7 +121,10 @@ export class StreamHub {
   private readonly sockets = new Set<StreamSocket>()
   private attached: ProviderSources | null = null
   private readonly pendingMarketFrames = new Map<string, PendingMarketFrame>()
+  /** Latest unsent state per market channel and symbol for each remote client. */
+  private readonly socketMarketFrames = new Map<StreamSocket, Map<string, PendingMarketFrame>>()
   private marketFlushTimer: ReturnType<typeof setTimeout> | null = null
+  private marketRetryTimer: ReturnType<typeof setTimeout> | null = null
   private lastMarketFlushAt: number | null = null
   // One upstream connection per watched symbol, since these channels carry a
   // single symbol each. Two clients on different symbols are both served.
@@ -143,12 +168,14 @@ export class StreamHub {
 
   add(socket: StreamSocket): void {
     this.sockets.add(socket)
+    this.socketMarketFrames.set(socket, new Map())
     this.options.onClientAttach?.(socket.data.clientId)
     this.attachUpstream()
   }
 
   remove(socket: StreamSocket): void {
     this.sockets.delete(socket)
+    this.socketMarketFrames.delete(socket)
     this.options.onClientDetach?.(socket.data.clientId)
     this.resyncQuotes()
     this.resyncSymbols("equityQuotes")
@@ -204,7 +231,7 @@ export class StreamHub {
     for (const socket of this.sockets) {
       if (!socket.data.subscriptions.has(channel)) continue
       if (symbol !== undefined && !this.wants(socket, channel, symbol)) continue
-      if (socket.getBufferedAmount() > BACKPRESSURE_LIMIT_BYTES) {
+      if (socket.getBufferedAmount() > NON_MARKET_BACKPRESSURE_LIMIT_BYTES) {
         socket.data.dropped += 1
         this.options.performance?.count(`ws.backpressure_dropped.${channel}`)
         continue
@@ -223,21 +250,12 @@ export class StreamHub {
     this.options.performance?.count(`market.upstream.${channel}`)
     if (!this.hasSubscriber(channel, symbol)) return
 
-    const elapsed = this.lastMarketFlushAt === null
-      ? MARKET_FRAME_INTERVAL_MS
-      : now - this.lastMarketFlushAt
-    if (elapsed >= MARKET_FRAME_INTERVAL_MS && this.marketFlushTimer === null) {
-      this.lastMarketFlushAt = now
-      this.options.performance?.observe(`market.queue_ms.${channel}`, 0)
-      this.emit(channel, frame, symbol)
-      return
-    }
-
     const key = `${channel}:${symbol}`
     if (this.pendingMarketFrames.has(key)) this.options.performance?.count(`market.coalesced.${channel}`)
     this.pendingMarketFrames.set(key, { channel, frame, symbol, queuedAt: now })
     if (this.marketFlushTimer !== null) return
 
+    const elapsed = this.lastMarketFlushAt === null ? 0 : now - this.lastMarketFlushAt
     const delay = Math.max(0, MARKET_FRAME_INTERVAL_MS - elapsed)
     this.marketFlushTimer = setTimeout(() => this.flushMarketFrames(), delay)
   }
@@ -248,18 +266,74 @@ export class StreamHub {
 
     const frames = [...this.pendingMarketFrames.values()]
     this.pendingMarketFrames.clear()
-    const now = performance.now()
-    this.lastMarketFlushAt = now
-    for (const { channel, frame, symbol, queuedAt } of frames) {
-      this.options.performance?.observe(`market.queue_ms.${channel}`, now - queuedAt)
-      this.emit(channel, frame, symbol)
+    this.lastMarketFlushAt = performance.now()
+    for (const socket of this.sockets) {
+      const pending = this.socketMarketFrames.get(socket)
+      if (!pending) continue
+      for (const frame of frames) {
+        if (!socket.data.subscriptions.has(frame.channel) || !this.wants(socket, frame.channel, frame.symbol)) continue
+        const key = `${frame.channel}:${frame.symbol}`
+        if (pending.has(key)) {
+          socket.data.dropped += 1
+          this.options.performance?.count(`ws.backpressure_superseded.${frame.channel}`)
+        }
+        pending.set(key, frame)
+      }
+      this.flushSocketMarket(socket)
     }
+  }
+
+  /** Flushes the newest retained market state when Bun says a remote socket is writable again. */
+  drain(socket: StreamSocket): void {
+    if (this.sockets.has(socket)) this.flushSocketMarket(socket)
+  }
+
+  private flushSocketMarket(socket: StreamSocket): void {
+    const pending = this.socketMarketFrames.get(socket)
+    if (!pending || pending.size === 0) return
+
+    for (const [key, frame] of pending) {
+      if (!socket.data.subscriptions.has(frame.channel) || !this.wants(socket, frame.channel, frame.symbol)) {
+        pending.delete(key)
+      }
+    }
+    if (pending.size === 0) return
+    if (socket.getBufferedAmount() > MARKET_BACKPRESSURE_LIMIT_BYTES) {
+      this.options.performance?.count("ws.backpressure_deferred.marketBatch")
+      this.scheduleMarketRetry()
+      return
+    }
+
+    const frames = [...pending.values()]
+    const batch = marketBatch(frames.map(({ frame }) => frame))
+    const payload = JSON.stringify(batch)
+    // Bun queues a message even when send() reports backpressure. Clear these
+    // entries either way; any later tick is retained separately as the new state.
+    this.send(socket, batch, payload)
+    pending.clear()
+    const now = performance.now()
+    this.options.performance?.count("market.batch.items", frames.length)
+    for (const frame of frames) {
+      this.options.performance?.observe(`market.queue_ms.${frame.channel}`, now - frame.queuedAt)
+    }
+  }
+
+  /** Retries below Bun's own backpressure threshold, where no drain callback is guaranteed. */
+  private scheduleMarketRetry(): void {
+    if (this.marketRetryTimer !== null) return
+    this.marketRetryTimer = setTimeout(() => {
+      this.marketRetryTimer = null
+      for (const socket of this.sockets) this.flushSocketMarket(socket)
+    }, MARKET_FRAME_INTERVAL_MS)
   }
 
   private resetMarketFrames(): void {
     if (this.marketFlushTimer !== null) clearTimeout(this.marketFlushTimer)
+    if (this.marketRetryTimer !== null) clearTimeout(this.marketRetryTimer)
     this.marketFlushTimer = null
+    this.marketRetryTimer = null
     this.pendingMarketFrames.clear()
+    for (const pending of this.socketMarketFrames.values()) pending.clear()
     this.lastMarketFlushAt = null
   }
 
@@ -270,21 +344,22 @@ export class StreamHub {
     return false
   }
 
-  private send(socket: StreamSocket, frame: ServerFrame, payload: string): void {
-    const bytes = socket.send(payload)
+  private send(socket: StreamSocket, frame: ServerFrame, payload: string): number {
+    const bytes = socket.send(payload, payload.length >= 1_024)
     const telemetry = this.options.performance
-    if (!telemetry) return
+    if (!telemetry) return bytes
     if (bytes === 0) {
       telemetry.count("ws.send_dropped")
-      return
+      return bytes
     }
     if (bytes < 0) {
       telemetry.count("ws.send_backpressure")
-      return
+      return bytes
     }
     telemetry.count("ws.sent.frames")
     telemetry.count(`ws.sent.${frame.type}`)
     telemetry.count("ws.sent.bytes", bytes)
+    return bytes
   }
 
   /** Remembers a status frame and sends it on, so a later subscriber can be told. */

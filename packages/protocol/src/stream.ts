@@ -53,6 +53,13 @@ export type ClientFrame =
   // an acknowledgement, so it goes over HTTP. See ROUTES.stopDecision.
   | { type: "alertDecision"; alertId: string; decision: "dismiss" | "rearm" }
 
+export interface MarketBatchFrame {
+  type: "marketBatch"
+  quotes: QuoteUpdate[]
+  equityQuotes: EquityQuoteUpdate[]
+  depth: DepthBook[]
+}
+
 const SubscribeFrameSchema = z.union([
   z.object({ type: z.literal("subscribe"), channel: z.literal("quotes"), symbols: z.array(z.string()) }),
   z.object({ type: z.literal("subscribe"), channel: z.literal("equityQuotes"), symbol: z.string() }),
@@ -72,9 +79,7 @@ export const ClientFrameSchema: z.ZodType<ClientFrame> = z.union([
 ])
 
 export type ServerFrame =
-  | { type: "quotes"; update: QuoteUpdate }
-  | { type: "equityQuotes"; update: EquityQuoteUpdate }
-  | { type: "depth"; book: DepthBook }
+  | MarketBatchFrame
   | { type: "depthStatus"; status: DepthStatus }
   | { type: "account"; update: AccountLiveUpdate }
   | { type: "status"; channel: StreamChannel; connected: boolean }
@@ -154,9 +159,12 @@ interface StopTriggerFrame {
 }
 
 export const ServerFrameSchema: z.ZodType<ServerFrame> = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("quotes"), update: QuoteUpdateSchema }),
-  z.object({ type: z.literal("equityQuotes"), update: EquityQuoteUpdateSchema }),
-  z.object({ type: z.literal("depth"), book: DepthBookSchema }),
+  z.object({
+    type: z.literal("marketBatch"),
+    quotes: z.array(QuoteUpdateSchema),
+    equityQuotes: z.array(EquityQuoteUpdateSchema),
+    depth: z.array(DepthBookSchema),
+  }),
   z.object({ type: z.literal("depthStatus"), status: z.enum(DEPTH_STATUSES) }),
   z.object({ type: z.literal("account"), update: AccountLiveUpdateSchema }),
   z.object({ type: z.literal("status"), channel: z.enum(STREAM_CHANNELS), connected: z.boolean() }),

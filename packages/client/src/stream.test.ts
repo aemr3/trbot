@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import type { Server } from "bun"
 import { parseClientFrame, type ServerFrame } from "@trbot/protocol/stream.ts"
 import { PerformanceTelemetry } from "@trbot/telemetry/performance.ts"
-import { StreamConnection } from "./stream.ts"
+import { StreamConnection, WsDepthStream, WsEquityQuoteStream, WsQuoteStream } from "./stream.ts"
 
 /**
  * The reconnect loop retries forever and says nothing, so a failure that never
@@ -160,8 +160,10 @@ test("a listener can be taken off again, so a replaced screen stops hearing fram
 test("records WebSocket payload and decode metrics without changing dispatch", async () => {
   const port = 47_918
   const frame: ServerFrame = {
-    type: "quotes",
-    update: { symbol: "AAA", lastPrice: 100, sessionStatus: null, timestamp: Date.now() },
+    type: "marketBatch",
+    quotes: [{ symbol: "AAA", lastPrice: 100, sessionStatus: null, timestamp: Date.now() }],
+    equityQuotes: [],
+    depth: [],
   }
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -191,10 +193,75 @@ test("records WebSocket payload and decode metrics without changing dispatch", a
   expect(heard).toEqual([frame])
   const report = telemetry.report()
   expect(report?.counters["ws.received.frames"]).toBe(1)
-  expect(report?.counters["ws.received.quotes"]).toBe(1)
+  expect(report?.counters["ws.received.marketBatch"]).toBe(1)
+  expect(report?.counters["market.received.items"]).toBe(1)
   expect(report?.counters["ws.received.bytes"]).toBeGreaterThan(0)
   expect(report?.distributions["ws.decode_ms"]?.count).toBe(1)
   expect(report?.distributions["market.age_at_receive_ms"]?.count).toBe(1)
+})
+
+test("fans one market batch into the existing quote and depth stream contracts", async () => {
+  const port = 47_919
+  const batch: ServerFrame = {
+    type: "marketBatch",
+    quotes: [
+      { symbol: "AAA", lastPrice: 100, sessionStatus: "OPEN", timestamp: 1 },
+      { symbol: "BBB", lastPrice: 200, sessionStatus: "OPEN", timestamp: 2 },
+    ],
+    equityQuotes: [{ symbol: "XU030", lastPrice: 12_000, sessionStatus: "OPEN", timestamp: 3 }],
+    depth: [{
+      symbol: "AAA",
+      bids: [],
+      asks: [],
+      buyLots: 10,
+      sellLots: 8,
+      trades: [],
+      marketClosed: false,
+    }],
+  }
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port,
+    fetch: (request, self) => (self.upgrade(request) ? undefined : new Response("no", { status: 400 })),
+    websocket: {
+      open(socket) {
+        socket.send(JSON.stringify(batch))
+      },
+      message() {},
+    },
+  })
+  servers.push(server)
+
+  const telemetry = new PerformanceTelemetry({ scope: "tui" })
+  const connection = track(new StreamConnection({
+    url: `http://127.0.0.1:${port}`,
+    token: "test-token",
+    performance: telemetry,
+  }))
+  const quoteStream = new WsQuoteStream(connection)
+  const equityStream = new WsEquityQuoteStream(connection)
+  const depthStream = new WsDepthStream(connection)
+  const quotes: string[] = []
+  const equities: string[] = []
+  const books: string[] = []
+  quoteStream.subscribe((update) => quotes.push(`${update.symbol}:${update.lastPrice}`))
+  equityStream.subscribe((update) => equities.push(`${update.symbol}:${update.lastPrice}`))
+  depthStream.subscribe((book) => books.push(book.symbol))
+
+  connection.connect()
+  await waitFor(() => quotes.length === 2 && equities.length === 1 && books.length === 1)
+
+  expect(quotes).toEqual(["AAA:100", "BBB:200"])
+  expect(equities).toEqual(["XU030:12000"])
+  expect(books).toEqual(["AAA"])
+  const report = telemetry.report()
+  expect(report?.counters["ws.received.frames"]).toBe(1)
+  expect(report?.counters["ws.received.marketBatch"]).toBe(1)
+  expect(report?.counters["market.received.items"]).toBe(4)
+  expect(report?.distributions["market.age_at_receive_ms"]?.count).toBe(3)
+  quoteStream.destroy()
+  equityStream.destroy()
+  depthStream.destroy()
 })
 
 test("reports again once a connection that came back has failed a second time", async () => {

@@ -117,6 +117,7 @@ export function startServer(config: ServerConfig, deps: ServerDeps): Server<Sock
     },
 
     websocket: {
+      perMessageDeflate: true,
       open(socket: ServerWebSocket<SocketData>) {
         deps.hub.add(socket)
         for (const frame of deps.backlog()) socket.send(JSON.stringify(frame))
@@ -129,6 +130,9 @@ export function startServer(config: ServerConfig, deps: ServerDeps): Server<Sock
           return
         }
         deps.hub.handle(socket, frame)
+      },
+      drain(socket: ServerWebSocket<SocketData>) {
+        deps.hub.drain(socket)
       },
       close(socket: ServerWebSocket<SocketData>) {
         deps.hub.remove(socket)

@@ -4,7 +4,7 @@ import type { EquityQuoteListener, EquityQuoteStream } from "@trbot/market/equit
 import type { ConnectionListener, QuoteStream, QuoteUpdateListener } from "@trbot/market/quote-stream.ts"
 import { CLIENT_INSTANCE_HEADER, ROUTES } from "@trbot/protocol/routes.ts"
 import { parseServerFrame, STREAM_CHANNELS } from "@trbot/protocol/stream.ts"
-import type { ClientFrame, ServerFrame, StopOutcome } from "@trbot/protocol/stream.ts"
+import type { ClientFrame, MarketBatchFrame, ServerFrame, StopOutcome } from "@trbot/protocol/stream.ts"
 import type { PerformanceRecorder } from "@trbot/telemetry/performance.ts"
 import type { AccountLiveUpdateListener, AccountStream } from "@trbot/trading/account.ts"
 import type { StopRuleView, StopTriggerEvent } from "@trbot/trading/stop-monitor.ts"
@@ -87,13 +87,7 @@ export class StreamConnection {
         if (frame) {
           telemetry.count("ws.received.frames")
           telemetry.count(`ws.received.${frame.type}`)
-          if (isMarketFrame(frame)) {
-            telemetry.mark("market_received")
-            if (frame.type !== "depth" && frame.update.timestamp > 0) {
-              telemetry.markEpoch("market_event", frame.update.timestamp)
-              telemetry.observe("market.age_at_receive_ms", Date.now() - frame.update.timestamp)
-            }
-          }
+          if (frame.type === "marketBatch") recordMarketTelemetry(telemetry, frame)
         } else {
           telemetry.count("ws.invalid_frames")
         }
@@ -178,8 +172,19 @@ export class StreamConnection {
   }
 }
 
-function isMarketFrame(frame: ServerFrame): frame is Extract<ServerFrame, { type: "quotes" | "equityQuotes" | "depth" }> {
-  return frame.type === "quotes" || frame.type === "equityQuotes" || frame.type === "depth"
+function recordMarketTelemetry(
+  telemetry: PerformanceRecorder,
+  frame: MarketBatchFrame,
+): void {
+  const itemCount = frame.quotes.length + frame.equityQuotes.length + frame.depth.length
+  if (itemCount === 0) return
+  telemetry.count("market.received.items", itemCount)
+  telemetry.mark("market_received")
+  for (const update of [...frame.quotes, ...frame.equityQuotes]) {
+    if (update.timestamp <= 0) continue
+    telemetry.markEpoch("market_event", update.timestamp)
+    telemetry.observe("market.age_at_receive_ms", Date.now() - update.timestamp)
+  }
 }
 
 export class WsQuoteStream implements QuoteStream {
@@ -189,7 +194,9 @@ export class WsQuoteStream implements QuoteStream {
 
   constructor(private readonly connection: StreamConnection) {
     this.detach = connection.on((frame) => {
-      if (frame.type === "quotes") for (const listener of this.listeners) listener(frame.update)
+      if (frame.type === "marketBatch") {
+        for (const update of frame.quotes) for (const listener of this.listeners) listener(update)
+      }
       if (frame.type === "status" && frame.channel === "quotes") {
         for (const listener of this.connectionListeners) listener(frame.connected)
       }
@@ -225,7 +232,9 @@ export class WsEquityQuoteStream implements EquityQuoteStream {
 
   constructor(private readonly connection: StreamConnection) {
     this.detach = connection.on((frame) => {
-      if (frame.type === "equityQuotes") for (const listener of this.listeners) listener(frame.update)
+      if (frame.type === "marketBatch") {
+        for (const update of frame.equityQuotes) for (const listener of this.listeners) listener(update)
+      }
       if (frame.type === "status" && frame.channel === "equityQuotes") {
         for (const listener of this.connectionListeners) listener(frame.connected)
       }
@@ -260,7 +269,9 @@ export class WsDepthStream implements DepthStream {
 
   constructor(private readonly connection: StreamConnection) {
     this.detach = connection.on((frame) => {
-      if (frame.type === "depth") for (const listener of this.listeners) listener(frame.book)
+      if (frame.type === "marketBatch") {
+        for (const book of frame.depth) for (const listener of this.listeners) listener(book)
+      }
       if (frame.type === "depthStatus") for (const listener of this.statusListeners) listener(frame.status)
     })
   }
