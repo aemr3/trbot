@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { FeedInstrumentSource, parseFutureCode } from "./instruments.ts"
+import { FeedInstrumentSource, parseFutureCode, type FeedInstrumentSourceOptions } from "./instruments.ts"
 import type { FeedRequest, FeedResponse, FeedTransport } from "./transport.ts"
 
 const UNIVERSE = {
@@ -22,21 +22,28 @@ const COLLECTIONS = [
   },
 ]
 
-function build() {
+function build(options: {
+  now?: () => number
+  collections?: () => { title: string; data: string[] }[]
+} = {}) {
   const requests: FeedRequest[] = []
   const transport: FeedTransport = {
     async request(request: FeedRequest): Promise<FeedResponse> {
       requests.push(request)
       const path = new URL(request.url).pathname
       if (path === "/symbols/") return { status: 200, body: JSON.stringify(UNIVERSE) }
-      if (path === "/mobile/symbols/collections/") return { status: 200, body: JSON.stringify(COLLECTIONS) }
+      if (path === "/mobile/symbols/collections/") {
+        return { status: 200, body: JSON.stringify(options.collections?.() ?? COLLECTIONS) }
+      }
       throw new Error(`unexpected path ${path}`)
     },
   }
   const session = { accessToken: async () => "access-1", renewAccessToken: async () => "access-2" }
+  const sourceOptions: FeedInstrumentSourceOptions = { transport, baseUrl: "https://feed.test" }
+  if (options.now) sourceOptions.now = options.now
   return {
     requests,
-    instruments: new FeedInstrumentSource(session, { transport, baseUrl: "https://feed.test" }),
+    instruments: new FeedInstrumentSource(session, sourceOptions),
   }
 }
 
@@ -88,6 +95,27 @@ describe("FeedInstrumentSource", () => {
     await instruments.listInstruments()
     await instruments.listInstruments()
     expect(requests.filter((request) => request.url.endsWith("/symbols/"))).toHaveLength(1)
+  })
+
+  test("refreshes active futures when the Istanbul market date reaches month end", async () => {
+    let now = Date.parse("2026-08-30T20:59:00Z")
+    let rolledOver = false
+    const { instruments, requests } = build({
+      now: () => now,
+      collections: () => [{
+        title: "V\u0130OP Aktif Vade",
+        data: [rolledOver ? "F_GARAN0926" : "F_GARAN0826"],
+      }],
+    })
+
+    expect((await instruments.listFutures()).map((contract) => contract.symbol)).toEqual(["F_GARAN0826"])
+    rolledOver = true
+    expect((await instruments.listFutures()).map((contract) => contract.symbol)).toEqual(["F_GARAN0826"])
+
+    // 21:00 UTC is midnight in Istanbul: August 31 must not reuse August 30's contracts.
+    now = Date.parse("2026-08-30T21:00:00Z")
+    expect((await instruments.listFutures()).map((contract) => contract.symbol)).toEqual(["F_GARAN0926"])
+    expect(requests.filter((request) => request.url.endsWith("/mobile/symbols/collections/"))).toHaveLength(2)
   })
 
   /**

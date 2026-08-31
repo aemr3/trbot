@@ -5,6 +5,7 @@ import type {
   ResolvedCandleInstrument,
 } from "@trbot/market/candle.ts"
 import { ACCOUNT_API_BASE, withAccessToken, type FeedSession } from "./session.ts"
+import { marketDate } from "./session-hours.ts"
 import { buildUrl, FetchFeedTransport, readJson, type FeedTransport } from "./transport.ts"
 
 /** The kinds of instrument the universe endpoint reports. */
@@ -105,6 +106,7 @@ function isInstrumentKind(value: string): value is InstrumentKind {
 export interface FeedInstrumentSourceOptions {
   transport?: FeedTransport
   baseUrl?: string
+  now?: () => number
 }
 
 /**
@@ -123,8 +125,9 @@ export interface FeedInstrumentSourceOptions {
 export class FeedInstrumentSource implements CandleInstrumentResolver {
   private readonly transport: FeedTransport
   private readonly baseUrl: string
+  private readonly now: () => number
   private universe: FeedInstrument[] | null = null
-  private futures: FeedFutureInstrument[] | null = null
+  private futures: { marketDate: string; instruments: FeedFutureInstrument[] } | null = null
 
   constructor(
     private readonly session: Pick<FeedSession, "accessToken" | "renewAccessToken">,
@@ -132,6 +135,7 @@ export class FeedInstrumentSource implements CandleInstrumentResolver {
   ) {
     this.transport = options.transport ?? new FetchFeedTransport()
     this.baseUrl = options.baseUrl ?? ACCOUNT_API_BASE
+    this.now = options.now ?? (() => Date.now())
   }
 
   /** Every cash instrument. Cached: it is a single large response that does not move intraday. */
@@ -160,18 +164,19 @@ export class FeedInstrumentSource implements CandleInstrumentResolver {
     return (await this.listInstruments(options)).filter((instrument) => instrument.kind === kind)
   }
 
-  /** The active futures contracts, newest-dated last. */
+  /** The active futures contracts, newest-dated last, refreshed once per exchange day. */
   async listFutures(options: { signal?: AbortSignal } = {}): Promise<FeedFutureInstrument[]> {
-    if (this.futures) return this.futures
+    const today = marketDate(this.now())
+    if (this.futures?.marketDate === today) return this.futures.instruments
     const collections = await this.loadCollections(options.signal)
     const active = collections.find((collection) => collection.title === ACTIVE_FUTURES_COLLECTION)
       ?? collections.find((collection) => collection.data.some((code) => code.startsWith("F_")))
     if (!active) {
-      this.futures = []
-      return this.futures
+      this.futures = { marketDate: today, instruments: [] }
+      return this.futures.instruments
     }
 
-    this.futures = active.data.flatMap((code) => {
+    const instruments = active.data.flatMap((code) => {
       const parsed = parseFutureCode(code)
       if (!parsed) return []
       return [{
@@ -185,7 +190,8 @@ export class FeedInstrumentSource implements CandleInstrumentResolver {
         ? left.contractMonth.localeCompare(right.contractMonth)
         : left.underlying.localeCompare(right.underlying)
     )
-    return this.futures
+    this.futures = { marketDate: today, instruments }
+    return instruments
   }
 
   /** Index constituents, keyed by index code — `XU100`, `XU030`, `XUTUM`. */

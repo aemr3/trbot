@@ -1366,7 +1366,9 @@ export class TradeScreen {
       const refreshed = await this.options.instruments.listInstruments({ signal: request.signal })
       if (this.destroyed || request.signal.aborted || this.instrumentRefreshRequest !== request) return
       const snapshots = new Map(refreshed.map((instrument) => [instrument.symbol, instrument]))
+      const selectedSymbol = this.instruments[this.instrumentList.selectedIndex]?.symbol
       let changed = false
+      let selectedAvailabilityChanged = false
       for (const instrument of this.instruments) {
         const snapshot = snapshots.get(instrument.symbol)
         if (!snapshot) continue
@@ -1379,6 +1381,11 @@ export class TradeScreen {
           instrument.lastPrice = snapshot.lastPrice
           changed = true
         }
+        if (!sameMarketDataAvailability(instrument.marketData, snapshot.marketData)) {
+          instrument.marketData = snapshot.marketData
+          selectedAvailabilityChanged ||= instrument.symbol === selectedSymbol
+          changed = true
+        }
         if (this.applyReferenceClose(instrument, referenceClose(snapshot))) changed = true
       }
       if (changed) {
@@ -1386,7 +1393,12 @@ export class TradeScreen {
         this.sortAndRenderInstrumentList(selectedUid, true)
       }
       const selected = this.instruments[this.instrumentList.selectedIndex]
-      if (selected) void this.loadContractDetails(selected)
+      if (selectedAvailabilityChanged) {
+        this.options.onInstrumentsChange?.(this.instruments)
+        this.onInstrumentSelected(this.instrumentList.selectedIndex)
+      } else if (selected) {
+        void this.loadContractDetails(selected)
+      }
     } catch (error) {
       if (!this.destroyed && !request.signal.aborted && !isAbortError(error)) this.reportError("Watchlist refresh", error)
     } finally {
@@ -2483,6 +2495,17 @@ function chartTargets(instrument: ViopInstrument): CandleChartTarget[] {
     "BIST_100",
     "BIST_30",
   ]
+}
+
+function sameMarketDataAvailability(
+  left: ViopInstrument["marketData"],
+  right: ViopInstrument["marketData"],
+): boolean {
+  if (!left || !right) return left === right
+  return left.instrumentCandles === right.instrumentCandles
+    && left.underlyingSymbol === right.underlyingSymbol
+    && left.underlyingKind === right.underlyingKind
+    && left.brokerAnalytics === right.brokerAnalytics
 }
 
 function chartUnderlyingLabel(kind: InstrumentMarketKind | null): string {

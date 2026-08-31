@@ -1006,6 +1006,66 @@ test("refreshes snapshot volumes and re-sorts without replacing live prices", as
   renderer.destroy()
 })
 
+test("restores the futures chart when refreshed rollover availability recognizes the contract", async () => {
+  const { renderer, waitForFrame } = await createTestRenderer({ width: 200, height: 24 })
+  let calls = 0
+  let releaseRefresh = (): void => {}
+  const refreshAllowed = new Promise<void>((resolve) => {
+    releaseRefresh = resolve
+  })
+  const rollingAvailability: ViopInstrumentSource = {
+    async listInstruments() {
+      calls++
+      if (calls > 1) await refreshAllowed
+      return [{
+        uid: "petkm-future",
+        symbol: "F_PETKM0926",
+        displayName: "PETKM",
+        underlyingSymbol: "PETKM",
+        lastPrice: 20.22,
+        changePercent: -0.49,
+        volume: 100_000,
+        currency: "TRY",
+        marketData: {
+          instrumentCandles: calls > 1,
+          underlyingSymbol: "PETKM",
+          underlyingKind: "equity",
+          brokerAnalytics: true,
+        },
+      }]
+    },
+  }
+  const candleTargets: Array<string | undefined> = []
+  const rolloverCandles: CandleSource = {
+    async loadCandles(instrumentUid, range, interval, options) {
+      candleTargets.push(options?.target)
+      return candles.loadCandles(instrumentUid, range, interval, options)
+    },
+  }
+  const screen = new TradeScreen(renderer, {
+    instruments: rollingAvailability,
+    candles: rolloverCandles,
+    news,
+    preferences: { ...DEFAULT_APP_PREFERENCES, chartTarget: "INSTRUMENT" },
+    instrumentIntervalMs: 10,
+  })
+  renderer.root.add(screen.root)
+  screen.mount()
+
+  try {
+    await waitForFrame((frame) => frame.includes("Chart  PETKM stock"))
+    releaseRefresh()
+
+    const refreshed = await waitForFrame((frame) => frame.includes("Chart  PETKM futures"))
+    expect(refreshed).toContain("Futures")
+    expect(candleTargets).toContain("INSTRUMENT")
+  } finally {
+    releaseRefresh()
+    screen.destroy()
+    renderer.destroy()
+  }
+})
+
 // A session left running past a settlement keeps its live prices but must pick
 // up the new daily-change reference, or every row reports the previous day's
 // change against a stale previous close.
