@@ -288,8 +288,8 @@ per level, alongside the ordinary scalar fields.
 
 So a decoder that assumes snapshot rows hold only scalars rejects the whole
 acknowledgement and loses both the opening book and the opening quotes. Subscribe
-to `ob-10` for the book and to `BV`/`AV` for the resting totals behind a
-buy/sell ratio.
+to `ob-10` for the book, `BV`/`AV` for the resting totals behind a buy/sell
+ratio, and `TRU` for the trade prints shown beneath it.
 
 The key is built from the level frame itself, which is why a level frame and a
 snapshot row are the same object arriving by two routes:
@@ -350,8 +350,8 @@ Socket rows are unshifted onto the array HTTP produced, compared on `i`. One
 array, one renderer, one shape — so seed the tape over HTTP, append from the
 socket, and key on `i` so a reconnect cannot print the same trade twice.
 
-This comes from the web client rather than from a frame observed here: new prints
-only flow during a session, and none has been seen arrive yet.
+The trade-tape component explicitly subscribes the symbol to `TRU`. Merely
+subscribing to its `ob-10` order book does not request these frames.
 
 **The tape is per session.** It empties at the session boundary — the same symbol
 returned a full page at 23:57 and zero results at 00:04. An empty tape out of
@@ -387,6 +387,7 @@ K   FLOOR            A   ASK              B   BID
 U   WAVG             V   VOL              M   LOT
 AC  AUC_PRICE        ACP AUC_CHANGE_PCT   AD  AUC_SIZE
 AG  AUC_REM_ASK      AF  AUC_REM_BID
+TRU TRADE_UPDATES
 BV  OB_BID_TOTAL_VOL BW  OB_BID_WAVG      AV  OB_ASK_TOTAL_VOL
 AW  OB_ASK_WAVG      MA  MM_ASK           MB  MM_BID
 ob-10  OB_10         best BEST            worst WORST

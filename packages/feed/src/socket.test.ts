@@ -299,7 +299,7 @@ describe("MarketSocket", () => {
     const { socket, sockets } = build()
     const depth: string[] = []
     const trades: string[] = []
-    socket.subscribe(["GARAN/ob-10"], {
+    socket.subscribe(["GARAN/ob-10", "GARAN/TRU"], {
       onDepth: (update) => depth.push(update.symbol),
       onTrade: (update) => trades.push(update.symbol),
     })

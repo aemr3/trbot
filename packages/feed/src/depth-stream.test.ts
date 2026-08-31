@@ -25,6 +25,10 @@ class FakeMarketSocket implements SocketSubscriber {
   level(payload: FeedRecord, symbol = "F_XU0300826"): void {
     this.listener.onDepth?.({ symbol, payload })
   }
+
+  trade(payload: FeedRecord, symbol = "F_XU0300826"): void {
+    this.listener.onTrade?.({ symbol, payload })
+  }
 }
 
 function build() {
@@ -78,9 +82,30 @@ describe("FeedDepthStream", () => {
     expect(latest(books).bids).toEqual([{ price: 59, lots: 10, orderCount: 2 }])
   })
 
-  test("subscribes to the book and side totals", () => {
+  test("subscribes to the book, side totals, and live trades", () => {
     const { socket } = build()
-    expect(socket.subscribed[0]).toEqual(["F_XU0300826/ob-10", "F_XU0300826/BV", "F_XU0300826/AV"])
+    expect(socket.subscribed[0]).toEqual([
+      "F_XU0300826/ob-10",
+      "F_XU0300826/BV",
+      "F_XU0300826/AV",
+      "F_XU0300826/TRU",
+    ])
+  })
+
+  test("appends a live trade from the subscribed trade topic", () => {
+    const { socket, books } = build()
+
+    socket.trade({ p: 16822, s: 7, a: "B", bb: null, sb: null, i: 40613120, t: 1787325000 })
+
+    expect(latest(books).trades).toEqual([{
+      id: "40613120",
+      price: 16822,
+      lots: 7,
+      timestamp: 1_787_325_000_000,
+      side: "BUY",
+      buyer: null,
+      seller: null,
+    }])
   })
 
   test("can request a new opening snapshot for already-retained topics", () => {

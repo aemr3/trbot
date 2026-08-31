@@ -27,6 +27,7 @@ export const FEED_FIELDS = {
   AUCTION_SIZE: "AD",
   AUCTION_REMAINING_ASK: "AG",
   AUCTION_REMAINING_BID: "AF",
+  TRADE_UPDATES: "TRU",
   DEPTH_10: "ob-10",
   BID_TOTAL_VOLUME: "BV",
   BID_WEIGHTED_AVERAGE: "BW",
@@ -48,11 +49,12 @@ export const QUOTE_FIELDS: FeedField[] = [
   FEED_FIELDS.TIMESTAMP,
 ]
 
-/** The fields the order book needs. */
+/** The fields the depth panel needs for its book, side totals, and trade tape. */
 export const DEPTH_FIELDS: FeedField[] = [
   FEED_FIELDS.DEPTH_10,
   FEED_FIELDS.BID_TOTAL_VOLUME,
   FEED_FIELDS.ASK_TOTAL_VOLUME,
+  FEED_FIELDS.TRADE_UPDATES,
 ]
 
 export function topic(symbol: string, field: FeedField): string {
