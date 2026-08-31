@@ -24,6 +24,7 @@ test("prepares a futures order with exchange limits, quote, collateral, and posi
   const prepared = await source.prepareOrder({ instrumentUid: "future-1", side: "SELL" })
 
   expect(prepared).toEqual({
+    underlyingInstrumentUid: "underlying-1",
     lowerLimit: 188.3,
     upperLimit: 230.1,
     lastPrice: 209.55,
@@ -209,7 +210,7 @@ function fakeClient(
           : call.operationName === "viopOverviewPositions"
           ? { viopOverviewPositions: { positions: [{ assetUid: "future-1", quantity: positionQuantity }] } }
           : call.operationName === "assetFuture"
-            ? { assetFuture: { multiplier: 100, tradePriceAndQuote: { ask: 210, bid: 209.55, futurePrice: 209.55 }, priceFormat: { scale: 2 } } }
+            ? { assetFuture: { underlyingInstrumentUid: "underlying-1", multiplier: 100, tradePriceAndQuote: { ask: 210, bid: 209.55, futurePrice: 209.55 }, priceFormat: { scale: 2 } } }
             : call.operationName === "prepareOrder"
               ? {
                   orderPreparationV2: {

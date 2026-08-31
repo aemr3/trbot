@@ -331,6 +331,7 @@ export class ApiViopOrderSource implements ViopOrderSource, ViopOrderCancellatio
       positionIntent,
       preparation,
       result: {
+        underlyingInstrumentUid: asset?.underlyingInstrumentUid ?? null,
         lowerLimit: finiteNumber(preparation.priceRange?.minPrice),
         upperLimit: finiteNumber(preparation.priceRange?.maxPrice),
         lastPrice: finiteNumber(quote?.futurePrice),

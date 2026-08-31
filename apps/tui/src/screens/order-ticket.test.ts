@@ -154,6 +154,7 @@ test("blocks review when available collateral is insufficient", async () => {
   const setup = await createTestRenderer({ width: 80, height: 28 })
   const source = fakeOrderSource()
   source.prepareOrder = async ({ side }) => ({
+    underlyingInstrumentUid: "underlying-1",
     lowerLimit: 188.3,
     upperLimit: 230.1,
     lastPrice: 209.55,
@@ -188,6 +189,7 @@ test("uses only residual reversal exposure for the collateral check", async () =
   const setup = await createTestRenderer({ width: 80, height: 28 })
   const source = fakeOrderSource()
   source.prepareOrder = async () => ({
+    underlyingInstrumentUid: "underlying-1",
     lowerLimit: 188.3,
     upperLimit: 230.1,
     lastPrice: 209.55,
@@ -277,6 +279,7 @@ function fakeOrderSource(placed: PlaceViopOrderRequest[] = []): ViopOrderSource 
   return {
     async prepareOrder({ side }) {
       return {
+        underlyingInstrumentUid: "underlying-1",
         lowerLimit: 188.3,
         upperLimit: 230.1,
         lastPrice: 209.55,

@@ -300,6 +300,7 @@ function harness(
     },
     orders: {
       prepareOrder: async () => ({
+        underlyingInstrumentUid: "underlying-instrument-1",
         lowerLimit: 360,
         upperLimit: 440,
         lastPrice: 401,
@@ -997,6 +998,7 @@ test("falls back to the latest contract candle when closed-market quote sources 
     instruments: { listInstruments: async () => [instrument] },
     orders: {
       prepareOrder: async () => ({
+        underlyingInstrumentUid: "underlying-instrument-1",
         lowerLimit: 360,
         upperLimit: 440,
         lastPrice: null,
@@ -1316,9 +1318,27 @@ test("builds compact point-in-time intraday context from contract, cash, benchma
     },
     basis: {
       available: true,
-      futuresPrice: 400,
-      spotPrice: 398,
-      absolute: 2,
+      status: "LIVE",
+      convention: "MID_TO_MID",
+      futuresPrice: 401,
+      spotPrice: 401,
+      absolute: 0,
+      futures: {
+        instrumentUid: ASELS.uid,
+        symbol: ASELS.symbol,
+        source: "BROKERAGE_CONTRACT_QUOTE",
+        bid: 400,
+        ask: 402,
+        price: 401,
+      },
+      spot: {
+        instrumentUid: "underlying-instrument-1",
+        symbol: "ASELS",
+        source: "MARKET_DATA_DEPTH_SNAPSHOT",
+        bid: 400,
+        ask: 402,
+        price: 401,
+      },
     },
     liquidity: {
       available: true,
@@ -1346,8 +1366,163 @@ test("builds compact point-in-time intraday context from contract, cash, benchma
     }),
   }).parse(result)
   expect(parsed.technicals.confirmed.priceVsVwap.atrUnits).toBeFinite()
-  expect(testHarness.calls.marginRequirements).toBe(1)
-  expect(testHarness.depthLookups).toEqual([ASELS.symbol])
+  expect(testHarness.calls.marginRequirements).toBe(0)
+  expect(testHarness.depthLookups).toEqual(["ASELS", ASELS.symbol])
+})
+
+test("uses the canonical front-month and cash mids for ENKAI, KRDMD, and TUPRS basis", async () => {
+  const examples = [
+    { symbol: "ENKAI", futuresBid: 89.20, futuresAsk: 89.24, spotBid: 87.00, spotAsk: 87.05, absolute: 2.195 },
+    { symbol: "KRDMD", futuresBid: 48.39, futuresAsk: 48.41, spotBid: 47.32, spotAsk: 47.34, absolute: 1.07 },
+    { symbol: "TUPRS", futuresBid: 405.75, futuresAsk: 405.85, spotBid: 402.00, spotAsk: 402.25, absolute: 3.675 },
+  ]
+
+  for (const example of examples) {
+    const instrument: ViopInstrument = {
+      uid: `future-${example.symbol}`,
+      symbol: `F_${example.symbol}0926`,
+      displayName: example.symbol,
+      underlyingSymbol: example.symbol,
+      lastPrice: (example.futuresBid + example.futuresAsk) / 2,
+      changePercent: null,
+      volume: 1_000,
+      currency: "TRY",
+    }
+    const underlyingUid = `cash-${example.symbol}`
+    const testHarness = harness({
+      instruments: { listInstruments: async () => [instrument] },
+      orders: {
+        prepareOrder: async ({ instrumentUid }) => {
+          expect(instrumentUid).toBe(instrument.uid)
+          return {
+            underlyingInstrumentUid: underlyingUid,
+            lowerLimit: null,
+            upperLimit: null,
+            lastPrice: instrument.lastPrice,
+            bid: example.futuresBid,
+            ask: example.futuresAsk,
+            priceScale: 2,
+            contractSize: 100,
+            initialCollateral: null,
+            availableCollateral: null,
+            currentPositionQuantity: 0,
+            positionIntent: "BUY_TO_OPEN",
+          }
+        },
+        listPendingOrders: async () => [],
+      },
+      depthBooks: {
+        loadDepthBookSnapshot: async (symbol) => symbol === instrument.symbol
+          ? depthBookAt(symbol, example.futuresBid, example.futuresAsk)
+          : depthBookAt(symbol, example.spotBid, example.spotAsk),
+      },
+    }, {
+      resolveCandleInstrument: async (_symbol, target) => ({
+        candleSymbol: target === "INSTRUMENT" ? instrument.symbol : example.symbol,
+        contractSymbol: instrument.symbol,
+        underlyingSymbol: example.symbol,
+        displayName: example.symbol,
+      }),
+    })
+    const tools = new ChatTools(marketDataTools(testHarness.clients))
+    const context = z.object({
+      basis: z.object({
+        available: z.literal(true),
+        status: z.literal("LIVE"),
+        convention: z.literal("MID_TO_MID"),
+        futuresPrice: z.number(),
+        spotPrice: z.number(),
+        absolute: z.number(),
+        percent: z.number(),
+        timestampSkewMs: z.number(),
+        futures: z.object({ instrumentUid: z.string(), symbol: z.string(), source: z.string(), timestamp: z.number() }),
+        spot: z.object({ instrumentUid: z.string(), symbol: z.string(), source: z.string(), timestamp: z.number() }),
+      }),
+    }).parse(modelData(await call(tools, "get_intraday_context", { symbol: example.symbol })))
+    const viopQuote = z.object({
+      quote: z.object({ canonicalPrice: z.number(), canonicalPriceSource: z.literal("BID_ASK_MID") }),
+    }).parse(modelData(await call(tools, "get_viop_quote", { symbol: example.symbol })))
+
+    expect(context.basis.futuresPrice).toBeCloseTo((example.futuresBid + example.futuresAsk) / 2)
+    expect(context.basis.spotPrice).toBeCloseTo((example.spotBid + example.spotAsk) / 2)
+    expect(context.basis.absolute).toBeCloseTo(example.absolute)
+    expect(context.basis.percent).toBeCloseTo(example.absolute / context.basis.spotPrice * 100)
+    expect(context.basis.futures).toMatchObject({
+      instrumentUid: instrument.uid,
+      symbol: instrument.symbol,
+      source: "BROKERAGE_CONTRACT_QUOTE",
+    })
+    expect(context.basis.spot).toMatchObject({
+      instrumentUid: underlyingUid,
+      symbol: example.symbol,
+      source: "MARKET_DATA_DEPTH_SNAPSHOT",
+    })
+    expect(context.basis.timestampSkewMs).toBe(0)
+    expect(viopQuote.quote.canonicalPrice).toBe(context.basis.futuresPrice)
+  }
+})
+
+test("marks a basis unavailable when the synchronized quote snapshots are too far apart", async () => {
+  const testHarness = harness()
+  const timestamps = [NOW, NOW + 1_000, NOW + 7_000]
+  testHarness.clients.now = () => timestamps.shift() ?? NOW + 7_000
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const result = modelData(await call(tools, "get_intraday_context", { symbol: "ASELS" }))
+
+  expect(result).toMatchObject({
+    basis: {
+      available: false,
+      status: "STALE",
+      convention: "MID_TO_MID",
+      timestampSkewMs: 6_000,
+      futuresPrice: null,
+      spotPrice: null,
+      absolute: null,
+      percent: null,
+      futures: { price: 401 },
+      spot: { price: 401 },
+    },
+  })
+})
+
+test("does not expose a near-zero basis when the futures mid disagrees with the canonical quote", async () => {
+  const testHarness = harness({
+    orders: {
+      prepareOrder: async () => ({
+        underlyingInstrumentUid: "underlying-instrument-1",
+        lowerLimit: 350,
+        upperLimit: 450,
+        lastPrice: 390,
+        bid: 400,
+        ask: 402,
+        priceScale: 1,
+        contractSize: 100,
+        initialCollateral: 30,
+        availableCollateral: 80_000,
+        currentPositionQuantity: 0,
+        positionIntent: "BUY_TO_OPEN",
+      }),
+      listPendingOrders: async () => [],
+    },
+  })
+  const tools = new ChatTools(marketDataTools(testHarness.clients))
+
+  const result = modelData(await call(tools, "get_intraday_context", { symbol: "ASELS" }))
+
+  expect(result).toMatchObject({
+    basis: {
+      available: false,
+      status: "MISMATCH",
+      reason: `Basis futures price does not match the canonical quote for ${ASELS.symbol}`,
+      futures: { price: 401 },
+      spot: { price: 401 },
+      futuresPrice: null,
+      spotPrice: null,
+      absolute: null,
+      percent: null,
+    },
+  })
 })
 
 test("keeps candle context when optional live basis and depth are unavailable", async () => {
@@ -1356,13 +1531,6 @@ test("keeps candle context when optional live basis and depth are unavailable", 
       loadDepthBookSnapshot: async () => { throw new Error("Contract depth is unavailable") },
     },
   })
-  testHarness.clients.viopMargins = {
-    ...testHarness.clients.viopMargins,
-    listMarginRequirements: async () => ({
-      updatedAt: "2026-08-21T18:00:00Z",
-      requirements: [],
-    }),
-  }
   const tools = new ChatTools(marketDataTools(testHarness.clients))
 
   const outcome = await call(tools, "get_intraday_context", { symbol: "ASELS" })
@@ -1370,7 +1538,7 @@ test("keeps candle context when optional live basis and depth are unavailable", 
   expect(outcome.isError).toBe(false)
   expect(modelData(outcome)).toMatchObject({
     levels: { currentSession: { date: "2026-08-06" } },
-    basis: { available: false, reason: "No futures-versus-spot basis is available for F_ASELS0826" },
+    basis: { available: false, status: "UNAVAILABLE", reason: "Contract depth is unavailable" },
     liquidity: { available: false, reason: "Contract depth is unavailable" },
     relativeStrength: { benchmark: "BIST_100" },
   })
@@ -1631,6 +1799,18 @@ function depthBook(): DepthBook {
       { id: "trade-1", price: 401, lots: 2, timestamp: NOW, side: "BUY", buyer: "A", seller: "B" },
       { id: "trade-2", price: 400, lots: 1, timestamp: NOW - 1_000, side: "SELL", buyer: "C", seller: "D" },
     ],
+    marketClosed: false,
+  }
+}
+
+function depthBookAt(symbol: string, bid: number, ask: number): DepthBook {
+  return {
+    symbol,
+    bids: [{ price: bid, lots: 10, orderCount: 1 }],
+    asks: [{ price: ask, lots: 12, orderCount: 1 }],
+    buyLots: 10,
+    sellLots: 12,
+    trades: [],
     marketClosed: false,
   }
 }

@@ -63,6 +63,7 @@ function harness(allowed = true) {
       account: { loadAccount: async () => ACCOUNT },
       orders: {
         prepareOrder: async ({ side }) => ({
+          underlyingInstrumentUid: "underlying-1",
           lowerLimit: 90,
           upperLimit: 110,
           lastPrice: 100,

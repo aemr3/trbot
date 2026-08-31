@@ -10,6 +10,8 @@ export function isViopOrderKind(value: string): value is ViopOrderKind {
 }
 
 export interface ViopOrderPreparation {
+  /** Brokerage UID of the cash/spot instrument this exact contract settles against. */
+  underlyingInstrumentUid: string | null
   lowerLimit: number | null
   upperLimit: number | null
   lastPrice: number | null
@@ -24,6 +26,7 @@ export interface ViopOrderPreparation {
 }
 
 export const ViopOrderPreparationSchema: z.ZodType<ViopOrderPreparation> = z.object({
+  underlyingInstrumentUid: z.string().nullable(),
   lowerLimit: z.number().nullable(),
   upperLimit: z.number().nullable(),
   lastPrice: z.number().nullable(),

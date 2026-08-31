@@ -52,7 +52,11 @@ import type {
 import type { MemberFeatureSource } from "@trbot/member/features.ts"
 import type { PerformanceRecorder } from "@trbot/telemetry/performance.ts"
 import type { AccountSource } from "@trbot/trading/account.ts"
-import type { ViopOrderCancellationSource, ViopOrderSource } from "@trbot/trading/order.ts"
+import type {
+  ViopOrderCancellationSource,
+  ViopOrderPreparation,
+  ViopOrderSource,
+} from "@trbot/trading/order.ts"
 import { isOpenStopRule, type StopRule } from "@trbot/trading/stop.ts"
 import { paginate, paginateNewest, paginationHint, paginationOffset } from "./pagination.ts"
 import { toolText, type ChatTool } from "./tool.ts"
@@ -63,6 +67,7 @@ const DEFAULT_INDICATOR_CANDLE_LIMIT = 120
 const INTRADAY_CONTEXT_RANGE = "MONTH"
 const INTRADAY_CONTEXT_INTERVAL = "MIN_5"
 const INTRADAY_CONTEXT_DEPTH_LEVELS = 5
+const INTRADAY_BASIS_MAX_SNAPSHOT_SKEW_MS = 5_000
 const INTRADAY_CONTEXT_INDICATORS = [
   "EMA_20",
   "EMA_50",
@@ -990,11 +995,13 @@ function viopQuoteTool(clients: MarketDataToolClients): ChatTool<typeof SymbolOn
         await sources.instruments.listInstruments({ signal: options.signal }),
         symbol,
       )
-      const quote = await sources.orders.prepareOrder({
-        instrumentUid: instrument.uid,
-        side: "BUY",
-        signal: options.signal,
-      })
+      const snapshot = await loadContractQuoteSnapshot(
+        sources,
+        instrument,
+        clients.now ?? Date.now,
+        options.signal,
+      )
+      const quote = snapshot.quote
       let lastPrice = quote.lastPrice ?? instrument.lastPrice
       const lastPriceSource = quote.lastPrice !== null
         ? "CONTRACT_QUOTE"
@@ -1015,15 +1022,20 @@ function viopQuoteTool(clients: MarketDataToolClients): ChatTool<typeof SymbolOn
         candleInterval = series.interval
       }
       return dataOutcome(`Read VIOP quote for ${instrument.displayName}.`, {
-        readAt: Date.now(),
+        readAt: clients.now?.() ?? Date.now(),
         instrument,
         quote: {
+          canonicalPrice: snapshot.mid ?? lastPrice,
+          canonicalPriceSource: snapshot.mid === null ? lastPriceSource : "BID_ASK_MID",
           lastPrice,
           lastPriceSource,
           lastPriceTimestamp,
           candleInterval,
           bid: quote.bid,
           ask: quote.ask,
+          mid: snapshot.mid,
+          bidAskTimestamp: snapshot.observedAt,
+          timestampKind: "CLIENT_OBSERVED_AT",
           lowerLimit: quote.lowerLimit,
           upperLimit: quote.upperLimit,
           priceScale: quote.priceScale,
@@ -1206,7 +1218,7 @@ function intradayContextTool(clients: MarketDataToolClients): ChatTool<typeof In
       description: [
         "Read one compact first-pass intraday context for a nearest-expiry single-stock VIOP contract.",
         "Returns previous/current session OHLCV, confirmed or forming 15/30-minute opening ranges, time-of-day relative volume,",
-        "completed and provisional EMA20/EMA50/VWAP/ATR14 snapshots, daily classic pivots, futures-versus-spot basis,",
+        "completed and provisional EMA20/EMA50/VWAP/ATR14 snapshots, daily classic pivots, synchronized mid-to-mid futures-versus-spot basis,",
         "contract spread/depth/liquidity, and cash-underlying relative strength versus BIST 30 or BIST 100.",
         "The fixed source is five-minute candles over one month so volume baselines and indicator warm-ups are comparable.",
         "This is descriptive context, not setup validation or a reward/risk decision; use get_candles for other indicators or timeframes.",
@@ -1215,13 +1227,18 @@ function intradayContextTool(clients: MarketDataToolClients): ChatTool<typeof In
     },
     run: async ({ symbol, benchmark }, options) => {
       const asOf = clients.now?.() ?? Date.now()
+      const sources = clients.sources()
       const resolvedBenchmark = benchmark ?? "BIST_100"
       const benchmarkSymbol = resolvedBenchmark === "BIST_30" ? "XU030" : "XU100"
+      const instrument = resolveViopInstrument(
+        await sources.instruments.listInstruments({ signal: options.signal }),
+        symbol,
+      )
       const [contract, underlying] = await Promise.all([
-        clients.candleData.instruments.resolveCandleInstrument(symbol, "INSTRUMENT", {
+        clients.candleData.instruments.resolveCandleInstrument(instrument.symbol, "INSTRUMENT", {
           signal: options.signal,
         }),
-        clients.candleData.instruments.resolveCandleInstrument(symbol, "UNDERLYING", {
+        clients.candleData.instruments.resolveCandleInstrument(instrument.symbol, "UNDERLYING", {
           signal: options.signal,
         }),
       ])
@@ -1244,7 +1261,14 @@ function intradayContextTool(clients: MarketDataToolClients): ChatTool<typeof In
           INTRADAY_CONTEXT_INTERVAL,
           { signal: options.signal, target: resolvedBenchmark },
         ),
-        marketReading(() => loadBasis(clients, contract.contractSymbol, options.signal), options.signal),
+        loadBasis(
+          sources,
+          instrument,
+          contract.contractSymbol,
+          underlying.underlyingSymbol,
+          clients.now ?? Date.now,
+          options.signal,
+        ),
         marketReading(
           () => loadLiquidity(clients, contract.contractSymbol, asOf, options.signal),
           options.signal,
@@ -1267,8 +1291,9 @@ function intradayContextTool(clients: MarketDataToolClients): ChatTool<typeof In
       return dataOutcome(`Read compact intraday context for ${contract.displayName}.`, {
         readAt: asOf,
         instrument: {
-          symbol: contract.contractSymbol,
-          displayName: contract.displayName,
+          uid: instrument.uid,
+          symbol: instrument.symbol,
+          displayName: instrument.displayName,
           underlyingSymbol: underlying.underlyingSymbol,
         },
         source: {
@@ -1446,27 +1471,205 @@ function pointInTimeSeries(series: CandleSeries, asOf: number): CandleSeries {
   }
 }
 
+interface TimedContractQuote {
+  quote: ViopOrderPreparation
+  observedAt: number
+  mid: number | null
+}
+
+interface BasisPrice {
+  instrumentUid: string | null
+  symbol: string
+  source: "BROKERAGE_CONTRACT_QUOTE" | "MARKET_DATA_DEPTH_SNAPSHOT"
+  timestamp: number
+  timestampKind: "CLIENT_OBSERVED_AT"
+  bid: number
+  ask: number
+  price: number
+}
+
+async function loadContractQuoteSnapshot(
+  sources: MarketDataSources,
+  instrument: ViopInstrument,
+  now: () => number,
+  signal?: AbortSignal,
+): Promise<TimedContractQuote> {
+  const quote = await sources.orders.prepareOrder({
+    instrumentUid: instrument.uid,
+    side: "BUY",
+    signal,
+  })
+  return {
+    quote,
+    observedAt: now(),
+    mid: quote.bid === null || quote.ask === null ? null : (quote.bid + quote.ask) / 2,
+  }
+}
+
 async function loadBasis(
-  clients: MarketDataToolClients,
-  contractSymbol: string,
+  sources: MarketDataSources,
+  instrument: ViopInstrument,
+  candleContractSymbol: string,
+  candleUnderlyingSymbol: string | null,
+  now: () => number,
   signal?: AbortSignal,
 ) {
-  const snapshot = await clients.viopMargins.listMarginRequirements({ signal })
-  const wanted = contractSymbol.trim().toUpperCase()
-  const requirement = snapshot.requirements.find((candidate) => candidate.contractSymbol.toUpperCase() === wanted)
-  if (!requirement) throw new Error(`No futures-versus-spot basis is available for ${contractSymbol}`)
-  if (requirement.futuresPrice === null || requirement.spotPrice === null) {
-    throw new Error(`Futures or spot price is unavailable for ${contractSymbol}`)
+  const futuresSymbol = instrument.symbol.trim().toUpperCase()
+  const spotSymbol = instrument.underlyingSymbol?.trim().toUpperCase() ?? null
+  if (candleContractSymbol.trim().toUpperCase() !== futuresSymbol || candleUnderlyingSymbol?.trim().toUpperCase() !== spotSymbol) {
+    return unavailableBasis(
+      "MISMATCH",
+      `Resolved candle instruments do not match ${futuresSymbol} and its underlying ${spotSymbol ?? "(none)"}`,
+    )
   }
-  const absolute = requirement.futuresPrice - requirement.spotPrice
+  if (spotSymbol === null) {
+    return unavailableBasis("MISMATCH", `${futuresSymbol} has no exact cash/spot underlying symbol`)
+  }
+
+  try {
+    const [futuresSnapshot, spotSnapshot] = await Promise.all([
+      loadContractQuoteSnapshot(sources, instrument, now, signal),
+      sources.depthBooks.loadDepthBookSnapshot(spotSymbol, { signal }).then((book) => ({
+        book,
+        observedAt: now(),
+      })),
+    ])
+    const { quote, mid: futuresMid, observedAt: futuresTimestamp } = futuresSnapshot
+    const { book: spotBook, observedAt: spotTimestamp } = spotSnapshot
+    const spotBid = spotBook.bids[0]?.price ?? null
+    const spotAsk = spotBook.asks[0]?.price ?? null
+    const spotMid = spotBid === null || spotAsk === null ? null : (spotBid + spotAsk) / 2
+    const futures = twoSidedBasisPrice({
+      instrumentUid: instrument.uid,
+      symbol: futuresSymbol,
+      source: "BROKERAGE_CONTRACT_QUOTE",
+      timestamp: futuresTimestamp,
+      bid: quote.bid,
+      ask: quote.ask,
+      mid: futuresMid,
+    })
+    const spot = twoSidedBasisPrice({
+      instrumentUid: quote.underlyingInstrumentUid,
+      symbol: spotSymbol,
+      source: "MARKET_DATA_DEPTH_SNAPSHOT",
+      timestamp: spotTimestamp,
+      bid: spotBid,
+      ask: spotAsk,
+      mid: spotMid,
+    })
+
+    if (spotBook.symbol.trim().toUpperCase() !== spotSymbol) {
+      return unavailableBasis("MISMATCH", `Cash quote returned ${spotBook.symbol} instead of ${spotSymbol}`, futures, spot)
+    }
+    if (quote.underlyingInstrumentUid === null) {
+      return unavailableBasis("MISMATCH", `Contract ${futuresSymbol} returned no underlying instrument UID`, futures, spot)
+    }
+    if (futures === null || spot === null) {
+      return unavailableBasis(
+        "UNAVAILABLE",
+        `A valid two-sided futures and cash market is required for ${futuresSymbol}`,
+        futures,
+        spot,
+      )
+    }
+
+    const timestampSkewMs = Math.abs(futures.timestamp - spot.timestamp)
+    if (spotBook.marketClosed || timestampSkewMs > INTRADAY_BASIS_MAX_SNAPSHOT_SKEW_MS) {
+      const reason = spotBook.marketClosed
+        ? `Cash market snapshot for ${spotSymbol} is closed`
+        : `Futures and cash snapshots are ${timestampSkewMs}ms apart`
+      return unavailableBasis("STALE", reason, futures, spot, timestampSkewMs)
+    }
+
+    // The same bid/ask snapshot powers get_viop_quote. Its reported last price
+    // is an additional independent guard against a wrongly paired quote.
+    const canonicalFuturesPrice = quote.lastPrice ?? futuresSnapshot.mid
+    if (canonicalFuturesPrice === null || materiallyDifferent(futures.price, canonicalFuturesPrice)) {
+      return unavailableBasis(
+        "MISMATCH",
+        `Basis futures price does not match the canonical quote for ${futuresSymbol}`,
+        futures,
+        spot,
+        timestampSkewMs,
+      )
+    }
+
+    const absolute = futures.price - spot.price
+    return {
+      available: true as const,
+      status: "LIVE" as const,
+      convention: "MID_TO_MID" as const,
+      maxTimestampSkewMs: INTRADAY_BASIS_MAX_SNAPSHOT_SKEW_MS,
+      timestampSkewMs,
+      futures,
+      spot,
+      futuresPrice: futures.price,
+      spotPrice: spot.price,
+      absolute,
+      percent: spot.price === 0 ? null : absolute / spot.price * 100,
+    }
+  } catch (error) {
+    if (signal?.aborted) throw error
+    return unavailableBasis("UNAVAILABLE", error instanceof Error ? error.message : String(error))
+  }
+}
+
+function twoSidedBasisPrice(reading: {
+  instrumentUid: string | null
+  symbol: string
+  source: BasisPrice["source"]
+  timestamp: number
+  bid: number | null
+  ask: number | null
+  mid: number | null
+}): BasisPrice | null {
+  if (
+    reading.bid === null
+    || reading.ask === null
+    || reading.mid === null
+    || !Number.isFinite(reading.bid)
+    || !Number.isFinite(reading.ask)
+    || reading.bid <= 0
+    || reading.ask < reading.bid
+  ) return null
   return {
-    updatedAt: snapshot.updatedAt,
-    marketTimestamp: requirement.marketTimestamp,
-    futuresPrice: requirement.futuresPrice,
-    spotPrice: requirement.spotPrice,
-    absolute,
-    percent: requirement.spotPrice === 0 ? null : absolute / requirement.spotPrice * 100,
+    instrumentUid: reading.instrumentUid,
+    symbol: reading.symbol,
+    source: reading.source,
+    timestamp: reading.timestamp,
+    timestampKind: "CLIENT_OBSERVED_AT",
+    bid: reading.bid,
+    ask: reading.ask,
+    price: reading.mid,
   }
+}
+
+function unavailableBasis(
+  status: "STALE" | "MISMATCH" | "UNAVAILABLE",
+  reason: string,
+  futures: BasisPrice | null = null,
+  spot: BasisPrice | null = null,
+  timestampSkewMs: number | null = null,
+) {
+  return {
+    available: false as const,
+    status,
+    reason,
+    convention: "MID_TO_MID" as const,
+    maxTimestampSkewMs: INTRADAY_BASIS_MAX_SNAPSHOT_SKEW_MS,
+    timestampSkewMs,
+    futures,
+    spot,
+    futuresPrice: null,
+    spotPrice: null,
+    absolute: null,
+    percent: null,
+  }
+}
+
+function materiallyDifferent(left: number, right: number): boolean {
+  const scale = Math.max(Math.abs(left), Math.abs(right))
+  return Math.abs(left - right) > Math.max(scale * 0.005, 0.01)
 }
 
 async function loadLiquidity(

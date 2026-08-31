@@ -313,6 +313,7 @@ function fakeOrderSource(placed: PlaceViopOrderRequest[] = []): ViopOrderSource 
   return {
     async prepareOrder({ side }) {
       return {
+        underlyingInstrumentUid: "underlying-1",
         lowerLimit: 14_000,
         upperLimit: 17_000,
         lastPrice: 15_910,
