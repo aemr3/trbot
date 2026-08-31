@@ -2668,7 +2668,64 @@ test("retains completed parallel workers while their parent keeps running", asyn
   renderer.destroy()
 })
 
-test("settles a known running worker when an idle parent snapshot arrives", async () => {
+test("keeps a background worker spinning after its parent turn finishes", async () => {
+  const { renderer, waitForFrame, renderOnce, captureCharFrame } = await createTestRenderer({
+    width: 100,
+    height: 24,
+    kittyKeyboard: true,
+  })
+  const chats = fakeChats()
+  const parent = await chats.create()
+  const parentPrompt = userMessage("Start background research", "SENT")
+  chats.messages.set(parent.id, [parentPrompt])
+  const child: ChatSession = {
+    ...parent,
+    id: "worker-background",
+    title: "Background market research",
+    parentSessionId: parent.id,
+    parentPromptMessageId: parentPrompt.id,
+    parentToolCallId: "call-background",
+    agent: "worker",
+    running: true,
+  }
+  chats.sessions.push(child)
+  chats.messages.set(child.id, [])
+  const screen = new ChatScreen(renderer, { chats, account: account(connected), logs: new ApplicationLog() })
+  renderer.root.add(screen.root)
+  screen.mount()
+  await waitForFrame((frame) => frame.includes("ask something") && frame.includes(child.title))
+
+  screen.acceptRun(parent.id, "parent-run", "running")
+  screen.acceptRun(child.id, "worker-run", "running")
+  const firstFrame = await waitForFrame((frame) => frame.includes(child.title))
+  const first = spinnerFrame(firstFrame)
+  expect(first).toBeDefined()
+
+  screen.acceptRun(parent.id, "parent-run", "done")
+  screen.acceptSessions([{ ...parent, running: false }])
+  await Bun.sleep(200)
+  await renderOnce()
+  const background = captureCharFrame()
+  const second = spinnerFrame(background)
+  expect(second).toBeDefined()
+  expect(second).not.toBe(first)
+  expect(background).not.toContain("0 toolcalls")
+
+  screen.acceptMessage(child.id, replyMessage("Research complete"))
+  chats.sessions[chats.sessions.findIndex((session) => session.id === child.id)] = { ...child, running: false }
+  screen.acceptRun(child.id, "worker-run", "done")
+  await Bun.sleep(0)
+  await renderOnce()
+  const completed = captureCharFrame()
+  expect(completed).toContain("0 toolcalls")
+  const completedLine = completed.split("\n").find((line) => line.includes(child.title)) ?? ""
+  expect(completedLine.trimStart().startsWith("✓")).toBeTrue()
+
+  screen.destroy()
+  renderer.destroy()
+})
+
+test("settles a known running worker when an authoritative child lookup says it stopped", async () => {
   const { renderer, waitForFrame } = await createTestRenderer({ width: 100, height: 24, kittyKeyboard: true })
   const chats = fakeChats()
   const parent = await chats.create()

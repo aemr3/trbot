@@ -797,21 +797,10 @@ export class ChatScreen {
       this.streamingBySession.delete(child.id)
       this.bumpSessionRevision(child.id)
     }
-    const runningParents = new Set(sessions.filter((session) => session.running).map((session) => session.id))
+    // Root snapshots omit children. A background worker may outlive its parent turn,
+    // so only the child's own run event or an explicit child lookup can settle it.
     const knownChildren = this.sessions
       .filter((session) => session.parentSessionId !== null && incomingRootIds.has(session.parentSessionId))
-      .map((child) => {
-        if (runningParents.has(child.parentSessionId!)) return child
-        const settled = child.running ? { ...child, running: false } : child
-        if (child.running && child.parentPromptMessageId !== null) {
-          this.rememberCompletedSubagent(child.id, null, settled)
-        }
-        this.runIdBySession.delete(child.id)
-        this.runStartedAtBySession.delete(child.id)
-        this.bumpSessionRevision(child.id)
-        this.streamingBySession.delete(child.id)
-        return settled
-      })
     this.sessions = [
       ...sessions,
       ...knownChildren.filter((child) => !sessions.some((session) => session.id === child.id)),
@@ -2173,7 +2162,20 @@ export class ChatScreen {
       const currentChildren = children.filter((child) => (
         (this.sessionRevision.get(child.id) ?? 0) === (initialRevisions.get(child.id) ?? 0)
       ))
-      for (const child of currentChildren) this.rememberSession(child)
+      for (const child of currentChildren) {
+        this.rememberSession(child)
+        if (child.running) {
+          this.completedSubagents.delete(child.id)
+          this.loadedSubagentUpdatedAt.delete(child.id)
+          continue
+        }
+        if (this.runIdBySession.has(child.id) || this.streamingBySession.has(child.id)) {
+          this.runIdBySession.delete(child.id)
+          this.runStartedAtBySession.delete(child.id)
+          this.streamingBySession.delete(child.id)
+          this.bumpSessionRevision(child.id)
+        }
+      }
 
       const completed = currentChildren.filter((child) => (
         !child.running
@@ -2199,6 +2201,7 @@ export class ChatScreen {
         )
         this.loadedSubagentUpdatedAt.set(detail.session.id, detail.session.updatedAt)
       }
+      this.render.schedule()
     } catch (error) {
       this.options.logs.error("Subagent sessions", error)
     }
@@ -2732,6 +2735,12 @@ export class ChatScreen {
   private syncSpinner(session: ChatSession | null): void {
     const running = session !== null && (
       this.streamingBySession.has(session.id) || this.compactingSessionId === session.id
+      || (
+        session.parentSessionId === null
+        && this.sessions.some((child) => (
+          child.parentSessionId === session.id && this.runIdBySession.has(child.id)
+        ))
+      )
     )
     if (!running) {
       this.stopSpinner()
