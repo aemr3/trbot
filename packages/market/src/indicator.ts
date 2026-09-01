@@ -15,6 +15,7 @@ export const CANDLE_INDICATORS = [
   "RSI_14",
   "MACD",
   "PIVOT_DAILY_CLASSIC",
+  "RELATIVE_VOLUME",
 ] as const
 export type CandleIndicator = (typeof CANDLE_INDICATORS)[number]
 
@@ -28,6 +29,7 @@ export const CANDLE_INDICATOR_DESCRIPTIONS = {
   RSI_14: "14-change Wilder relative strength index of closes",
   MACD: "12/26-bar EMA difference with a 9-bar EMA signal and histogram",
   PIVOT_DAILY_CLASSIC: `Classic floor pivots from the previous observed ${MARKET_TIME_ZONE} trading date, projected across the current date; requires a range containing at least two dates`,
+  RELATIVE_VOLUME: `Cumulative ${MARKET_TIME_ZONE} session volume divided by the average cumulative volume through the same bar count over up to the prior 20 sessions in range; 1 is the typical pace and null until a prior comparable session exists`,
 } as const satisfies Record<CandleIndicator, string>
 
 // Keep the terminal chart's compact overlay controls separate from the larger
@@ -60,6 +62,7 @@ const EMA_PERIODS = {
 
 const BOLLINGER_PERIOD = 20
 const BOLLINGER_DEVIATIONS = 2
+const RELATIVE_VOLUME_BASELINE_SESSIONS = 20
 
 export interface BollingerBands {
   upper: (number | null)[]
@@ -245,6 +248,46 @@ export function movingAverageConvergenceDivergence(
   return { macd, signal, histogram }
 }
 
+/**
+ * Cumulative session volume relative to the average cumulative volume through
+ * the same bar count over the prior sessions, so 09:35 is compared with 09:35.
+ * Only prior sessions that reached the same bar count with reported volume
+ * enter the baseline; the value is null while none has.
+ */
+export function relativeVolumeSeries(
+  candles: Candle[],
+  baselineSessions = RELATIVE_VOLUME_BASELINE_SESSIONS,
+): (number | null)[] {
+  const values: (number | null)[] = candles.map(() => null)
+  const sessions: { day: string; cumulative: (number | null)[] }[] = []
+  let current: { day: string; cumulative: (number | null)[] } | null = null
+  for (let index = 0; index < candles.length; index++) {
+    const candle = candles[index]!
+    const day = marketDayKey(candle.timestamp)
+    if (current === null || current.day !== day) {
+      current = { day, cumulative: [] }
+      sessions.push(current)
+    }
+    const barIndex = current.cumulative.length
+    const previous = barIndex === 0 ? 0 : current.cumulative[barIndex - 1] ?? null
+    const cumulative = previous === null || candle.volume === null ? null : previous + candle.volume
+    current.cumulative.push(cumulative)
+    if (cumulative === null) continue
+    const priorStart = Math.max(0, sessions.length - 1 - baselineSessions)
+    let sum = 0
+    let count = 0
+    for (let session = priorStart; session < sessions.length - 1; session++) {
+      const comparable = sessions[session]!.cumulative[barIndex]
+      if (comparable === undefined || comparable === null) continue
+      sum += comparable
+      count++
+    }
+    if (count === 0 || sum <= 0) continue
+    values[index] = cumulative / (sum / count)
+  }
+  return values
+}
+
 export interface DailyClassicPivotSeries {
   pivot: (number | null)[]
   r1: (number | null)[]
@@ -322,6 +365,8 @@ export function candleIndicatorSeries(
       result.push(buildIndicatorSeries(indicator, { ...movingAverageConvergenceDivergence(candles) }))
     } else if (indicator === "PIVOT_DAILY_CLASSIC") {
       result.push(buildIndicatorSeries(indicator, { ...dailyClassicPivotLevels(candles) }))
+    } else if (indicator === "RELATIVE_VOLUME") {
+      result.push(buildIndicatorSeries(indicator, { ratio: relativeVolumeSeries(candles) }))
     } else {
       result.push(buildIndicatorSeries(indicator, {
         ema: exponentialMovingAverage(candles, EMA_PERIODS[indicator]),

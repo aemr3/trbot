@@ -37,13 +37,8 @@ import type {
   IndexImpactCode,
   IndexImpactSource,
 } from "@trbot/market/index-impact.ts"
-import type { NewsSource } from "@trbot/market/news.ts"
 import type { SettlementSource } from "@trbot/market/settlement.ts"
 import type { ShortSaleActivity, ShortSaleSource } from "@trbot/market/short-sales.ts"
-import {
-  intradayCandleContext,
-  sessionRelativeStrength,
-} from "@trbot/market/intraday-context.ts"
 import type {
   ViopMarginCall,
   ViopMarginRequirement,
@@ -62,19 +57,7 @@ import { paginate, paginateNewest, paginationHint, paginationOffset } from "./pa
 import { toolText, type ChatTool } from "./tool.ts"
 
 const STREAM_SNAPSHOT_TIMEOUT_MS = 10_000
-const MAX_ARTICLE_CHARS = 30_000
 const DEFAULT_INDICATOR_CANDLE_LIMIT = 120
-const INTRADAY_CONTEXT_RANGE = "MONTH"
-const INTRADAY_CONTEXT_INTERVAL = "MIN_5"
-const INTRADAY_CONTEXT_DEPTH_LEVELS = 5
-const INTRADAY_BASIS_MAX_SNAPSHOT_SKEW_MS = 5_000
-const INTRADAY_CONTEXT_INDICATORS = [
-  "EMA_20",
-  "EMA_50",
-  "VWAP",
-  "ATR_14",
-  "PIVOT_DAILY_CLASSIC",
-] as const satisfies readonly CandleIndicator[]
 const CANDLE_INTERVAL_HELP =
   "Supported intervals: MIN_1, MIN_5, MIN_15, MIN_30, HOUR_1, HOUR_4, DAY_1, WEEK_1, MONTH_1."
 
@@ -283,16 +266,6 @@ const RecentFinancialsParameters = Type.Object({
   })),
 })
 const SymbolOnlyParameters = Type.Object({ symbol: SymbolParameter })
-const IntradayContextParameters = Type.Object({
-  symbol: SymbolParameter,
-  benchmark: Type.Optional(Type.Union([
-    Type.Literal("BIST_30"),
-    Type.Literal("BIST_100"),
-  ], {
-    description: "Cash-underlying session return benchmark; defaults to BIST_100",
-    default: "BIST_100",
-  })),
-})
 const CandleParameters = Type.Object({
   symbol: Type.Optional(Type.String({
     description: "Exact nearest-expiry contract returned by list_instruments, its underlying, or an index alias such as ASELS, XU100, XU030, BIST100, or BIST30; never construct an expiry code",
@@ -305,7 +278,7 @@ const CandleParameters = Type.Object({
   indicators: Type.Optional(Type.Array(CandleIndicatorParameter, {
     description: [
       "Optional index-aligned indicator series.",
-      "For an intraday first pass prefer EMA_20, EMA_50, VWAP, and ATR_14; add RSI_14 or BOLLINGER only for a mean-reversion question.",
+      "For an intraday first pass prefer EMA_20, EMA_50, VWAP, ATR_14, and RELATIVE_VOLUME; add RSI_14 or BOLLINGER only for a mean-reversion question.",
       "Do not treat EMA, MACD, Bollinger, and RSI agreement as independent confirmation, and avoid requesting every indicator without a specific reason.",
     ].join(" "),
     minItems: 1,
@@ -367,21 +340,12 @@ const SettlementParameters = Type.Object({
   offset: ResultOffset,
   limit: ResultLimit,
 })
-const ListNewsParameters = Type.Object({
-  symbol: Type.Optional(SymbolParameter),
-  offset: ResultOffset,
-  limit: ResultLimit,
-})
-const ArticleParameters = Type.Object({
-  uid: Type.String({ description: "Article UID returned by list_news", minLength: 1, maxLength: 300 }),
-})
 const EmptyParameters = Type.Object({})
 
 export interface MarketDataSources {
   instruments: ViopInstrumentSource
   financials: RecentFinancialSource
   candles: CandleSource
-  news: NewsSource
   account: AccountSource
   orders: Pick<ViopOrderSource, "prepareOrder"> & Pick<ViopOrderCancellationSource, "listPendingOrders">
   brokerage: BrokerageDistributionSource
@@ -411,7 +375,7 @@ export interface MarketDataToolClients {
   now?: () => number
 }
 
-/** Read-only market, portfolio, broker, and news capabilities available to every chat agent. */
+/** Read-only market, portfolio, and broker capabilities available to every chat agent. */
 export function marketDataTools(clients: MarketDataToolClients): ChatTool[] {
   return [
     listInstrumentsTool(clients),
@@ -419,7 +383,6 @@ export function marketDataTools(clients: MarketDataToolClients): ChatTool[] {
     viopQuoteTool(clients),
     contractDetailsTool(clients),
     candlesTool(clients),
-    intradayContextTool(clients),
     indexImpactTool(clients),
     shortSalesTool(clients),
     marginCallsTool(clients),
@@ -430,8 +393,6 @@ export function marketDataTools(clients: MarketDataToolClients): ChatTool[] {
     equityQuoteTool(clients),
     brokerageTool(clients),
     settlementTool(clients),
-    listNewsTool(clients),
-    newsArticleTool(clients),
     pendingOrdersTool(clients),
     subscriptionFeaturesTool(clients),
     stopRulesTool(clients),
@@ -1211,141 +1172,6 @@ function cachedIndicatorSeries(
   return result
 }
 
-function intradayContextTool(clients: MarketDataToolClients): ChatTool<typeof IntradayContextParameters> {
-  return {
-    definition: {
-      name: "get_intraday_context",
-      description: [
-        "Read one compact first-pass intraday context for a nearest-expiry single-stock VIOP contract.",
-        "Returns previous/current session OHLCV, confirmed or forming 15/30-minute opening ranges, time-of-day relative volume,",
-        "completed and provisional EMA20/EMA50/VWAP/ATR14 snapshots, daily classic pivots, synchronized mid-to-mid futures-versus-spot basis,",
-        "contract spread/depth/liquidity, and cash-underlying relative strength versus BIST 30 or BIST 100.",
-        "The fixed source is five-minute candles over one month so volume baselines and indicator warm-ups are comparable.",
-        "This is descriptive context, not setup validation or a reward/risk decision; use get_candles for other indicators or timeframes.",
-      ].join(" "),
-      parameters: IntradayContextParameters,
-    },
-    run: async ({ symbol, benchmark }, options) => {
-      const asOf = clients.now?.() ?? Date.now()
-      const sources = clients.sources()
-      const resolvedBenchmark = benchmark ?? "BIST_100"
-      const benchmarkSymbol = resolvedBenchmark === "BIST_30" ? "XU030" : "XU100"
-      const instrument = resolveViopInstrument(
-        await sources.instruments.listInstruments({ signal: options.signal }),
-        symbol,
-      )
-      const [contract, underlying] = await Promise.all([
-        clients.candleData.instruments.resolveCandleInstrument(instrument.symbol, "INSTRUMENT", {
-          signal: options.signal,
-        }),
-        clients.candleData.instruments.resolveCandleInstrument(instrument.symbol, "UNDERLYING", {
-          signal: options.signal,
-        }),
-      ])
-      const [contractSeries, underlyingSeries, benchmarkSeries, basis, liquidity] = await Promise.all([
-        clients.candleData.candles.loadCandles(
-          contract.candleSymbol,
-          INTRADAY_CONTEXT_RANGE,
-          INTRADAY_CONTEXT_INTERVAL,
-          { signal: options.signal, target: "INSTRUMENT" },
-        ),
-        clients.candleData.candles.loadCandles(
-          underlying.candleSymbol,
-          INTRADAY_CONTEXT_RANGE,
-          INTRADAY_CONTEXT_INTERVAL,
-          { signal: options.signal, target: "UNDERLYING" },
-        ),
-        clients.candleData.candles.loadCandles(
-          benchmarkSymbol,
-          INTRADAY_CONTEXT_RANGE,
-          INTRADAY_CONTEXT_INTERVAL,
-          { signal: options.signal, target: resolvedBenchmark },
-        ),
-        loadBasis(
-          sources,
-          instrument,
-          contract.contractSymbol,
-          underlying.underlyingSymbol,
-          clients.now ?? Date.now,
-          options.signal,
-        ),
-        marketReading(
-          () => loadLiquidity(clients, contract.contractSymbol, asOf, options.signal),
-          options.signal,
-        ),
-      ])
-      const visibleContractSeries = pointInTimeSeries(contractSeries, asOf)
-      const candleState = resolveCandleState(
-        visibleContractSeries.candles,
-        closedCandles(visibleContractSeries, asOf),
-        asOf,
-      )
-      const indicators = candleIndicatorSeries(
-        visibleContractSeries.candles,
-        INTRADAY_CONTEXT_INDICATORS,
-        visibleContractSeries.intervalMs,
-      )
-      const pivots = indicators.find(({ indicator }) => indicator === "PIVOT_DAILY_CLASSIC")
-      const sessionContext = intradayCandleContext(visibleContractSeries, asOf)
-
-      return dataOutcome(`Read compact intraday context for ${contract.displayName}.`, {
-        readAt: asOf,
-        instrument: {
-          uid: instrument.uid,
-          symbol: instrument.symbol,
-          displayName: instrument.displayName,
-          underlyingSymbol: underlying.underlyingSymbol,
-        },
-        source: {
-          range: visibleContractSeries.range,
-          interval: visibleContractSeries.interval,
-          intervalMs: visibleContractSeries.intervalMs,
-          currency: visibleContractSeries.currency,
-        },
-        status: {
-          lastCompletedTimestamp: candleState.lastCompletedTimestamp,
-          formingTimestamp: candleState.formingTimestamp,
-        },
-        levels: {
-          previousSession: sessionContext.previousSession,
-          currentSession: sessionContext.currentSession,
-          openingRanges: sessionContext.openingRanges,
-          dailyClassicPivots: pivots
-            ? {
-                status: "CONFIRMED",
-                semantics: pivots.semantics,
-                values: indicatorSnapshot(
-                  pivots.lines,
-                  candleState.formingIndex ?? candleState.lastCompletedIndex,
-                ),
-              }
-            : null,
-        },
-        relativeVolume: sessionContext.relativeVolume,
-        technicals: {
-          confirmed: intradayTechnicalSnapshot(
-            visibleContractSeries.candles,
-            indicators,
-            candleState.lastCompletedIndex,
-          ),
-          provisional: intradayTechnicalSnapshot(
-            visibleContractSeries.candles,
-            indicators,
-            candleState.formingIndex,
-          ),
-        },
-        basis,
-        liquidity,
-        relativeStrength: {
-          target: "UNDERLYING",
-          benchmark: resolvedBenchmark,
-          reading: sessionRelativeStrength(underlyingSeries, benchmarkSeries, asOf),
-        },
-      })
-    },
-  }
-}
-
 function pageIndicatorSeries(
   indicators: CandleIndicatorSeries[],
   candleState: CandleState,
@@ -1410,82 +1236,10 @@ function indicatorSnapshot(
   return { available: Object.values(values).every((value) => value !== null), values }
 }
 
-interface IntradayTechnicalSnapshot {
-  candleTimestamp: number
-  close: number
-  ema20: number | null
-  ema50: number | null
-  vwap: number | null
-  atr14: number | null
-  priceVsVwap: {
-    absolute: number
-    percent: number | null
-    atrUnits: number | null
-  } | null
-}
-
-function intradayTechnicalSnapshot(
-  candles: Candle[],
-  indicators: CandleIndicatorSeries[],
-  index: number | null,
-): IntradayTechnicalSnapshot | null {
-  if (index === null || index < 0) return null
-  const candle = candles[index]
-  if (!candle) return null
-  const ema20 = indicatorValue(indicators, "EMA_20", "ema", index)
-  const ema50 = indicatorValue(indicators, "EMA_50", "ema", index)
-  const vwap = indicatorValue(indicators, "VWAP", "vwap", index)
-  const atr14 = indicatorValue(indicators, "ATR_14", "atr", index)
-  return {
-    candleTimestamp: candle.timestamp,
-    close: candle.close,
-    ema20,
-    ema50,
-    vwap,
-    atr14,
-    priceVsVwap: vwap === null
-      ? null
-      : {
-          absolute: candle.close - vwap,
-          percent: vwap === 0 ? null : (candle.close / vwap - 1) * 100,
-          atrUnits: atr14 !== null && atr14 > 0 ? (candle.close - vwap) / atr14 : null,
-        },
-  }
-}
-
-function indicatorValue(
-  indicators: CandleIndicatorSeries[],
-  indicator: CandleIndicator,
-  line: string,
-  index: number,
-): number | null {
-  return indicators.find((candidate) => candidate.indicator === indicator)?.lines[line]?.[index] ?? null
-}
-
-function pointInTimeSeries(series: CandleSeries, asOf: number): CandleSeries {
-  return {
-    ...series,
-    candles: series.candles
-      .filter((candle) => candle.timestamp <= asOf)
-      .sort((left, right) => left.timestamp - right.timestamp),
-  }
-}
-
 interface TimedContractQuote {
   quote: ViopOrderPreparation
   observedAt: number
   mid: number | null
-}
-
-interface BasisPrice {
-  instrumentUid: string | null
-  symbol: string
-  source: "BROKERAGE_CONTRACT_QUOTE" | "MARKET_DATA_DEPTH_SNAPSHOT"
-  timestamp: number
-  timestampKind: "CLIENT_OBSERVED_AT"
-  bid: number
-  ask: number
-  price: number
 }
 
 async function loadContractQuoteSnapshot(
@@ -1503,231 +1257,6 @@ async function loadContractQuoteSnapshot(
     quote,
     observedAt: now(),
     mid: quote.bid === null || quote.ask === null ? null : (quote.bid + quote.ask) / 2,
-  }
-}
-
-async function loadBasis(
-  sources: MarketDataSources,
-  instrument: ViopInstrument,
-  candleContractSymbol: string,
-  candleUnderlyingSymbol: string | null,
-  now: () => number,
-  signal?: AbortSignal,
-) {
-  const futuresSymbol = instrument.symbol.trim().toUpperCase()
-  const spotSymbol = instrument.underlyingSymbol?.trim().toUpperCase() ?? null
-  if (candleContractSymbol.trim().toUpperCase() !== futuresSymbol || candleUnderlyingSymbol?.trim().toUpperCase() !== spotSymbol) {
-    return unavailableBasis(
-      "MISMATCH",
-      `Resolved candle instruments do not match ${futuresSymbol} and its underlying ${spotSymbol ?? "(none)"}`,
-    )
-  }
-  if (spotSymbol === null) {
-    return unavailableBasis("MISMATCH", `${futuresSymbol} has no exact cash/spot underlying symbol`)
-  }
-
-  try {
-    const [futuresSnapshot, spotSnapshot] = await Promise.all([
-      loadContractQuoteSnapshot(sources, instrument, now, signal),
-      sources.depthBooks.loadDepthBookSnapshot(spotSymbol, { signal }).then((book) => ({
-        book,
-        observedAt: now(),
-      })),
-    ])
-    const { quote, mid: futuresMid, observedAt: futuresTimestamp } = futuresSnapshot
-    const { book: spotBook, observedAt: spotTimestamp } = spotSnapshot
-    const spotBid = spotBook.bids[0]?.price ?? null
-    const spotAsk = spotBook.asks[0]?.price ?? null
-    const spotMid = spotBid === null || spotAsk === null ? null : (spotBid + spotAsk) / 2
-    const futures = twoSidedBasisPrice({
-      instrumentUid: instrument.uid,
-      symbol: futuresSymbol,
-      source: "BROKERAGE_CONTRACT_QUOTE",
-      timestamp: futuresTimestamp,
-      bid: quote.bid,
-      ask: quote.ask,
-      mid: futuresMid,
-    })
-    const spot = twoSidedBasisPrice({
-      instrumentUid: quote.underlyingInstrumentUid,
-      symbol: spotSymbol,
-      source: "MARKET_DATA_DEPTH_SNAPSHOT",
-      timestamp: spotTimestamp,
-      bid: spotBid,
-      ask: spotAsk,
-      mid: spotMid,
-    })
-
-    if (spotBook.symbol.trim().toUpperCase() !== spotSymbol) {
-      return unavailableBasis("MISMATCH", `Cash quote returned ${spotBook.symbol} instead of ${spotSymbol}`, futures, spot)
-    }
-    if (quote.underlyingInstrumentUid === null) {
-      return unavailableBasis("MISMATCH", `Contract ${futuresSymbol} returned no underlying instrument UID`, futures, spot)
-    }
-    if (futures === null || spot === null) {
-      return unavailableBasis(
-        "UNAVAILABLE",
-        `A valid two-sided futures and cash market is required for ${futuresSymbol}`,
-        futures,
-        spot,
-      )
-    }
-
-    const timestampSkewMs = Math.abs(futures.timestamp - spot.timestamp)
-    if (spotBook.marketClosed || timestampSkewMs > INTRADAY_BASIS_MAX_SNAPSHOT_SKEW_MS) {
-      const reason = spotBook.marketClosed
-        ? `Cash market snapshot for ${spotSymbol} is closed`
-        : `Futures and cash snapshots are ${timestampSkewMs}ms apart`
-      return unavailableBasis("STALE", reason, futures, spot, timestampSkewMs)
-    }
-
-    // The same bid/ask snapshot powers get_viop_quote. Its reported last price
-    // is an additional independent guard against a wrongly paired quote.
-    const canonicalFuturesPrice = quote.lastPrice ?? futuresSnapshot.mid
-    if (canonicalFuturesPrice === null || materiallyDifferent(futures.price, canonicalFuturesPrice)) {
-      return unavailableBasis(
-        "MISMATCH",
-        `Basis futures price does not match the canonical quote for ${futuresSymbol}`,
-        futures,
-        spot,
-        timestampSkewMs,
-      )
-    }
-
-    const absolute = futures.price - spot.price
-    return {
-      available: true as const,
-      status: "LIVE" as const,
-      convention: "MID_TO_MID" as const,
-      maxTimestampSkewMs: INTRADAY_BASIS_MAX_SNAPSHOT_SKEW_MS,
-      timestampSkewMs,
-      futures,
-      spot,
-      futuresPrice: futures.price,
-      spotPrice: spot.price,
-      absolute,
-      percent: spot.price === 0 ? null : absolute / spot.price * 100,
-    }
-  } catch (error) {
-    if (signal?.aborted) throw error
-    return unavailableBasis("UNAVAILABLE", error instanceof Error ? error.message : String(error))
-  }
-}
-
-function twoSidedBasisPrice(reading: {
-  instrumentUid: string | null
-  symbol: string
-  source: BasisPrice["source"]
-  timestamp: number
-  bid: number | null
-  ask: number | null
-  mid: number | null
-}): BasisPrice | null {
-  if (
-    reading.bid === null
-    || reading.ask === null
-    || reading.mid === null
-    || !Number.isFinite(reading.bid)
-    || !Number.isFinite(reading.ask)
-    || reading.bid <= 0
-    || reading.ask < reading.bid
-  ) return null
-  return {
-    instrumentUid: reading.instrumentUid,
-    symbol: reading.symbol,
-    source: reading.source,
-    timestamp: reading.timestamp,
-    timestampKind: "CLIENT_OBSERVED_AT",
-    bid: reading.bid,
-    ask: reading.ask,
-    price: reading.mid,
-  }
-}
-
-function unavailableBasis(
-  status: "STALE" | "MISMATCH" | "UNAVAILABLE",
-  reason: string,
-  futures: BasisPrice | null = null,
-  spot: BasisPrice | null = null,
-  timestampSkewMs: number | null = null,
-) {
-  return {
-    available: false as const,
-    status,
-    reason,
-    convention: "MID_TO_MID" as const,
-    maxTimestampSkewMs: INTRADAY_BASIS_MAX_SNAPSHOT_SKEW_MS,
-    timestampSkewMs,
-    futures,
-    spot,
-    futuresPrice: null,
-    spotPrice: null,
-    absolute: null,
-    percent: null,
-  }
-}
-
-function materiallyDifferent(left: number, right: number): boolean {
-  const scale = Math.max(Math.abs(left), Math.abs(right))
-  return Math.abs(left - right) > Math.max(scale * 0.005, 0.01)
-}
-
-async function loadLiquidity(
-  clients: MarketDataToolClients,
-  contractSymbol: string,
-  readAt: number,
-  signal?: AbortSignal,
-) {
-  const book = await clients.sources().depthBooks.loadDepthBookSnapshot(contractSymbol, { signal })
-  const bids = book.bids.slice(0, INTRADAY_CONTEXT_DEPTH_LEVELS)
-  const asks = book.asks.slice(0, INTRADAY_CONTEXT_DEPTH_LEVELS)
-  const bestBid = bids[0]?.price ?? null
-  const bestAsk = asks[0]?.price ?? null
-  const mid = bestBid === null || bestAsk === null ? null : (bestBid + bestAsk) / 2
-  const spread = bestBid === null || bestAsk === null ? null : bestAsk - bestBid
-  const bidLots = bids.reduce((sum, level) => sum + level.lots, 0)
-  const askLots = asks.reduce((sum, level) => sum + level.lots, 0)
-  const topDepthLots = bidLots + askLots
-  const recentBuyLots = book.trades
-    .filter((trade) => trade.side === "BUY")
-    .reduce((sum, trade) => sum + trade.lots, 0)
-  const recentSellLots = book.trades
-    .filter((trade) => trade.side === "SELL")
-    .reduce((sum, trade) => sum + trade.lots, 0)
-  return {
-    readAt,
-    marketClosed: book.marketClosed,
-    bestBid,
-    bestAsk,
-    mid,
-    spread,
-    spreadBps: spread === null || mid === null || mid === 0 ? null : spread / mid * 10_000,
-    topLevels: INTRADAY_CONTEXT_DEPTH_LEVELS,
-    topBidLots: bidLots,
-    topAskLots: askLots,
-    topImbalancePercent: topDepthLots === 0 ? null : (bidLots - askLots) / topDepthLots * 100,
-    totalBidLots: book.buyLots,
-    totalAskLots: book.sellLots,
-    recentTrades: {
-      count: book.trades.length,
-      buyLots: recentBuyLots,
-      sellLots: recentSellLots,
-      latestTimestamp: book.trades
-        .flatMap((trade) => trade.timestamp === null ? [] : [trade.timestamp])
-        .reduce<number | null>((latest, timestamp) => latest === null ? timestamp : Math.max(latest, timestamp), null),
-    },
-  }
-}
-
-async function marketReading<T extends object>(
-  read: () => Promise<T>,
-  signal?: AbortSignal,
-): Promise<({ available: true } & T) | { available: false; reason: string }> {
-  try {
-    return { available: true, ...await read() }
-  } catch (error) {
-    if (signal?.aborted) throw error
-    return { available: false, reason: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -1983,52 +1512,6 @@ function settlementTool(clients: MarketDataToolClients): ChatTool<typeof Settlem
         totalHoldings: settlement.holdings.length,
         page: page.page,
       })
-    },
-  }
-}
-
-function listNewsTool(clients: MarketDataToolClients): ChatTool<typeof ListNewsParameters> {
-  return {
-    definition: {
-      name: "list_news",
-      description: "List recent general market news or news for the equity underlying a VIOP contract. Use get_news_article for the body.",
-      parameters: ListNewsParameters,
-    },
-    run: async ({ symbol, offset, limit }, options) => {
-      const sources = clients.sources()
-      const instrument = symbol
-        ? resolveViopInstrument(await sources.instruments.listInstruments({ signal: options.signal }), symbol)
-        : null
-      const articles = await sources.news.listNews({ instrumentUid: instrument?.uid, signal: options.signal })
-      const page = paginate(articles, offset, limit ?? 20)
-      const returned = page.values.map(({ body: _body, ...article }) => article)
-      return dataOutcome(`Found ${articles.length} news article${articles.length === 1 ? "" : "s"}; returned ${returned.length}.${paginationHint(page.page)}`, {
-        instrument,
-        totalArticles: articles.length,
-        articles: returned,
-        page: page.page,
-      })
-    },
-  }
-}
-
-function newsArticleTool(clients: MarketDataToolClients): ChatTool<typeof ArticleParameters> {
-  return {
-    definition: {
-      name: "get_news_article",
-      description: "Read the full body and attachments of a news article returned by list_news.",
-      parameters: ArticleParameters,
-    },
-    run: async ({ uid }, options) => {
-      const article = await clients.sources().news.getArticle(uid, { signal: options.signal })
-      if (!article) throw new Error(`No news article found with UID ${uid}`)
-      const truncated = article.body.length > MAX_ARTICLE_CHARS
-      const normalized = {
-        ...article,
-        body: article.body.slice(0, MAX_ARTICLE_CHARS),
-        bodyTruncated: truncated,
-      }
-      return dataOutcome(`Read news article: ${article.headline}.`, normalized)
     },
   }
 }

@@ -11,6 +11,7 @@ import {
   indicatorLines,
   movingAverageConvergenceDivergence,
   relativeStrengthIndex,
+  relativeVolumeSeries,
   volumeWeightedAveragePrice,
 } from "./indicator.ts"
 
@@ -146,6 +147,53 @@ test("projects the prior trading date across every candle in the current date", 
   expect(levels.s1.slice(1)).toEqual([90, 90])
   expect(levels.s2.slice(1)).toEqual([80, 80])
   expect(levels.s3.slice(1)).toEqual([70, 70])
+})
+
+test("relative volume compares each bar with the same time of day in prior sessions", () => {
+  const sessionBars = (day: number, volumes: number[]): Candle[] =>
+    volumes.map((volume, index) => ({
+      timestamp: START + day * DAY_MS + index * HOUR_MS,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100,
+      volume,
+    }))
+  const candles = [
+    ...sessionBars(0, [100, 100, 100]),
+    ...sessionBars(1, [300, 100, 100]),
+    ...sessionBars(2, [400, 400, 400]),
+  ]
+
+  const values = relativeVolumeSeries(candles)
+
+  // The first session has no prior session to compare with.
+  expect(values.slice(0, 3)).toEqual([null, null, null])
+  // Session two: 300 vs 100, then cumulative 400 vs 200, then 500 vs 300.
+  expect(values[3]).toBeCloseTo(3, 10)
+  expect(values[4]).toBeCloseTo(2, 10)
+  expect(values[5]).toBeCloseTo(500 / 300, 10)
+  // Session three averages both prior sessions bar for bar: 400 vs (100 + 300) / 2.
+  expect(values[6]).toBeCloseTo(2, 10)
+  expect(values[8]).toBeCloseTo(1_200 / 400, 10)
+})
+
+test("relative volume skips prior sessions that are shorter or missing volume", () => {
+  const shortPrior = [
+    { timestamp: START, open: 100, high: 101, low: 99, close: 100, volume: 100 },
+    { timestamp: START + DAY_MS, open: 100, high: 101, low: 99, close: 100, volume: 200 },
+    { timestamp: START + DAY_MS + HOUR_MS, open: 100, high: 101, low: 99, close: 100, volume: 200 },
+  ]
+  const values = relativeVolumeSeries(shortPrior)
+  expect(values[1]).toBeCloseTo(2, 10)
+  // The prior session never reached a second bar, so the second bar has no baseline.
+  expect(values[2]).toBeNull()
+
+  const unreported = relativeVolumeSeries([
+    { timestamp: START, open: 100, high: 101, low: 99, close: 100, volume: null },
+    { timestamp: START + DAY_MS, open: 100, high: 101, low: 99, close: 100, volume: 200 },
+  ])
+  expect(unreported).toEqual([null, null])
 })
 
 test("keeps agent-only indicators outside the chart indicator set", () => {

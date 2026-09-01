@@ -48,7 +48,7 @@ test("teaches the agent VIOP exposure and the difference between limits and circ
   expect(CHAT_SYSTEM_PROMPT).toContain("equity quotes still belong to an available cash-equity underlying")
   expect(CHAT_SYSTEM_PROMPT).toContain("none proves trade direction by itself")
   expect(CHAT_SYSTEM_PROMPT).toContain("not independent proof of a setup")
-  expect(CHAT_SYSTEM_PROMPT).toContain("Use get_intraday_context for a first-pass")
+  expect(CHAT_SYSTEM_PROMPT).toContain("only the indicators the setup needs")
   expect(CHAT_SYSTEM_PROMPT).toContain("latest completed candle for confirmation")
   expect(CHAT_SYSTEM_PROMPT).toContain("forming-candle reading as provisional")
   expect(CHAT_SYSTEM_PROMPT).toContain("what happened at trigger time, not current market data")
