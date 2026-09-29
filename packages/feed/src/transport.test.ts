@@ -38,6 +38,7 @@ describe("FetchFeedTransport", () => {
     const received = ReceivedRequestSchema.parse(JSON.parse(response.body))
     expect(received.headers.authorization).toBe("Bearer feed-token")
     expect(received.headers["content-type"]).toBe("application/json")
+    expect(received.headers["x-ft-request-context"]).toMatch(/^fintables\d{10}-[A-Za-z0-9_-]{43}$/)
     expect(received.body).toBe(JSON.stringify({ refresh: "refresh-token" }))
     expect(received.headers["user-agent"]).toContain("Chrome/")
     expect(received.headers["sec-ch-ua"]).toContain("Google Chrome")

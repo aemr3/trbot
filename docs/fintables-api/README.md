@@ -31,11 +31,19 @@ and HTTP2 connection profile, so those layers need to identify the same client:
 | Bun `fetch` with a Chrome `User-Agent`, `Origin`, `Referer` | **403** challenge page |
 | `curl` with a Chrome `User-Agent` | **403** challenge page |
 | Chrome headers with a matching Chrome TLS/HTTP2 profile | Selected transport |
+| Matching Chrome profile without `X-FT-Request-Context` (2026-09-29) | **403** Cloudflare block page |
+| Same profile with the feed's signed request context | **200** login and session check |
 
 Chrome HTTP headers and Bun's native TLS/HTTP2 profile describe different
 clients, so that combination is rejected. `FetchFeedTransport` uses Wreq's
 aligned Chrome TLS, HTTP2, and header profile from inside the Bun process. Keep
 the header and connection profiles together when changing this transport.
+
+The web client also attaches `X-FT-Request-Context` to feed API requests. Its
+public JavaScript signs `fintables` plus the current Unix second with HMAC-SHA256,
+then sends the prefix and URL-safe signature together. Without that header,
+Cloudflare blocks the account API before it can validate credentials. The feed
+transport generates a fresh value per request; no browser session is needed.
 
 A challenge response is HTML with `Just a moment...` and HTTP 403. Treat it as a
 distinct, retryable-but-not-auth failure so it is never confused with a 401.

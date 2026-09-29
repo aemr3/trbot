@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto"
 import { z } from "zod"
 import {
   createTransport,
@@ -83,6 +84,14 @@ export function isChallengeBody(body: string): boolean {
 // profile reproduces the Chrome handshake and headers used to verify the feed.
 let sharedHttpTransport: Promise<FingerprintTransport> | null = null
 
+const REQUEST_CONTEXT_KEY = "ft-req-ctx-n8vQ2mLx4pR7wK9tY3cH"
+
+function requestContext(): string {
+  const prefix = `fintables${Math.floor(Date.now() / 1_000)}`
+  const signature = createHmac("sha256", REQUEST_CONTEXT_KEY).update(prefix).digest("base64url")
+  return `${prefix}-${signature}`
+}
+
 function feedHttpTransport(): Promise<FingerprintTransport> {
   sharedHttpTransport ??= createTransport({
     browser: "chrome_142",
@@ -117,9 +126,12 @@ function parseBody<T>(body: string, schema: z.ZodType<T>): T | null {
 
 export class FetchFeedTransport implements FeedTransport {
   async request(request: FeedRequest): Promise<FeedResponse> {
-    const headers: Record<string, string> = {}
-    if (request.token) headers.Authorization = `Bearer ${request.token}`
-    if (request.body !== undefined) headers["Content-Type"] = "application/json"
+    // The feed's edge requires the same short-lived signed context its web client attaches.
+    const headers = {
+      "X-FT-Request-Context": requestContext(),
+      ...(request.token && { Authorization: `Bearer ${request.token}` }),
+      ...(request.body !== undefined && { "Content-Type": "application/json" }),
+    }
 
     const response = await fingerprintFetch(request.url, {
       method: request.method ?? "GET",
