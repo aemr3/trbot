@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import {
   Type,
+  contentText,
   createModels,
   fauxAssistantMessage,
   fauxProvider,
@@ -46,9 +47,12 @@ test("describes the subagent modes as mutually exclusive", () => {
 
 test("runs a single worker with every non-delegation parent tool", async () => {
   const { faux, models } = harness(1, (context) => {
-    expect(context.systemPrompt).toContain("general-purpose subagent")
-    expect(context.systemPrompt).toContain("Do not delegate or create further subagents")
-    expect(context.tools?.map((tool) => tool.name)).toEqual(["web_search"])
+    const system = context.messages[0]
+    expect(system?.role).toBe("system")
+    if (system?.role !== "system") throw new Error("Missing system message")
+    expect(system.content).toContain("general-purpose subagent")
+    expect(system.content).toContain("Do not delegate or create further subagents")
+    expect(system.toolsAdded?.map((tool) => tool.name)).toEqual(["web_search"])
     return fauxAssistantMessage("Worker result.")
   })
   const tools = new ChatTools([passthroughTool("web_search")])
@@ -227,7 +231,8 @@ test("rejects more than eight parallel tasks before starting a worker", async ()
 
 test("reports the shared turn limit and lets the parent agent continue", async () => {
   const { faux, models } = harness(11, (context) => {
-    if (context.systemPrompt?.includes("general-purpose subagent")) {
+    const system = context.messages[0]
+    if (system?.role === "system" && contentText(system.content).includes("general-purpose subagent")) {
       return fauxAssistantMessage("Worker result.")
     }
 
@@ -277,7 +282,8 @@ test("hides delegation from workers and rejects a hallucinated nested call", asy
   faux.setResponses([
     (context) => {
       expect(context.messages.at(-1)).toMatchObject({ role: "user", content: "Outer task" })
-      expect(context.tools?.map((tool) => tool.name)).toEqual(["web_search"])
+      const system = context.messages[0]
+      expect(system?.role === "system" ? system.toolsAdded?.map((tool) => tool.name) : undefined).toEqual(["web_search"])
       return fauxAssistantMessage([
         fauxToolCall("subagent", { agent: "worker", task: "Nested task" }),
       ], { stopReason: "toolUse" })

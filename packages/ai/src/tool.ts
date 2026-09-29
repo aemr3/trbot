@@ -2,6 +2,7 @@ import {
   validateToolCall,
   type Api,
   type Model,
+  type JsonValue,
   type Static,
   type Tool,
   type ToolCall,
@@ -16,7 +17,7 @@ export interface ChatToolOutcome {
   /** Full content for the model when the transcript should stay compact. */
   modelBlocks?: ChatBlock[]
   /** Optional tool-specific metadata retained for future application consumers. */
-  details?: unknown
+  details?: JsonValue
   isError: boolean
   /** Successful state changes journaled for optional conversation rewind. */
   effects?: ChatToolEffect[]

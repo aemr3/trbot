@@ -234,7 +234,7 @@ function measuredContextTokens(input: ChatCompactionInput): number | null {
 }
 
 function estimateMessageTokens(message: Message): number {
-  if (message.role === "user" || message.role === "toolResult") {
+  if (message.role === "system" || message.role === "user" || message.role === "toolResult") {
     const text = Array.isArray(message.content)
       ? message.content.map((block) => block.type === "text" ? block.text : "[image]").join("")
       : message.content
@@ -252,6 +252,12 @@ function estimateTextTokens(text: string): number {
 }
 
 function serializeRecord(message: ChatRecord): string {
+  if (message.role === "system") {
+    const content = Array.isArray(message.content)
+      ? message.content.map((block) => block.text).join("\n")
+      : message.content
+    return `[System]: ${content}`
+  }
   if (message.role === "user") {
     const content = Array.isArray(message.content)
       ? message.content.map((block) => block.type === "text" ? block.text : "[Attached image]").join("\n")

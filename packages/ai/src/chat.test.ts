@@ -9,7 +9,9 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai"
 import type { ChatMessageDraft } from "@trbot/chat/session.ts"
+import type { AiCredentialStore } from "./credential-store.ts"
 import { CHAT_SYSTEM_PROMPT, ChatAgent, type ChatRecord } from "./chat.ts"
+import { createHarness, harnessModel } from "./harness.ts"
 import { steeringPrompt } from "./steering.ts"
 import { ChatTools, toolText, type ChatTool } from "./tool.ts"
 
@@ -96,6 +98,53 @@ test("streams a reply and hands over the message it produced", async () => {
   expect(drafts[0]?.message.blocks.map((block) => block.kind)).toEqual(["THINKING", "TEXT"])
 })
 
+for (const providerId of ["opencode", "opencode-go"]) {
+  test(`sends the chat session ID with ${providerId} model requests`, async () => {
+    const credentials: AiCredentialStore = {
+      get: async (id) => id === providerId
+        ? { providerId: id, credential: { type: "api_key", key: "test-key" }, createdAt: 0, updatedAt: 0 }
+        : null,
+      list: async () => [],
+      put: async () => {},
+      delete: async () => {},
+    }
+    const models = createHarness(credentials, { fetch: async () => Response.json({}) })
+    const requests: string[] = []
+    const agent = new ChatAgent({
+      models,
+      fetch: async (_input, init) => {
+        const sessionId = new Headers(init?.headers).get("x-opencode-session")
+        if (!sessionId) return Response.json({ type: "MissingSessionID" }, { status: 400 })
+        requests.push(sessionId)
+        return new Response(
+          'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"Ready."},"finish_reason":null}]}\n\n'
+          + 'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+          + "data: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        )
+      },
+    })
+    const text: string[] = []
+    const result = await agent.run({
+      model: harnessModel(models, providerId, "glm-5.3-flash"),
+      history: [],
+      prompt: "hey",
+      chatSessionId: "chat-123",
+      events: {
+        onText: (delta) => { text.push(delta) },
+        onReasoning: () => {},
+        onToolCall: () => {},
+        onRetry: ignoreRetry,
+        onMessage: async () => {},
+      },
+    })
+
+    expect(result).toEqual({ completed: true, aborted: false, errorMessage: null })
+    expect(requests).toEqual(["chat-123"])
+    expect(text.join("")).toBe("Ready.")
+  })
+}
+
 test("replays the stored history rather than only the new question", async () => {
   const { faux, models } = scripted()
   let replayedRoles: string[] = []
@@ -129,7 +178,7 @@ test("replays the stored history rather than only the new question", async () =>
     events: { onText: () => {}, onReasoning: () => {}, onToolCall: () => {}, onRetry: ignoreRetry, onMessage: async () => {} },
   })
 
-  expect(replayedRoles).toEqual(["user", "assistant", "user"])
+  expect(replayedRoles).toEqual(["system", "user", "assistant", "user"])
 })
 
 test("runs the tools a reply asks for and answers with their results", async () => {
@@ -241,6 +290,7 @@ test("applies steering after the current tool batch and before the next model ca
     fauxAssistantMessage([fauxToolCall("inspect_stop", {})], { stopReason: "toolUse" }),
     (context) => {
       expect(context.messages.map((message) => message.role)).toEqual([
+        "system",
         "user",
         "assistant",
         "toolResult",
@@ -682,6 +732,7 @@ test("retries an abnormal provider disconnect without running completed tools ag
     (context, options) => {
       expect(options?.sessionId).toBe("chat-1")
       expect(context.messages.map((message) => message.role)).toEqual([
+        "system",
         "user",
         "assistant",
         "toolResult",
@@ -741,6 +792,7 @@ test("keeps retrying a provider overload after a completed tool without running 
     fauxAssistantMessage([], overload),
     (context) => {
       expect(context.messages.map((message) => message.role)).toEqual([
+        "system",
         "user",
         "assistant",
         "toolResult",

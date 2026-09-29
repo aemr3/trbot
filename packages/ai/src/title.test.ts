@@ -18,11 +18,14 @@ test("generates a title in an isolated tool-free context", async () => {
   const faux = fauxProvider({ models: [{ id: "title-model", reasoning: true }] })
   faux.setResponses([
     (context) => {
-      expect(context.tools).toBeUndefined()
-      expect(context.systemPrompt).toContain("3-7 word title")
-      expect(context.systemPrompt).not.toContain("trading desk assistant")
-      expect(context.messages[0]?.role).toBe("user")
-      expect(context.messages[0]?.content).toContain("Where is ASELS heading?")
+      const system = context.messages[0]
+      expect(system?.role).toBe("system")
+      if (system?.role !== "system") throw new Error("Missing system message")
+      expect(system.toolsAdded).toBeUndefined()
+      expect(system.content).toContain("3-7 word title")
+      expect(system.content).not.toContain("trading desk assistant")
+      expect(context.messages[1]?.role).toBe("user")
+      expect(context.messages[1]?.content).toContain("Where is ASELS heading?")
       return fauxAssistantMessage("<title>Review ASELS price direction</title>")
     },
   ])

@@ -15,7 +15,7 @@ test("compacts the old prefix and keeps recent complete turns verbatim", async (
   const { faux, models } = harness()
   faux.setResponses([
     (context) => {
-      const prompt = context.messages[0]
+      const prompt = context.messages[1]
       expect(prompt?.role).toBe("user")
       expect(JSON.stringify(prompt)).toContain("Previous objective")
       expect(JSON.stringify(prompt)).toContain("old question")
