@@ -31,19 +31,16 @@ describe("FeedAwareInstrumentSource", () => {
 
     expect(instruments.map((entry) => [entry.symbol, entry.marketData])).toEqual([
       ["F_GARAN0826", {
-        instrumentCandles: true,
         underlyingSymbol: "GARAN",
         underlyingKind: "equity",
         brokerAnalytics: true,
       }],
       ["F_XAUTRYM0826", {
-        instrumentCandles: true,
         underlyingSymbol: null,
         underlyingKind: null,
         brokerAnalytics: false,
       }],
       ["F_USDTRY0826", {
-        instrumentCandles: true,
         underlyingSymbol: "USDTRY",
         underlyingKind: "currency",
         brokerAnalytics: false,
@@ -51,7 +48,7 @@ describe("FeedAwareInstrumentSource", () => {
     ])
   })
 
-  test("marks a brokerage contract absent from the active feed collection unavailable", async () => {
+  test("keeps underlying availability when a brokerage contract is absent from the active feed collection", async () => {
     const source = new FeedAwareInstrumentSource({
       listInstruments: async () => [instrument("future-old", "F_GARAN1026", "GARAN")],
     }, feed)
@@ -59,7 +56,6 @@ describe("FeedAwareInstrumentSource", () => {
     const [instrumentWithAvailability] = await source.listInstruments()
 
     expect(instrumentWithAvailability?.marketData).toEqual({
-      instrumentCandles: false,
       underlyingSymbol: "GARAN",
       underlyingKind: "equity",
       brokerAnalytics: true,

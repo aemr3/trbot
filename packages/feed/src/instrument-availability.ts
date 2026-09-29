@@ -34,7 +34,6 @@ export class FeedAwareInstrumentSource implements ViopInstrumentSource {
       return {
         ...instrument,
         marketData: {
-          instrumentCandles: future !== undefined,
           underlyingSymbol: underlying?.symbol ?? null,
           underlyingKind: underlying ? marketKind(underlying.kind) : null,
           brokerAnalytics: underlying?.kind === "equity",

@@ -4,8 +4,6 @@ export const INSTRUMENT_MARKET_KINDS = ["equity", "index", "currency", "commodit
 export type InstrumentMarketKind = (typeof INSTRUMENT_MARKET_KINDS)[number]
 
 export interface InstrumentMarketDataAvailability {
-  /** The feed carries candles for the VIOP contract itself. */
-  instrumentCandles: boolean
   /** The exact cash, spot, or index symbol the feed carries, when one exists. */
   underlyingSymbol: string | null
   underlyingKind: InstrumentMarketKind | null
@@ -14,7 +12,6 @@ export interface InstrumentMarketDataAvailability {
 }
 
 export const InstrumentMarketDataAvailabilitySchema: z.ZodType<InstrumentMarketDataAvailability> = z.object({
-  instrumentCandles: z.boolean(),
   underlyingSymbol: z.string().min(1).nullable(),
   underlyingKind: z.enum(INSTRUMENT_MARKET_KINDS).nullable(),
   brokerAnalytics: z.boolean(),

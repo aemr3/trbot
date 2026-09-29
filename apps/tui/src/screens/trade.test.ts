@@ -1007,29 +1007,21 @@ test("refreshes snapshot volumes and re-sorts without replacing live prices", as
   renderer.destroy()
 })
 
-test("restores the futures chart when refreshed rollover availability recognizes the contract", async () => {
-  const { renderer, waitForFrame } = await createTestRenderer({ width: 200, height: 24 })
-  let calls = 0
-  let releaseRefresh = (): void => {}
-  const refreshAllowed = new Promise<void>((resolve) => {
-    releaseRefresh = resolve
-  })
-  const rollingAvailability: ViopInstrumentSource = {
+test("offers the futures chart for a broker-listed contract outside the active-vade collection", async () => {
+  const { renderer, mockInput, waitForFrame } = await createTestRenderer({ width: 200, height: 24 })
+  const contractSource: ViopInstrumentSource = {
     async listInstruments() {
-      calls++
-      if (calls > 1) await refreshAllowed
       return [{
-        uid: "petkm-future",
-        symbol: "F_PETKM0926",
-        displayName: "PETKM",
-        underlyingSymbol: "PETKM",
-        lastPrice: 20.22,
-        changePercent: -0.49,
+        uid: "aksen-future",
+        symbol: "F_AKSEN1026",
+        displayName: "AKSEN",
+        underlyingSymbol: "AKSEN",
+        lastPrice: 74.25,
+        changePercent: 0,
         volume: 100_000,
         currency: "TRY",
         marketData: {
-          instrumentCandles: calls > 1,
-          underlyingSymbol: "PETKM",
+          underlyingSymbol: "AKSEN",
           underlyingKind: "equity",
           brokerAnalytics: true,
         },
@@ -1037,31 +1029,28 @@ test("restores the futures chart when refreshed rollover availability recognizes
     },
   }
   const candleTargets: Array<string | undefined> = []
-  const rolloverCandles: CandleSource = {
+  const contractCandles: CandleSource = {
     async loadCandles(instrumentUid, range, interval, options) {
       candleTargets.push(options?.target)
       return candles.loadCandles(instrumentUid, range, interval, options)
     },
   }
   const screen = new TradeScreen(renderer, {
-    instruments: rollingAvailability,
-    candles: rolloverCandles,
+    instruments: contractSource,
+    candles: contractCandles,
     news,
-    preferences: { ...DEFAULT_APP_PREFERENCES, chartTarget: "INSTRUMENT" },
-    instrumentIntervalMs: 10,
   })
   renderer.root.add(screen.root)
   screen.mount()
 
   try {
-    await waitForFrame((frame) => frame.includes("Chart  PETKM stock"))
-    releaseRefresh()
-
-    const refreshed = await waitForFrame((frame) => frame.includes("Chart  PETKM futures"))
-    expect(refreshed).toContain("Futures")
+    const stockFrame = await waitForFrame((value) => value.includes("Chart  AKSEN stock"))
+    expect(stockFrame).toContain("Futures")
+    focusPanel(mockInput, "chart")
+    await mockInput.typeText("f")
+    await waitForFrame((value) => value.includes("Chart  AKSEN futures"))
     expect(candleTargets).toContain("INSTRUMENT")
   } finally {
-    releaseRefresh()
     screen.destroy()
     renderer.destroy()
   }
@@ -1921,7 +1910,6 @@ test("uses only the market-data views available for a futures-only underlying", 
         volume: 100_000,
         currency: "TRY",
         marketData: {
-          instrumentCandles: true,
           underlyingSymbol: null,
           underlyingKind: null,
           brokerAnalytics: false,

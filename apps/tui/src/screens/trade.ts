@@ -2491,7 +2491,7 @@ function chartTargets(instrument: ViopInstrument): CandleChartTarget[] {
   if (!availability) return ["UNDERLYING", "INSTRUMENT", "BIST_100", "BIST_30"]
   return [
     ...(availability.underlyingSymbol ? ["UNDERLYING" as const] : []),
-    ...(availability.instrumentCandles ? ["INSTRUMENT" as const] : []),
+    "INSTRUMENT",
     "BIST_100",
     "BIST_30",
   ]
@@ -2502,8 +2502,7 @@ function sameMarketDataAvailability(
   right: ViopInstrument["marketData"],
 ): boolean {
   if (!left || !right) return left === right
-  return left.instrumentCandles === right.instrumentCandles
-    && left.underlyingSymbol === right.underlyingSymbol
+  return left.underlyingSymbol === right.underlyingSymbol
     && left.underlyingKind === right.underlyingKind
     && left.brokerAnalytics === right.brokerAnalytics
 }

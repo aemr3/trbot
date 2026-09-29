@@ -915,7 +915,6 @@ test("rejects market-data views the selected contract does not provide before ca
           displayName: "XAUTRY",
           underlyingSymbol: "XAUTRY",
           marketData: {
-            instrumentCandles: true,
             underlyingSymbol: null,
             underlyingKind: null,
             brokerAnalytics: false,
