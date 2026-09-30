@@ -268,7 +268,7 @@ const RecentFinancialsParameters = Type.Object({
 const SymbolOnlyParameters = Type.Object({ symbol: SymbolParameter })
 const CandleParameters = Type.Object({
   symbol: Type.Optional(Type.String({
-    description: "Exact nearest-expiry contract returned by list_instruments, its underlying, or an index alias such as ASELS, XU100, XU030, BIST100, or BIST30; never construct an expiry code",
+    description: "Underlying ticker such as ASELS, an exact active market-data feed contract, or an index alias such as XU100, XU030, BIST100, or BIST30. The feed's active expiry can differ from list_instruments; never construct an expiry code",
     minLength: 1,
     maxLength: 80,
   })),
@@ -890,7 +890,8 @@ function listInstrumentsTool(clients: MarketDataToolClients): ChatTool<typeof Li
       name: "list_instruments",
       description: [
         "List the nearest-expiry VIOP contract for every underlying with instrument UIDs, prices, changes, and volume.",
-        "This is the authoritative contract-symbol universe: out-month expiries are not exposed, so never construct or probe another expiry code.",
+        "This is the authoritative brokerage contract-symbol universe for trading and quotes; the candle feed's active expiry can differ.",
+        "For candles, use the underlying ticker to resolve the feed's active contract and check the returned symbol. Never construct or probe another expiry code.",
       ].join(" "),
       parameters: ListInstrumentsParameters,
     },
@@ -1034,6 +1035,7 @@ function candlesTool(clients: MarketDataToolClients): ChatTool<typeof CandlePara
       name: "get_candles",
       description: [
         "Read OHLCV candle history for a VIOP contract, an available underlying cash/spot instrument, BIST 100, or BIST 30.",
+        "Contracts resolve against the market-data feed, independently of the brokerage list_instruments. Prefer an underlying ticker and check the returned contract; never substitute a different expiry for an explicitly requested contract.",
         "For indices, pass XU100/XU030 as symbol or select BIST_100/BIST_30 without a symbol.",
         "Optional indicators use the complete source at the requested interval before pagination and are aligned by index with the returned candles.",
         "The result identifies the latest completed candle and any forming candle; use completed snapshots for confirmation because forming values are provisional.",

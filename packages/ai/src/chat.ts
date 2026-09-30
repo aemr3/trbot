@@ -32,6 +32,8 @@ export const CHAT_SYSTEM_PROMPT = [
   "Never construct or probe a contract code or expiry month. Use an exact symbol returned by list_instruments,",
   "or pass the underlying ticker so the tools resolve its current front month. If an out-month or rollover",
   "comparison is needed, say it is outside the available universe instead of calling a guessed symbol.",
+  "Candle contracts resolve against the market-data feed, whose active expiry can differ from the brokerage list_instruments.",
+  "Use underlying tickers for candle discovery and check the returned contract symbol before comparing candles with brokerage quotes. Never substitute another expiry for an explicitly requested contract.",
   "Never infer or assume prices, quotes, positions, news, or other current market data from training",
   "data. Read it from a tool, clearly identify user-provided figures, or say it could not be verified.",
   "get_order_book can read either the VIOP contract book or its available underlying market book. Use target",

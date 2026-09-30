@@ -71,6 +71,7 @@ const CollectionsSchema = z.array(
 /** The collection holding the tradable futures contracts. */
 // Fintables uses U+0130 in this exact collection title; application copy uses VIOP.
 const ACTIVE_FUTURES_COLLECTION = "V\u0130OP Aktif Vade"
+const FUTURES_CACHE_TTL_MS = 5 * 60_000
 
 const FUTURE_CODE = /^F_([A-Z0-9]+?)(\d{2})(\d{2})$/
 
@@ -127,7 +128,7 @@ export class FeedInstrumentSource implements CandleInstrumentResolver {
   private readonly baseUrl: string
   private readonly now: () => number
   private universe: FeedInstrument[] | null = null
-  private futures: { marketDate: string; instruments: FeedFutureInstrument[] } | null = null
+  private futures: { marketDate: string; expiresAt: number; instruments: FeedFutureInstrument[] } | null = null
 
   constructor(
     private readonly session: Pick<FeedSession, "accessToken" | "renewAccessToken">,
@@ -164,15 +165,17 @@ export class FeedInstrumentSource implements CandleInstrumentResolver {
     return (await this.listInstruments(options)).filter((instrument) => instrument.kind === kind)
   }
 
-  /** The active futures contracts, newest-dated last, refreshed once per exchange day. */
-  async listFutures(options: { signal?: AbortSignal } = {}): Promise<FeedFutureInstrument[]> {
+  /** Active contracts can roll during the exchange day, independently of the brokerage. */
+  async listFutures(options: { signal?: AbortSignal; force?: boolean } = {}): Promise<FeedFutureInstrument[]> {
     const today = marketDate(this.now())
-    if (this.futures?.marketDate === today) return this.futures.instruments
+    if (!options.force && this.futures?.marketDate === today && this.now() < this.futures.expiresAt) {
+      return this.futures.instruments
+    }
     const collections = await this.loadCollections(options.signal)
     const active = collections.find((collection) => collection.title === ACTIVE_FUTURES_COLLECTION)
       ?? collections.find((collection) => collection.data.some((code) => code.startsWith("F_")))
     if (!active) {
-      this.futures = { marketDate: today, instruments: [] }
+      this.futures = { marketDate: today, expiresAt: this.now() + FUTURES_CACHE_TTL_MS, instruments: [] }
       return this.futures.instruments
     }
 
@@ -190,7 +193,7 @@ export class FeedInstrumentSource implements CandleInstrumentResolver {
         ? left.contractMonth.localeCompare(right.contractMonth)
         : left.underlying.localeCompare(right.underlying)
     )
-    this.futures = { marketDate: today, instruments }
+    this.futures = { marketDate: today, expiresAt: this.now() + FUTURES_CACHE_TTL_MS, instruments }
     return instruments
   }
 
@@ -216,16 +219,27 @@ export class FeedInstrumentSource implements CandleInstrumentResolver {
     options: { signal?: AbortSignal } = {},
   ): Promise<ResolvedCandleInstrument> {
     const wanted = symbol.trim().toUpperCase()
-    const [futures, instruments] = await Promise.all([
+    const cachedFutures = this.futures
+    const [initialFutures, instruments] = await Promise.all([
       this.listFutures(options),
       this.listInstruments(options),
     ])
+    let futures = initialFutures
     const wantedUnderlying = FUTURE_UNDERLYING_BY_ALIAS.get(wanted) ?? wanted
-    const contract = futures.find((future) => future.symbol === wanted)
+    const findContract = () => futures.find((future) => future.symbol === wanted)
       ?? futures.find((future) => future.underlying === wantedUnderlying)
+    let contract = findContract()
+    if (!contract && cachedFutures !== null && this.futures === cachedFutures) {
+      futures = await this.listFutures({ ...options, force: true })
+      contract = findContract()
+    }
     if (!contract) {
+      const underlying = parseFutureCode(wanted)?.underlying ?? wantedUnderlying
+      const available = futures.filter((future) => future.underlying === underlying)
       throw new Error(
-        `No active VIOP contract matches ${symbol}. Only nearest-expiry contracts are available; use an exact listed contract or its underlying symbol instead of constructing an expiry code.`,
+        `No active VIOP contract matches ${symbol} in the market-data feed.`
+        + (available.length > 0 ? ` Available feed contracts for ${underlying}: ${available.map((future) => future.symbol).join(", ")}.` : "")
+        + " Only nearest-expiry contracts are available. Brokerage and feed contract lists can differ; use the underlying ticker to resolve the feed's active contract, and check the returned expiry.",
       )
     }
 

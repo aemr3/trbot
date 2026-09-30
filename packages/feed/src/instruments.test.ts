@@ -118,6 +118,57 @@ describe("FeedInstrumentSource", () => {
     expect(requests.filter((request) => request.url.endsWith("/mobile/symbols/collections/"))).toHaveLength(2)
   })
 
+  test.each(["ASELS", "TRMET"])("refreshes cached contracts when %s rolls within the market day", async (symbol) => {
+    let rolledOver = false
+    const { instruments, requests } = build({
+      now: () => Date.parse("2026-09-30T15:15:00Z"),
+      collections: () => [{
+        title: "V\u0130OP Aktif Vade",
+        data: [`F_${symbol}${rolledOver ? "1026" : "0926"}`],
+      }],
+    })
+
+    await instruments.listFutures()
+    rolledOver = true
+
+    await expect(instruments.resolveCandleInstrument(`F_${symbol}1026`, "INSTRUMENT")).resolves.toMatchObject({
+      candleSymbol: `F_${symbol}1026`,
+      contractSymbol: `F_${symbol}1026`,
+    })
+    expect(requests.filter((request) => request.url.endsWith("/mobile/symbols/collections/"))).toHaveLength(2)
+    await instruments.resolveCandleInstrument(`F_${symbol}1026`, "INSTRUMENT")
+    expect(requests.filter((request) => request.url.endsWith("/mobile/symbols/collections/"))).toHaveLength(2)
+  })
+
+  test("refreshes underlying resolution after the intraday futures cache expires", async () => {
+    let now = Date.parse("2026-09-30T15:15:00Z")
+    let rolledOver = false
+    const { instruments, requests } = build({
+      now: () => now,
+      collections: () => [{
+        title: "V\u0130OP Aktif Vade",
+        data: [rolledOver ? "F_GARAN1026" : "F_GARAN0926"],
+      }],
+    })
+
+    expect((await instruments.resolveCandleInstrument("GARAN", "INSTRUMENT")).contractSymbol).toBe("F_GARAN0926")
+    rolledOver = true
+    expect((await instruments.resolveCandleInstrument("GARAN", "INSTRUMENT")).contractSymbol).toBe("F_GARAN0926")
+    now += 5 * 60_000
+    expect((await instruments.resolveCandleInstrument("GARAN", "INSTRUMENT")).contractSymbol).toBe("F_GARAN1026")
+    expect(requests.filter((request) => request.url.endsWith("/mobile/symbols/collections/"))).toHaveLength(2)
+  })
+
+  test("reports the feed contract when an explicit expiry is unavailable without substituting it", async () => {
+    const { instruments, requests } = build()
+    await instruments.listFutures()
+
+    await expect(instruments.resolveCandleInstrument("F_GARAN0926", "INSTRUMENT"))
+      .rejects.toThrow("Available feed contracts for GARAN: F_GARAN0826")
+    expect(requests.filter((request) => request.url.endsWith("/mobile/symbols/collections/"))).toHaveLength(2)
+    expect((await instruments.resolveCandleInstrument("GARAN", "INSTRUMENT")).contractSymbol).toBe("F_GARAN0826")
+  })
+
   /**
    * The universe endpoint carries no futures at all, so contracts come from the
    * active-contract collection instead.
