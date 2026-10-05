@@ -18,7 +18,7 @@
     "@trbot/provider": "workspace:*",
     "@trbot/telemetry": "workspace:*",
     "@trbot/trading": "workspace:*",
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "^0.45.3",
     "reflect-metadata": "^0.2.2",
     "zod": "^4.4.3"
   },
