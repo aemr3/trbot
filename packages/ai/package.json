@@ -17,7 +17,7 @@
     "@trbot/telemetry": "workspace:*",
     "@trbot/trading": "workspace:*",
     "linkedom": "^0.18.13",
-    "ogg-opus-decoder": "^1.7.3",
+    "ogg-opus-decoder": "^1.7.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
